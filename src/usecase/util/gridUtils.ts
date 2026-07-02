@@ -19,8 +19,8 @@ export const drawGrid = (canvas: HTMLCanvasElement, view: View, tiles: Tile[]): 
   const rects = tiles.map((t) => ({
     l: t.x * view.k + view.x,
     t: t.y * view.k + view.y,
-    r: (t.x + t.w) * view.k + view.x,
-    b: (t.y + t.h) * view.k + view.y
+    r: (t.x + t.width) * view.k + view.x,
+    b: (t.y + t.height) * view.k + view.y
   }));
   const insideTile = (px: number, py: number): boolean => {
     for (const r of rects) {

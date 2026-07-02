@@ -1,10 +1,4 @@
-export interface Tile {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+export type { Tile } from '~/domain/interfaces/workspace.interface';
 
 export interface View {
   x: number;

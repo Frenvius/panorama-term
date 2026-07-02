@@ -1,5 +1,3 @@
-export const STORE_KEY = 'panorama.canvas';
-
 export const CELL = 20;
 export const MAJOR = 80;
 export const BASE_FONT = 12;

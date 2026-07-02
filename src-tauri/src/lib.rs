@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+mod store;
+
 const SIDECAR_PORT: u16 = 9777;
 
 fn sidecar_alive() -> bool {
@@ -44,6 +46,12 @@ pub fn run() {
             spawn_sidecar();
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            store::store_read,
+            store::store_write,
+            store::store_delete,
+            store::store_list
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

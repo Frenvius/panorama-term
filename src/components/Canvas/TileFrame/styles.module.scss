@@ -46,3 +46,13 @@
   min-height: 0;
   overflow: hidden;
 }
+
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #4a5568;
+  font-size: 12px;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}

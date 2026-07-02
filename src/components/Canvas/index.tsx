@@ -1,9 +1,11 @@
 import TileFrame from '~/components/Canvas/TileFrame';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
+import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 
 import styles from './styles.module.scss';
 
 const Canvas = () => {
+  const { activeState, saveActiveState } = useWorkspace();
   const {
     view,
     tiles,
@@ -16,7 +18,7 @@ const Canvas = () => {
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown
-  } = useCanvas();
+  } = useCanvas({ seed: activeState, onPersist: saveActiveState });
 
   return (
     <div className={styles.root}>

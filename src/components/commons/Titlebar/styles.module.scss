@@ -13,11 +13,27 @@
   user-select: none;
 }
 
-.brand {
+.settings {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin-right: 8px;
+  border: none;
+  cursor: pointer;
   color: #8894a8;
-  font-size: 12px;
-  font-weight: 500;
-  font-family: 'Geist Mono', ui-monospace, monospace;
+  border-radius: 6px;
+  background: transparent;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+
+  &:hover {
+    color: #c7d0e0;
+    background: rgba(199, 208, 224, 0.06);
+  }
 }
 
 .controls {

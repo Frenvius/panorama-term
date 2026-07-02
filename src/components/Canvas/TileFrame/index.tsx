@@ -31,6 +31,7 @@ const TileFrame = ({ tile, view, onMove, onClose }: TileFrameProps) => {
     drag.current = null;
   };
   const closeTile = () => onClose(tile.id);
+  const label = tile.userTitle || tile.autoTitle || `${tile.type} · ${tile.id}`;
 
   return (
     <div
@@ -39,8 +40,8 @@ const TileFrame = ({ tile, view, onMove, onClose }: TileFrameProps) => {
       style={{
         top: tile.y * k + view.y,
         left: tile.x * k + view.x,
-        width: tile.w,
-        height: tile.h,
+        width: tile.width,
+        height: tile.height,
         transform: `scale(${k})`,
         transformOrigin: 'top left'
       }}
@@ -52,13 +53,17 @@ const TileFrame = ({ tile, view, onMove, onClose }: TileFrameProps) => {
         onPointerMove={onDrag}
         onPointerCancel={endDrag}
       >
-        <span className={styles.title}>terminal · {tile.id}</span>
+        <span className={styles.title}>{label}</span>
         <button className={styles.close} onClick={closeTile}>
           ×
         </button>
       </div>
       <div className={styles.body}>
-        <Terminal tileId={tile.id} scale={k} bodyW={tile.w} bodyH={tile.h - TILE_HEADER} />
+        {tile.type === 'term' ? (
+          <Terminal tileId={tile.id} scale={k} bodyW={tile.width} bodyH={tile.height - TILE_HEADER} />
+        ) : (
+          <div className={styles.placeholder}>{tile.type}</div>
+        )}
       </div>
     </div>
   );

@@ -2045,6 +2045,8 @@ dependencies = [
 name = "panorama"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

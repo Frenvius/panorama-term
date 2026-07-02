@@ -1,10 +1,11 @@
 import React from 'react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
-import { loadCanvas, saveCanvas } from '~/usecase/util/canvasStorage';
+import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import {
   RUBBER_K,
   ZOOM_MIN,
@@ -21,8 +22,16 @@ type PanOrigin = { ox: number; oy: number; vx: number; vy: number };
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
-export const useCanvas = () => {
-  const initial = React.useRef(loadCanvas());
+const EMPTY: RuntimeCanvas = { tiles: [], frames: [], view: { x: 0, y: 0, k: 1 } };
+
+interface UseCanvasArgs {
+  seed: CanvasState | null;
+  onPersist: (state: CanvasState) => void;
+}
+
+export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
+  const initial = React.useRef(seed ? toRuntime(seed) : EMPTY);
+  const frames = React.useRef(initial.current.frames);
   const [tiles, setTiles] = React.useState<Tile[]>(initial.current.tiles);
   const [view, setView] = React.useState<View>(initial.current.view);
 
@@ -43,8 +52,8 @@ export const useCanvas = () => {
   const panRef = React.useRef<PanOrigin | null>(null);
 
   React.useEffect(() => {
-    saveCanvas({ tiles, view });
-  }, [tiles, view]);
+    onPersist(toStored({ tiles, view, frames: frames.current }));
+  }, [tiles, view, onPersist]);
 
   React.useEffect(() => {
     if (gridRef.current) drawGrid(gridRef.current, view, tiles);
@@ -95,7 +104,15 @@ export const useCanvas = () => {
       const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => [
         ...prev,
-        { id: createId(), x: cx - TILE_WIDTH / 2, y: cy - TILE_HEIGHT / 2, w: TILE_WIDTH, h: TILE_HEIGHT }
+        {
+          id: createId(),
+          type: 'term',
+          x: cx - TILE_WIDTH / 2,
+          y: cy - TILE_HEIGHT / 2,
+          width: TILE_WIDTH,
+          height: TILE_HEIGHT,
+          zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
+        }
       ]);
       return v;
     });

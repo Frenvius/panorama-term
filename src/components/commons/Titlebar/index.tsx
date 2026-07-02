@@ -1,5 +1,9 @@
 import React from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { X, Copy, Minus, Square, Settings } from 'lucide-react';
+
+import TabsBar from '~/components/commons/TabsBar';
+import WorkspaceBar from '~/components/commons/WorkspaceBar';
 
 import styles from './styles.module.scss';
 
@@ -22,7 +26,7 @@ const Titlebar = () => {
 
   const onDragStart = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest('button')) return;
+    if ((e.target as HTMLElement).closest('button, [data-no-drag]')) return;
     if (e.detail === 2) {
       void win.toggleMaximize();
       return;
@@ -43,29 +47,20 @@ const Titlebar = () => {
 
   return (
     <div className={styles.bar} onMouseDown={onDragStart}>
-      <span className={styles.brand}>Panorama</span>
+      <button className={styles.settings} aria-label="Settings">
+        <Settings size={15} strokeWidth={1.75} />
+      </button>
+      <WorkspaceBar />
+      <TabsBar />
       <div className={styles.controls}>
         <button className={styles.btn} onClick={minimize} aria-label="Minimize">
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M0 5 H10" stroke="currentColor" strokeWidth="1" fill="none" />
-          </svg>
+          <Minus size={16} strokeWidth={1.5} />
         </button>
         <button className={styles.btn} onClick={toggleMaximize} aria-label={maximized ? 'Restore' : 'Maximize'}>
-          {maximized ? (
-            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-              <path d="M2.5 2.5 V0.5 H9.5 V7.5 H7.5" stroke="currentColor" strokeWidth="1" fill="none" />
-              <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" strokeWidth="1" fill="none" />
-            </svg>
-          ) : (
-            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-              <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" strokeWidth="1" fill="none" />
-            </svg>
-          )}
+          {maximized ? <Copy size={13} strokeWidth={1.5} /> : <Square size={12} strokeWidth={1.5} />}
         </button>
         <button className={`${styles.btn} ${styles.close}`} onClick={close} aria-label="Close">
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" strokeWidth="1" fill="none" />
-          </svg>
+          <X size={16} strokeWidth={1.5} />
         </button>
       </div>
     </div>
