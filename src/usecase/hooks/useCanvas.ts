@@ -5,8 +5,11 @@ import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
+import { computeDragSnap } from '~/usecase/util/magneticSnap';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import {
+  CELL,
+  SNAP_PX,
   RUBBER_K,
   ZOOM_MIN,
   ZOOM_MAX,
@@ -14,8 +17,10 @@ import {
   TILE_WIDTH,
   TILE_HEIGHT,
   INDICATOR_MS,
+  TILE_MIN_WIDTH,
   TOOLBAR_HEIGHT,
-  MAX_ZOOM_DELTA
+  MAX_ZOOM_DELTA,
+  TILE_MIN_HEIGHT
 } from '~/usecase/util/constants';
 
 type PanOrigin = { ox: number; oy: number; vx: number; vy: number };
@@ -98,10 +103,10 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     []
   );
 
-  const addTile = React.useCallback(() => {
+  const addTile = React.useCallback((center?: { x: number; y: number }) => {
     setView((v) => {
-      const cx = (window.innerWidth / 2 - v.x) / v.k;
-      const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
+      const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
+      const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => [
         ...prev,
         {
@@ -124,11 +129,58 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   }, []);
 
   const moveTile = React.useCallback(
-    (id: string, dx: number, dy: number) => {
-      setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, x: t.x + dx / view.k, y: t.y + dy / view.k } : t)));
+    (id: string, rawX: number, rawY: number) => {
+      setTiles((prev) => {
+        const moving = prev.find((t) => t.id === id);
+        if (!moving) return prev;
+        const cand = { ...moving, x: rawX, y: rawY };
+        const others = prev.filter((t) => t.id !== id);
+        const snap = computeDragSnap(cand, others, SNAP_PX / view.k);
+        return prev.map((t) => (t.id === id ? { ...t, x: snap.x ?? rawX, y: snap.y ?? rawY } : t));
+      });
     },
     [view.k]
   );
+
+  const resizeTile = React.useCallback(
+    (id: string, dir: string, dx: number, dy: number) => {
+      const wdx = dx / view.k;
+      const wdy = dy / view.k;
+      setTiles((prev) =>
+        prev.map((t) => {
+          if (t.id !== id) return t;
+          let { x, y, width, height } = t;
+          if (dir.includes('e')) width = Math.max(TILE_MIN_WIDTH, width + wdx);
+          if (dir.includes('s')) height = Math.max(TILE_MIN_HEIGHT, height + wdy);
+          if (dir.includes('w')) {
+            const nw = Math.max(TILE_MIN_WIDTH, width - wdx);
+            x += width - nw;
+            width = nw;
+          }
+          if (dir.includes('n')) {
+            const nh = Math.max(TILE_MIN_HEIGHT, height - wdy);
+            y += height - nh;
+            height = nh;
+          }
+          return { ...t, x, y, width, height };
+        })
+      );
+    },
+    [view.k]
+  );
+
+  const snapTile = React.useCallback((id: string) => {
+    setTiles((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        const x = Math.round(t.x / CELL) * CELL;
+        const y = Math.round(t.y / CELL) * CELL;
+        const width = Math.max(TILE_MIN_WIDTH, Math.round(t.width / CELL) * CELL);
+        const height = Math.max(TILE_MIN_HEIGHT, Math.round(t.height / CELL) * CELL);
+        return { ...t, x, y, width, height };
+      })
+    );
+  }, []);
 
   const resetZoom = React.useCallback(() => {
     setView((v) => {
@@ -219,8 +271,10 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     onWheel,
     addTile,
     moveTile,
+    snapTile,
     closeTile,
     resetZoom,
+    resizeTile,
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown

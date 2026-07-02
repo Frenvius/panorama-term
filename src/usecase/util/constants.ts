@@ -15,3 +15,7 @@ export const TILE_WIDTH = 640;
 export const TILE_HEIGHT = 400;
 export const TILE_HEADER = 28;
 export const TOOLBAR_HEIGHT = 40;
+export const TILE_MIN_WIDTH = 200;
+export const TILE_MIN_HEIGHT = 120;
+export const TILE_GAP = 6;
+export const SNAP_PX = 8;
