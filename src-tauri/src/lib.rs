@@ -32,17 +32,38 @@ fn spawn_sidecar() {
         eprintln!("[panorama] sidecar binary missing: {}", bin.display());
         return;
     }
-    let mut cmd = Command::new(bin);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let make = || {
+        let mut cmd = Command::new(&bin);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd
+    };
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let base = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+        let mut cmd = make();
+        cmd.creation_flags(base | CREATE_BREAKAWAY_FROM_JOB);
+        if cmd.spawn().is_ok() {
+            return;
+        }
+        let mut fallback = make();
+        fallback.creation_flags(base);
+        if let Err(e) = fallback.spawn() {
+            eprintln!("[panorama] failed to spawn sidecar: {e}");
+        }
+        return;
     }
-    if let Err(e) = cmd.spawn() {
-        eprintln!("[panorama] failed to spawn sidecar: {e}");
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = make();
+        if let Err(e) = cmd.spawn() {
+            eprintln!("[panorama] failed to spawn sidecar: {e}");
+        }
     }
 }
 
