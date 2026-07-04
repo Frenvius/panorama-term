@@ -3,9 +3,12 @@ import React from 'react';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
+import { orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
+import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
+import type { Cell, Selection } from '~/usecase/util/terminalSelection';
 
 import styles from './styles.module.scss';
 
@@ -22,6 +25,7 @@ interface GridTerminalProps {
 const FONT = 12;
 const CELL_H = 15;
 const PAINT_MS = 60;
+const CLICK_MS = 400;
 const BG = '#0b0e14';
 
 let cellW = 7.23;
@@ -95,6 +99,9 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
   const scrollRef = React.useRef(0);
   const dirtyRef = React.useRef(true);
   const blinkRef = React.useRef(true);
+  const selRef = React.useRef<Selection | null>(null);
+  const selectingRef = React.useRef(false);
+  const clickRef = React.useRef({ t: 0, row: -1, col: -1, count: 0 });
   const activeRef = React.useRef(active);
   const visibleRef = React.useRef(visible);
   const kRef = React.useRef(k);
@@ -158,6 +165,18 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
           ctx.fillStyle = hex(w0);
           ctx.fillText(ch, c * cellW, r * CELL_H + yOff);
         }
+      }
+    }
+
+    const sel = selRef.current;
+    if (sel) {
+      const { s, e } = orderSel(sel);
+      ctx.fillStyle = 'rgba(74,144,217,0.35)';
+      for (let r = s.row; r <= e.row; r++) {
+        if (r < 0 || r >= nRows) continue;
+        const c0 = r === s.row ? s.col : 0;
+        const c1 = r === e.row ? e.col : nCols - 1;
+        ctx.fillRect(c0 * cellW, r * CELL_H, (c1 - c0 + 1) * cellW, CELL_H);
       }
     }
 
@@ -233,13 +252,118 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
     return () => clearInterval(id);
   }, [active]);
 
+  const cellFromEvent = (e: React.PointerEvent): Cell | null => {
+    const canvas = canvasRef.current;
+    const frame = frameRef.current;
+    if (!canvas || !frame) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const col = Math.floor(((e.clientX - rect.left) / rect.width) * frame.cols);
+    const row = Math.floor(((e.clientY - rect.top) / rect.height) * frame.rows);
+    return { col: Math.max(0, Math.min(frame.cols - 1, col)), row: Math.max(0, Math.min(frame.rows - 1, row)) };
+  };
+
+  const selectedText = (): string => {
+    const sel = selRef.current;
+    const frame = frameRef.current;
+    if (!sel || !frame) return '';
+    return selectText(frame.lines, frame.cols, sel);
+  };
+
+  const clearSelection = () => {
+    if (!selRef.current) return;
+    selRef.current = null;
+    dirtyRef.current = true;
+  };
+
+  const copySelection = () => {
+    const text = selectedText();
+    if (text) writeClipboard(text);
+  };
+
+  const paste = () => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    void readClipboard().then((t) => {
+      if (t) sendPtyInput(ws, t.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
+    });
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !activeRef.current) return;
+    const cell = cellFromEvent(e);
+    if (!cell) return;
+    e.stopPropagation();
+
+    const frame = frameRef.current;
+    const now = performance.now();
+    const l = clickRef.current;
+    const near = cell.row === l.row && Math.abs(cell.col - l.col) <= 1 && now - l.t < CLICK_MS;
+    const count = near ? l.count + 1 : 1;
+    clickRef.current = { t: now, row: cell.row, col: cell.col, count };
+
+    if (count >= 3 && frame) {
+      selectingRef.current = false;
+      selRef.current = lineSelection(cell.row, frame.cols);
+      dirtyRef.current = true;
+      return;
+    }
+    if (count === 2 && frame) {
+      selectingRef.current = false;
+      selRef.current = wordSelection(frame.lines[cell.row] ?? '', cell.row, cell.col);
+      dirtyRef.current = true;
+      return;
+    }
+
+    canvasRef.current?.setPointerCapture(e.pointerId);
+    selectingRef.current = true;
+    selRef.current = { a: cell, b: cell };
+    dirtyRef.current = true;
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!selectingRef.current || !selRef.current) return;
+    const cell = cellFromEvent(e);
+    if (!cell) return;
+    selRef.current = { a: selRef.current.a, b: cell };
+    dirtyRef.current = true;
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (!selectingRef.current) return;
+    selectingRef.current = false;
+    canvasRef.current?.releasePointerCapture(e.pointerId);
+    const s = selRef.current;
+    if (s && s.a.row === s.b.row && s.a.col === s.b.col) selRef.current = null;
+    dirtyRef.current = true;
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     const ws = wsRef.current;
     if (!ws) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const key = e.key.toLowerCase();
+    if (mod && e.shiftKey && key === 'c') {
+      e.preventDefault();
+      copySelection();
+      return;
+    }
+    if (mod && e.shiftKey && key === 'v') {
+      e.preventDefault();
+      paste();
+      return;
+    }
+    if (mod && !e.shiftKey && key === 'c' && selRef.current) {
+      e.preventDefault();
+      copySelection();
+      clearSelection();
+      return;
+    }
     const bytes = keyToBytes(e);
     if (bytes === null) return;
     e.preventDefault();
     blinkRef.current = true;
+    clearSelection();
     sendPtyInput(ws, bytes);
   };
 
@@ -251,10 +375,23 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
     const next = Math.max(0, scrollRef.current + (e.deltaY < 0 ? 3 : -3));
     if (next === scrollRef.current) return;
     scrollRef.current = next;
+    clearSelection();
     sendPtyScroll(ws, next);
   };
 
-  return <canvas ref={canvasRef} tabIndex={-1} onKeyDown={onKeyDown} onWheel={onWheel} className={styles.wasm} />;
+  return (
+    <canvas
+      ref={canvasRef}
+      tabIndex={-1}
+      onWheel={onWheel}
+      onKeyDown={onKeyDown}
+      onPointerUp={onPointerUp}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerCancel={onPointerUp}
+      className={styles.wasm}
+    />
+  );
 };
 
 export default GridTerminal;
