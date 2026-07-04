@@ -104,6 +104,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
     ctx.textBaseline = 'top';
+    const snap = (v: number) => Math.round(v * scale) / scale;
 
     const lines = frame.lines;
     const attrs = frame.attrs;
@@ -123,7 +124,9 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k }: GridTermi
         if (ch && ch !== ' ') {
           ctx.font = `${w0 & (1 << 24) ? 'bold ' : ''}${FONT}px Hack, monospace`;
           ctx.fillStyle = hex(w0);
-          ctx.fillText(ch, c * cellW, r * CELL_H + yOff);
+          const cp = ch.codePointAt(0) ?? 0;
+          const box = cp >= 0x2500 && cp <= 0x259f;
+          ctx.fillText(ch, box ? c * cellW : snap(c * cellW), box ? r * CELL_H + yOff : snap(r * CELL_H + yOff));
         }
       }
     }

@@ -106,8 +106,8 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
             active={active}
             visible={visible}
             tileId={tile.id}
-            cols={Math.max(20, Math.floor(bodyW / 7.23))}
-            rows={Math.max(2, Math.floor((bodyH - TILE_HEADER) / 15))}
+            cols={Math.max(20, Math.floor((bodyW - 8) / 7.23))}
+            rows={Math.max(2, Math.floor((bodyH - TILE_HEADER - 4) / 15))}
           />
         ) : (
           <div className={styles.placeholder} />
