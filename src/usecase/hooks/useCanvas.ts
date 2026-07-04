@@ -1,6 +1,6 @@
 import React from 'react';
 
-import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { getSetting } from '~/adapter/settings/settings.client';
@@ -16,13 +16,18 @@ import {
   ZOOM_MAX,
   SNAP_DELAY,
   TILE_WIDTH,
+  FRAME_COLOR,
+  FRAME_WIDTH,
   MAX_ZOOM_KEY,
   TILE_HEIGHT,
+  FRAME_HEIGHT,
   INDICATOR_MS,
   TILE_MIN_WIDTH,
   TOOLBAR_HEIGHT,
   MAX_ZOOM_DELTA,
-  TILE_MIN_HEIGHT
+  TILE_MIN_HEIGHT,
+  FRAME_MIN_WIDTH,
+  FRAME_MIN_HEIGHT
 } from '~/usecase/util/constants';
 
 const maxZoom = (): number => Math.min(ZOOM_MAX, Math.max(1, getSetting(MAX_ZOOM_KEY, 1)));
@@ -40,7 +45,7 @@ interface UseCanvasArgs {
 
 export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   const initial = React.useRef(seed ? toRuntime(seed) : EMPTY);
-  const frames = React.useRef(initial.current.frames);
+  const [frames, setFrames] = React.useState<Frame[]>(initial.current.frames);
   const [tiles, setTiles] = React.useState<Tile[]>(initial.current.tiles);
   const [view, setView] = React.useState<View>(initial.current.view);
   const [activeTile, setActiveTile] = React.useState<string | null>(null);
@@ -62,9 +67,9 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   const panRef = React.useRef<PanOrigin | null>(null);
 
   React.useEffect(() => {
-    const id = setTimeout(() => onPersist(toStored({ tiles, view, frames: frames.current })), 400);
+    const id = setTimeout(() => onPersist(toStored({ tiles, view, frames })), 400);
     return () => clearTimeout(id);
-  }, [tiles, view, onPersist]);
+  }, [tiles, view, frames, onPersist]);
 
   React.useEffect(() => {
     if (gridRef.current) drawGrid(gridRef.current, view);
@@ -291,6 +296,80 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
 
   const activateTile = React.useCallback((id: string) => setActiveTile(id), []);
 
+  const addFrame = React.useCallback((x: number, y: number) => {
+    setFrames((prev) => [
+      ...prev,
+      {
+        id: createId(),
+        x: Math.round(x / CELL) * CELL,
+        y: Math.round(y / CELL) * CELL,
+        width: FRAME_WIDTH,
+        height: FRAME_HEIGHT,
+        title: 'Frame',
+        color: FRAME_COLOR
+      }
+    ]);
+  }, []);
+
+  const dragFrame = React.useCallback((id: string, x: number, y: number, members: FrameMember[]) => {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x, y } : f)));
+    if (members.length === 0) return;
+    const pos = new Map(members.map((m) => [m.id, m]));
+    setTiles((prev) => prev.map((t) => (pos.has(t.id) ? { ...t, x: pos.get(t.id)!.x, y: pos.get(t.id)!.y } : t)));
+  }, []);
+
+  const resizeFrame = React.useCallback(
+    (id: string, dir: string, dx: number, dy: number) => {
+      const wdx = dx / view.k;
+      const wdy = dy / view.k;
+      setFrames((prev) =>
+        prev.map((f) => {
+          if (f.id !== id) return f;
+          let { x, y, width, height } = f;
+          if (dir.includes('e')) width = Math.max(FRAME_MIN_WIDTH, width + wdx);
+          if (dir.includes('s')) height = Math.max(FRAME_MIN_HEIGHT, height + wdy);
+          if (dir.includes('w')) {
+            const nw = Math.max(FRAME_MIN_WIDTH, width - wdx);
+            x += width - nw;
+            width = nw;
+          }
+          if (dir.includes('n')) {
+            const nh = Math.max(FRAME_MIN_HEIGHT, height - wdy);
+            y += height - nh;
+            height = nh;
+          }
+          return { ...f, x, y, width, height };
+        })
+      );
+    },
+    [view.k]
+  );
+
+  const snapFrame = React.useCallback((id: string) => {
+    setFrames((prev) =>
+      prev.map((f) => {
+        if (f.id !== id) return f;
+        const x = Math.round(f.x / CELL) * CELL;
+        const y = Math.round(f.y / CELL) * CELL;
+        const width = Math.max(FRAME_MIN_WIDTH, Math.round(f.width / CELL) * CELL);
+        const height = Math.max(FRAME_MIN_HEIGHT, Math.round(f.height / CELL) * CELL);
+        return { ...f, x, y, width, height };
+      })
+    );
+  }, []);
+
+  const renameFrame = React.useCallback((id: string, title: string) => {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, title } : f)));
+  }, []);
+
+  const recolorFrame = React.useCallback((id: string, color: string) => {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, color } : f)));
+  }, []);
+
+  const removeFrame = React.useCallback((id: string) => {
+    setFrames((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
   const panTo = React.useCallback((x: number, y: number) => setView((v) => ({ ...v, x, y })), []);
 
   return {
@@ -298,17 +377,25 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     tiles,
     panTo,
     bgRef,
+    frames,
     endPan,
     gridRef,
     onWheel,
     addTile,
+    addFrame,
     moveTile,
     snapTile,
+    dragFrame,
     closeTile,
+    snapFrame,
     activeTile,
     setTileCwd,
     resetZoom,
     resizeTile,
+    removeFrame,
+    renameFrame,
+    resizeFrame,
+    recolorFrame,
     activateTile,
     indicatorRef,
     onBgPointerMove,

@@ -1,6 +1,7 @@
 import React from 'react';
-import { SquareTerminal } from 'lucide-react';
+import { SquareDashed, SquareTerminal } from 'lucide-react';
 
+import Frame from '~/components/Canvas/Frame';
 import Minimap from '~/components/Canvas/Minimap';
 import TileFrame from '~/components/Canvas/TileFrame';
 import ContextMenu from '~/components/commons/ContextMenu';
@@ -24,15 +25,23 @@ const Canvas = () => {
     tiles,
     panTo,
     bgRef,
+    frames,
     endPan,
     addTile,
+    addFrame,
     gridRef,
     onWheel,
     moveTile,
     snapTile,
+    dragFrame,
     closeTile,
+    snapFrame,
     activeTile,
     resizeTile,
+    removeFrame,
+    renameFrame,
+    resizeFrame,
+    recolorFrame,
     activateTile,
     indicatorRef,
     onBgPointerMove,
@@ -78,6 +87,10 @@ const Canvas = () => {
     if (menu) addTile({ x: menu.wx, y: menu.wy });
   };
 
+  const newFrame = () => {
+    if (menu) addFrame(menu.wx, menu.wy);
+  };
+
   return (
     <div className={styles.root}>
       <div
@@ -91,6 +104,20 @@ const Canvas = () => {
         onPointerCancel={endPan}
       >
         <canvas ref={gridRef} className={styles.grid} />
+        {frames.map((f) => (
+          <Frame
+            key={f.id}
+            frame={f}
+            view={view}
+            tiles={tiles}
+            onDrag={dragFrame}
+            onSnap={snapFrame}
+            onResize={resizeFrame}
+            onRemove={removeFrame}
+            onRename={renameFrame}
+            onRecolor={recolorFrame}
+          />
+        ))}
         {tiles.map((t) => {
           const vis = isVisible(t);
           if (vis && (t.width - TILE_GAP) * view.k >= MIN_LIVE_WIDTH) activated.current.add(t.id);
@@ -121,7 +148,10 @@ const Canvas = () => {
           x={menu.sx}
           y={menu.sy}
           onClose={closeMenu}
-          items={[{ label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal }]}
+          items={[
+            { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
+            { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame }
+          ]}
         />
       )}
     </div>
