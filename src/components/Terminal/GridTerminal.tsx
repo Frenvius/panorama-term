@@ -283,7 +283,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     blinkRef.current = true;
     dirtyRef.current = true;
     if (!active) return;
-    canvasRef.current?.focus();
+    canvasRef.current?.focus({ preventScroll: true });
     const id = setInterval(() => {
       blinkRef.current = !blinkRef.current;
       dirtyRef.current = true;
