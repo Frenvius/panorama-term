@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import { themeInk, THEME_EVENT } from '~/usecase/util/theme';
 
 import styles from './styles.module.scss';
 
@@ -181,7 +182,7 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
 
     if (visible) {
       ctx.globalAlpha = VP_BORDER_OPACITY;
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = themeInk.line;
       ctx.lineWidth = 1;
       ctx.strokeRect(vx, vy, vw, vh);
     }
@@ -205,6 +206,12 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
     const ctx = canvas.getContext('2d');
     ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
     scheduleRedraw();
+  }, [scheduleRedraw]);
+
+  React.useEffect(() => {
+    const onTheme = () => scheduleRedraw();
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => window.removeEventListener(THEME_EVENT, onTheme);
   }, [scheduleRedraw]);
 
   React.useEffect(() => {

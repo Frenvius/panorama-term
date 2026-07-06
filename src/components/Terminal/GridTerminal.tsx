@@ -1,5 +1,6 @@
 import React from 'react';
 
+import { termTheme, THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
@@ -29,7 +30,7 @@ const FONT = 12;
 const CELL_H = 15;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
-const BG = '#0b0e14';
+const DEFAULT_FG = 0xc7d0e0;
 const QUAD = [0b0010, 0b0001, 0b1000, 0b1011, 0b1001, 0b1110, 0b1101, 0b0100, 0b0110, 0b0111];
 
 let cellW = 7.23;
@@ -54,6 +55,11 @@ const ensureFont = (): Promise<void> => {
 };
 
 const hex = (v: number): string => '#' + (v & 0xffffff).toString(16).padStart(6, '0');
+const fgOf = (w0: number): string => {
+  const v = w0 & 0xffffff;
+  if (v === DEFAULT_FG) return termTheme.fg;
+  return termTheme.ansi?.get(v) ?? hex(v);
+};
 
 const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -117,7 +123,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       canvas.style.height = `${h}px`;
     }
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    ctx.fillStyle = BG;
+    ctx.fillStyle = termTheme.bg;
     ctx.fillRect(0, 0, w, h);
     ctx.textBaseline = 'top';
     const snap = (v: number) => Math.round(v * scale) / scale;
@@ -175,11 +181,11 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
         if (ch && ch !== ' ') {
           const cp = ch.codePointAt(0) ?? 0;
           if (cp >= 0x2580 && cp <= 0x259f) {
-            ctx.fillStyle = hex(w0);
+            ctx.fillStyle = fgOf(w0);
             drawBlock(cp, c, r);
           } else {
             ctx.font = `${w0 & (1 << 24) ? 'bold ' : ''}${FONT}px Hack, monospace`;
-            ctx.fillStyle = hex(w0);
+            ctx.fillStyle = fgOf(w0);
             const box = cp >= 0x2500 && cp <= 0x257f;
             ctx.fillText(ch, box ? c * cellW : snap(c * cellW), box ? r * CELL_H + yOff : snap(r * CELL_H + yOff));
           }
@@ -200,9 +206,17 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     }
 
     if (activeRef.current && blinkRef.current && !frame.cursorHidden) {
-      ctx.fillStyle = 'rgba(199,208,224,0.65)';
+      ctx.fillStyle = termTheme.cursor;
       ctx.fillRect(frame.cursorCol * cellW, frame.cursorRow * CELL_H, cellW, CELL_H);
     }
+  }, []);
+
+  React.useEffect(() => {
+    const onTheme = () => {
+      dirtyRef.current = true;
+    };
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => window.removeEventListener(THEME_EVENT, onTheme);
   }, []);
 
   React.useEffect(() => {

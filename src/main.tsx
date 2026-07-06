@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 
 import App from '~/App';
+import { initTheme } from '~/usecase/util/theme';
 import { loadHackFont } from '~/usecase/util/fontUtils';
 import { initSettings } from '~/adapter/settings/settings.client';
 import { WorkspaceProvider } from '~/usecase/context/WorkspaceContext';
@@ -15,4 +16,7 @@ const mount = () =>
   );
 
 void loadHackFont();
-void initSettings().finally(mount);
+void initSettings().finally(() => {
+  initTheme();
+  mount();
+});

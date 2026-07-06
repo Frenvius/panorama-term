@@ -8,7 +8,7 @@
   opacity: 0;
   border-radius: 4px;
   pointer-events: none;
-  background: rgba(18, 18, 18, 0.25);
+  background: var(--minimap-bg);
   backdrop-filter: blur(8px);
   transition: opacity 150ms ease;
 

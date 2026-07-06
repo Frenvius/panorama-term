@@ -13,10 +13,10 @@
   width: 640px;
   height: 440px;
   overflow: hidden;
-  border: 1px solid #1e2430;
+  border: 1px solid var(--border-1);
   border-radius: 12px;
-  background: #10141c;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-modal);
 }
 
 .sidebar {
@@ -25,14 +25,14 @@
   gap: 16px;
   width: 176px;
   padding: 20px 12px;
-  border-right: 1px solid #1e2430;
-  background: #0b0e14;
+  border-right: 1px solid var(--border-1);
+  background: var(--surface-1);
 }
 
 .heading {
   padding: 0 8px;
   margin: 0;
-  color: #e4e9f2;
+  color: var(--text-strong);
   font-size: 16px;
   font-weight: 600;
 }
@@ -50,7 +50,7 @@
   padding: 8px 10px;
   border: none;
   cursor: pointer;
-  color: #8a94a6;
+  color: var(--text-muted);
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
@@ -59,13 +59,13 @@
   transition: background 0.12s ease, color 0.12s ease;
 
   &:hover {
-    color: #c7d0e0;
+    color: var(--text-1);
   }
 }
 
 .navActive {
-  color: #e4e9f2;
-  background: rgba(199, 208, 224, 0.08);
+  color: var(--text-strong);
+  background: var(--hover-2);
 }
 
 .content {
@@ -85,14 +85,14 @@
   height: 24px;
   border: none;
   cursor: pointer;
-  color: #6b7688;
+  color: var(--text-dim);
   border-radius: 6px;
   background: transparent;
   transition: background 0.12s ease, color 0.12s ease;
 
   &:hover {
-    color: #c7d0e0;
-    background: rgba(199, 208, 224, 0.08);
+    color: var(--text-1);
+    background: var(--hover-2);
   }
 }
 
@@ -111,14 +111,14 @@
 
 .title {
   margin: 0;
-  color: #e4e9f2;
+  color: var(--text-strong);
   font-size: 16px;
   font-weight: 600;
 }
 
 .subtitle {
   margin: 0;
-  color: #6b7688;
+  color: var(--text-dim);
   font-size: 13px;
 }
 
@@ -130,7 +130,7 @@
 
 .groupLabel {
   margin: 0;
-  color: #c7d0e0;
+  color: var(--text-1);
   font-size: 13px;
   font-weight: 500;
 }
@@ -148,7 +148,7 @@
 }
 
 .sliderValue {
-  color: #8a94a6;
+  color: var(--text-muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
@@ -160,22 +160,22 @@
   cursor: pointer;
   appearance: none;
   border-radius: 2px;
-  background: #1e2430;
+  background: var(--border-1);
 
   &::-webkit-slider-thumb {
     width: 14px;
     height: 14px;
     appearance: none;
     cursor: pointer;
-    border: 1px solid #2a3140;
+    border: 1px solid var(--border-3);
     border-radius: 50%;
-    background: #e4e9f2;
+    background: var(--text-strong);
   }
 }
 
 .hint {
   margin: 0;
-  color: #6b7688;
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -184,7 +184,7 @@
   align-items: flex-start;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #1e2430;
+  border: 1px solid var(--border-1);
   cursor: pointer;
   border-radius: 8px;
   text-align: left;
@@ -192,13 +192,13 @@
   transition: border-color 0.12s ease, background 0.12s ease;
 
   &:hover {
-    border-color: #2a3140;
+    border-color: var(--border-3);
   }
 }
 
 .selected {
-  border-color: #c7d0e0;
-  background: rgba(199, 208, 224, 0.06);
+  border-color: var(--text-1);
+  background: var(--hover-1);
 }
 
 .radio {
@@ -208,12 +208,12 @@
   width: 16px;
   height: 16px;
   margin-top: 1px;
-  border: 1px solid #6b7688;
+  border: 1px solid var(--text-dim);
   border-radius: 50%;
   flex-shrink: 0;
 
   .selected & {
-    border-color: #e4e9f2;
+    border-color: var(--text-strong);
   }
 }
 
@@ -221,7 +221,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #e4e9f2;
+  background: var(--text-strong);
 }
 
 .optionText {
@@ -231,12 +231,12 @@
 }
 
 .optionLabel {
-  color: #e4e9f2;
+  color: var(--text-strong);
   font-size: 13px;
   font-weight: 500;
 }
 
 .optionDesc {
-  color: #6b7688;
+  color: var(--text-dim);
   font-size: 12px;
 }

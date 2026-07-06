@@ -8,8 +8,8 @@
   align-items: center;
   height: 38px;
   padding-left: 12px;
-  background: #0b0e14;
-  border-bottom: 1px solid #1e2430;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-1);
   user-select: none;
 }
 
@@ -23,7 +23,7 @@
   margin-right: 8px;
   border: none;
   cursor: pointer;
-  color: #8894a8;
+  color: var(--text-muted);
   border-radius: 6px;
   background: transparent;
   transition:
@@ -31,8 +31,8 @@
     color 0.12s ease;
 
   &:hover {
-    color: #c7d0e0;
-    background: rgba(199, 208, 224, 0.06);
+    color: var(--text-1);
+    background: var(--hover-1);
   }
 }
 
@@ -51,15 +51,15 @@
   padding: 0;
   border: none;
   cursor: pointer;
-  color: #8894a8;
+  color: var(--text-muted);
   background: transparent;
   transition:
     background 0.12s ease,
     color 0.12s ease;
 
   &:hover {
-    color: #c7d0e0;
-    background: rgba(199, 208, 224, 0.09);
+    color: var(--text-1);
+    background: var(--hover-3);
   }
 }
 

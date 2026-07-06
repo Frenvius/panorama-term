@@ -6,10 +6,10 @@
   gap: 2px;
   min-width: 176px;
   padding: 6px;
-  border: 1px solid #1e2430;
+  border: 1px solid var(--border-1);
   border-radius: 8px;
-  background: #10141c;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-pop);
 }
 
 .item {
@@ -20,7 +20,7 @@
   padding: 0 8px;
   border: none;
   cursor: pointer;
-  color: #c7d0e0;
+  color: var(--text-1);
   border-radius: 6px;
   font-size: 12px;
   text-align: left;
@@ -29,6 +29,6 @@
   transition: background 0.12s ease;
 
   &:hover {
-    background: rgba(199, 208, 224, 0.08);
+    background: var(--hover-2);
   }
 }

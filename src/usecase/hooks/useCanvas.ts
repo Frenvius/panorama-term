@@ -3,6 +3,7 @@ import React from 'react';
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
+import { THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
@@ -77,6 +78,14 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   React.useEffect(() => {
     if (gridRef.current) drawGrid(gridRef.current, view);
   }, [view]);
+
+  React.useEffect(() => {
+    const onTheme = () => {
+      if (gridRef.current) drawGrid(gridRef.current, viewRef.current);
+    };
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => window.removeEventListener(THEME_EVENT, onTheme);
+  }, []);
 
   React.useEffect(() => {
     if (firstRender.current) {

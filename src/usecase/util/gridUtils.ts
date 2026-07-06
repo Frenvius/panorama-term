@@ -1,4 +1,5 @@
 import type { View } from '~/domain/interfaces/canvas.interface';
+import { themeInk } from '~/usecase/util/theme';
 import { CELL, MAJOR, ZOOM_MIN } from '~/usecase/util/constants';
 
 export const drawGrid = (canvas: HTMLCanvasElement, view: View): void => {
@@ -26,7 +27,7 @@ export const drawGrid = (canvas: HTMLCanvasElement, view: View): void => {
 
   const minorFade = Math.min(1, Math.max(0, (view.k - 0.5) / (0.75 - 0.5)));
   if (minorFade > 0) {
-    ctx.fillStyle = `rgba(255,255,255,${0.15 * minorFade})`;
+    ctx.fillStyle = `rgba(${themeInk.dot}, ${0.15 * minorFade})`;
     const halfDot = dotSize / 2;
     for (let x = dotOffX; x <= w; x += step) {
       for (let y = dotOffY; y <= h; y += step) {
@@ -39,7 +40,7 @@ export const drawGrid = (canvas: HTMLCanvasElement, view: View): void => {
   if (majorFade > 0) {
     const majorDotSize = Math.max(1.5, 1.5 * view.k);
     const halfMajor = majorDotSize / 2;
-    ctx.fillStyle = `rgba(255,255,255,${0.25 * majorFade})`;
+    ctx.fillStyle = `rgba(${themeInk.dot}, ${0.25 * majorFade})`;
     for (let x = offX; x <= w; x += majorStep) {
       for (let y = offY; y <= h; y += majorStep) {
         ctx.fillRect(Math.round(x - halfMajor), Math.round(y - halfMajor), majorDotSize, majorDotSize);
