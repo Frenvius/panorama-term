@@ -30,6 +30,7 @@ const Canvas = () => {
     addTile,
     addFrame,
     gridRef,
+    focusTile,
     onWheel,
     moveTile,
     snapTile,
@@ -133,6 +134,7 @@ const Canvas = () => {
               onClose={closeTile}
               onResize={resizeTile}
               onActivate={activateTile}
+              onFocusTile={focusTile}
               onCwd={setTileCwd}
               active={t.id === activeTile}
               visible={vis}

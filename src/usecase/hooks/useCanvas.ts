@@ -36,6 +36,8 @@ type PanOrigin = { ox: number; oy: number; vx: number; vy: number; moved: boolea
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
+const FOCUS_MS = 350;
+
 const EMPTY: RuntimeCanvas = { tiles: [], frames: [], view: { x: 0, y: 0, k: 1 } };
 
 interface UseCanvasArgs {
@@ -62,6 +64,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   tilesRef.current = tiles;
 
   const snapRaf = React.useRef(0);
+  const focusRaf = React.useRef(0);
   const focal = React.useRef({ x: 0, y: 0 });
   const snapTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panRef = React.useRef<PanOrigin | null>(null);
@@ -108,6 +111,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   React.useEffect(
     () => () => {
       cancelAnimationFrame(snapRaf.current);
+      cancelAnimationFrame(focusRaf.current);
       clearTimeout(snapTimer.current);
       clearTimeout(indicatorTimer.current);
     },
@@ -372,6 +376,26 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
 
   const panTo = React.useCallback((x: number, y: number) => setView((v) => ({ ...v, x, y })), []);
 
+  const focusTile = React.useCallback((id: string) => {
+    const bg = bgRef.current;
+    const tile = tilesRef.current.find((t) => t.id === id);
+    if (!bg || !tile) return;
+    cancelAnimationFrame(focusRaf.current);
+    const start = viewRef.current;
+    const cx = tile.x + tile.width / 2;
+    const cy = tile.y + tile.height / 2;
+    const tx = bg.clientWidth / 2 - cx * start.k;
+    const ty = bg.clientHeight / 2 - cy * start.k;
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const p = Math.min((now - t0) / FOCUS_MS, 1);
+      const e = 1 - Math.pow(1 - p, 3);
+      setView((v) => ({ ...v, x: start.x + (tx - start.x) * e, y: start.y + (ty - start.y) * e }));
+      if (p < 1) focusRaf.current = requestAnimationFrame(step);
+    };
+    focusRaf.current = requestAnimationFrame(step);
+  }, []);
+
   return {
     view,
     tiles,
@@ -379,6 +403,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     bgRef,
     frames,
     endPan,
+    focusTile,
     gridRef,
     onWheel,
     addTile,

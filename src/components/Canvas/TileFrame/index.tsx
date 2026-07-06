@@ -16,6 +16,7 @@ interface TileFrameProps {
   onClose: (id: string) => void;
   onSnap: (id: string) => void;
   onActivate: (id: string) => void;
+  onFocusTile: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
   onResize: (id: string, dir: string, dx: number, dy: number) => void;
   onCwd: (id: string, cwd: string) => void;
@@ -23,7 +24,7 @@ interface TileFrameProps {
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
-const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose, onResize, onActivate, onCwd }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onCwd }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
@@ -68,6 +69,7 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
   const [restartKey, setRestartKey] = React.useState(0);
   const restartTile = () => setRestartKey((n) => n + 1);
   const closeTile = () => onClose(tile.id);
+  const focusTile = () => onFocusTile(tile.id);
   const label = tile.userTitle || tile.autoTitle || `${tile.type} · ${tile.id}`;
 
   const inset = TILE_GAP / 2;
@@ -93,6 +95,7 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
         onPointerDown={startDrag}
         onPointerMove={onDrag}
         onPointerCancel={endDrag}
+        onDoubleClick={focusTile}
       >
         <span className={styles.title}>{label}</span>
         <div className={styles.actions}>
