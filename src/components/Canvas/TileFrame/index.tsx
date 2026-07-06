@@ -18,11 +18,12 @@ interface TileFrameProps {
   onActivate: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
   onResize: (id: string, dir: string, dx: number, dy: number) => void;
+  onCwd: (id: string, cwd: string) => void;
 }
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
-const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose, onResize, onActivate }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose, onResize, onActivate, onCwd }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
@@ -110,6 +111,7 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
           <GridTerminal
             k={k}
             cwd={tile.cwd}
+            onCwd={onCwd}
             restartKey={restartKey}
             active={active}
             visible={visible}

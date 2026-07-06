@@ -10,7 +10,12 @@ export interface PtyExitMessage {
   t: 'exit';
 }
 
-export type PtyServerMessage = PtyReadyMessage | PtyExitMessage;
+export interface PtyCwdMessage {
+  t: 'cwd';
+  cwd: string;
+}
+
+export type PtyServerMessage = PtyReadyMessage | PtyExitMessage | PtyCwdMessage;
 
 export interface GridFrame {
   rows: number;

@@ -22,6 +22,7 @@ interface GridTerminalProps {
   visible: boolean;
   k: number;
   restartKey: number;
+  onCwd: (id: string, cwd: string) => void;
 }
 
 const FONT = 12;
@@ -54,7 +55,7 @@ const ensureFont = (): Promise<void> => {
 
 const hex = (v: number): string => '#' + (v & 0xffffff).toString(16).padStart(6, '0');
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
@@ -71,11 +72,13 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey 
   const kRef = React.useRef(k);
   const colsRef = React.useRef(cols);
   const rowsRef = React.useRef(rows);
+  const onCwdRef = React.useRef(onCwd);
   activeRef.current = active;
   visibleRef.current = visible;
   kRef.current = k;
   colsRef.current = cols;
   rowsRef.current = rows;
+  onCwdRef.current = onCwd;
 
   const draw = React.useCallback(() => {
     const canvas = canvasRef.current;
@@ -226,6 +229,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey 
             dirtyRef.current = true;
           },
           onExit: () => {},
+          onCwd: (dir) => onCwdRef.current(tileId, dir),
           onReady: (info) => {
             if (!pendingResumeRef.current || !info.resumeId || info.reused) return;
             pendingResumeRef.current = false;

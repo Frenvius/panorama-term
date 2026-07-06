@@ -9,14 +9,14 @@ fn scrollback_offset_beyond_rows_does_not_panic() {
     }
     parser.process(seed.as_bytes());
 
-    parser.set_scrollback(100);
+    parser.screen_mut().set_scrollback(100);
     let screen = parser.screen();
     assert_eq!(screen.scrollback(), 100);
 
     let mut first = String::new();
     for c in 0..cols {
         if let Some(cell) = screen.cell(0, c) {
-            first.push_str(&cell.contents());
+            first.push_str(cell.contents());
         }
     }
     assert!(first.trim_end().len() > 0, "top row should render scrollback history");

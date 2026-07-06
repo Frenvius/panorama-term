@@ -59,13 +59,55 @@ fn blend(a: u32, b: u32, t: f32) -> u32 {
     (r << 16) | (g << 8) | bl
 }
 
+#[derive(Default)]
+struct CwdSink {
+    cwd: Option<String>,
+    changed: bool,
+}
+
+impl CwdSink {
+    fn take_changed(&mut self) -> Option<String> {
+        if self.changed {
+            self.changed = false;
+            self.cwd.clone()
+        } else {
+            None
+        }
+    }
+}
+
+impl vt100::Callbacks for CwdSink {
+    fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
+        if let [b"7", url] = params {
+            if let Some(path) = parse_osc7(url) {
+                if self.cwd.as_deref() != Some(path.as_str()) {
+                    self.cwd = Some(path);
+                    self.changed = true;
+                }
+            }
+        }
+    }
+}
+
+fn parse_osc7(url: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(url).ok()?;
+    let rest = s.strip_prefix("file://")?;
+    let idx = rest.find('/')?;
+    let mut path = &rest[idx..];
+    let pb = path.as_bytes();
+    if pb.len() >= 3 && pb[0] == b'/' && pb[2] == b':' {
+        path = &path[1..];
+    }
+    Some(percent_decode(path))
+}
+
 const SCROLLBACK_LINES: usize = 5000;
 const RAW_CAP: usize = 256 * 1024;
 
 struct Session {
     tile_id: String,
     shell: String,
-    parser: Mutex<vt100::Parser>,
+    parser: Mutex<vt100::Parser<CwdSink>>,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
@@ -76,6 +118,8 @@ struct Session {
     cols: AtomicU16,
     rows: AtomicU16,
     scrollback: AtomicUsize,
+    cwd: Mutex<Option<String>>,
+    cwd_dirty: AtomicBool,
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
@@ -539,7 +583,7 @@ fn spawn_session(
     drop(pair.slave);
 
     let seed = load_buffer(&p.tile_id);
-    let mut parser = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
+    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, CwdSink::default());
     if !seed.is_empty() {
         parser.process(&seed);
     }
@@ -558,6 +602,8 @@ fn spawn_session(
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
+        cwd: Mutex::new(Some(cwd.clone())),
+        cwd_dirty: AtomicBool::new(true),
     });
 
     let s = session.clone();
@@ -582,7 +628,14 @@ fn spawn_session(
                     if chunk.is_empty() {
                         continue;
                     }
-                    s.parser.lock().unwrap_or_else(|e| e.into_inner()).process(chunk);
+                    {
+                        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                        p.process(chunk);
+                        if let Some(new_cwd) = p.callbacks_mut().take_changed() {
+                            *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
+                            s.cwd_dirty.store(true, Ordering::Relaxed);
+                        }
+                    }
                     if let Ok(mut raw) = s.raw.lock() {
                         raw.extend_from_slice(chunk);
                         if raw.len() > RAW_CAP {
@@ -909,6 +962,15 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                         break;
                     }
                 }
+                if session.cwd_dirty.swap(false, Ordering::Relaxed) {
+                    let cwd = session.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if let Some(cwd) = cwd {
+                        let msg = serde_json::json!({ "t": "cwd", "cwd": cwd }).to_string();
+                        if tx.send(Message::Text(msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
             }
             msg = rx.next() => {
                 match msg {
@@ -1174,5 +1236,19 @@ mod tests {
     #[test]
     fn genuine_invalid_byte_not_held() {
         assert_eq!(utf8_valid_len(&[0xff, 0xfe]), 2);
+    }
+
+    #[test]
+    fn osc7_parses_windows_and_unix_paths() {
+        use super::parse_osc7;
+        assert_eq!(
+            parse_osc7(b"file://HOST/D:/workspace/panorama-term").as_deref(),
+            Some("D:/workspace/panorama-term")
+        );
+        assert_eq!(
+            parse_osc7(b"file://host/home/u/my%20dir").as_deref(),
+            Some("/home/u/my dir")
+        );
+        assert_eq!(parse_osc7(b"not-a-url"), None);
     }
 }

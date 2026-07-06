@@ -23,6 +23,7 @@ export interface PtyHandlers {
   onExit: () => void;
   onReady: (info: PtyReadyInfo) => void;
   onGrid: (frame: GridFrame) => void;
+  onCwd: (cwd: string) => void;
 }
 
 const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
@@ -60,6 +61,7 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       const msg = JSON.parse(e.data) as PtyServerMessage;
       if (msg.t === 'ready') handlers.onReady({ reused: msg.reused, cols: msg.cols, rows: msg.rows, resumeId: msg.resumeId });
       else if (msg.t === 'exit') handlers.onExit();
+      else if (msg.t === 'cwd') handlers.onCwd(msg.cwd);
       return;
     }
     const frame = parseGridFrame(e.data as ArrayBuffer);

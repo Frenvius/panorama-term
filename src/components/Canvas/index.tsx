@@ -43,6 +43,7 @@ const Canvas = () => {
     resizeFrame,
     recolorFrame,
     activateTile,
+    setTileCwd,
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown
@@ -132,6 +133,7 @@ const Canvas = () => {
               onClose={closeTile}
               onResize={resizeTile}
               onActivate={activateTile}
+              onCwd={setTileCwd}
               active={t.id === activeTile}
               visible={vis}
               live={live}
