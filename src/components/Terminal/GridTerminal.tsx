@@ -109,45 +109,49 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     const nRows = frame.rows;
     const w = nCols * cellW;
     const h = nRows * CELL_H;
-    const scale = (window.devicePixelRatio || 1) * kRef.current;
-    const moving = Math.abs(kRef.current - prevKRef.current) > 1e-4;
-    prevKRef.current = kRef.current;
+    const k = kRef.current;
+    const moving = Math.abs(k - prevKRef.current) > 1e-4;
+    prevKRef.current = k;
     if (moving) {
       clearTimeout(settleRef.current);
       settleRef.current = setTimeout(() => {
         dirtyRef.current = true;
-      }, 140);
+      }, 50);
       return;
     }
-    const bw = Math.ceil(w * scale);
-    const bh = Math.ceil(h * scale);
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const bw = Math.round(rect.width * dpr);
+    const bh = Math.round(rect.height * dpr);
     if (canvas.width !== bw || canvas.height !== bh) {
       canvas.width = bw;
       canvas.height = bh;
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
     }
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    const scale = bw / w;
+    const scaleY = bh / h;
+    ctx.setTransform(scale, 0, 0, scaleY, 0, 0);
     ctx.fillStyle = termTheme.bg;
     ctx.fillRect(0, 0, w, h);
     ctx.textBaseline = 'top';
     const snap = (v: number) => Math.round(v * scale) / scale;
+    const snapY = (v: number) => Math.round(v * scaleY) / scaleY;
 
     const drawBlock = (cp: number, c: number, r: number) => {
       const x0 = snap(c * cellW);
       const x1 = snap((c + 1) * cellW);
-      const y0 = snap(r * CELL_H);
-      const y1 = snap((r + 1) * CELL_H);
+      const y0 = snapY(r * CELL_H);
+      const y1 = snapY((r + 1) * CELL_H);
       const xm = snap(c * cellW + cellW / 2);
-      const ym = snap(r * CELL_H + CELL_H / 2);
+      const ym = snapY(r * CELL_H + CELL_H / 2);
       const rect = (l: number, t: number, rt: number, b: number) => ctx.fillRect(l, t, rt - l, b - t);
       if (cp === 0x2588) return rect(x0, y0, x1, y1);
       if (cp === 0x2580) return rect(x0, y0, x1, ym);
       if (cp === 0x2590) return rect(xm, y0, x1, y1);
-      if (cp === 0x2594) return rect(x0, y0, x1, snap(r * CELL_H + CELL_H / 8));
+      if (cp === 0x2594) return rect(x0, y0, x1, snapY(r * CELL_H + CELL_H / 8));
       if (cp === 0x2595) return rect(snap(c * cellW + (cellW * 7) / 8), y0, x1, y1);
       if (cp >= 0x2581 && cp <= 0x2587) {
-        return rect(x0, snap(r * CELL_H + CELL_H * (1 - (cp - 0x2580) / 8)), x1, y1);
+        return rect(x0, snapY(r * CELL_H + CELL_H * (1 - (cp - 0x2580) / 8)), x1, y1);
       }
       if (cp >= 0x2589 && cp <= 0x258f) {
         return rect(x0, y0, snap(c * cellW + (cellW * (0x2590 - cp)) / 8), y1);
@@ -192,7 +196,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             ctx.font = `${w0 & (1 << 24) ? 'bold ' : ''}${FONT}px Hack, monospace`;
             ctx.fillStyle = fgOf(w0);
             const box = cp >= 0x2500 && cp <= 0x257f;
-            ctx.fillText(ch, box ? c * cellW : snap(c * cellW), box ? r * CELL_H + yOff : snap(r * CELL_H + yOff));
+            ctx.fillText(ch, box ? c * cellW : snap(c * cellW), box ? r * CELL_H + yOff : snapY(r * CELL_H + yOff));
           }
         }
       }
@@ -494,6 +498,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     <>
       <canvas
         ref={canvasRef}
+        style={{ height: `calc(100% - ${6 * k}px)` }}
         tabIndex={-1}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
@@ -503,14 +508,16 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
         onPointerCancel={onPointerUp}
         className={styles.wasm}
       />
-      <AgentBar
-        tileId={tileId}
-        active={active}
-        send={sendData}
-        getLines={getLines}
-        getStructured={getStructured}
-        focusTerminal={focusTerminal}
-      />
+      <div className={styles.agentScale} style={{ width: `calc(100% / ${k})`, height: `calc(100% / ${k})`, transform: `scale(${k})` }}>
+        <AgentBar
+          tileId={tileId}
+          active={active}
+          send={sendData}
+          getLines={getLines}
+          getStructured={getStructured}
+          focusTerminal={focusTerminal}
+        />
+      </div>
     </>
   );
 };

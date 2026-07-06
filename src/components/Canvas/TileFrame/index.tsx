@@ -24,6 +24,11 @@ interface TileFrameProps {
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
+const devicePx = (v: number): number => {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.round(v * dpr) / dpr;
+};
+
 const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onCwd }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
@@ -75,43 +80,51 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
   const inset = TILE_GAP / 2;
   const bodyW = tile.width - TILE_GAP;
   const bodyH = tile.height - TILE_GAP;
+  const sx = (tile.x + inset) * k + view.x;
+  const sy = (tile.y + inset) * k + view.y;
+  const z = active ? 2 : 1;
+  const scaled = { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };
+  const term = tile.type === 'term' && live;
 
   return (
-    <div
-      data-tile={tile.id}
-      className={active ? `${styles.tile} ${styles.active}` : styles.tile}
-      style={{
-        top: (tile.y + inset) * k + view.y,
-        left: (tile.x + inset) * k + view.x,
-        width: bodyW,
-        height: bodyH,
-        transform: `scale(${k})`,
-        transformOrigin: 'top left',
-        zIndex: active ? 2 : 1
-      }}
-    >
+    <>
       <div
-        className={styles.header}
-        onPointerUp={endDrag}
-        onPointerDown={startDrag}
-        onPointerMove={onDrag}
-        onPointerCancel={endDrag}
-        onDoubleClick={focusTile}
+        data-tile={tile.id}
+        className={active ? `${styles.tile} ${styles.active}` : styles.tile}
+        style={{ top: sy, left: sx, zIndex: z, ...scaled }}
       >
-        <span className={styles.title}>{label}</span>
-        <div className={styles.actions}>
-          <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
-            <RotateCw size={13} strokeWidth={2} />
-          </button>
-          <button className={`${styles.action} ${styles.close}`} onClick={closeTile} aria-label="Close tile">
-            <X size={14} strokeWidth={2} />
-          </button>
+        <div
+          className={styles.header}
+          onPointerUp={endDrag}
+          onPointerDown={startDrag}
+          onPointerMove={onDrag}
+          onPointerCancel={endDrag}
+          onDoubleClick={focusTile}
+        >
+          <span className={styles.title}>{label}</span>
+          <div className={styles.actions}>
+            <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
+              <RotateCw size={13} strokeWidth={2} />
+            </button>
+            <button className={`${styles.action} ${styles.close}`} onClick={closeTile} aria-label="Close tile">
+              <X size={14} strokeWidth={2} />
+            </button>
+          </div>
         </div>
+        <div className={styles.body}>{!term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}</div>
       </div>
-      <div className={styles.body}>
-        {tile.type !== 'term' ? (
-          <div className={styles.placeholder}>{label}</div>
-        ) : live ? (
+      {term && (
+        <div
+          data-tile={tile.id}
+          className={styles.termLayer}
+          style={{
+            top: devicePx(sy + (TILE_HEADER + 4) * k),
+            left: devicePx(sx + 4 * k),
+            width: devicePx((bodyW - 8) * k),
+            height: devicePx((bodyH - TILE_HEADER - 5) * k),
+            zIndex: z
+          }}
+        >
           <GridTerminal
             k={k}
             cwd={tile.cwd}
@@ -123,22 +136,22 @@ const TileFrame = ({ tile, view, active, visible, live, onMove, onSnap, onClose,
             cols={Math.max(20, Math.floor((bodyW - 8) / 7.23))}
             rows={Math.max(2, Math.floor((bodyH - TILE_HEADER - 4) / 15))}
           />
-        ) : (
-          <div className={styles.placeholder} />
-        )}
+        </div>
+      )}
+      <div data-tile={tile.id} className={styles.handles} style={{ top: sy, left: sx, zIndex: z, ...scaled }}>
+        {HANDLES.map((dir) => (
+          <div
+            key={dir}
+            data-dir={dir}
+            className={styles.handle}
+            onPointerUp={endResize}
+            onPointerMove={onResizeMove}
+            onPointerCancel={endResize}
+            onPointerDown={startResize(dir)}
+          />
+        ))}
       </div>
-      {HANDLES.map((dir) => (
-        <div
-          key={dir}
-          data-dir={dir}
-          className={styles.handle}
-          onPointerUp={endResize}
-          onPointerMove={onResizeMove}
-          onPointerCancel={endResize}
-          onPointerDown={startResize(dir)}
-        />
-      ))}
-    </div>
+    </>
   );
 };
 

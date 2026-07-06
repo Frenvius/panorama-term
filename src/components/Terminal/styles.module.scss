@@ -6,12 +6,25 @@
 }
 
 .wasm {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
+  width: 100%;
+  height: 100%;
   cursor: text;
   overflow: hidden;
   user-select: none;
   background: var(--surface-1);
   outline: none;
+}
+
+.agentScale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
 }
 
 .lite {
