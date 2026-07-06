@@ -33,16 +33,18 @@ const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
   const cols = dv.getUint16(3, true);
   const cursor = dv.getUint32(5, true);
   const cursorHidden = dv.getUint8(9) === 1;
-  const offset = dv.getUint16(10, true);
-  const textLen = dv.getUint32(12, true);
-  const text = decoder.decode(new Uint8Array(buf, 16, textLen));
-  const attrs = new Uint32Array(buf.slice(16 + textLen));
+  const mouseMode = dv.getUint8(10);
+  const offset = dv.getUint16(11, true);
+  const textLen = dv.getUint32(13, true);
+  const text = decoder.decode(new Uint8Array(buf, 17, textLen));
+  const attrs = new Uint32Array(buf.slice(17 + textLen));
   return {
     rows,
     cols,
     cursorRow: cursor >>> 16,
     cursorCol: cursor & 0xffff,
     cursorHidden,
+    mouseMode,
     offset,
     lines: text.split('\n'),
     attrs
@@ -80,6 +82,17 @@ export const sendPtyResize = (ws: WebSocket, cols: number, rows: number): void =
 
 export const sendPtyScroll = (ws: WebSocket, dir: number, lines: number, col: number, row: number): void => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'scroll', dir, lines, col, row }));
+};
+
+export const sendPtyMouse = (
+  ws: WebSocket,
+  kind: number,
+  button: number,
+  col: number,
+  row: number,
+  mods: number
+): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'mouse', kind, button, col, row, mods }));
 };
 
 export const sendPtyKill = (ws: WebSocket): void => {

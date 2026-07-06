@@ -7,7 +7,7 @@ import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
 import { orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
-import { sendPtyKill, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
+import { sendPtyKill, sendPtyMouse, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 import type { Cell, Selection } from '~/usecase/util/terminalSelection';
@@ -70,6 +70,9 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const selRef = React.useRef<Selection | null>(null);
   const selectingRef = React.useRef(false);
   const clickRef = React.useRef({ t: 0, row: -1, col: -1, count: 0 });
+  const mouseFwdRef = React.useRef(false);
+  const mouseBtnRef = React.useRef(0);
+  const lastFwdRef = React.useRef({ row: -1, col: -1 });
   const pendingResumeRef = React.useRef(false);
   const prevKRef = React.useRef(k);
   const settleRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -349,13 +352,28 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     });
   };
 
+  const modBits = (e: React.PointerEvent): number =>
+    (e.altKey ? 8 : 0) | (e.ctrlKey || e.metaKey ? 16 : 0);
+
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || !activeRef.current) return;
+    if (!activeRef.current) return;
     const cell = cellFromEvent(e);
     if (!cell) return;
-    e.stopPropagation();
 
     const frame = frameRef.current;
+    const ws = wsRef.current;
+    if (ws && frame && frame.mouseMode > 0 && !e.shiftKey) {
+      e.stopPropagation();
+      canvasRef.current?.setPointerCapture(e.pointerId);
+      mouseFwdRef.current = true;
+      mouseBtnRef.current = e.button;
+      lastFwdRef.current = cell;
+      sendPtyMouse(ws, 0, e.button, cell.col + 1, cell.row + 1, modBits(e));
+      return;
+    }
+    if (e.button !== 0) return;
+    e.stopPropagation();
+
     const now = performance.now();
     const l = clickRef.current;
     const near = cell.row === l.row && Math.abs(cell.col - l.col) <= 1 && now - l.t < CLICK_MS;
@@ -382,6 +400,16 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (mouseFwdRef.current) {
+      const ws = wsRef.current;
+      const frame = frameRef.current;
+      if (!ws || !frame || frame.mouseMode < 3) return;
+      const cell = cellFromEvent(e);
+      if (!cell || (cell.row === lastFwdRef.current.row && cell.col === lastFwdRef.current.col)) return;
+      lastFwdRef.current = cell;
+      sendPtyMouse(ws, 2, mouseBtnRef.current, cell.col + 1, cell.row + 1, modBits(e));
+      return;
+    }
     if (!selectingRef.current || !selRef.current) return;
     const cell = cellFromEvent(e);
     if (!cell) return;
@@ -390,6 +418,14 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
+    if (mouseFwdRef.current) {
+      mouseFwdRef.current = false;
+      canvasRef.current?.releasePointerCapture(e.pointerId);
+      const ws = wsRef.current;
+      const cell = cellFromEvent(e) ?? lastFwdRef.current;
+      if (ws) sendPtyMouse(ws, 1, mouseBtnRef.current, cell.col + 1, cell.row + 1, modBits(e));
+      return;
+    }
     if (!selectingRef.current) return;
     selectingRef.current = false;
     canvasRef.current?.releasePointerCapture(e.pointerId);

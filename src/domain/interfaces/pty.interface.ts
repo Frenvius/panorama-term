@@ -23,6 +23,7 @@ export interface GridFrame {
   cursorRow: number;
   cursorCol: number;
   cursorHidden: boolean;
+  mouseMode: number;
   offset: number;
   lines: string[];
   attrs: Uint32Array;

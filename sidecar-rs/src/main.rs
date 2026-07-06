@@ -775,6 +775,49 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
     s.dirty.store(true, Ordering::Relaxed);
 }
 
+fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mods: i64) {
+    let (mouse, enc) = {
+        let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let sc = parser.screen();
+        (sc.mouse_protocol_mode(), sc.mouse_protocol_encoding())
+    };
+    if mouse == vt100::MouseProtocolMode::None {
+        return;
+    }
+    let motion = kind == 2;
+    if motion
+        && mouse != vt100::MouseProtocolMode::ButtonMotion
+        && mouse != vt100::MouseProtocolMode::AnyMotion
+    {
+        return;
+    }
+    let release = kind == 1;
+    if release && mouse == vt100::MouseProtocolMode::Press {
+        return;
+    }
+    let mut cb = button + mods;
+    if motion {
+        cb += 32;
+    }
+    let mut seq: Vec<u8> = Vec::new();
+    match enc {
+        vt100::MouseProtocolEncoding::Sgr => {
+            let term = if release { 'm' } else { 'M' };
+            seq.extend_from_slice(format!("\x1b[<{};{};{}{}", cb, col, row, term).as_bytes());
+        }
+        _ => {
+            let base = if release { 3 + mods } else { cb };
+            let cx = (col.min(223) as u8).saturating_add(32);
+            let cy = (row.min(223) as u8).saturating_add(32);
+            seq.extend_from_slice(&[0x1b, b'[', b'M', (base as u8).saturating_add(32), cx, cy]);
+        }
+    }
+    if let Ok(mut w) = s.writer.lock() {
+        let _ = w.write_all(&seq);
+        let _ = w.flush();
+    }
+}
+
 fn kill_session(s: &Arc<Session>) {
     let s = s.clone();
     std::thread::spawn(move || {
@@ -862,6 +905,13 @@ fn build_frame(s: &Session) -> Vec<u8> {
     let (cur_r, cur_c) = screen.cursor_position();
     let cursor = ((cur_r as u32) << 16) | (cur_c as u32);
     let hidden = screen.hide_cursor();
+    let mouse_byte: u8 = match screen.mouse_protocol_mode() {
+        vt100::MouseProtocolMode::None => 0,
+        vt100::MouseProtocolMode::Press => 1,
+        vt100::MouseProtocolMode::PressRelease => 2,
+        vt100::MouseProtocolMode::ButtonMotion => 3,
+        vt100::MouseProtocolMode::AnyMotion => 4,
+    };
     drop(parser);
 
     let text_bytes = text.as_bytes();
@@ -871,6 +921,7 @@ fn build_frame(s: &Session) -> Vec<u8> {
     buf.extend_from_slice(&cols.to_le_bytes());
     buf.extend_from_slice(&cursor.to_le_bytes());
     buf.push(if hidden { 1 } else { 0 });
+    buf.push(mouse_byte);
     buf.extend_from_slice(&offset.to_le_bytes());
     buf.extend_from_slice(&(text_bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(text_bytes);
@@ -904,6 +955,14 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             if dir != 0 && lines != 0 {
                 scroll_session(s, dir, lines, col, row);
             }
+        }
+        Some("mouse") => {
+            let kind = v.get("kind").and_then(|k| k.as_u64()).unwrap_or(0) as u8;
+            let button = v.get("button").and_then(|b| b.as_i64()).unwrap_or(0);
+            let col = v.get("col").and_then(|c| c.as_u64()).unwrap_or(1) as usize;
+            let row = v.get("row").and_then(|r| r.as_u64()).unwrap_or(1) as usize;
+            let mods = v.get("mods").and_then(|m| m.as_i64()).unwrap_or(0);
+            mouse_session(s, kind, button, col, row, mods);
         }
         Some("resize") => {
             let cols = v.get("cols").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
