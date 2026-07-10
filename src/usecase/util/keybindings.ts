@@ -1,6 +1,6 @@
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 
-export type CommandId = 'tile.fullscreen' | 'tile.new' | 'tile.close' | 'view.resetZoom';
+export type CommandId = 'tile.fullscreen' | 'tile.new' | 'note.new' | 'tile.close' | 'view.resetZoom';
 
 interface Command {
   id: CommandId;
@@ -15,6 +15,7 @@ const IS_MAC = typeof navigator !== 'undefined' && navigator.platform.toLowerCas
 
 export const KEYBINDINGS: Command[] = [
   { id: 'tile.new', label: 'New terminal', group: 'Canvas', defaultCombo: 'mod+t' },
+  { id: 'note.new', label: 'New note', group: 'Canvas', defaultCombo: 'mod+shift+n' },
   { id: 'tile.close', label: 'Close active tile', group: 'Canvas', defaultCombo: 'mod+w' },
   { id: 'tile.fullscreen', label: 'Toggle fullscreen', group: 'Canvas', defaultCombo: 'mod+shift+f' },
   { id: 'view.resetZoom', label: 'Reset zoom', group: 'View', defaultCombo: 'mod+0' }

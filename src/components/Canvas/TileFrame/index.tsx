@@ -1,9 +1,12 @@
 import React from 'react';
-import { X, RotateCw, Maximize, Minimize } from 'lucide-react';
+import type { Editor } from '@tiptap/react';
+import { X, Copy, RotateCw, Maximize, Minimize } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import NoteTile from '~/components/Canvas/NoteTile';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
+import { noteTextColor } from '~/usecase/util/note';
 
 import styles from './styles.module.scss';
 
@@ -26,6 +29,10 @@ interface TileFrameProps {
   onMove: (id: string, dx: number, dy: number) => void;
   onResize: (id: string, dir: string, dx: number, dy: number) => void;
   onCwd: (id: string, cwd: string) => void;
+  onNoteChange: (id: string, content: string) => void;
+  onNoteEditor: (id: string, editor: Editor | null) => void;
+  onNoteTitle: (id: string, title: string) => void;
+  onCopyNote: (id: string) => void;
 }
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
@@ -37,7 +44,7 @@ const devicePx = (v: number): number => {
   return Math.round(v * dpr) / dpr;
 };
 
-const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
@@ -86,6 +93,12 @@ const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exit
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
   const label = tile.userTitle || tile.autoTitle || `${tile.type} · ${tile.id}`;
 
+  const note = tile.type === 'note';
+  const noteTint = note ? { background: tile.color, color: noteTextColor(tile.color || '#fef8c4') } : null;
+  const copyNote = () => onCopyNote(tile.id);
+  const changeTitle = (e: React.ChangeEvent<HTMLInputElement>) => onNoteTitle(tile.id, e.target.value);
+  const stopDrag = (e: React.PointerEvent) => e.stopPropagation();
+
   const inset = TILE_GAP / 2;
   const ek = fullscreen ? 1 : k;
   const bodyW = fullscreen ? vpW - FS_PAD * 2 : tile.width - TILE_GAP;
@@ -98,12 +111,12 @@ const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exit
     : { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };
   const term = tile.type === 'term' && live;
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
-  const cls = [styles.tile, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
+  const cls = [styles.tile, note && styles.sticky, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
   const gone = { display: hidden ? 'none' : undefined };
 
   return (
     <>
-      <div data-tile={tile.id} className={cls} style={{ top: sy, left: sx, zIndex: z, ...box, ...gone }}>
+      <div data-tile={tile.id} className={cls} style={{ top: sy, left: sx, zIndex: z, ...box, ...gone, ...noteTint }}>
         <div
           className={styles.header}
           onPointerUp={endDrag}
@@ -112,14 +125,31 @@ const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exit
           onPointerCancel={endDrag}
           onDoubleClick={focusTile}
         >
-          <span className={styles.title}>{label}</span>
+          {note ? (
+            <input
+              className={styles.noteTitle}
+              value={tile.userTitle ?? ''}
+              placeholder="Note"
+              onChange={changeTitle}
+              onPointerDown={stopDrag}
+            />
+          ) : (
+            <span className={styles.title}>{label}</span>
+          )}
           <div className={styles.actions}>
+            {note && (
+              <button className={styles.action} onClick={copyNote} aria-label="Copy note">
+                <Copy size={13} strokeWidth={2} />
+              </button>
+            )}
             <button className={styles.action} onClick={toggleFullscreen} aria-label="Toggle fullscreen">
               {fullscreen ? <Minimize size={13} strokeWidth={2} /> : <Maximize size={13} strokeWidth={2} />}
             </button>
-            <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
-              <RotateCw size={13} strokeWidth={2} />
-            </button>
+            {!note && (
+              <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
+                <RotateCw size={13} strokeWidth={2} />
+              </button>
+            )}
             {!fullscreen && (
               <button className={`${styles.action} ${styles.close}`} onClick={closeTile} aria-label="Close tile">
                 <X size={14} strokeWidth={2} />
@@ -127,7 +157,13 @@ const TileFrame = ({ tile, view, active, visible, live, hidden, fullscreen, exit
             )}
           </div>
         </div>
-        <div className={styles.body}>{!term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}</div>
+        <div className={styles.body}>
+          {note ? (
+            <NoteTile tile={tile} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
+          ) : (
+            !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>
+          )}
+        </div>
       </div>
       {term && (
         <div

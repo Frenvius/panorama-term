@@ -90,6 +90,46 @@
   overflow: hidden;
 }
 
+.sticky {
+  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.sticky .header {
+  background: transparent;
+  border-bottom: none;
+}
+
+.sticky .action {
+  color: inherit;
+  opacity: 0.55;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.sticky .body {
+  padding: 0;
+}
+
+.noteTitle {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  outline: none;
+
+  &::placeholder {
+    color: inherit;
+    opacity: 0.45;
+  }
+}
+
 .termLayer {
   position: absolute;
   overflow: hidden;

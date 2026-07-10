@@ -1,0 +1,63 @@
+.pano-note .tiptap {
+  min-height: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  caret-color: var(--note-text);
+}
+
+.pano-note .tiptap p {
+  margin: 0 0 6px;
+}
+
+.pano-note .tiptap h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.pano-note .tiptap h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.pano-note .tiptap ul,
+.pano-note .tiptap ol {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.pano-note .tiptap code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.pano-note .tiptap ul[data-type='taskList'] {
+  padding-left: 2px;
+  list-style: none;
+}
+
+.pano-note .tiptap ul[data-type='taskList'] li {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.pano-note .tiptap ul[data-type='taskList'] li > label {
+  margin-top: 2px;
+  user-select: none;
+}
+
+.pano-note .tiptap ul[data-type='taskList'] li > div {
+  flex: 1;
+}
+
+.pano-note .tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  opacity: 0.5;
+}

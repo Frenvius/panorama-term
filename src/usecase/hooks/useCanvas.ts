@@ -8,6 +8,7 @@ import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { computeDragSnap } from '~/usecase/util/magneticSnap';
+import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import {
   CELL,
@@ -17,8 +18,10 @@ import {
   ZOOM_MAX,
   SNAP_DELAY,
   TILE_WIDTH,
+  NOTE_WIDTH,
   FRAME_COLOR,
   FRAME_WIDTH,
+  NOTE_HEIGHT,
   MAX_ZOOM_KEY,
   TILE_HEIGHT,
   FRAME_HEIGHT,
@@ -145,6 +148,32 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
       ]);
       return v;
     });
+  }, []);
+
+  const addNote = React.useCallback((center?: { x: number; y: number }) => {
+    setView((v) => {
+      const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
+      const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
+      setTiles((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          type: 'note',
+          x: cx - NOTE_WIDTH / 2,
+          y: cy - NOTE_HEIGHT / 2,
+          width: NOTE_WIDTH,
+          height: NOTE_HEIGHT,
+          color: NOTE_DEFAULT_COLOR,
+          content: '',
+          zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
+        }
+      ]);
+      return v;
+    });
+  }, []);
+
+  const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {
+    setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
   const closeTile = React.useCallback((id: string) => {
@@ -412,10 +441,12 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     bgRef,
     frames,
     endPan,
+    addNote,
     focusTile,
     gridRef,
     onWheel,
     addTile,
+    patchTile,
     addFrame,
     moveTile,
     snapTile,

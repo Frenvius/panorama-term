@@ -14,6 +14,8 @@ export const MAX_ZOOM_DELTA = 25;
 
 export const TILE_WIDTH = 640;
 export const TILE_HEIGHT = 400;
+export const NOTE_WIDTH = 280;
+export const NOTE_HEIGHT = 240;
 export const TILE_HEADER = 28;
 export const TOOLBAR_HEIGHT = 40;
 export const TILE_MIN_WIDTH = 200;

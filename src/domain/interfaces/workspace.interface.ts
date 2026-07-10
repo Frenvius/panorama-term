@@ -16,6 +16,8 @@ export interface Tile {
   folderPath?: string;
   workspacePath?: string;
   ptySessionId?: string;
+  color?: string;
+  content?: string;
 }
 
 export interface Frame {

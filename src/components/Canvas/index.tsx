@@ -1,10 +1,13 @@
 import React from 'react';
-import { SquareDashed, SquareTerminal } from 'lucide-react';
+import type { Editor } from '@tiptap/react';
+import { StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
+import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import TileFrame from '~/components/Canvas/TileFrame';
+import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
@@ -31,7 +34,9 @@ const Canvas = () => {
     bgRef,
     frames,
     endPan,
+    addNote,
     addTile,
+    patchTile,
     addFrame,
     gridRef,
     focusTile,
@@ -56,6 +61,7 @@ const Canvas = () => {
   } = useCanvas({ seed: activeState, onPersist: saveActiveState });
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
+  const [noteEditors, setNoteEditors] = React.useState<Record<string, Editor>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
@@ -108,6 +114,10 @@ const Canvas = () => {
         addTile();
         return true;
       }
+      if (cmd === 'note.new') {
+        addNote();
+        return true;
+      }
       if (cmd === 'tile.close') {
         const id = activeTileRef.current;
         if (!id) return false;
@@ -130,7 +140,7 @@ const Canvas = () => {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleFs, addTile, closeTile, resetZoom]);
+  }, [toggleFs, addTile, addNote, closeTile, resetZoom]);
 
   React.useEffect(() => {
     if (!fsId) return;
@@ -210,6 +220,31 @@ const Canvas = () => {
     if (menu) addTile({ x: menu.wx, y: menu.wy });
   };
 
+  const newNote = () => {
+    if (menu) addNote({ x: menu.wx, y: menu.wy });
+  };
+
+  const setNoteContent = (id: string, content: string) => patchTile(id, { content });
+  const setNoteColor = (id: string, color: string) => patchTile(id, { color });
+  const setNoteTitle = (id: string, title: string) => patchTile(id, { userTitle: title });
+
+  const copyNote = (id: string) => {
+    const editor = noteEditors[id];
+    if (editor) writeClipboard(editor.getText());
+  };
+
+  const registerEditor = React.useCallback((id: string, editor: Editor | null) => {
+    setNoteEditors((prev) => {
+      if (editor) return { ...prev, [id]: editor };
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  const activeNote = tiles.find((t) => t.id === activeTile && t.type === 'note') ?? null;
+  const activeNoteEditor = activeNote ? noteEditors[activeNote.id] : null;
+
   const newFrame = () => {
     if (menu) addFrame(menu.wx, menu.wy);
   };
@@ -248,6 +283,10 @@ const Canvas = () => {
               onFocusTile={focusTile}
               onToggleFullscreen={toggleFs}
               onCwd={setTileCwd}
+              onNoteChange={setNoteContent}
+              onNoteEditor={registerEditor}
+              onNoteTitle={setNoteTitle}
+              onCopyNote={copyNote}
               active={t.id === activeTile}
               visible={vis}
               live={live}
@@ -278,6 +317,13 @@ const Canvas = () => {
         </div>
         {!fsId && <Minimap view={view} tiles={tiles} viewportRef={bgRef} onPan={panTo} />}
       </div>
+      {!fsId && activeNote && activeNoteEditor && (
+        <NoteToolbar
+          editor={activeNoteEditor}
+          color={activeNote.color || '#fef8c4'}
+          onColor={(c) => setNoteColor(activeNote.id, c)}
+        />
+      )}
       {fsId && <div className={fsExit ? `${styles.backdrop} ${styles.backdropExit}` : styles.backdrop} />}
       {menu && (
         <ContextMenu
@@ -286,6 +332,7 @@ const Canvas = () => {
           onClose={closeMenu}
           items={[
             { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
+            { label: 'New note', icon: <StickyNote size={15} strokeWidth={1.75} />, onSelect: newNote },
             { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame }
           ]}
         />
