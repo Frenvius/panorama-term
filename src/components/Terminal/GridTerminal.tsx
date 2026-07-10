@@ -297,13 +297,13 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             if (next && next !== prev) {
               statusRef.current = next;
               const rect = canvasRef.current?.getBoundingClientRect();
-              const inView =
-                !!rect &&
-                rect.width > 0 &&
-                rect.right > 0 &&
-                rect.bottom > 0 &&
-                rect.top < window.innerHeight &&
-                rect.left < window.innerWidth;
+              let inView = false;
+              if (rect && rect.width > 0 && rect.height > 0) {
+                const visW = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+                const visH = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+                const visArea = Math.max(0, visW) * Math.max(0, visH);
+                inView = visArea / (rect.width * rect.height) >= 0.5;
+              }
               const onScreen = !document.hidden && document.hasFocus();
               const watching = activeRef.current && inView && onScreen;
               if (!watching) {
