@@ -108,23 +108,19 @@ fn read_temp_image(path: String) -> Result<tauri::ipc::Response, String> {
 }
 
 fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(
-        app,
-        "notif",
-        WebviewUrl::App("index.html?overlay=notif".into()),
-    )
-    .title("Panorama Notifications")
-    .inner_size(NOTIF_WIDTH, 120.0)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .focused(false)
-    .visible(false)
-    .content_protected(true)
-    .build()?;
+    WebviewWindowBuilder::new(app, "notif", WebviewUrl::App("index.html".into()))
+        .title("Panorama Notifications")
+        .inner_size(NOTIF_WIDTH, 120.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .focused(false)
+        .visible(false)
+        .content_protected(true)
+        .build()?;
     Ok(())
 }
 

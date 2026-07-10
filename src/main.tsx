@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import App from '~/App';
 import { initTheme } from '~/usecase/util/theme';
@@ -24,7 +25,7 @@ const mountOverlay = () => {
   root().render(<NotificationOverlay />);
 };
 
-const isOverlay = new URLSearchParams(window.location.search).get('overlay') === 'notif';
+const isOverlay = getCurrentWindow().label === 'notif';
 
 void loadHackFont();
 void initSettings().finally(() => {
