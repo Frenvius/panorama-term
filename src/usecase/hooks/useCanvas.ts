@@ -413,21 +413,30 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
 
   const panTo = React.useCallback((x: number, y: number) => setView((v) => ({ ...v, x, y })), []);
 
-  const focusTile = React.useCallback((id: string) => {
+  const focusTile = React.useCallback((id: string, zoomToMax = false) => {
     const bg = bgRef.current;
     const tile = tilesRef.current.find((t) => t.id === id);
     if (!bg || !tile) return;
     cancelAnimationFrame(focusRaf.current);
+    cancelAnimationFrame(snapRaf.current);
+    clearTimeout(snapTimer.current);
     const start = viewRef.current;
+    const tk = zoomToMax ? maxZoom() : start.k;
     const cx = tile.x + tile.width / 2;
     const cy = tile.y + tile.height / 2;
-    const tx = bg.clientWidth / 2 - cx * start.k;
-    const ty = bg.clientHeight / 2 - cy * start.k;
+    const tx = bg.clientWidth / 2 - cx * tk;
+    const ty = bg.clientHeight / 2 - cy * tk;
     const t0 = performance.now();
     const step = (now: number) => {
       const p = Math.min((now - t0) / FOCUS_MS, 1);
       const e = 1 - Math.pow(1 - p, 3);
-      setView((v) => ({ ...v, x: start.x + (tx - start.x) * e, y: start.y + (ty - start.y) * e }));
+      const next = {
+        k: start.k + (tk - start.k) * e,
+        x: start.x + (tx - start.x) * e,
+        y: start.y + (ty - start.y) * e
+      };
+      viewRef.current = next;
+      setView(next);
       if (p < 1) focusRaf.current = requestAnimationFrame(step);
     };
     focusRaf.current = requestAnimationFrame(step);

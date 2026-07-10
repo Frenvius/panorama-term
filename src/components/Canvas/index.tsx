@@ -253,7 +253,7 @@ const Canvas = () => {
   const openNotified = React.useCallback(
     (id: string) => {
       activateTile(id);
-      focusTile(id);
+      focusTile(id, true);
     },
     [activateTile, focusTile]
   );
