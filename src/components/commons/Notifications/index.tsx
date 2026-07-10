@@ -9,7 +9,13 @@ import styles from './styles.module.scss';
 import finishedSound from './notif-finished.wav';
 import attentionSound from './notif-attention.wav';
 
-const MAX_TOASTS = 4;
+const GAP = 10;
+const PAD_TOP = 16;
+const MAX_PEEK = 3;
+const MAX_TOASTS = 6;
+const PAD_BOTTOM = 32;
+const PEEK_SCALE = 0.05;
+const PEEK_OFFSET = 12;
 
 const playSound = (kind: NotifyKind): void => {
   const audio = new Audio(kind === 'finished' ? finishedSound : attentionSound);
@@ -19,7 +25,9 @@ const playSound = (kind: NotifyKind): void => {
 
 const NotificationOverlay = () => {
   const [toasts, setToasts] = React.useState<NotifyPayload[]>([]);
-  const stackRef = React.useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = React.useState(false);
+  const [itemH, setItemH] = React.useState(0);
+  const frontRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     const shown = listen<NotifyPayload>('notif:show', (e) => {
@@ -35,10 +43,19 @@ const NotificationOverlay = () => {
     };
   }, []);
 
-  React.useEffect(() => {
-    const height = toasts.length === 0 ? 0 : (stackRef.current?.scrollHeight ?? 0);
-    void invoke('notif_layout', { height });
+  React.useLayoutEffect(() => {
+    const h = frontRef.current?.offsetHeight ?? 0;
+    if (h) setItemH(h);
   }, [toasts]);
+
+  React.useEffect(() => {
+    const n = toasts.length;
+    const peek = Math.min(n - 1, MAX_PEEK) * PEEK_OFFSET;
+    const fanned = n * itemH + (n - 1) * GAP;
+    const content = expanded ? fanned : itemH + peek;
+    const height = n === 0 || itemH === 0 ? 0 : PAD_TOP + content + PAD_BOTTOM;
+    void invoke('notif_layout', { height });
+  }, [toasts, expanded, itemH]);
 
   const open = (toast: NotifyPayload) => {
     void emit('notif:open', { tileId: toast.tileId });
@@ -51,10 +68,34 @@ const NotificationOverlay = () => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const expand = () => setExpanded(true);
+  const collapse = () => setExpanded(false);
+
+  const styleFor = (i: number): React.CSSProperties => {
+    const n = toasts.length;
+    if (expanded) {
+      return { bottom: PAD_BOTTOM + (n - 1 - i) * (itemH + GAP), zIndex: i + 1 };
+    }
+    const depth = Math.min(n - 1 - i, MAX_PEEK + 1);
+    return {
+      bottom: PAD_BOTTOM,
+      zIndex: n - depth,
+      opacity: depth > MAX_PEEK ? 0 : 1,
+      transform: `translateY(${-depth * PEEK_OFFSET}px) scale(${1 - depth * PEEK_SCALE})`,
+      pointerEvents: depth === 0 ? 'auto' : 'none'
+    };
+  };
+
   return (
-    <div ref={stackRef} className={styles.stack}>
-      {toasts.map((toast) => (
-        <div key={toast.id} className={styles.toast} onClick={() => open(toast)}>
+    <div className={styles.stack} onMouseEnter={expand} onMouseLeave={collapse}>
+      {toasts.map((toast, i) => (
+        <div
+          key={toast.id}
+          ref={i === toasts.length - 1 ? frontRef : null}
+          className={styles.toast}
+          style={styleFor(i)}
+          onClick={() => open(toast)}
+        >
           <div className={toast.kind === 'finished' ? styles.iconOk : styles.iconAsk}>
             {toast.kind === 'finished' ? (
               <CircleCheck size={20} />
