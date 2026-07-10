@@ -112,10 +112,13 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
       const w = bg.clientWidth;
       const h = bg.clientHeight;
       if (!w || !h) return;
-      setView((v) => ({ ...v, x: v.x + (w - prevW) / 2, y: v.y + (h - prevH) / 2 }));
+      const v = viewRef.current;
+      const next = { ...v, x: v.x + (w - prevW) / 2, y: v.y + (h - prevH) / 2 };
+      viewRef.current = next;
+      setView(next);
       prevW = w;
       prevH = h;
-      if (gridRef.current) drawGrid(gridRef.current, viewRef.current);
+      if (gridRef.current) drawGrid(gridRef.current, next);
     });
     ro.observe(bg);
     return () => ro.disconnect();
@@ -429,17 +432,16 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     const tk = zoomToMax ? maxZoom() : start.k;
     const cx = tile.x + tile.width / 2;
     const cy = tile.y + tile.height / 2;
-    const tx = bg.clientWidth / 2 - cx * tk;
-    const ty = bg.clientHeight / 2 - cy * tk;
+    const sx = (bg.clientWidth / 2 - start.x) / start.k;
+    const sy = (bg.clientHeight / 2 - start.y) / start.k;
     const t0 = performance.now();
     const step = (now: number) => {
       const p = Math.min((now - t0) / FOCUS_MS, 1);
       const e = 1 - Math.pow(1 - p, 3);
-      const next = {
-        k: start.k + (tk - start.k) * e,
-        x: start.x + (tx - start.x) * e,
-        y: start.y + (ty - start.y) * e
-      };
+      const k = start.k + (tk - start.k) * e;
+      const wx = sx + (cx - sx) * e;
+      const wy = sy + (cy - sy) * e;
+      const next = { k, x: bg.clientWidth / 2 - wx * k, y: bg.clientHeight / 2 - wy * k };
       viewRef.current = next;
       setView(next);
       if (p < 1) focusRaf.current = requestAnimationFrame(step);
