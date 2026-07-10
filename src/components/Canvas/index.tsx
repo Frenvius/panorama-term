@@ -346,7 +346,7 @@ const Canvas = () => {
           ]}
         />
       )}
-      <Notifications tiles={tiles} onOpen={openNotified} />
+      <Notifications tiles={tiles} activeTile={activeTile} onOpen={openNotified} />
     </div>
   );
 };

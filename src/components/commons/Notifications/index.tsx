@@ -10,7 +10,6 @@ import attentionSound from './notif-attention.wav';
 export type NotifyKind = 'finished' | 'attention';
 
 const NOTIFY_EVENT = 'panorama:notify';
-const DISMISS_MS = 6000;
 const MAX_TOASTS = 4;
 
 interface NotifyDetail {
@@ -27,6 +26,7 @@ interface Toast {
 
 interface NotificationsProps {
   tiles: Tile[];
+  activeTile: string | null;
   onOpen: (tileId: string) => void;
 }
 
@@ -49,7 +49,7 @@ const playSound = (kind: NotifyKind): void => {
   audio.play().catch(() => {});
 };
 
-const Notifications = ({ tiles, onOpen }: NotificationsProps) => {
+const Notifications = ({ tiles, activeTile, onOpen }: NotificationsProps) => {
   const [toasts, setToasts] = React.useState<Toast[]>([]);
   const tilesRef = React.useRef(tiles);
   tilesRef.current = tiles;
@@ -70,11 +70,15 @@ const Notifications = ({ tiles, onOpen }: NotificationsProps) => {
       };
       setToasts((prev) => [...prev, toast].slice(-MAX_TOASTS));
       playSound(detail.kind);
-      window.setTimeout(() => dismiss(toast.id), DISMISS_MS);
     };
     window.addEventListener(NOTIFY_EVENT, onNotify);
     return () => window.removeEventListener(NOTIFY_EVENT, onNotify);
-  }, [dismiss]);
+  }, []);
+
+  React.useEffect(() => {
+    if (!activeTile) return;
+    setToasts((prev) => prev.filter((t) => t.tileId !== activeTile));
+  }, [activeTile]);
 
   const open = (toast: Toast) => {
     onOpen(toast.tileId);
@@ -93,7 +97,7 @@ const Notifications = ({ tiles, onOpen }: NotificationsProps) => {
       {toasts.map((toast) => (
         <div key={toast.id} className={styles.toast} onClick={() => open(toast)}>
           <div className={toast.kind === 'finished' ? styles.iconOk : styles.iconAlert}>
-            {toast.kind === 'finished' ? <CircleCheck size={16} /> : <CircleAlert size={16} />}
+            {toast.kind === 'finished' ? <CircleCheck size={20} /> : <CircleAlert size={20} />}
           </div>
           <div className={styles.body}>
             <div className={styles.title}>{toast.title}</div>
@@ -102,7 +106,7 @@ const Notifications = ({ tiles, onOpen }: NotificationsProps) => {
             </div>
           </div>
           <button className={styles.close} onClick={(e) => close(e, toast.id)}>
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
       ))}
