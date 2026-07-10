@@ -51,7 +51,10 @@ const NoteTile = ({ tile, active, onChange, onActivate, onEditor }: NoteTileProp
     []
   );
 
-  const activate = () => onActivate(tile.id);
+  const activate = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    onActivate(tile.id);
+  };
 
   const stopWheel = (e: React.WheelEvent) => {
     if (active) e.stopPropagation();
