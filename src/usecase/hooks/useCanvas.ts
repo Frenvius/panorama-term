@@ -111,6 +111,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     const ro = new ResizeObserver(() => {
       const w = bg.clientWidth;
       const h = bg.clientHeight;
+      if (!w || !h) return;
       setView((v) => ({ ...v, x: v.x + (w - prevW) / 2, y: v.y + (h - prevH) / 2 }));
       prevW = w;
       prevH = h;
@@ -413,13 +414,17 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
 
   const panTo = React.useCallback((x: number, y: number) => setView((v) => ({ ...v, x, y })), []);
 
-  const focusTile = React.useCallback((id: string, zoomToMax = false) => {
+  const focusTile = React.useCallback(function run(id: string, zoomToMax = false) {
     const bg = bgRef.current;
     const tile = tilesRef.current.find((t) => t.id === id);
     if (!bg || !tile) return;
     cancelAnimationFrame(focusRaf.current);
     cancelAnimationFrame(snapRaf.current);
     clearTimeout(snapTimer.current);
+    if (!bg.clientWidth || !bg.clientHeight) {
+      focusRaf.current = requestAnimationFrame(() => run(id, zoomToMax));
+      return;
+    }
     const start = viewRef.current;
     const tk = zoomToMax ? maxZoom() : start.k;
     const cx = tile.x + tile.width / 2;
