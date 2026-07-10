@@ -136,8 +136,8 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
             />
           ) : (
             <span className={styles.title}>
-              {alert && <span className={styles.alertDot} />}
               {label}
+              {alert && <span className={styles.alertDot} />}
             </span>
           )}
           <div className={styles.actions}>
