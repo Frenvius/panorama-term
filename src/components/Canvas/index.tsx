@@ -9,9 +9,9 @@ import Minimap from '~/components/Canvas/Minimap';
 import TileFrame from '~/components/Canvas/TileFrame';
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
-import Notifications from '~/components/commons/Notifications';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
+import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
 import { isCapturing, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 
@@ -258,6 +258,8 @@ const Canvas = () => {
     [activateTile, focusTile]
   );
 
+  useNotifyBridge({ tiles, activeTile, onOpen: openNotified });
+
   return (
     <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root}>
       <div
@@ -346,7 +348,6 @@ const Canvas = () => {
           ]}
         />
       )}
-      <Notifications tiles={tiles} activeTile={activeTile} onOpen={openNotified} />
     </div>
   );
 };

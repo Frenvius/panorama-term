@@ -1,12 +1,12 @@
 import React from 'react';
 
 import AgentBar from '~/components/Terminal/AgentBar';
-import { notifyClaude } from '~/components/commons/Notifications';
 import { termTheme, THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
+import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
 import { sendPtyKill, sendPtyMouse, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
