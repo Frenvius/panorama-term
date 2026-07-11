@@ -1,7 +1,9 @@
 import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { X, CircleCheck, MessageCircleQuestionMark } from 'lucide-react';
+import { X, Bell } from 'lucide-react';
+
+import ClaudeLogo from '~/components/commons/ClaudeLogo';
 
 import type { NotifyKind, NotifyPayload } from '~/components/commons/Notifications/bridge';
 
@@ -17,10 +19,26 @@ const PAD_BOTTOM = 32;
 const PEEK_SCALE = 0.05;
 const PEEK_OFFSET = 12;
 
+const SOFT_KINDS: NotifyKind[] = ['finished', 'idle', 'generic'];
+
 const playSound = (kind: NotifyKind): void => {
-  const audio = new Audio(kind === 'finished' ? finishedSound : attentionSound);
-  audio.volume = kind === 'finished' ? 0.2 : 0.7;
+  const soft = SOFT_KINDS.includes(kind);
+  const audio = new Audio(soft ? finishedSound : attentionSound);
+  audio.volume = soft ? 0.2 : 0.7;
   audio.play().catch(() => {});
+};
+
+const KIND_TEXT: Record<NotifyKind, string> = {
+  finished: 'Claude finished',
+  attention: 'Claude needs your attention',
+  permission: 'Claude needs permission',
+  idle: 'Claude is waiting for input',
+  generic: ''
+};
+
+const kindIcon = (kind: NotifyKind): React.ReactNode => {
+  if (kind === 'generic') return <Bell size={20} />;
+  return <ClaudeLogo size={20} />;
 };
 
 const NotificationOverlay = () => {
@@ -35,7 +53,7 @@ const NotificationOverlay = () => {
   React.useEffect(() => {
     const shown = listen<NotifyPayload>('notif:show', (e) => {
       setToasts((prev) => {
-        const kept = prev.filter((t) => t.tileId !== e.payload.tileId || t.kind !== e.payload.kind);
+        const kept = prev.filter((t) => t.tileId !== e.payload.tileId);
         return [...kept, e.payload].slice(-MAX_TOASTS);
       });
       playSound(e.payload.kind);
@@ -108,18 +126,12 @@ const NotificationOverlay = () => {
           style={styleFor(i)}
           onClick={() => open(toast)}
         >
-          <div className={toast.kind === 'finished' ? styles.iconOk : styles.iconAsk}>
-            {toast.kind === 'finished' ? (
-              <CircleCheck size={20} />
-            ) : (
-              <MessageCircleQuestionMark size={20} />
-            )}
+          <div className={SOFT_KINDS.includes(toast.kind) ? styles.iconOk : styles.iconAsk}>
+            {kindIcon(toast.kind)}
           </div>
           <div className={styles.body}>
             <div className={styles.title}>{toast.title}</div>
-            <div className={styles.text}>
-              {toast.kind === 'finished' ? 'Claude finished' : 'Claude needs your attention'}
-            </div>
+            <div className={styles.text}>{toast.text || KIND_TEXT[toast.kind]}</div>
           </div>
           <button className={styles.close} onClick={(e) => close(e, toast.id)}>
             <X size={16} />

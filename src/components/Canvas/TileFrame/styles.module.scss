@@ -41,6 +41,7 @@
 }
 
 .header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -52,12 +53,44 @@
   border-bottom: 1px solid var(--border-2);
 }
 
+.progressBar {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: #d97757;
+  transition: width 0.3s ease;
+  pointer-events: none;
+}
+
+.progressError {
+  background: #ef4444;
+}
+
 .title {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.claudeMark {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.branch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 140px;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--text-muted) 65%, transparent);
 }
 
 .alertDot {
@@ -67,6 +100,10 @@
   border-radius: 50%;
   background: #f5a623;
   animation: alert-pulse 1.6s ease-in-out infinite;
+}
+
+.alertDone {
+  background: #4cc38a;
 }
 
 @keyframes alert-pulse {

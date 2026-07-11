@@ -6,7 +6,7 @@ import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
-import { notifyClaude } from '~/components/commons/Notifications/bridge';
+import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
@@ -26,7 +26,11 @@ interface GridTerminalProps {
   visible: boolean;
   k: number;
   restartKey: number;
-  onCwd: (id: string, cwd: string) => void;
+  onCwd: (id: string, cwd: string, branch?: string) => void;
+  onOscTitle: (id: string, title: string) => void;
+  onClaudeActive?: (active: boolean) => void;
+  onClaudeStatus?: (status: string) => void;
+  onProgress?: (state: number, pct: number) => void;
 }
 
 const FONT = 12;
@@ -64,7 +68,7 @@ const fgOf = (w0: number): string => {
   return termTheme.ansi?.get(v) ?? hex(v);
 };
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onProgress }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
@@ -90,12 +94,33 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const colsRef = React.useRef(cols);
   const rowsRef = React.useRef(rows);
   const onCwdRef = React.useRef(onCwd);
+  const onOscTitleRef = React.useRef(onOscTitle);
+  const onClaudeStatusRef = React.useRef(onClaudeStatus);
+  const onProgressRef = React.useRef(onProgress);
+  const agentEventsRef = React.useRef(false);
+  const lastAgentEventRef = React.useRef(0);
   activeRef.current = active;
   visibleRef.current = visible;
   kRef.current = k;
   colsRef.current = cols;
   rowsRef.current = rows;
   onCwdRef.current = onCwd;
+  onOscTitleRef.current = onOscTitle;
+  onClaudeStatusRef.current = onClaudeStatus;
+  onProgressRef.current = onProgress;
+
+  const isWatching = React.useCallback((): boolean => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    let inView = false;
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const visW = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+      const visH = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+      const visArea = Math.max(0, visW) * Math.max(0, visH);
+      inView = visArea / (rect.width * rect.height) >= 0.5;
+    }
+    const onScreen = !document.hidden && document.hasFocus();
+    return activeRef.current && inView && onScreen;
+  }, []);
 
   const draw = React.useCallback(() => {
     const canvas = canvasRef.current;
@@ -291,28 +316,43 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
           },
           onExit: () => {},
           onClaude: (state) => {
-            claudeRef.current = state;
+            claudeRef.current = { ...claudeRef.current, ...state };
             const prev = statusRef.current;
             const next = state.status;
             if (next && next !== prev) {
               statusRef.current = next;
-              const rect = canvasRef.current?.getBoundingClientRect();
-              let inView = false;
-              if (rect && rect.width > 0 && rect.height > 0) {
-                const visW = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
-                const visH = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
-                const visArea = Math.max(0, visW) * Math.max(0, visH);
-                inView = visArea / (rect.width * rect.height) >= 0.5;
-              }
-              const onScreen = !document.hidden && document.hasFocus();
-              const watching = activeRef.current && inView && onScreen;
-              if (!watching) {
+              onClaudeStatusRef.current?.(next);
+              if (!isWatching() && !agentEventsRef.current) {
                 if (prev === 'busy' && next === 'idle') notifyClaude(tileId, 'finished');
                 else if (next === 'waiting') notifyClaude(tileId, 'attention');
               }
             }
           },
-          onCwd: (dir) => onCwdRef.current(tileId, dir),
+          onCwd: (dir, branch) => onCwdRef.current(tileId, dir, branch),
+          onClipboard: (text) => writeClipboard(text),
+          onTitle: (title) => onOscTitleRef.current(tileId, title),
+          onNotify: (title, body) => {
+            if (Date.now() - lastAgentEventRef.current < 5000) return;
+            if (!isWatching()) notifyClaude(tileId, 'generic', body, title || undefined);
+          },
+          onProgress: (state, pct) => onProgressRef.current?.(state, pct),
+          onAgentEvent: (evt) => {
+            agentEventsRef.current = true;
+            lastAgentEventRef.current = Date.now();
+            if (evt.event === 'prompt-submit') {
+              clearNotify(tileId);
+              return;
+            }
+            if (isWatching()) return;
+            if (evt.event === 'stop') {
+              notifyClaude(tileId, 'finished', evt.response || undefined);
+            } else if (evt.event === 'permission') {
+              const detail = [evt.toolName, evt.message].filter(Boolean).join(': ');
+              notifyClaude(tileId, 'permission', detail || undefined);
+            } else if (evt.event === 'notification') {
+              if (!document.hasFocus()) notifyClaude(tileId, 'idle', evt.message || undefined);
+            }
+          },
           onReady: (info) => {
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
@@ -378,6 +418,29 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       dirtyRef.current = true;
     }, 530);
     return () => clearInterval(id);
+  }, [active]);
+
+  React.useEffect(() => {
+    if (!active) return;
+    const onCopyKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (e.key.toLowerCase() !== 'c') return;
+      const sel = selRef.current;
+      const frame = frameRef.current;
+      if (!sel || !frame) return;
+      const domSel = window.getSelection();
+      if (domSel && !domSel.isCollapsed) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const text = selectText(frame.lines, frame.cols, sel);
+      if (text) writeClipboard(text);
+      if (!e.shiftKey) {
+        selRef.current = null;
+        dirtyRef.current = true;
+      }
+    };
+    window.addEventListener('keydown', onCopyKey, true);
+    return () => window.removeEventListener('keydown', onCopyKey, true);
   }, [active]);
 
   const cellFromEvent = (e: React.MouseEvent): Cell | null => {
@@ -610,6 +673,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
           getLines={getLines}
           getStructured={getStructured}
           focusTerminal={focusTerminal}
+          onClaudeActive={onClaudeActive}
         />
       </div>
     </>

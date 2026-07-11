@@ -1,4 +1,5 @@
 import React from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import type { Editor } from '@tiptap/react';
 import { StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
@@ -12,7 +13,7 @@ import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
-import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
+import { useNotifyBridge, type NotifyKind } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
 import { isCapturing, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 
@@ -58,13 +59,14 @@ const Canvas = () => {
     recolorFrame,
     activateTile,
     setTileCwd,
+    setTileOscTitle,
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown
   } = useCanvas({ seed: activeState, onPersist: saveActiveState });
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
-  const [alerts, setAlerts] = React.useState<Set<string>>(() => new Set());
+  const [alerts, setAlerts] = React.useState<Map<string, NotifyKind>>(() => new Map());
   const [noteEditors, setNoteEditors] = React.useState<Record<string, Editor>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
   const [fsId, setFsId] = React.useState<string | null>(null);
@@ -264,14 +266,17 @@ const Canvas = () => {
     if (menu) addFrame(menu.wx, menu.wy);
   };
 
-  const addAlert = React.useCallback((id: string) => {
-    setAlerts((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  const addAlert = React.useCallback((id: string, kind: NotifyKind) => {
+    setAlerts((prev) => {
+      if (prev.get(id) === kind) return prev;
+      return new Map(prev).set(id, kind);
+    });
   }, []);
 
   const clearAlert = React.useCallback((id: string) => {
     setAlerts((prev) => {
       if (!prev.has(id)) return prev;
-      const next = new Set(prev);
+      const next = new Map(prev);
       next.delete(id);
       return next;
     });
@@ -297,7 +302,11 @@ const Canvas = () => {
     [activateAndClear, focusTile]
   );
 
-  useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert });
+  useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert, onClear: clearAlert });
+
+  React.useEffect(() => {
+    void invoke('set_pending_count', { count: alerts.size }).catch(() => {});
+  }, [alerts]);
 
   return (
     <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root}>
@@ -333,6 +342,7 @@ const Canvas = () => {
               onFocusTile={focusTile}
               onToggleFullscreen={toggleFs}
               onCwd={setTileCwd}
+              onOscTitle={setTileOscTitle}
               onNoteChange={setNoteContent}
               onNoteEditor={registerEditor}
               onNoteTitle={setNoteTitle}
@@ -342,7 +352,7 @@ const Canvas = () => {
               onReveal={revealTilePath}
               onDuplicate={duplicateTile}
               active={t.id === activeTile}
-              alert={alerts.has(t.id)}
+              alert={alerts.get(t.id) ?? null}
               visible={vis}
               live={live}
               fullscreen={t.id === fsId}

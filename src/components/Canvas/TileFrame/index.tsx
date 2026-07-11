@@ -1,13 +1,16 @@
 import React from 'react';
 import type { Editor } from '@tiptap/react';
-import { X, Copy, Focus, Pencil, Trash2, Maximize, Minimize, RotateCw, CopyPlus, FolderOpen, ClipboardCopy } from 'lucide-react';
+import { X, Copy, Focus, Pencil, Trash2, Maximize, Minimize, RotateCw, CopyPlus, GitBranch, FolderOpen, ClipboardCopy } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
+import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import NoteTile from '~/components/Canvas/NoteTile';
 import { noteTextColor } from '~/usecase/util/note';
+import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import ContextMenu from '~/components/commons/ContextMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
+import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
 import { getBinding, formatCombo } from '~/usecase/util/keybindings';
 
@@ -17,7 +20,7 @@ interface TileFrameProps {
   tile: Tile;
   view: View;
   active: boolean;
-  alert: boolean;
+  alert: NotifyKind | null;
   visible: boolean;
   live: boolean;
   hidden: boolean;
@@ -32,7 +35,8 @@ interface TileFrameProps {
   onToggleFullscreen: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
   onResize: (id: string, dir: string, dx: number, dy: number) => void;
-  onCwd: (id: string, cwd: string) => void;
+  onCwd: (id: string, cwd: string, branch?: string) => void;
+  onOscTitle: (id: string, title: string) => void;
   onNoteChange: (id: string, content: string) => void;
   onNoteEditor: (id: string, editor: Editor | null) => void;
   onNoteTitle: (id: string, title: string) => void;
@@ -52,10 +56,15 @@ const devicePx = (v: number): number => {
   return Math.round(v * dpr) / dpr;
 };
 
-const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onRename, onCopyPath, onReveal, onDuplicate }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onRename, onCopyPath, onReveal, onDuplicate }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
+  const [claudeLive, setClaudeLive] = React.useState(false);
+  const [claudeBusy, setClaudeBusy] = React.useState(false);
+  const [progress, setProgress] = React.useState<{ state: number; pct: number } | null>(null);
+  const onClaudeStatus = (s: string) => setClaudeBusy(s === 'busy');
+  const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });
 
   const startDrag = (e: React.PointerEvent) => {
     if (e.button !== 0 || fullscreen) return;
@@ -99,7 +108,12 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
   const closeTile = () => onClose(tile.id);
   const focusTile = () => onFocusTile(tile.id);
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
-  const label = tile.userTitle || tile.autoTitle || `${tile.type} · ${tile.id}`;
+  const oscTitle = tile.oscTitle ? stripStarPrefix(tile.oscTitle).trim() : '';
+  const spinning = !tile.userTitle && claudeBusy && hasSpinnerPrefix(oscTitle);
+  const label = tile.userTitle
+    || (oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
+    || tile.autoTitle
+    || `${tile.type} · ${tile.id}`;
 
   const note = tile.type === 'note';
   const noteTint = note ? { background: tile.color, color: noteTextColor(tile.color || '#fef8c4') } : null;
@@ -196,6 +210,12 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
           onDoubleClick={focusTile}
           onContextMenu={openMenu}
         >
+          {progress && !note && (
+            <span
+              className={progress.state === 2 ? `${styles.progressBar} ${styles.progressError}` : styles.progressBar}
+              style={{ width: `${progress.pct}%` }}
+            />
+          )}
           {note ? (
             <input
               className={styles.noteTitle}
@@ -219,8 +239,19 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
             />
           ) : (
             <span className={styles.title}>
+              {claudeLive && !spinning && (
+                <span className={styles.claudeMark}>
+                  <ClaudeLogo size={11} />
+                </span>
+              )}
               {label}
-              {alert && <span className={styles.alertDot} />}
+              {!note && tile.branch && (
+                <span className={styles.branch}>
+                  <GitBranch size={10} strokeWidth={2} />
+                  {tile.branch}
+                </span>
+              )}
+              {alert && <span className={alert === 'finished' ? `${styles.alertDot} ${styles.alertDone}` : styles.alertDot} />}
             </span>
           )}
           <div className={styles.actions}>
@@ -269,6 +300,10 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
             k={ek}
             cwd={tile.cwd}
             onCwd={onCwd}
+            onOscTitle={onOscTitle}
+            onClaudeActive={setClaudeLive}
+            onClaudeStatus={onClaudeStatus}
+            onProgress={onProgress}
             restartKey={restartKey}
             active={active}
             visible={visible && !hidden}

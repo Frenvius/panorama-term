@@ -9,9 +9,11 @@ export interface Tile {
   height: number;
   zIndex: number;
   cwd?: string;
+  branch?: string;
   url?: string | null;
   filePath?: string;
   autoTitle?: string;
+  oscTitle?: string;
   userTitle?: string;
   folderPath?: string;
   workspacePath?: string;

@@ -1,0 +1,20 @@
+const ALNUM = /[\p{L}\p{N}]/u;
+const STAR_PREFIX = /^[\s✳✻✽✶✢❋✱✲✧✦∗*]+/u;
+
+export const stripStarPrefix = (title: string): string => title.replace(STAR_PREFIX, '');
+
+export const hasSpinnerPrefix = (title: string): boolean => {
+  const m = title.trim().match(/^(\S{1,3})(\s|$)/u);
+  return Boolean(m && !ALNUM.test(m[1]));
+};
+
+export const stripSpinner = (title: string): string => {
+  let rest = title.trim();
+  for (;;) {
+    const m = rest.match(/^(\S{1,3})\s+/u);
+    if (!m || ALNUM.test(m[1])) break;
+    rest = rest.slice(m[0].length);
+  }
+  if (rest.length <= 3 && !ALNUM.test(rest)) return '';
+  return rest.trim();
+};

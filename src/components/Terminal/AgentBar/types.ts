@@ -8,6 +8,7 @@ export interface AgentBarProps {
   getLines: () => string[];
   getStructured: () => ClaudeState | null;
   focusTerminal: () => void;
+  onClaudeActive?: (active: boolean) => void;
 }
 
 export type SuggestTrigger = { kind: 'slash' | 'model' | 'effort'; query: string } | null;

@@ -169,6 +169,92 @@ fn focus_main(app: tauri::AppHandle) -> Result<(), String> {
     win.set_focus().map_err(|e| e.to_string())
 }
 
+#[cfg(target_os = "windows")]
+const BADGE_FONT: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b010, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+#[cfg(target_os = "windows")]
+const BADGE_PLUS: [u8; 5] = [0b000, 0b010, 0b111, 0b010, 0b000];
+
+#[cfg(target_os = "windows")]
+fn badge_icon(count: u32) -> tauri::image::Image<'static> {
+    const SIZE: usize = 32;
+    const SCALE: usize = 3;
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    let center = (SIZE as f32 - 1.0) / 2.0;
+    let radius = center;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            if (dx * dx + dy * dy).sqrt() <= radius {
+                let i = (y * SIZE + x) * 4;
+                rgba[i..i + 4].copy_from_slice(&[0xd9, 0x77, 0x57, 0xff]);
+            }
+        }
+    }
+    let glyphs: Vec<[u8; 5]> = if count > 9 {
+        vec![BADGE_FONT[9], BADGE_PLUS]
+    } else {
+        vec![BADGE_FONT[count.max(1) as usize % 10]]
+    };
+    let glyph_w = 3 * SCALE;
+    let glyph_h = 5 * SCALE;
+    let gap = SCALE;
+    let total_w = glyphs.len() * glyph_w + (glyphs.len() - 1) * gap;
+    let x0 = (SIZE - total_w) / 2;
+    let y0 = (SIZE - glyph_h) / 2;
+    for (g, glyph) in glyphs.iter().enumerate() {
+        let gx = x0 + g * (glyph_w + gap);
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..3 {
+                if bits & (0b100 >> col) == 0 {
+                    continue;
+                }
+                for sy in 0..SCALE {
+                    for sx in 0..SCALE {
+                        let px = gx + col * SCALE + sx;
+                        let py = y0 + row * SCALE + sy;
+                        let i = (py * SIZE + px) * 4;
+                        rgba[i..i + 4].copy_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+                    }
+                }
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, SIZE as u32, SIZE as u32)
+}
+
+#[tauri::command]
+fn set_pending_count(app: tauri::AppHandle, count: u32) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("no main window")?;
+    let title = if count > 0 {
+        format!("Panorama ({count})")
+    } else {
+        "Panorama".to_string()
+    };
+    let _ = win.set_title(&title);
+    #[cfg(target_os = "windows")]
+    {
+        if count == 0 {
+            let _ = win.set_overlay_icon(None);
+        } else {
+            let _ = win.set_overlay_icon(Some(badge_icon(count)));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     let spawn = |cmd: &str, args: &[&str]| {
@@ -221,6 +307,7 @@ pub fn run() {
             read_temp_image,
             notif_layout,
             focus_main,
+            set_pending_count,
             reveal_path,
             open_url,
             store::store_read,

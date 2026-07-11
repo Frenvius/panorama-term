@@ -1,4 +1,4 @@
-import type { GridFrame, ClaudeState, PtyServerMessage } from '~/domain/interfaces/pty.interface';
+import type { GridFrame, AgentEvent, ClaudeState, PtyServerMessage } from '~/domain/interfaces/pty.interface';
 
 const SIDECAR_WS = 'ws://127.0.0.1:9777';
 
@@ -23,8 +23,13 @@ export interface PtyHandlers {
   onExit: () => void;
   onReady: (info: PtyReadyInfo) => void;
   onGrid: (frame: GridFrame) => void;
-  onCwd: (cwd: string) => void;
+  onCwd: (cwd: string, branch?: string) => void;
   onClaude: (state: ClaudeState) => void;
+  onClipboard: (text: string) => void;
+  onTitle: (title: string) => void;
+  onNotify: (title: string, body: string) => void;
+  onAgentEvent: (event: AgentEvent) => void;
+  onProgress: (state: number, pct: number) => void;
 }
 
 const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
@@ -64,8 +69,13 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       const msg = JSON.parse(e.data) as PtyServerMessage;
       if (msg.t === 'ready') handlers.onReady({ reused: msg.reused, cols: msg.cols, rows: msg.rows, resumeId: msg.resumeId });
       else if (msg.t === 'exit') handlers.onExit();
-      else if (msg.t === 'cwd') handlers.onCwd(msg.cwd);
+      else if (msg.t === 'cwd') handlers.onCwd(msg.cwd, msg.branch ?? undefined);
       else if (msg.t === 'claude') handlers.onClaude(msg);
+      else if (msg.t === 'clipboard') handlers.onClipboard(msg.text);
+      else if (msg.t === 'title') handlers.onTitle(msg.title);
+      else if (msg.t === 'notify') handlers.onNotify(msg.title, msg.body);
+      else if (msg.t === 'agentEvent') handlers.onAgentEvent(msg);
+      else if (msg.t === 'progress') handlers.onProgress(msg.state, msg.pct);
       return;
     }
     const frame = parseGridFrame(e.data as ArrayBuffer);

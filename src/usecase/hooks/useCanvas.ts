@@ -219,14 +219,21 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     });
   }, []);
 
-  const setTileCwd = React.useCallback((id: string, cwd: string) => {
+  const setTileCwd = React.useCallback((id: string, cwd: string, branch?: string) => {
     const autoTitle = cwd;
     setTiles((prev) =>
       prev.map((t) =>
-        t.id === id && (t.cwd !== cwd || t.autoTitle !== autoTitle)
-          ? { ...t, cwd, autoTitle }
+        t.id === id && (t.cwd !== cwd || t.autoTitle !== autoTitle || t.branch !== branch)
+          ? { ...t, cwd, autoTitle, branch }
           : t
       )
+    );
+  }, []);
+
+  const setTileOscTitle = React.useCallback((id: string, title: string) => {
+    const oscTitle = title.trim() || undefined;
+    setTiles((prev) =>
+      prev.map((t) => (t.id === id && t.oscTitle !== oscTitle ? { ...t, oscTitle } : t))
     );
   }, []);
 
@@ -504,6 +511,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     snapFrame,
     activeTile,
     setTileCwd,
+    setTileOscTitle,
     resetZoom,
     resizeTile,
     removeFrame,
