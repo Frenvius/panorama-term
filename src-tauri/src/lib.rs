@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod git;
 mod store;
 
 const SIDECAR_PORT: u16 = 9777;
@@ -344,7 +345,20 @@ pub fn run() {
             store::store_read,
             store::store_write,
             store::store_delete,
-            store::store_list
+            store::store_list,
+            git::git_branches,
+            git::git_checkout,
+            git::git_fetch,
+            git::git_create_branch,
+            git::git_rename_branch,
+            git::git_delete_branch,
+            git::git_merge_branch,
+            git::git_rebase_onto,
+            git::git_update_branch,
+            git::git_push_current,
+            git::git_set_upstream,
+            git::git_compare_with_current,
+            git::git_toggle_branch_favorite
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

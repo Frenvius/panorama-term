@@ -86,11 +86,25 @@
   align-items: center;
   gap: 3px;
   max-width: 140px;
+  padding: 1px 4px;
   overflow: hidden;
+  border: none;
+  cursor: pointer;
   font-size: 11px;
+  font-family: inherit;
   white-space: nowrap;
   text-overflow: ellipsis;
+  border-radius: 4px;
+  background: transparent;
   color: color-mix(in srgb, var(--text-muted) 65%, transparent);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-2);
+  }
 }
 
 .alertDot {

@@ -1,14 +1,16 @@
 import React from 'react';
+import { ChevronRight } from 'lucide-react';
 
 import styles from './styles.module.scss';
 
 export interface ContextMenuItem {
   label: string;
-  onSelect: () => void;
+  onSelect?: () => void;
   icon?: React.ReactNode;
   shortcut?: string;
   danger?: boolean;
   disabled?: boolean;
+  submenu?: ContextMenuEntry[];
 }
 
 export type ContextMenuEntry = ContextMenuItem | 'separator';
@@ -54,27 +56,74 @@ const ContextMenu = ({ x, y, items, onClose }: ContextMenuProps) => {
 
   return (
     <div ref={rootRef} className={styles.menu} style={{ top: pos.y, left: pos.x }} onPointerDown={stop}>
-      {items.map((item, i) => {
-        if (item === 'separator') return <div key={`sep-${i}`} className={styles.separator} />;
+      <Entries items={items} onClose={onClose} />
+    </div>
+  );
+};
 
-        const select = () => {
-          if (item.disabled) return;
-          item.onSelect();
-          onClose();
-        };
+interface EntriesProps {
+  items: ContextMenuEntry[];
+  onClose: () => void;
+}
 
-        const cls = [styles.item, item.danger && styles.danger, item.disabled && styles.disabled]
-          .filter(Boolean)
-          .join(' ');
+const Entries = ({ items, onClose }: EntriesProps) => (
+  <>
+    {items.map((item, i) => {
+      if (item === 'separator') return <div key={`sep-${i}`} className={styles.separator} />;
+      if (item.submenu) return <SubMenu key={item.label} item={item} onClose={onClose} />;
 
-        return (
-          <button key={item.label} className={cls} onClick={select} disabled={item.disabled}>
-            {item.icon && <span className={styles.icon}>{item.icon}</span>}
-            <span className={styles.label}>{item.label}</span>
-            {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
-          </button>
-        );
-      })}
+      const select = () => {
+        if (item.disabled) return;
+        item.onSelect?.();
+        onClose();
+      };
+
+      const cls = [styles.item, item.danger && styles.danger, item.disabled && styles.disabled]
+        .filter(Boolean)
+        .join(' ');
+
+      return (
+        <button key={item.label} className={cls} onClick={select} disabled={item.disabled}>
+          {item.icon && <span className={styles.icon}>{item.icon}</span>}
+          <span className={styles.label}>{item.label}</span>
+          {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
+        </button>
+      );
+    })}
+  </>
+);
+
+interface SubMenuProps {
+  item: ContextMenuItem;
+  onClose: () => void;
+}
+
+const SubMenu = ({ item, onClose }: SubMenuProps) => {
+  const [open, setOpen] = React.useState(false);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const enter = () => {
+    clearTimeout(timer.current);
+    setOpen(true);
+  };
+  const leave = () => {
+    timer.current = setTimeout(() => setOpen(false), 120);
+  };
+
+  React.useEffect(() => () => clearTimeout(timer.current), []);
+
+  return (
+    <div className={styles.subAnchor} onPointerEnter={enter} onPointerLeave={leave}>
+      <button className={styles.item}>
+        {item.icon && <span className={styles.icon}>{item.icon}</span>}
+        <span className={styles.label}>{item.label}</span>
+        <ChevronRight size={14} strokeWidth={2} className={styles.arrow} />
+      </button>
+      {open && (
+        <div className={`${styles.menu} ${styles.submenu}`}>
+          <Entries items={item.submenu ?? []} onClose={onClose} />
+        </div>
+      )}
     </div>
   );
 };

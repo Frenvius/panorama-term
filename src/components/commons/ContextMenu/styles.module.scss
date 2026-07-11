@@ -78,6 +78,29 @@
   background: var(--border-2);
 }
 
+.subAnchor {
+  position: relative;
+
+  > .item {
+    width: 100%;
+  }
+}
+
+.submenu {
+  position: absolute;
+  top: -6px;
+  left: 100%;
+  margin-left: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  animation: none;
+}
+
+.arrow {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
 .danger {
   color: var(--danger);
 

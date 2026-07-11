@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Editor } from '@tiptap/react';
-import { X, Pin, PinOff, Copy, Focus, Pencil, Trash2, Maximize, Minimize, RotateCw, CopyPlus, GitBranch, FolderOpen, ClipboardCopy } from 'lucide-react';
+import { X, Pin, PinOff, Copy, Focus, Pencil, Trash2, Maximize, Minimize, RotateCw, CopyPlus, GitBranch, ChevronDown, FolderOpen, ClipboardCopy } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
@@ -9,7 +9,9 @@ import NoteTile from '~/components/Canvas/NoteTile';
 import { noteTextColor } from '~/usecase/util/note';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import ContextMenu from '~/components/commons/ContextMenu';
+import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
+import { useBranches } from '~/usecase/hooks/useBranches';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
 import { getBinding, formatCombo } from '~/usecase/util/keybindings';
@@ -161,6 +163,26 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
   const copyPath = () => onCopyPath(tile.id);
   const reveal = () => onReveal(tile.id);
 
+  const [branchLocal, setBranchLocal] = React.useState<{ x: number; y: number } | null>(null);
+  const branches = useBranches(tile.cwd, branchLocal !== null);
+  const snapCurrent = branches.snapshot?.current ?? null;
+
+  React.useEffect(() => {
+    if (!snapCurrent || !tile.cwd || snapCurrent === tile.branch) return;
+    onCwd(tile.id, tile.cwd, snapCurrent);
+  }, [snapCurrent, tile.id, tile.cwd, tile.branch, onCwd]);
+
+  const closeBranches = () => setBranchLocal(null);
+
+  const openBranches = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const btn = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const tileRect = (e.currentTarget as HTMLElement).closest('[data-tile]')?.getBoundingClientRect();
+    if (!tileRect) return;
+    const scale = fullscreen ? 1 : k;
+    setBranchLocal({ x: (btn.left - tileRect.left) / scale, y: (btn.bottom - tileRect.top) / scale + 4 });
+  };
+
   const menuItems: ContextMenuEntry[] = [
     { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: startRename },
     { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
@@ -254,10 +276,11 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
               )}
               {label}
               {!note && tile.branch && (
-                <span className={styles.branch}>
+                <button className={styles.branch} onClick={openBranches} onPointerDown={stopDrag}>
                   <GitBranch size={10} strokeWidth={2} />
                   {tile.branch}
-                </span>
+                  <ChevronDown size={10} strokeWidth={2} />
+                </button>
               )}
               {alert && <span className={alert === 'finished' ? `${styles.alertDot} ${styles.alertDone}` : styles.alertDot} />}
             </span>
@@ -346,6 +369,20 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
         </div>
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
+      {branchLocal && tile.cwd && (
+        <BranchMenu
+          k={ek}
+          cwd={tile.cwd}
+          anchor={{ x: sx + branchLocal.x * ek, y: sy + branchLocal.y * ek }}
+          zIndex={z}
+          snapshot={branches.snapshot}
+          loading={branches.loading}
+          error={branches.error}
+          onClose={closeBranches}
+          onSnapshot={branches.setSnapshot}
+          onError={branches.setError}
+        />
+      )}
     </>
   );
 };
