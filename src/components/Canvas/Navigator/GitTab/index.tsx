@@ -1,25 +1,32 @@
 import React from 'react';
 import {
   Eye,
+  Copy,
   Check,
   History,
   ArrowUp,
   ListTree,
+  GitBranch,
   RefreshCw,
+  FolderOpen,
   ChevronDown,
   CircleCheck,
   ChevronRight,
   ListCollapse,
-  LoaderCircle
+  LoaderCircle,
+  GitCompareArrows
 } from 'lucide-react';
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { FileChange, StatusSnapshot, CommitMessageEntry } from '~/domain/interfaces/git.interface';
 import FileIcon from '~/components/commons/FileIcon';
 import ContextMenu from '~/components/commons/ContextMenu';
+import { revealPath } from '~/adapter/shell/shell.client';
+import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import {
   gitStatus,
   gitCommit,
+  gitAddIgnore,
   gitPushCurrent,
   gitLogMessages,
   gitUnpushedCommits
@@ -137,6 +144,9 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const [groupBy, setGroupBy] = React.useState<'directory' | 'module'>('module');
   const [amendMenu, setAmendMenu] = React.useState<CommitMessageEntry[] | null>(null);
   const [viewMenu, setViewMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const [fileMenu, setFileMenu] = React.useState<{ x: number; y: number; rel: string; file: FileChange | null } | null>(
+    null
+  );
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
   const commitRef = React.useRef<HTMLDivElement>(null);
@@ -307,6 +317,66 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const groupDirectory = () => setGroupBy('directory');
   const groupModule = () => setGroupBy('module');
 
+  const openFileMenu = (e: React.MouseEvent, file: FileChange) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFileMenu({ x: e.clientX, y: e.clientY, rel: file.path, file });
+  };
+
+  const openFolderMenu = (e: React.MouseEvent, rel: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFileMenu({ x: e.clientX, y: e.clientY, rel, file: null });
+  };
+
+  const closeFileMenu = () => setFileMenu(null);
+
+  const sep = root.includes('/') ? '/' : '\\';
+  const absPath = (rel: string) => root + sep + rel.replace(/\//g, sep);
+  const absDir = (file: FileChange) => (file.dir ? root + sep + file.dir.replace(/\//g, sep) : root);
+
+  const addIgnore = (rel: string, local: boolean) => {
+    gitAddIgnore(root, rel, local)
+      .then(() => fetchStatus(true))
+      .catch((err: unknown) => setError(message(err)));
+  };
+
+  const gitEntry = (rel: string): ContextMenuEntry => ({
+    label: 'Git',
+    icon: <GitBranch size={15} strokeWidth={1.75} />,
+    submenu: [
+      { label: 'Add local exclude', onSelect: () => addIgnore(rel, true) },
+      { label: 'Add to .gitignore', onSelect: () => addIgnore(rel, false) }
+    ]
+  });
+
+  const menuItems = (rel: string, file: FileChange | null): ContextMenuEntry[] => {
+    if (!file) return [gitEntry(rel)];
+    return [
+      {
+        label: 'Commit file',
+        icon: <Check size={15} strokeWidth={1.75} />,
+        onSelect: () => setMany([file.path], true)
+      },
+      {
+        label: 'Show diff',
+        icon: <GitCompareArrows size={15} strokeWidth={1.75} />,
+        onSelect: () => openDiff(file.path)
+      },
+      'separator',
+      { label: 'Copy path', icon: <Copy size={15} strokeWidth={1.75} />, onSelect: () => writeClipboard(absPath(rel)) },
+      { label: 'Copy relative path', icon: <span />, onSelect: () => writeClipboard(rel) },
+      'separator',
+      {
+        label: 'Show in Explorer',
+        icon: <FolderOpen size={15} strokeWidth={1.75} />,
+        onSelect: () => revealPath(absDir(file))
+      },
+      'separator',
+      gitEntry(rel)
+    ];
+  };
+
   const viewItems: ContextMenuEntry[] = [
     { label: 'Directory', icon: groupBy === 'directory' ? <Check size={15} strokeWidth={2} /> : <span />, onSelect: groupDirectory },
     { label: 'Module', icon: groupBy === 'module' ? <Check size={15} strokeWidth={2} /> : <span />, onSelect: groupModule }
@@ -390,10 +460,11 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
       const paths = collectPaths(node.children);
       const open = () => toggleCollapse(node.id);
       const check = (on: boolean) => setMany(paths, on);
+      const menu = (e: React.MouseEvent) => openFolderMenu(e, node.id.slice(node.id.indexOf(':') + 1));
 
       return (
         <div key={node.id}>
-          <div className={styles.row} style={{ paddingLeft: pad }} onClick={open}>
+          <div className={styles.row} style={{ paddingLeft: pad }} onClick={open} onContextMenu={menu}>
             {shut ? (
               <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
             ) : (
@@ -412,6 +483,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
     const key = statusKey(file);
     const pick = () => toggle(file.path);
     const view = () => openDiff(file.path);
+    const menu = (e: React.MouseEvent) => openFileMenu(e, file);
 
     return (
       <div
@@ -420,6 +492,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         style={{ paddingLeft: pad + 16 }}
         title={file.path}
         onClick={view}
+        onContextMenu={menu}
         data-active={file.path === active}
       >
         <input type="checkbox" checked={selected.has(file.path)} onChange={pick} onClick={stopClick} />
@@ -438,6 +511,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
     const key = statusKey(file);
     const pick = () => toggle(file.path);
     const view = () => openDiff(file.path);
+    const menu = (e: React.MouseEvent) => openFileMenu(e, file);
     return (
       <div
         key={file.path}
@@ -445,6 +519,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         style={{ paddingLeft: 43 }}
         title={file.path}
         onClick={view}
+        onContextMenu={menu}
         data-active={file.path === active}
       >
         <input type="checkbox" checked={selected.has(file.path)} onChange={pick} onClick={stopClick} />
@@ -616,6 +691,9 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
       </div>
 
       {viewMenu && <ContextMenu x={viewMenu.x} y={viewMenu.y} items={viewItems} onClose={closeViewMenu} />}
+      {fileMenu && (
+        <ContextMenu x={fileMenu.x} y={fileMenu.y} items={menuItems(fileMenu.rel, fileMenu.file)} onClose={closeFileMenu} />
+      )}
     </div>
   );
 };

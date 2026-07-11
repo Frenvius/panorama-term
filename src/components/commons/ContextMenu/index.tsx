@@ -1,4 +1,5 @@
 import React from 'react';
+import ReactDOM from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 
 import styles from './styles.module.scss';
@@ -54,10 +55,11 @@ const ContextMenu = ({ x, y, items, onClose }: ContextMenuProps) => {
 
   const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-  return (
+  return ReactDOM.createPortal(
     <div ref={rootRef} className={styles.menu} style={{ top: pos.y, left: pos.x }} onPointerDown={stop}>
       <Entries items={items} onClose={onClose} />
-    </div>
+    </div>,
+    document.body
   );
 };
 

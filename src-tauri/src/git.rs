@@ -807,6 +807,34 @@ pub fn git_unwatch_file(id: u32) {
 }
 
 #[tauri::command]
+pub fn git_add_ignore(path: String, pattern: String, local: bool) -> Result<(), String> {
+    let file = if local {
+        let dir = run_git(&path, &["rev-parse", "--git-common-dir"])?;
+        let mut base = PathBuf::from(dir.trim());
+        if base.is_relative() {
+            base = PathBuf::from(&path).join(base);
+        }
+        let info = base.join("info");
+        fs::create_dir_all(&info).map_err(|e| e.to_string())?;
+        info.join("exclude")
+    } else {
+        PathBuf::from(&path).join(".gitignore")
+    };
+    let existing = fs::read_to_string(&file).unwrap_or_default();
+    let line = format!("/{}", pattern.trim_start_matches('/'));
+    if existing.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&line);
+    out.push('\n');
+    fs::write(&file, out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn git_revert_hunk(path: String, file: String, content: String, crlf: bool) -> Result<(), String> {
     let full = PathBuf::from(&path).join(&file);
     let text = if crlf {

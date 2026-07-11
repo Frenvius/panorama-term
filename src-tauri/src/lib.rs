@@ -364,6 +364,7 @@ pub fn run() {
             git::git_log_messages,
             git::git_unpushed_commits,
             git::git_diff_file,
+            git::git_add_ignore,
             git::git_revert_hunk,
             git::git_watch_file,
             git::git_unwatch_file
