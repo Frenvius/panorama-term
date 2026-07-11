@@ -7,6 +7,7 @@ import {
   ListTree,
   RefreshCw,
   ChevronDown,
+  CircleCheck,
   ChevronRight,
   ListCollapse
 } from 'lucide-react';
@@ -392,7 +393,12 @@ const GitTab = ({ root, query }: GitTabProps) => {
       <div className={styles.list}>
         {!status && !error && <div className={styles.hint}>Loading...</div>}
         {blocked && <div className={styles.notice}>{friendly}</div>}
-        {clean && <div className={styles.hint}>Working tree clean</div>}
+        {clean && (
+          <div className={styles.notice}>
+            <CircleCheck size={16} strokeWidth={1.75} />
+            Working tree clean
+          </div>
+        )}
         {status && section('changes', 'Changes', status.changes)}
         {status && section('unversioned', 'Unversioned', status.unversioned)}
       </div>
