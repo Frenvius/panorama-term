@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -63,6 +63,15 @@ fn blend(a: u32, b: u32, t: f32) -> u32 {
 struct CwdSink {
     cwd: Option<String>,
     changed: bool,
+    prompt_seen: bool,
+    clipboard: Option<String>,
+    title: Option<String>,
+    title_changed: bool,
+    responses: Vec<Vec<u8>>,
+    agent_events: Vec<String>,
+    notifies: Vec<(String, String)>,
+    progress: Option<(u8, u8)>,
+    progress_changed: bool,
 }
 
 impl CwdSink {
@@ -74,19 +83,179 @@ impl CwdSink {
             None
         }
     }
+
+    fn take_prompt(&mut self) -> Option<String> {
+        if self.prompt_seen {
+            self.prompt_seen = false;
+            self.cwd.clone()
+        } else {
+            None
+        }
+    }
+
+    fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
+    fn take_title(&mut self) -> Option<String> {
+        if self.title_changed {
+            self.title_changed = false;
+            self.title.clone()
+        } else {
+            None
+        }
+    }
+
+    fn take_responses(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.responses)
+    }
+
+    fn take_agent_events(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.agent_events)
+    }
+
+    fn take_notifies(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.notifies)
+    }
+
+    fn take_progress(&mut self) -> Option<(u8, u8)> {
+        if self.progress_changed {
+            self.progress_changed = false;
+            self.progress
+        } else {
+            None
+        }
+    }
 }
+
+const AGENT_EVENT_SENTINEL: &str = "panorama://cli-agent";
+const OSC777_MAX: usize = 16 * 1024;
+
+const OSC_FG_RESPONSE: &[u8] = b"\x1b]10;rgb:c7c7/d0d0/e0e0\x07";
+const OSC_BG_RESPONSE: &[u8] = b"\x1b]11;rgb:0b0b/0e0e/1414\x07";
 
 impl vt100::Callbacks for CwdSink {
     fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
         if let [b"7", url] = params {
             if let Some(path) = parse_osc7(url) {
+                self.prompt_seen = true;
                 if self.cwd.as_deref() != Some(path.as_str()) {
                     self.cwd = Some(path);
                     self.changed = true;
                 }
             }
         }
+        match params {
+            [b"10", b"?"] => self.responses.push(OSC_FG_RESPONSE.to_vec()),
+            [b"11", b"?"] => self.responses.push(OSC_BG_RESPONSE.to_vec()),
+            [b"9", b"4", rest @ ..] => {
+                let num = |i: usize| {
+                    rest.get(i)
+                        .and_then(|s| std::str::from_utf8(s).ok())
+                        .and_then(|s| s.parse::<u8>().ok())
+                        .unwrap_or(0)
+                };
+                let next = (num(0), num(1).min(100));
+                if self.progress != Some(next) {
+                    self.progress = Some(next);
+                    self.progress_changed = true;
+                }
+            }
+            [b"9", b"2", msg @ ..] if !msg.is_empty() => {
+                let body = msg
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                if !body.trim().is_empty() && body.len() <= OSC777_MAX {
+                    self.notifies.push((String::new(), body));
+                }
+            }
+            [b"9", msg] if !msg.is_empty() => {
+                let body = String::from_utf8_lossy(msg).into_owned();
+                if !body.trim().is_empty() && body.len() <= OSC777_MAX {
+                    self.notifies.push((String::new(), body));
+                }
+            }
+            _ => {}
+        }
+        if let [b"777", b"notify", title, rest @ ..] = params {
+            if rest.is_empty() {
+                return;
+            }
+            let title = String::from_utf8_lossy(title).into_owned();
+            let body = rest
+                .iter()
+                .map(|p| String::from_utf8_lossy(p))
+                .collect::<Vec<_>>()
+                .join(";");
+            if body.len() > OSC777_MAX {
+                return;
+            }
+            if title == AGENT_EVENT_SENTINEL {
+                self.agent_events.push(body);
+            } else {
+                self.notifies.push((title, body));
+            }
+        }
     }
+
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        let t = String::from_utf8_lossy(title).trim().to_string();
+        if self.title.as_deref() != Some(t.as_str()) {
+            self.title = Some(t);
+            self.title_changed = true;
+        }
+    }
+
+    fn copy_to_clipboard(&mut self, _screen: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
+        if let Some(text) = decode_osc52(data) {
+            self.clipboard = Some(text);
+        }
+    }
+}
+
+const OSC52_MAX: usize = 128 * 1024;
+
+fn decode_osc52(data: &[u8]) -> Option<String> {
+    if data.is_empty() || data == b"?" || data.len() > OSC52_MAX {
+        return None;
+    }
+    use base64::Engine;
+    let cleaned: Vec<u8> = data.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&cleaned).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn git_branch(cwd: &str) -> Option<String> {
+    let mut dir = Some(Path::new(cwd));
+    while let Some(d) = dir {
+        let dot_git = d.join(".git");
+        if dot_git.is_dir() {
+            return branch_from_head(&dot_git.join("HEAD"));
+        }
+        if dot_git.is_file() {
+            let raw = std::fs::read_to_string(&dot_git).ok()?;
+            let gitdir = raw.strip_prefix("gitdir:")?.trim();
+            let base = if Path::new(gitdir).is_absolute() {
+                PathBuf::from(gitdir)
+            } else {
+                d.join(gitdir)
+            };
+            return branch_from_head(&base.join("HEAD"));
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+fn branch_from_head(head: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(head).ok()?;
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("ref: ") {
+        return Some(rest.rsplit('/').next().unwrap_or(rest).to_string());
+    }
+    Some(raw.chars().take(7).collect())
 }
 
 fn parse_osc7(url: &[u8]) -> Option<String> {
@@ -120,6 +289,13 @@ struct Session {
     scrollback: AtomicUsize,
     cwd: Mutex<Option<String>>,
     cwd_dirty: AtomicBool,
+    branch: Mutex<Option<String>>,
+    cmd: Mutex<Option<(Instant, String)>>,
+    clipboard: Mutex<Option<String>>,
+    clipboard_dirty: AtomicBool,
+    title: Mutex<Option<String>>,
+    title_dirty: AtomicBool,
+    events: Mutex<Vec<String>>,
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
@@ -178,6 +354,24 @@ fn binding_path(tile_id: &str) -> Option<std::path::PathBuf> {
     let dir = panorama_dir()?.join("agent-bindings");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.json", sanitize_key(tile_id))))
+}
+
+fn tile_for_session(session_id: &str) -> Option<String> {
+    let dir = panorama_dir()?.join("agent-bindings");
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let Ok(raw) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if v.get("agentSessionId").and_then(|s| s.as_str()) == Some(session_id) {
+            if let Some(tile) = v.get("tileId").and_then(|t| t.as_str()) {
+                return Some(tile.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn read_binding(tile_id: &str) -> Option<String> {
@@ -422,6 +616,298 @@ impl ClaudeTracker {
     }
 }
 
+fn agent_event_ws_msg(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let event = v.get("event").and_then(|e| e.as_str())?;
+    let field = |k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or("");
+    let msg = serde_json::json!({
+        "t": "agentEvent",
+        "event": event,
+        "sessionId": field("session_id"),
+        "project": field("project"),
+        "query": field("query"),
+        "response": field("response"),
+        "toolName": field("tool_name"),
+        "message": field("message"),
+    });
+    Some(msg.to_string())
+}
+
+fn status_ws_msg(v: &serde_json::Value) -> Option<String> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("t".into(), "claude".into());
+    let mut put = |k: &str, val: Option<serde_json::Value>| {
+        if let Some(val) = val {
+            if !val.is_null() {
+                obj.insert(k.into(), val);
+            }
+        }
+    };
+    put("model", v.pointer("/model/id").cloned());
+    put("effort", v.pointer("/effort/level").cloned());
+    put("thinking", v.pointer("/thinking/enabled").cloned());
+    put("contextTokens", v.pointer("/context_window/total_input_tokens").cloned());
+    put("contextPercent", v.pointer("/context_window/used_percentage").cloned());
+    put("contextWindow", v.pointer("/context_window/context_window_size").cloned());
+    put("costUsd", v.pointer("/cost/total_cost_usd").cloned());
+    put("sessionName", v.get("session_name").cloned());
+    put("outputStyle", v.pointer("/output_style/name").cloned());
+    put("rateFiveHour", v.pointer("/rate_limits/five_hour/used_percentage").cloned());
+    put("rateSevenDay", v.pointer("/rate_limits/seven_day/used_percentage").cloned());
+    if obj.len() == 1 {
+        return None;
+    }
+    Some(serde_json::Value::Object(obj).to_string())
+}
+
+fn handle_agent_status(body: &[u8]) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return;
+    };
+    let Some(session_id) = v.get("session_id").and_then(|s| s.as_str()) else {
+        return;
+    };
+    let Some(tile_id) = tile_for_session(session_id) else {
+        return;
+    };
+    let Some(msg) = status_ws_msg(&v) else {
+        return;
+    };
+    let session = sessions().lock().unwrap().get(&tile_id).cloned();
+    if let Some(s) = session {
+        s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
+    }
+}
+
+const STATUS_POST_MAX: usize = 64 * 1024;
+
+fn post_agent_status(input: &str) {
+    if input.len() > STATUS_POST_MAX {
+        return;
+    }
+    let addr: std::net::SocketAddr = "127.0.0.1:9777".parse().unwrap();
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) else {
+        return;
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+    let req = format!(
+        "POST /agent-status HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        input.len(),
+        input
+    );
+    let _ = stream.write_all(req.as_bytes());
+}
+
+fn statusline_chain_path() -> Option<PathBuf> {
+    Some(panorama_dir()?.join("statusline-chain.json"))
+}
+
+fn load_statusline_chain() -> Option<String> {
+    let raw = std::fs::read_to_string(statusline_chain_path()?).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let cmd = v.get("command").and_then(|c| c.as_str())?.trim().to_string();
+    if cmd.is_empty() || cmd.ends_with("\" statusline") || cmd.ends_with(" statusline") {
+        return None;
+    }
+    Some(cmd)
+}
+
+fn run_chained_statusline(command: &str, input: &str) -> Option<String> {
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new(resolve_powershell());
+        c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", command]);
+        c
+    };
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn default_status_line(v: &serde_json::Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(m) = v.pointer("/model/display_name").and_then(|s| s.as_str()) {
+        parts.push(m.to_string());
+    }
+    if let Some(p) = v.pointer("/context_window/used_percentage").and_then(|n| n.as_f64()) {
+        parts.push(format!("{}% ctx", p.round() as i64));
+    }
+    if let Some(c) = v.pointer("/cost/total_cost_usd").and_then(|n| n.as_f64()) {
+        parts.push(format!("${c:.2}"));
+    }
+    if parts.is_empty() {
+        parts.push("Claude".to_string());
+    }
+    parts.join(" \u{00b7} ")
+}
+
+fn statusline_cmd() {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    post_agent_status(&input);
+    if let Some(chain) = load_statusline_chain() {
+        if let Some(line) = run_chained_statusline(&chain, &input) {
+            println!("{line}");
+            return;
+        }
+    }
+    let v: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+    println!("{}", default_status_line(&v));
+}
+
+const EMIT_EVENT_MIN_CC: (u64, u64, u64) = (2, 1, 141);
+const EVENT_TEXT_CAP: usize = 200;
+
+fn cc_supports_terminal_sequence() -> bool {
+    let Ok(raw) = std::env::var("CLAUDE_CODE_VERSION") else {
+        return true;
+    };
+    let mut parts = raw
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u64>().ok());
+    let ver = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    ver >= EMIT_EVENT_MIN_CC
+}
+
+fn sanitize_event_text(raw: &str) -> String {
+    let clean: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.chars().count() > EVENT_TEXT_CAP {
+        let cut: String = clean.chars().take(EVENT_TEXT_CAP - 3).collect();
+        format!("{cut}...")
+    } else {
+        clean
+    }
+}
+
+fn transcript_last_texts(path: &str) -> (String, String) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return (String::new(), String::new());
+    };
+    let mut query = String::new();
+    let mut response = String::new();
+    for line in raw.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let kind = entry.get("type").and_then(|t| t.as_str());
+        let content = entry.get("message").and_then(|m| m.get("content"));
+        let text = match content {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => continue,
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        match kind {
+            Some("user") => query = text,
+            Some("assistant") => response = text,
+            _ => {}
+        }
+    }
+    (sanitize_event_text(&query), sanitize_event_text(&response))
+}
+
+fn emit_event(event: &str) {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let evt: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+
+    if std::env::var("PANORAMA_TILE_ID").is_err() {
+        return;
+    }
+    if !cc_supports_terminal_sequence() {
+        return;
+    }
+    if event == "stop"
+        && evt
+            .get("stop_hook_active")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+    {
+        return;
+    }
+
+    let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let cwd = field("cwd");
+    let project = Path::new(&cwd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut payload = serde_json::json!({
+        "v": 1,
+        "agent": "claude",
+        "event": event,
+        "session_id": field("session_id"),
+        "cwd": cwd,
+        "project": project,
+    });
+    let obj = payload.as_object_mut().unwrap();
+    match event {
+        "stop" => {
+            std::thread::sleep(Duration::from_millis(300));
+            let (query, response) = transcript_last_texts(&field("transcript_path"));
+            obj.insert("query".into(), query.into());
+            obj.insert("response".into(), response.into());
+        }
+        "permission" => {
+            obj.insert("tool_name".into(), field("tool_name").into());
+            let preview = evt
+                .get("tool_input")
+                .map(|t| sanitize_event_text(&t.to_string()))
+                .unwrap_or_default();
+            obj.insert("message".into(), preview.into());
+        }
+        "notification" => {
+            obj.insert("message".into(), sanitize_event_text(&field("message")).into());
+        }
+        "prompt-submit" => {
+            obj.insert("query".into(), sanitize_event_text(&field("prompt")).into());
+        }
+        _ => {}
+    }
+
+    let body = payload.to_string();
+    let seq = format!("\x1b]777;notify;{AGENT_EVENT_SENTINEL};{body}\x07");
+    let out = serde_json::json!({ "terminalSequence": seq });
+    println!("{out}");
+}
+
 fn record_agent() {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -455,7 +941,6 @@ fn install_claude_hook() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let command = format!("\"{}\" record-agent", exe.display());
     let file = claude_dir.join("settings.json");
 
     let mut json: serde_json::Value = std::fs::read_to_string(&file)
@@ -476,32 +961,64 @@ fn install_claude_hook() {
     }
     let hooks = hooks.as_object_mut().unwrap();
 
-    let existing = hooks
-        .get("SessionStart")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut cleaned: Vec<serde_json::Value> = existing
-        .into_iter()
-        .filter(|entry| {
-            !entry
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .map(|arr| {
-                    arr.iter().any(|h| {
-                        h.get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.contains("record-agent"))
-                            .unwrap_or(false)
+    let exe = exe.display();
+    let entries: &[(&str, Option<&str>, String, &str)] = &[
+        ("SessionStart", None, format!("\"{exe}\" record-agent"), "record-agent"),
+        ("Stop", None, format!("\"{exe}\" emit-event stop"), "emit-event"),
+        ("PermissionRequest", None, format!("\"{exe}\" emit-event permission"), "emit-event"),
+        ("Notification", Some("idle_prompt"), format!("\"{exe}\" emit-event notification"), "emit-event"),
+        ("UserPromptSubmit", None, format!("\"{exe}\" emit-event prompt-submit"), "emit-event"),
+    ];
+
+    for (name, matcher, command, marker) in entries {
+        let existing = hooks.get(*name).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let mut cleaned: Vec<serde_json::Value> = existing
+            .into_iter()
+            .filter(|entry| {
+                !entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|arr| {
+                        arr.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| c.contains(marker))
+                                .unwrap_or(false)
+                        })
                     })
-                })
-                .unwrap_or(false)
-        })
-        .collect();
-    cleaned.push(serde_json::json!({
-        "hooks": [ { "type": "command", "command": command } ]
-    }));
-    hooks.insert("SessionStart".into(), serde_json::Value::Array(cleaned));
+                    .unwrap_or(false)
+            })
+            .collect();
+        let mut entry = serde_json::json!({
+            "hooks": [ { "type": "command", "command": command } ]
+        });
+        if let Some(m) = matcher {
+            entry.as_object_mut().unwrap().insert("matcher".into(), (*m).into());
+        }
+        cleaned.push(entry);
+        hooks.insert((*name).into(), serde_json::Value::Array(cleaned));
+    }
+
+    let our_status = format!("\"{exe}\" statusline");
+    let current = json
+        .get("statusLine")
+        .and_then(|s| s.get("command"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+    if current.as_deref() != Some(our_status.as_str()) {
+        if let Some(prev) = current {
+            let trimmed = prev.trim();
+            if !trimmed.is_empty() && !trimmed.ends_with(" statusline") {
+                if let Some(path) = statusline_chain_path() {
+                    let _ = std::fs::write(path, serde_json::json!({ "command": prev }).to_string());
+                }
+            }
+        }
+        json.as_object_mut().unwrap().insert(
+            "statusLine".into(),
+            serde_json::json!({ "type": "command", "command": our_status }),
+        );
+    }
 
     if let Ok(text) = serde_json::to_string_pretty(&json) {
         let _ = std::fs::write(&file, text);
@@ -820,6 +1337,11 @@ fn spawn_session(
     let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, CwdSink::default());
     if !seed.is_empty() {
         parser.process(&seed);
+        let _ = parser.callbacks_mut().take_clipboard();
+        let _ = parser.callbacks_mut().take_responses();
+        let _ = parser.callbacks_mut().take_agent_events();
+        let _ = parser.callbacks_mut().take_notifies();
+        let _ = parser.callbacks_mut().take_progress();
     }
 
     let session = Arc::new(Session {
@@ -838,6 +1360,13 @@ fn spawn_session(
         scrollback: AtomicUsize::new(0),
         cwd: Mutex::new(Some(cwd.clone())),
         cwd_dirty: AtomicBool::new(true),
+        branch: Mutex::new(git_branch(&cwd)),
+        cmd: Mutex::new(None),
+        clipboard: Mutex::new(None),
+        clipboard_dirty: AtomicBool::new(false),
+        title: Mutex::new(None),
+        title_dirty: AtomicBool::new(false),
+        events: Mutex::new(Vec::new()),
     });
 
     let s = session.clone();
@@ -862,12 +1391,76 @@ fn spawn_session(
                     if chunk.is_empty() {
                         continue;
                     }
-                    {
+                    let responses = {
                         let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
                         p.process(chunk);
                         if let Some(new_cwd) = p.callbacks_mut().take_changed() {
                             *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
                             s.cwd_dirty.store(true, Ordering::Relaxed);
+                        }
+                        if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
+                            let branch = git_branch(&prompt_cwd);
+                            {
+                                let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
+                                if *cur != branch {
+                                    *cur = branch;
+                                    s.cwd_dirty.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
+                            if let Some((start, cmd)) = done {
+                                let secs = start.elapsed().as_secs();
+                                if secs >= LONG_CMD_SECS {
+                                    let msg = serde_json::json!({
+                                        "t": "notify",
+                                        "title": cmd,
+                                        "body": format!("Finished in {}", fmt_duration(secs)),
+                                    });
+                                    s.events
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .push(msg.to_string());
+                                }
+                            }
+                        }
+                        if let Some(text) = p.callbacks_mut().take_clipboard() {
+                            *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                            s.clipboard_dirty.store(true, Ordering::Relaxed);
+                        }
+                        if let Some(title) = p.callbacks_mut().take_title() {
+                            if title != s.shell {
+                                *s.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
+                                s.title_dirty.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        let mut outgoing: Vec<String> = Vec::new();
+                        for body in p.callbacks_mut().take_agent_events() {
+                            if let Some(msg) = agent_event_ws_msg(&body) {
+                                outgoing.push(msg);
+                            }
+                        }
+                        for (title, body) in p.callbacks_mut().take_notifies() {
+                            let msg = serde_json::json!({ "t": "notify", "title": title, "body": body });
+                            outgoing.push(msg.to_string());
+                        }
+                        if let Some((state, pct)) = p.callbacks_mut().take_progress() {
+                            let msg = serde_json::json!({ "t": "progress", "state": state, "pct": pct });
+                            outgoing.push(msg.to_string());
+                        }
+                        if !outgoing.is_empty() {
+                            s.events
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .extend(outgoing);
+                        }
+                        p.callbacks_mut().take_responses()
+                    };
+                    if !responses.is_empty() {
+                        if let Ok(mut w) = s.writer.lock() {
+                            for resp in &responses {
+                                let _ = w.write_all(resp);
+                            }
+                            let _ = w.flush();
                         }
                     }
                     if let Ok(mut raw) = s.raw.lock() {
@@ -1165,6 +1758,42 @@ fn build_frame(s: &Session) -> Vec<u8> {
     buf
 }
 
+const LONG_CMD_SECS: u64 = 10;
+
+fn fmt_duration(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn current_command_line(s: &Arc<Session>) -> Option<String> {
+    let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let screen = parser.screen();
+    let (row, _) = screen.cursor_position();
+    let cols = screen.size().1;
+    let mut line = String::new();
+    for c in 0..cols {
+        match screen.cell(row, c) {
+            Some(cell) if !cell.contents().is_empty() => line.push_str(cell.contents()),
+            _ => line.push(' '),
+        }
+    }
+    let line = line.trim();
+    let cmd = match line.rsplit_once(['>', '$', '#', '\u{276f}']) {
+        Some((_, tail)) => tail.trim(),
+        None => line,
+    };
+    if cmd.is_empty() || cmd == "claude" || cmd.starts_with("claude ") {
+        None
+    } else {
+        Some(cmd.chars().take(60).collect())
+    }
+}
+
 fn handle_client_msg(s: &Arc<Session>, text: &str) {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -1175,6 +1804,11 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             if let Some(d) = v.get("d").and_then(|d| d.as_str()) {
                 s.scrollback.store(0, Ordering::Relaxed);
                 s.dirty.store(true, Ordering::Relaxed);
+                if d.contains('\r') || d.contains('\n') {
+                    let line = current_command_line(s);
+                    let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
+                    *cmd = line.map(|l| (Instant::now(), l));
+                }
                 if let Ok(mut w) = s.writer.lock() {
                     let _ = w.write_all(d.as_bytes());
                     let _ = w.flush();
@@ -1266,12 +1900,45 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                 }
                 if session.cwd_dirty.swap(false, Ordering::Relaxed) {
                     let cwd = session.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let branch = session.branch.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(cwd) = cwd {
-                        let msg = serde_json::json!({ "t": "cwd", "cwd": cwd }).to_string();
+                        let msg = serde_json::json!({ "t": "cwd", "cwd": cwd, "branch": branch }).to_string();
                         if tx.send(Message::Text(msg)).await.is_err() {
                             break;
                         }
                     }
+                }
+                if session.clipboard_dirty.swap(false, Ordering::Relaxed) {
+                    let text = session.clipboard.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(text) = text {
+                        let msg = serde_json::json!({ "t": "clipboard", "text": text }).to_string();
+                        if tx.send(Message::Text(msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                if session.title_dirty.swap(false, Ordering::Relaxed) {
+                    let title = session.title.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if let Some(title) = title {
+                        let msg = serde_json::json!({ "t": "title", "title": title }).to_string();
+                        if tx.send(Message::Text(msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                let queued: Vec<String> = {
+                    let mut ev = session.events.lock().unwrap_or_else(|e| e.into_inner());
+                    if ev.is_empty() { Vec::new() } else { std::mem::take(&mut *ev) }
+                };
+                let mut send_failed = false;
+                for msg in queued {
+                    if tx.send(Message::Text(msg)).await.is_err() {
+                        send_failed = true;
+                        break;
+                    }
+                }
+                if send_failed {
+                    break;
                 }
             }
             msg = rx.next() => {
@@ -1411,6 +2078,23 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
+    if path_only == "/agent-status" {
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if len > 0 && len <= STATUS_POST_MAX {
+            let mut body = vec![0u8; len];
+            if stream.read_exact(&mut body).await.is_ok() {
+                handle_agent_status(&body);
+            }
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await;
+        return;
+    }
+
     if path_only == "/capture" {
         let q = parse_query(query);
         let tid = q.get("tileId").cloned().unwrap_or_default();
@@ -1486,6 +2170,15 @@ async fn main() {
         record_agent();
         return;
     }
+    if std::env::args().nth(1).as_deref() == Some("emit-event") {
+        let event = std::env::args().nth(2).unwrap_or_default();
+        emit_event(&event);
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("statusline") {
+        statusline_cmd();
+        return;
+    }
     install_claude_hook();
     let listener = TcpListener::bind(("127.0.0.1", PORT))
         .await
@@ -1516,7 +2209,123 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::utf8_valid_len;
+    use super::{
+        agent_event_ws_msg, decode_osc52, default_status_line, sanitize_event_text,
+        status_ws_msg, utf8_valid_len, CwdSink, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+    };
+
+    #[test]
+    fn statusline_json_becomes_claude_msg() {
+        let input = serde_json::json!({
+            "session_id": "s1",
+            "model": { "id": "claude-fable-5", "display_name": "Fable 5" },
+            "effort": { "level": "high" },
+            "thinking": { "enabled": true },
+            "context_window": {
+                "total_input_tokens": 15500,
+                "context_window_size": 1000000,
+                "used_percentage": 8.2
+            },
+            "cost": { "total_cost_usd": 0.5 },
+            "rate_limits": { "five_hour": { "used_percentage": 23.5 } }
+        });
+        let msg = status_ws_msg(&input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["t"], "claude");
+        assert_eq!(v["model"], "claude-fable-5");
+        assert_eq!(v["effort"], "high");
+        assert_eq!(v["contextWindow"], 1000000);
+        assert_eq!(v["contextPercent"], 8.2);
+        assert_eq!(v["rateFiveHour"], 23.5);
+        assert!(v.get("rateSevenDay").is_none());
+        assert_eq!(default_status_line(&input), "Fable 5 \u{00b7} 8% ctx \u{b7} $0.50");
+        assert!(status_ws_msg(&serde_json::json!({"session_id": "x"})).is_none());
+    }
+
+    #[test]
+    fn duration_formatting() {
+        assert_eq!(super::fmt_duration(9), "9s");
+        assert_eq!(super::fmt_duration(154), "2m34s");
+        assert_eq!(super::fmt_duration(3725), "1h02m");
+    }
+
+    #[test]
+    fn git_branch_resolves_repo_head() {
+        let branch = super::git_branch(env!("CARGO_MANIFEST_DIR"));
+        assert!(branch.is_some());
+        assert!(!branch.unwrap().is_empty());
+        assert_eq!(super::git_branch("C:\\"), None);
+    }
+
+    #[test]
+    fn osc9_progress_and_notifications() {
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        parser.process(b"\x1b]9;4;1;42\x07\x1b]9;2;task done\x07\x1b]9;plain notify\x07");
+        assert_eq!(parser.callbacks_mut().take_progress(), Some((1, 42)));
+        assert_eq!(parser.callbacks_mut().take_progress(), None);
+        let notifies = parser.callbacks_mut().take_notifies();
+        assert_eq!(
+            notifies,
+            vec![
+                (String::new(), "task done".to_string()),
+                (String::new(), "plain notify".to_string())
+            ]
+        );
+        parser.process(b"\x1b]9;4;0;0\x07");
+        assert_eq!(parser.callbacks_mut().take_progress(), Some((0, 0)));
+    }
+
+    #[test]
+    fn osc777_routes_agent_events_and_generic_notifies() {
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let body = r#"{"v":1,"event":"stop","response":"a;b;c"}"#;
+        parser.process(format!("\x1b]777;notify;panorama://cli-agent;{body}\x07").as_bytes());
+        parser.process(b"\x1b]777;notify;Build;done in 3s\x07");
+        let events = parser.callbacks_mut().take_agent_events();
+        assert_eq!(events, vec![body.to_string()]);
+        let notifies = parser.callbacks_mut().take_notifies();
+        assert_eq!(notifies, vec![("Build".to_string(), "done in 3s".to_string())]);
+    }
+
+    #[test]
+    fn agent_event_body_becomes_ws_message() {
+        let body = r#"{"v":1,"agent":"claude","event":"stop","session_id":"s1","project":"p","response":"done"}"#;
+        let msg = agent_event_ws_msg(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["t"], "agentEvent");
+        assert_eq!(v["event"], "stop");
+        assert_eq!(v["sessionId"], "s1");
+        assert_eq!(v["response"], "done");
+        assert!(agent_event_ws_msg("not json").is_none());
+    }
+
+    #[test]
+    fn event_text_is_sanitized_and_capped() {
+        assert_eq!(sanitize_event_text("a\x1b[31m b\n\tc"), "a [31m b c");
+        let long = "x".repeat(500);
+        let out = sanitize_event_text(&long);
+        assert_eq!(out.chars().count(), 200);
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn color_queries_queue_responses_and_title_is_captured() {
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        parser.process(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]2;my title\x07");
+        let responses = parser.callbacks_mut().take_responses();
+        assert_eq!(responses, vec![OSC_FG_RESPONSE.to_vec(), OSC_BG_RESPONSE.to_vec()]);
+        assert_eq!(parser.callbacks_mut().take_title().as_deref(), Some("my title"));
+        assert_eq!(parser.callbacks_mut().take_title(), None);
+    }
+
+    #[test]
+    fn osc52_decodes_base64_payload() {
+        assert_eq!(decode_osc52(b"aGVsbG8gd29ybGQ=").as_deref(), Some("hello world"));
+        assert_eq!(decode_osc52(b"aGVs\nbG8=").as_deref(), Some("hello"));
+        assert_eq!(decode_osc52(b"?"), None);
+        assert_eq!(decode_osc52(b""), None);
+        assert_eq!(decode_osc52(b"!!!not base64!!!"), None);
+    }
 
     #[test]
     fn multibyte_split_across_reads_reassembles() {
