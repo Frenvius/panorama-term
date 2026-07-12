@@ -710,8 +710,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         {error && !blocked && <div className={styles.error}>{error}</div>}
 
         <div className={styles.buttons}>
-          <button className={styles.primary} onClick={doCommit} disabled={!canCommit}>
-            {busy ? 'Working...' : 'Commit'}
+          <button className={styles.primary} onClick={doCommit} disabled={!canCommit} data-amend={amend || undefined}>
+            {busy ? 'Working...' : amend ? 'Amend Commit' : 'Commit'}
           </button>
           {clean && unpushed > 0 ? (
             <button className={styles.secondary} onClick={push} disabled={pushing}>
@@ -720,7 +720,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
             </button>
           ) : (
             <button className={styles.secondary} onClick={doCommitPush} disabled={!canCommit}>
-              Commit and Push...
+              {amend ? 'Amend Commit and Push...' : 'Commit and Push...'}
             </button>
           )}
         </div>

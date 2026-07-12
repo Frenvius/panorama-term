@@ -308,13 +308,15 @@
 }
 
 .buttons {
+  overflow: hidden;
   display: flex;
   gap: 6px;
 }
 
 .primary {
   height: 28px;
-  flex: 1;
+  flex: none;
+  padding: 0 16px;
   border: none;
   cursor: pointer;
   color: #fff;
@@ -331,6 +333,15 @@
     cursor: default;
     opacity: 0.45;
   }
+
+  &[data-amend='true'] {
+    color: #1a1420;
+    background: #c9a3e8;
+
+    &:hover {
+      background: color-mix(in srgb, #c9a3e8 85%, #fff);
+    }
+  }
 }
 
 .secondary {
@@ -339,13 +350,14 @@
   justify-content: center;
   gap: 5px;
   height: 28px;
-  flex: 1;
-  padding: 0 8px;
+  flex: none;
+  padding: 0 12px;
   border: 1px solid var(--border-2);
   cursor: pointer;
   color: var(--text-1);
   border-radius: 6px;
   font-size: 12px;
+  white-space: nowrap;
   background: transparent;
 
   &:hover {
