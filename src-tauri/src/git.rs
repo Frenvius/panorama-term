@@ -807,6 +807,21 @@ pub fn git_unwatch_file(id: u32) {
 }
 
 #[tauri::command]
+pub fn git_rollback_file(path: String, file: String) -> Result<(), String> {
+    if run_git(&path, &["cat-file", "-e", &format!("HEAD:{}", file)]).is_ok() {
+        run_git(&path, &["checkout", "HEAD", "--", &file])?;
+        return Ok(());
+    }
+    let _ = run_git(&path, &["rm", "--cached", "--force", "--", &file]);
+    let full = PathBuf::from(&path).join(&file);
+    if full.is_dir() {
+        fs::remove_dir_all(&full).map_err(|e| e.to_string())
+    } else {
+        fs::remove_file(&full).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
 pub fn git_add_ignore(path: String, pattern: String, local: bool) -> Result<(), String> {
     let file = if local {
         let dir = run_git(&path, &["rev-parse", "--git-common-dir"])?;

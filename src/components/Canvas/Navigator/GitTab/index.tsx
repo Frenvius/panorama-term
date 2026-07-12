@@ -3,6 +3,7 @@ import {
   Eye,
   Copy,
   Check,
+  Undo2,
   History,
   ArrowUp,
   ListTree,
@@ -19,6 +20,7 @@ import {
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { FileChange, StatusSnapshot, CommitMessageEntry } from '~/domain/interfaces/git.interface';
+import Dialog from '~/components/commons/Dialog';
 import FileIcon from '~/components/commons/FileIcon';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { revealPath } from '~/adapter/shell/shell.client';
@@ -28,6 +30,7 @@ import {
   gitCommit,
   gitAddIgnore,
   gitPushCurrent,
+  gitRollbackFile,
   gitLogMessages,
   gitUnpushedCommits
 } from '~/adapter/git/git.client';
@@ -147,6 +150,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const [fileMenu, setFileMenu] = React.useState<{ x: number; y: number; rel: string; file: FileChange | null } | null>(
     null
   );
+  const [rollback, setRollback] = React.useState<FileChange | null>(null);
+  const [rollbackBusy, setRollbackBusy] = React.useState(false);
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
   const commitRef = React.useRef<HTMLDivElement>(null);
@@ -341,6 +346,31 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
       .catch((err: unknown) => setError(message(err)));
   };
 
+  const closeRollback = () => setRollback(null);
+
+  const confirmRollback = () => {
+    if (!rollback || rollbackBusy) return;
+    setRollbackBusy(true);
+    gitRollbackFile(root, rollback.path)
+      .then(() => {
+        setRollback(null);
+        fetchStatus(true);
+      })
+      .catch((err: unknown) => setError(message(err)))
+      .finally(() => setRollbackBusy(false));
+  };
+
+  const rollbackFooter = (
+    <>
+      <button type="button" className={styles.dlgBtn} onClick={closeRollback}>
+        Cancel
+      </button>
+      <button type="submit" className={`${styles.dlgBtn} ${styles.dlgDanger}`} disabled={rollbackBusy}>
+        {rollbackBusy ? 'Working...' : 'Rollback'}
+      </button>
+    </>
+  );
+
   const gitEntry = (rel: string): ContextMenuEntry => ({
     label: 'Git',
     icon: <GitBranch size={15} strokeWidth={1.75} />,
@@ -362,6 +392,12 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         label: 'Show diff',
         icon: <GitCompareArrows size={15} strokeWidth={1.75} />,
         onSelect: () => openDiff(file.path)
+      },
+      {
+        label: 'Rollback...',
+        icon: <Undo2 size={15} strokeWidth={1.75} />,
+        danger: true,
+        onSelect: () => setRollback(file)
       },
       'separator',
       { label: 'Copy path', icon: <Copy size={15} strokeWidth={1.75} />, onSelect: () => writeClipboard(absPath(rel)) },
@@ -693,6 +729,15 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
       {viewMenu && <ContextMenu x={viewMenu.x} y={viewMenu.y} items={viewItems} onClose={closeViewMenu} />}
       {fileMenu && (
         <ContextMenu x={fileMenu.x} y={fileMenu.y} items={menuItems(fileMenu.rel, fileMenu.file)} onClose={closeFileMenu} />
+      )}
+      {rollback && (
+        <Dialog title="Rollback changes" footer={rollbackFooter} onClose={closeRollback} onSubmit={confirmRollback}>
+          <p className={styles.confirmText}>
+            {rollback.is_untracked || statusKey(rollback) === 'added'
+              ? `'${rollback.path}' is not in the last commit and will be deleted.`
+              : `Revert changes in '${rollback.path}' to the last commit?`}
+          </p>
+        </Dialog>
       )}
     </div>
   );

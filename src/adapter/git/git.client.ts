@@ -70,6 +70,9 @@ export const gitUnpushedCommits = (path: string): Promise<CommitMessageEntry[]> 
 export const gitDiffFile = (path: string, file: string): Promise<FileDiff> =>
   invoke<FileDiff>('git_diff_file', { path, file });
 
+export const gitRollbackFile = (path: string, file: string): Promise<void> =>
+  invoke<void>('git_rollback_file', { path, file });
+
 export const gitAddIgnore = (path: string, pattern: string, local: boolean): Promise<void> =>
   invoke<void>('git_add_ignore', { path, pattern, local });
 
