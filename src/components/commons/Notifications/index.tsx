@@ -44,11 +44,27 @@ const kindIcon = (kind: NotifyKind): React.ReactNode => {
 const NotificationOverlay = () => {
   const [toasts, setToasts] = React.useState<NotifyPayload[]>([]);
   const [expanded, setExpanded] = React.useState(false);
-  const [itemH, setItemH] = React.useState(0);
-  const frontRef = React.useRef<HTMLDivElement>(null);
+  const [heights, setHeights] = React.useState<Record<number, number>>({});
+  const nodes = React.useRef(new Map<number, HTMLDivElement>());
+  const observer = React.useRef<ResizeObserver | null>(null);
   const hoverTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  if (!observer.current && typeof ResizeObserver !== 'undefined') {
+    observer.current = new ResizeObserver(() => {
+      setHeights((prev) => {
+        const next: Record<number, number> = {};
+        let changed = false;
+        nodes.current.forEach((el, id) => {
+          next[id] = el.offsetHeight;
+          if (prev[id] !== next[id]) changed = true;
+        });
+        return changed ? next : prev;
+      });
+    });
+  }
+
   React.useEffect(() => () => clearTimeout(hoverTimer.current), []);
+  React.useEffect(() => () => observer.current?.disconnect(), []);
 
   React.useEffect(() => {
     const shown = listen<NotifyPayload>('notif:show', (e) => {
@@ -67,19 +83,37 @@ const NotificationOverlay = () => {
     };
   }, []);
 
-  React.useLayoutEffect(() => {
-    const h = frontRef.current?.offsetHeight ?? 0;
-    if (h) setItemH(h);
-  }, [toasts]);
+  const bottoms = React.useMemo(() => {
+    const out: number[] = [];
+    let acc = PAD_BOTTOM;
+    for (let i = toasts.length - 1; i >= 0; i -= 1) {
+      out[i] = acc;
+      acc += (heights[toasts[i].id] ?? 0) + GAP;
+    }
+    return out;
+  }, [toasts, heights]);
 
   React.useEffect(() => {
     const n = toasts.length;
-    const peek = Math.min(n - 1, MAX_PEEK) * PEEK_OFFSET;
-    const fanned = n * itemH + (n - 1) * GAP;
-    const content = expanded ? fanned : itemH + peek;
-    const height = n === 0 || itemH === 0 ? 0 : PAD_TOP + content + PAD_BOTTOM;
-    void invoke('notif_layout', { height });
-  }, [toasts, expanded, itemH]);
+    if (n === 0) {
+      void invoke('notif_layout', { height: 0 });
+      return;
+    }
+    if (toasts.some((t) => !heights[t.id])) return;
+
+    let top = 0;
+    if (expanded) {
+      top = bottoms[0] + heights[toasts[0].id];
+    } else {
+      toasts.forEach((t, i) => {
+        const depth = n - 1 - i;
+        if (depth > MAX_PEEK) return;
+        const visible = heights[t.id] * (1 - depth * PEEK_SCALE);
+        top = Math.max(top, PAD_BOTTOM + depth * PEEK_OFFSET + visible);
+      });
+    }
+    void invoke('notif_layout', { height: PAD_TOP + top });
+  }, [toasts, expanded, heights, bottoms]);
 
   const open = (toast: NotifyPayload) => {
     void emit('notif:open', { tileId: toast.tileId });
@@ -101,10 +135,21 @@ const NotificationOverlay = () => {
     hoverTimer.current = setTimeout(() => setExpanded(false), 140);
   };
 
+  const setNode = (id: number) => (el: HTMLDivElement | null) => {
+    const prev = nodes.current.get(id);
+    if (prev) observer.current?.unobserve(prev);
+    if (el) {
+      nodes.current.set(id, el);
+      observer.current?.observe(el);
+    } else {
+      nodes.current.delete(id);
+    }
+  };
+
   const styleFor = (i: number): React.CSSProperties => {
     const n = toasts.length;
     if (expanded) {
-      return { bottom: PAD_BOTTOM + (n - 1 - i) * (itemH + GAP), zIndex: i + 1 };
+      return { bottom: bottoms[i], zIndex: i + 1 };
     }
     const depth = Math.min(n - 1 - i, MAX_PEEK + 1);
     return {
@@ -121,7 +166,7 @@ const NotificationOverlay = () => {
       {toasts.map((toast, i) => (
         <div
           key={toast.id}
-          ref={i === toasts.length - 1 ? frontRef : null}
+          ref={setNode(toast.id)}
           className={styles.toast}
           style={styleFor(i)}
           onClick={() => open(toast)}
