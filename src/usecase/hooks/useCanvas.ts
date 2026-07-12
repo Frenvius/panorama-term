@@ -156,18 +156,23 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     setView((v) => {
       const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
       const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
-      setTiles((prev) => [
-        ...prev,
-        {
-          id: createId(),
-          type: 'term',
-          x: cx - TILE_WIDTH / 2,
-          y: cy - TILE_HEIGHT / 2,
-          width: TILE_WIDTH,
-          height: TILE_HEIGHT,
-          zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
-        }
-      ]);
+      setTiles((prev) => {
+        const last = [...prev].reverse().find((t) => t.type === 'term');
+        const width = last?.width ?? TILE_WIDTH;
+        const height = last?.height ?? TILE_HEIGHT;
+        return [
+          ...prev,
+          {
+            id: createId(),
+            type: 'term',
+            x: cx - width / 2,
+            y: cy - height / 2,
+            width,
+            height,
+            zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
+          }
+        ];
+      });
       return v;
     });
   }, []);
