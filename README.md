@@ -1,50 +1,71 @@
 # Panorama
 
-Infinite canvas of persistent terminal tiles: a Tauri shell over a native Rust
-PTY sidecar.
+![Panorama](screenshot.png)
+
+Each terminal is a tile you drag, resize, and park wherever it makes sense. The shells themselves
+run in a separate native daemon, not in the app, so closing the window or reloading the UI does not
+kill anything - reopen and every session is exactly where you left it.
+
+Early stage, moving fast.
 
 ## Run
 
-```
+```sh
 bun install
-bun run sidecar   # build the Rust sidecar binary (once, and after sidecar changes)
 bun run dev
 ```
 
-`bun run dev` runs `tauri dev`, which compiles the Rust shell, starts Vite, and
-opens the window. On startup the Rust `setup` hook spawns the **sidecar**, a
-detached native process (`sidecar-rs/`) that owns the PTYs and survives app
-restarts. If the sidecar is already listening on port 9777 it is reused.
+Needs Rust and bun. `bun run dev` compiles the Rust PTY daemon, starts it on port 9777, runs Vite,
+and opens the Tauri window. An already-running daemon is reused, so a restart reattaches to live
+shells instead of respawning them.
 
-The sidecar is a separate Cargo crate; `tauri dev` does not build it. Run
-`bun run sidecar` (`cargo build --manifest-path sidecar-rs/Cargo.toml`) before
-the first launch and whenever the sidecar changes.
+`bun run build` produces an installer with the daemon bundled alongside the app.
 
-## What's here
+## How it works
 
-- **Canvas** (`src/components/Canvas`): pan (drag empty space), zoom
-  (ctrl+wheel), draggable/resizable grid-snapping tiles. Layout persisted per
-  workspace. A tile only goes live once it is on screen and wide enough
-  (`MIN_LIVE_WIDTH`); off-screen or tiny tiles render a placeholder while their
-  shell keeps running in the sidecar.
-- **Grid terminal** (`src/components/Terminal/GridTerminal.tsx`): one WebSocket
-  per tile to the sidecar. The sidecar emulates the terminal and streams a
-  ready-to-paint grid; the client renders it to a `<canvas>` and never emulates.
-  Wheel over a focused tile scrolls its 5000-line scrollback.
-- **Sidecar** (`sidecar-rs/`): native Rust PTY daemon. `portable-pty` spawns the
-  shell, `vt100` emulates it server-side, and a hand-rolled WebSocket/HTTP server
-  on port 9777 streams grid frames. One session per `tileId`; sessions persist
-  across window reloads and app restarts (grid state lives in the daemon, so a
-  reconnect just replays the current screen, no ring buffer). Shell spawns are
-  bounded by a semaphore and held until first output to avoid a boot storm.
+The frontend never emulates a terminal. `sidecar-rs` owns the PTYs: `portable-pty` spawns the
+shell, `vt100` does the VT emulation, and each tile holds a WebSocket to it that receives a
+ready-to-paint grid frame - a line buffer plus packed per-cell attributes. The tile paints that
+straight onto a `<canvas>`, scaled by the zoom level, which is why 20 live terminals on screen stay
+cheap. No xterm.js anywhere.
+
+Tiles off screen or shrunk below a minimum width drop their canvas and show a placeholder; the
+shell behind them keeps running.
+
+Built with Tauri 2, React 19, Vite, SCSS Modules, and bun. Everything is written to local files.
+
+## Getting around
+
+| Action       | Key                  |
+| ------------ | -------------------- |
+| New terminal | `Ctrl+T`             |
+| New note     | `Ctrl+Shift+N`       |
+| Close tile   | `Ctrl+W`             |
+| Fullscreen   | `Ctrl+Shift+F`       |
+| Reset zoom   | `Ctrl+0`             |
+| Navigator    | `Ctrl+B`             |
+| Pan / zoom   | Drag canvas / Ctrl+wheel |
+
+All rebindable in Settings.
+
+Besides terminals there are **note** tiles (markdown scratchpad, TipTap) and **code** tiles
+(read-only file view, drag a file in from the tree). Related tiles can be boxed into a **frame**
+and moved together, and the minimap gets you back to whatever is far off screen.
+
+The sidebar holds the file tree, the tab list, and a git tab: switch branch, stage, commit. Clicking
+a changed file opens the diff viewer (`Alt+Arrow` to walk chunks and files).
+
+An agent that finishes work in an off-screen tile raises a toast, so you can leave one running and
+go look at another.
 
 ## Sidecar protocol
 
-- `GET  /health` -> `ok`
-- `GET  /kill?tileId=...` -> kill a session and its whole process tree
-- `WS   /pty?tileId=...&cols=...&rows=...[&cwd=...][&target=...]`
-  - server -> client: text `{t:"ready",cols,rows,reused}` / `{t:"exit"}`,
-    binary = grid frame (header + scrollback offset + UTF-8 grid + per-cell attrs)
-  - client -> server: text `{t:"in",d}` / `{t:"resize",cols,rows}` /
-    `{t:"scroll",rows}` / `{t:"kill"}`
-```
+- `GET /health` -> `ok`
+- `GET /kill?tileId=...` -> kill a session and its process tree
+- `WS /pty?tileId=...&cols=...&rows=...[&cwd=...][&target=...]`
+  - in: `{t:"in",d}` / `{t:"resize",cols,rows}` / `{t:"scroll",rows}` / `{t:"kill"}`
+  - out: `{t:"ready",cols,rows,reused}` / `{t:"exit"}`, plus binary grid frames
+
+One session per `tileId`, keyed by the daemon, so a reconnect replays the current screen with no
+ring buffer. Spawns are throttled by a semaphore so opening a workspace with 30 tiles does not fork
+30 shells at once.
