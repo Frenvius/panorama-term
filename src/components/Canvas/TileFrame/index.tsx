@@ -116,9 +116,11 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
   const oscTitle = tile.oscTitle ? stripStarPrefix(tile.oscTitle).trim() : '';
   const spinning = !tile.userTitle && claudeBusy && hasSpinnerPrefix(oscTitle);
   const label = tile.userTitle
-    || (oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
+    || (claudeLive && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
+    || tile.cwd
     || tile.autoTitle
     || `${tile.type} · ${tile.id}`;
+  const folder = tile.cwd && label !== tile.cwd ? tile.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
 
   const note = tile.type === 'note';
   const code = tile.type === 'code';
@@ -277,6 +279,11 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
                 </span>
               )}
               {label}
+              {folder && folder !== label && (
+                <span className={styles.folder} data-tooltip={tile.cwd}>
+                  {folder}
+                </span>
+              )}
               {!note && tile.branch && (
                 <button className={styles.branch} onClick={openBranches} onPointerDown={stopDrag}>
                   <GitBranch size={10} strokeWidth={2} />
