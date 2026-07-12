@@ -228,6 +228,8 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
     ? { width: bodyW, height: bodyH }
     : { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };
   const term = tile.type === 'term' && live;
+  const termCols = Math.max(20, Math.floor((bodyW - 8) / 7.23));
+  const termRows = Math.max(2, Math.floor((bodyH - TILE_HEADER - 11) / 15));
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
   const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
   const gone = { display: hidden ? 'none' : undefined };
@@ -357,8 +359,8 @@ const TileFrame = ({ tile, view, active, alert, visible, live, hidden, fullscree
             active={active}
             visible={visible && !hidden}
             tileId={tile.id}
-            cols={Math.max(20, Math.floor((bodyW - 8) / 7.23))}
-            rows={Math.max(2, Math.floor((bodyH - TILE_HEADER - 4) / 15))}
+            cols={termCols}
+            rows={termRows}
           />
         </div>
       )}

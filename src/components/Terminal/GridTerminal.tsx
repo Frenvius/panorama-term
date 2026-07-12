@@ -654,7 +654,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     <>
       <canvas
         ref={canvasRef}
-        style={{ height: `calc(100% - ${6 * k}px)` }}
+        style={{ top: 'auto', bottom: 6 * k, height: rows * CELL_H * k }}
         tabIndex={-1}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
