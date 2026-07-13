@@ -1,7 +1,7 @@
 import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Editor } from '@tiptap/react';
-import { StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
+import { Group, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
 import { revealPath } from '~/adapter/shell/shell.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
@@ -66,6 +66,9 @@ const Canvas = () => {
     renameFrame,
     resizeFrame,
     recolorFrame,
+    removeFrameWithTiles,
+    fitFrame,
+    frameSelection,
     activateTile,
     setTileCwd,
     setTileOscTitle,
@@ -441,11 +444,13 @@ const Canvas = () => {
               view={view}
               tiles={tiles}
               recede={receded.has(f.id)}
+              onFit={fitFrame}
               onDrag={dragFrame}
               onSnap={snapFrame}
               onRemove={removeFrame}
               onRename={renameFrame}
               onRecolor={recolorFrame}
+              onRemoveWithTiles={removeFrameWithTiles}
             />
           ))}
         {marquee && (
@@ -514,7 +519,10 @@ const Canvas = () => {
           items={[
             { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
             { label: 'New note', icon: <StickyNote size={15} strokeWidth={1.75} />, onSelect: newNote },
-            { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame }
+            { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame },
+            ...(selected.size
+              ? [{ label: 'Frame selection', icon: <Group size={15} strokeWidth={1.75} />, onSelect: frameSelection }]
+              : [])
           ]}
         />
       )}

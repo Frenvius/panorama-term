@@ -28,6 +28,7 @@ export const FRAME_HEIGHT = 300;
 export const FRAME_MIN_WIDTH = 120;
 export const FRAME_MIN_HEIGHT = 80;
 export const FRAME_COLOR = '#6b7280';
+export const FRAME_PAD_KEY = 'framePad';
 
 export const CULL_MARGIN = 400;
 export const MIN_LIVE_WIDTH = 260;

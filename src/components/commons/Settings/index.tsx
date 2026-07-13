@@ -2,7 +2,7 @@ import React from 'react';
 import { X, Palette, Keyboard, RotateCcw, SquareTerminal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
-import { ZOOM_MAX, MAX_ZOOM_KEY } from '~/usecase/util/constants';
+import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import {
@@ -117,6 +117,7 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [target, setTarget] = React.useState(() => getSetting(TERMINAL_TARGET_KEY, 'auto'));
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
+  const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -140,6 +141,12 @@ const Settings = ({ onClose }: SettingsProps) => {
     const value = Number(e.target.value);
     setMaxZoom(value);
     void setSetting(MAX_ZOOM_KEY, value);
+  };
+
+  const changeFramePad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Math.max(0, Number(e.target.value) || 0);
+    setFramePad(value);
+    void setSetting(FRAME_PAD_KEY, value);
   };
 
   return (
@@ -237,6 +244,19 @@ const Settings = ({ onClose }: SettingsProps) => {
                     />
                   ))}
                 </div>
+              </div>
+              <div className={styles.group}>
+                <div className={styles.sliderHead}>
+                  <p className={styles.groupLabel}>Frame fit padding</p>
+                  <input
+                    min={0}
+                    type="number"
+                    value={framePad}
+                    onChange={changeFramePad}
+                    className={styles.numberInput}
+                  />
+                </div>
+                <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
               </div>
             </div>
           )}

@@ -4,6 +4,7 @@ import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { THEME_EVENT } from '~/usecase/util/theme';
+import { tileInFrame } from '~/usecase/util/frame';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
@@ -23,6 +24,7 @@ import {
   FRAME_WIDTH,
   NOTE_HEIGHT,
   MAX_ZOOM_KEY,
+  FRAME_PAD_KEY,
   TILE_HEIGHT,
   FRAME_HEIGHT,
   INDICATOR_MS,
@@ -41,6 +43,21 @@ type PanOrigin = { ox: number; oy: number; vx: number; vy: number; moved: boolea
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
 const FOCUS_MS = 350;
+
+const FRAME_PAD = 2 * CELL;
+
+const frameBounds = (members: Tile[], pad: number): { x: number; y: number; width: number; height: number } => {
+  const x = Math.min(...members.map((t) => t.x)) - pad;
+  const y = Math.min(...members.map((t) => t.y)) - pad;
+  const w = Math.max(...members.map((t) => t.x + t.width)) + pad - x;
+  const h = Math.max(...members.map((t) => t.y + t.height)) + pad - y;
+  return {
+    x: Math.round(x / CELL) * CELL,
+    y: Math.round(y / CELL) * CELL,
+    width: Math.max(FRAME_MIN_WIDTH, Math.round(w / CELL) * CELL),
+    height: Math.max(FRAME_MIN_HEIGHT, Math.round(h / CELL) * CELL)
+  };
+};
 
 const EMPTY: RuntimeCanvas = { tiles: [], frames: [], view: { x: 0, y: 0, k: 1 } };
 
@@ -575,6 +592,34 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     setFrames((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
+  const removeFrameWithTiles = React.useCallback((id: string) => {
+    const frame = framesRef.current.find((f) => f.id === id);
+    if (!frame) return;
+    const members = new Set(tilesRef.current.filter((t) => tileInFrame(frame, t)).map((t) => t.id));
+    setFrames((prev) => prev.filter((f) => f.id !== id));
+    setTiles((prev) => prev.filter((t) => !members.has(t.id)));
+    setActiveTile((a) => (a && members.has(a) ? null : a));
+    for (const tid of members) void killPtySession(tid);
+  }, []);
+
+  const fitFrame = React.useCallback((id: string) => {
+    const frame = framesRef.current.find((f) => f.id === id);
+    if (!frame) return;
+    const members = tilesRef.current.filter((t) => tileInFrame(frame, t));
+    if (!members.length) return;
+    const box = frameBounds(members, getSetting(FRAME_PAD_KEY, 0));
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, ...box } : f)));
+  }, []);
+
+  const frameSelection = React.useCallback(() => {
+    const sel = selectedRef.current;
+    const members = tilesRef.current.filter((t) => sel.has(t.id));
+    if (!members.length) return;
+    const box = frameBounds(members, FRAME_PAD);
+    setFrames((prev) => [...prev, { id: createId(), ...box, title: 'Frame', color: FRAME_COLOR }]);
+    setSelected((prev) => (prev.size ? new Set() : prev));
+  }, []);
+
   const panTo = React.useCallback((x: number, y: number) => setView((v) => ({ ...v, x, y })), []);
 
   const glide = React.useCallback((cx: number, cy: number, tk: number) => {
@@ -670,6 +715,9 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     renameFrame,
     resizeFrame,
     recolorFrame,
+    removeFrameWithTiles,
+    fitFrame,
+    frameSelection,
     activateTile,
     indicatorRef,
     onBgPointerMove,

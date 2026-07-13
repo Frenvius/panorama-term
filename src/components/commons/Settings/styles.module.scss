@@ -173,6 +173,23 @@
   }
 }
 
+.numberInput {
+  width: 72px;
+  padding: 4px 8px;
+  color: var(--text-strong);
+  font-size: 13px;
+  text-align: right;
+  border-radius: 6px;
+  border: 1px solid var(--border-1);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+
+  &:focus {
+    outline: none;
+    border-color: var(--border-3);
+  }
+}
+
 .hint {
   margin: 0;
   color: var(--text-dim);

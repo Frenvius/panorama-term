@@ -1,7 +1,8 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { X, Trash2, Shrink, Palette, PenLine } from 'lucide-react';
 
 import type { Tile, View, Frame as FrameData, FrameMember } from '~/domain/interfaces/canvas.interface';
+import ContextMenu from '~/components/commons/ContextMenu';
 import { CELL } from '~/usecase/util/constants';
 
 import styles from '~/components/Canvas/Frame/styles.module.scss';
@@ -11,8 +12,10 @@ interface FrameBarProps {
   view: View;
   tiles: Tile[];
   recede: boolean;
+  onFit: (id: string) => void;
   onSnap: (id: string) => void;
   onRemove: (id: string) => void;
+  onRemoveWithTiles: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onRecolor: (id: string, color: string) => void;
   onDrag: (id: string, x: number, y: number, members: FrameMember[]) => void;
@@ -34,9 +37,10 @@ const inside = (f: FrameData, t: Tile): boolean => {
   return cx >= f.x && cx <= f.x + f.width && cy >= f.y && cy <= f.y + f.height;
 };
 
-const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onRecolor, onRemove }: FrameBarProps) => {
+const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
   const k = view.k;
   const [editing, setEditing] = React.useState(false);
+  const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const colorRef = React.useRef<HTMLInputElement>(null);
   const drag = React.useRef<DragState | null>(null);
 
@@ -73,8 +77,22 @@ const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onReco
   const openColor = () => colorRef.current?.click();
   const recolor = (e: React.ChangeEvent<HTMLInputElement>) => onRecolor(frame.id, e.currentTarget.value);
   const remove = () => onRemove(frame.id);
+  const removeWithTiles = () => onRemoveWithTiles(frame.id);
+  const fit = () => onFit(frame.id);
 
   const startRename = () => setEditing(true);
+  const onBarDoubleClick = (e: React.MouseEvent) => {
+    if ((e.target as Element).closest('button, input')) return;
+    setEditing(true);
+  };
+
+  const closeMenu = () => setMenu(null);
+  const openMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    drag.current = null;
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
   const commitRename = (e: React.FocusEvent<HTMLInputElement> | React.KeyboardEvent<HTMLInputElement>) => {
     onRename(frame.id, (e.currentTarget as HTMLInputElement).value.trim() || 'Frame');
     setEditing(false);
@@ -106,10 +124,12 @@ const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onReco
         onPointerDown={startDrag}
         onPointerMove={onDragMove}
         onPointerCancel={endDrag}
+        onContextMenu={openMenu}
+        onDoubleClick={onBarDoubleClick}
       >
         {editing ? (
           <input
-            autoFocus
+            ref={(el) => el?.focus({ preventScroll: true })}
             type="text"
             defaultValue={frame.title}
             className={styles.renameInput}
@@ -118,9 +138,7 @@ const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onReco
             onPointerDown={stop}
           />
         ) : (
-          <span className={styles.title} onDoubleClick={startRename}>
-            {frame.title}
-          </span>
+          <span className={styles.title}>{frame.title}</span>
         )}
         <button className={styles.colorBtn} onClick={openColor} onPointerDown={stop} aria-label="Frame color" />
         <input ref={colorRef} type="color" value={frame.color} className={styles.colorInput} onChange={recolor} />
@@ -128,6 +146,21 @@ const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onReco
           <X size={14} strokeWidth={2} />
         </button>
       </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={closeMenu}
+          items={[
+            { label: 'Rename', icon: <PenLine size={15} strokeWidth={1.75} />, onSelect: startRename },
+            { label: 'Change color', icon: <Palette size={15} strokeWidth={1.75} />, onSelect: openColor },
+            { label: 'Fit to contents', icon: <Shrink size={15} strokeWidth={1.75} />, onSelect: fit },
+            'separator',
+            { label: 'Delete frame', icon: <X size={15} strokeWidth={1.75} />, onSelect: remove },
+            { label: 'Delete frame and tiles', icon: <Trash2 size={15} strokeWidth={1.75} />, danger: true, onSelect: removeWithTiles }
+          ]}
+        />
+      )}
     </div>
   );
 };
