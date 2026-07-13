@@ -32,6 +32,7 @@ export interface ClaudeState {
   thinking?: boolean;
   rateFiveHour?: number;
   rateSevenDay?: number;
+  reset?: boolean;
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

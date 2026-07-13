@@ -486,6 +486,7 @@ struct ClaudeTracker {
     status: Option<String>,
     status_path: Option<PathBuf>,
     sent: Option<String>,
+    reset: bool,
 }
 
 impl ClaudeTracker {
@@ -554,14 +555,14 @@ impl ClaudeTracker {
     }
 
     fn poll(&mut self, tile_id: &str) -> Option<String> {
-        if self.agent_id.is_none() {
-            let rec = read_binding_rec(tile_id)?;
-            self.agent_id = rec
-                .get("agentSessionId")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
+        let rec = read_binding_rec(tile_id)?;
+        let id = rec.get("agentSessionId").and_then(|s| s.as_str())?.to_string();
+        if self.agent_id.as_deref() != Some(id.as_str()) {
+            let rebind = self.agent_id.is_some();
+            *self = ClaudeTracker { default_model: self.default_model.take(), ..Default::default() };
+            self.reset = rebind;
             self.cwd = rec.get("cwd").and_then(|s| s.as_str()).map(|s| s.to_string());
-            self.agent_id.as_ref()?;
+            self.agent_id = Some(id);
         }
         if self.path.is_none() {
             let id = self.agent_id.clone()?;
@@ -604,6 +605,9 @@ impl ClaudeTracker {
         if let Some(s) = &self.status {
             obj.insert("status".into(), s.clone().into());
         }
+        if self.reset {
+            obj.insert("reset".into(), true.into());
+        }
         if obj.len() == 1 {
             return None;
         }
@@ -612,6 +616,7 @@ impl ClaudeTracker {
             return None;
         }
         self.sent = Some(json.clone());
+        self.reset = false;
         Some(json)
     }
 }

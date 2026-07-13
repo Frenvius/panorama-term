@@ -322,7 +322,9 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
           },
           onExit: () => {},
           onClaude: (state) => {
-            claudeRef.current = { ...claudeRef.current, ...state };
+            const { reset, ...rest } = state;
+            if (reset) statusRef.current = undefined;
+            claudeRef.current = reset ? rest : { ...claudeRef.current, ...rest };
             const prev = statusRef.current;
             const next = state.status;
             if (next && next !== prev) {
