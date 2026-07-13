@@ -97,6 +97,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   const snapTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panRef = React.useRef<PanOrigin | null>(null);
   const resizeRaw = React.useRef<{ id: string; x: number; y: number; width: number; height: number } | null>(null);
+  const lastTermSize = React.useRef<{ width: number; height: number } | null>(null);
 
   React.useEffect(() => {
     const id = setTimeout(() => onPersist(toStored({ tiles, view, frames })), 400);
@@ -180,7 +181,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
       const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
       const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => {
-        const last = [...prev].reverse().find((t) => t.type === 'term');
+        const last = lastTermSize.current ?? [...prev].reverse().find((t) => t.type === 'term');
         const width = last?.width ?? TILE_WIDTH;
         const height = last?.height ?? TILE_HEIGHT;
         return [
@@ -344,6 +345,12 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     resizeRaw.current = { id, x, y, width, height };
     const others = [...prev.filter((t) => t.id !== id), ...framesRef.current];
     const snap = computeResizeSnap({ x, y, width, height }, dir, others, SNAP_PX / k, TILE_MIN_WIDTH, TILE_MIN_HEIGHT);
+    if (tile.type === 'term') {
+      lastTermSize.current = {
+        width: Math.max(TILE_MIN_WIDTH, Math.round(snap.width / CELL) * CELL),
+        height: Math.max(TILE_MIN_HEIGHT, Math.round(snap.height / CELL) * CELL)
+      };
+    }
     setTiles((p) => p.map((t) => (t.id === id ? { ...t, x: snap.x, y: snap.y, width: snap.width, height: snap.height } : t)));
   }, []);
 
