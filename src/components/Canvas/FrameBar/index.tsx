@@ -11,6 +11,7 @@ interface FrameBarProps {
   view: View;
   tiles: Tile[];
   recede: boolean;
+  onSnap: (id: string) => void;
   onRemove: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onRecolor: (id: string, color: string) => void;
@@ -33,7 +34,7 @@ const inside = (f: FrameData, t: Tile): boolean => {
   return cx >= f.x && cx <= f.x + f.width && cy >= f.y && cy <= f.y + f.height;
 };
 
-const FrameBar = ({ frame, view, tiles, recede, onDrag, onRename, onRecolor, onRemove }: FrameBarProps) => {
+const FrameBar = ({ frame, view, tiles, recede, onDrag, onSnap, onRename, onRecolor, onRemove }: FrameBarProps) => {
   const k = view.k;
   const [editing, setEditing] = React.useState(false);
   const colorRef = React.useRef<HTMLInputElement>(null);
@@ -65,6 +66,7 @@ const FrameBar = ({ frame, view, tiles, recede, onDrag, onRename, onRecolor, onR
     const dx = (e.clientX - d.sx) / k;
     const dy = (e.clientY - d.sy) / k;
     onDrag(frame.id, snap(d.fx + dx), snap(d.fy + dy), d.members.map((m) => ({ id: m.id, x: snap(m.sx + dx), y: snap(m.sy + dy) })));
+    onSnap(frame.id);
   };
 
   const stop = (e: React.PointerEvent) => e.stopPropagation();

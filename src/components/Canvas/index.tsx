@@ -427,6 +427,7 @@ const Canvas = () => {
               tiles={tiles}
               recede={receded.has(f.id)}
               onDrag={dragFrame}
+              onSnap={snapFrame}
               onRemove={removeFrame}
               onRename={renameFrame}
               onRecolor={recolorFrame}

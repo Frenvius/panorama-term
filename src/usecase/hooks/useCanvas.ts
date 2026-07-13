@@ -7,7 +7,7 @@ import { THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
-import { computeDragSnap } from '~/usecase/util/magneticSnap';
+import { computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import {
@@ -74,6 +74,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   const focal = React.useRef({ x: 0, y: 0 });
   const snapTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panRef = React.useRef<PanOrigin | null>(null);
+  const resizeRaw = React.useRef<{ id: string; x: number; y: number; width: number; height: number } | null>(null);
 
   React.useEffect(() => {
     const id = setTimeout(() => onPersist(toStored({ tiles, view, frames })), 400);
@@ -269,48 +270,45 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     );
   }, []);
 
-  const moveTile = React.useCallback(
-    (id: string, rawX: number, rawY: number) => {
-      setTiles((prev) => {
-        const moving = prev.find((t) => t.id === id);
-        if (!moving) return prev;
-        const cand = { ...moving, x: rawX, y: rawY };
-        const others = prev.filter((t) => t.id !== id);
-        const snap = computeDragSnap(cand, others, SNAP_PX / view.k);
-        return prev.map((t) => (t.id === id ? { ...t, x: snap.x ?? rawX, y: snap.y ?? rawY } : t));
-      });
-    },
-    [view.k]
-  );
+  const moveTile = React.useCallback((id: string, rawX: number, rawY: number) => {
+    const prev = tilesRef.current;
+    const moving = prev.find((t) => t.id === id);
+    if (!moving) return;
+    const cand = { ...moving, x: rawX, y: rawY };
+    const others = [...prev.filter((t) => t.id !== id), ...framesRef.current];
+    const snap = computeDragSnap(cand, others, SNAP_PX / viewRef.current.k);
+    setTiles((p) => p.map((t) => (t.id === id ? { ...t, x: snap.x ?? rawX, y: snap.y ?? rawY } : t)));
+  }, []);
 
-  const resizeTile = React.useCallback(
-    (id: string, dir: string, dx: number, dy: number) => {
-      const wdx = dx / view.k;
-      const wdy = dy / view.k;
-      setTiles((prev) =>
-        prev.map((t) => {
-          if (t.id !== id) return t;
-          let { x, y, width, height } = t;
-          if (dir.includes('e')) width = Math.max(TILE_MIN_WIDTH, width + wdx);
-          if (dir.includes('s')) height = Math.max(TILE_MIN_HEIGHT, height + wdy);
-          if (dir.includes('w')) {
-            const nw = Math.max(TILE_MIN_WIDTH, width - wdx);
-            x += width - nw;
-            width = nw;
-          }
-          if (dir.includes('n')) {
-            const nh = Math.max(TILE_MIN_HEIGHT, height - wdy);
-            y += height - nh;
-            height = nh;
-          }
-          return { ...t, x, y, width, height };
-        })
-      );
-    },
-    [view.k]
-  );
+  const resizeTile = React.useCallback((id: string, dir: string, dx: number, dy: number) => {
+    const k = viewRef.current.k;
+    const wdx = dx / k;
+    const wdy = dy / k;
+    const prev = tilesRef.current;
+    const tile = prev.find((t) => t.id === id);
+    if (!tile) return;
+    const raw = resizeRaw.current?.id === id ? resizeRaw.current : { id, x: tile.x, y: tile.y, width: tile.width, height: tile.height };
+    let { x, y, width, height } = raw;
+    if (dir.includes('e')) width = Math.max(TILE_MIN_WIDTH, width + wdx);
+    if (dir.includes('s')) height = Math.max(TILE_MIN_HEIGHT, height + wdy);
+    if (dir.includes('w')) {
+      const nw = Math.max(TILE_MIN_WIDTH, width - wdx);
+      x += width - nw;
+      width = nw;
+    }
+    if (dir.includes('n')) {
+      const nh = Math.max(TILE_MIN_HEIGHT, height - wdy);
+      y += height - nh;
+      height = nh;
+    }
+    resizeRaw.current = { id, x, y, width, height };
+    const others = [...prev.filter((t) => t.id !== id), ...framesRef.current];
+    const snap = computeResizeSnap({ x, y, width, height }, dir, others, SNAP_PX / k, TILE_MIN_WIDTH, TILE_MIN_HEIGHT);
+    setTiles((p) => p.map((t) => (t.id === id ? { ...t, x: snap.x, y: snap.y, width: snap.width, height: snap.height } : t)));
+  }, []);
 
   const snapTile = React.useCallback((id: string) => {
+    resizeRaw.current = null;
     setTiles((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t;
@@ -429,40 +427,49 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   }, []);
 
   const dragFrame = React.useCallback((id: string, x: number, y: number, members: FrameMember[]) => {
-    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x, y } : f)));
+    const frame = framesRef.current.find((f) => f.id === id);
+    if (!frame) return;
+    const memberIds = new Set(members.map((m) => m.id));
+    const others = [...tilesRef.current.filter((t) => !memberIds.has(t.id)), ...framesRef.current.filter((f) => f.id !== id)];
+    const snap = computeDragSnap({ ...frame, x, y }, others, SNAP_PX / viewRef.current.k);
+    const fx = snap.x ?? x;
+    const fy = snap.y ?? y;
+    const ddx = fx - x;
+    const ddy = fy - y;
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x: fx, y: fy } : f)));
     if (members.length === 0) return;
     const pos = new Map(members.map((m) => [m.id, m]));
-    setTiles((prev) => prev.map((t) => (pos.has(t.id) ? { ...t, x: pos.get(t.id)!.x, y: pos.get(t.id)!.y } : t)));
+    setTiles((prev) => prev.map((t) => (pos.has(t.id) ? { ...t, x: pos.get(t.id)!.x + ddx, y: pos.get(t.id)!.y + ddy } : t)));
   }, []);
 
-  const resizeFrame = React.useCallback(
-    (id: string, dir: string, dx: number, dy: number) => {
-      const wdx = dx / view.k;
-      const wdy = dy / view.k;
-      setFrames((prev) =>
-        prev.map((f) => {
-          if (f.id !== id) return f;
-          let { x, y, width, height } = f;
-          if (dir.includes('e')) width = Math.max(FRAME_MIN_WIDTH, width + wdx);
-          if (dir.includes('s')) height = Math.max(FRAME_MIN_HEIGHT, height + wdy);
-          if (dir.includes('w')) {
-            const nw = Math.max(FRAME_MIN_WIDTH, width - wdx);
-            x += width - nw;
-            width = nw;
-          }
-          if (dir.includes('n')) {
-            const nh = Math.max(FRAME_MIN_HEIGHT, height - wdy);
-            y += height - nh;
-            height = nh;
-          }
-          return { ...f, x, y, width, height };
-        })
-      );
-    },
-    [view.k]
-  );
+  const resizeFrame = React.useCallback((id: string, dir: string, dx: number, dy: number) => {
+    const k = viewRef.current.k;
+    const wdx = dx / k;
+    const wdy = dy / k;
+    const frame = framesRef.current.find((f) => f.id === id);
+    if (!frame) return;
+    const raw = resizeRaw.current?.id === id ? resizeRaw.current : { id, x: frame.x, y: frame.y, width: frame.width, height: frame.height };
+    let { x, y, width, height } = raw;
+    if (dir.includes('e')) width = Math.max(FRAME_MIN_WIDTH, width + wdx);
+    if (dir.includes('s')) height = Math.max(FRAME_MIN_HEIGHT, height + wdy);
+    if (dir.includes('w')) {
+      const nw = Math.max(FRAME_MIN_WIDTH, width - wdx);
+      x += width - nw;
+      width = nw;
+    }
+    if (dir.includes('n')) {
+      const nh = Math.max(FRAME_MIN_HEIGHT, height - wdy);
+      y += height - nh;
+      height = nh;
+    }
+    resizeRaw.current = { id, x, y, width, height };
+    const others = [...tilesRef.current, ...framesRef.current.filter((f) => f.id !== id)];
+    const snap = computeResizeSnap({ x, y, width, height }, dir, others, SNAP_PX / k, FRAME_MIN_WIDTH, FRAME_MIN_HEIGHT);
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x: snap.x, y: snap.y, width: snap.width, height: snap.height } : f)));
+  }, []);
 
   const snapFrame = React.useCallback((id: string) => {
+    resizeRaw.current = null;
     setFrames((prev) =>
       prev.map((f) => {
         if (f.id !== id) return f;
