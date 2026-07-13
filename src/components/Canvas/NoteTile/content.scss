@@ -82,6 +82,11 @@
   flex: 1;
 }
 
+.pano-note .tiptap ul[data-type='taskList'] li[data-checked='true'] > div {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
 .pano-note .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
