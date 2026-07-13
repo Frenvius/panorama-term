@@ -188,6 +188,57 @@ export const getCaretOffset = (el: HTMLElement): number | null => {
   return serializeEditor(tmp).text.length;
 };
 
+export const setCaretOffset = (el: HTMLElement, offset: number): void => {
+  let remaining = Math.max(0, offset);
+  let imgCount = 0;
+  let placed = false;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const place = (fn: () => void) => {
+    fn();
+    range.collapse(true);
+    placed = true;
+  };
+  const walk = (node: Node): void => {
+    if (placed) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = (node.textContent ?? '').length;
+      if (remaining <= len) {
+        place(() => range.setStart(node, remaining));
+        return;
+      }
+      remaining -= len;
+      return;
+    }
+    if (!(node instanceof HTMLElement)) return;
+    if (node.dataset.imgpath) {
+      imgCount++;
+      const len = `[Image #${imgCount}]`.length;
+      if (remaining === 0) place(() => range.setStartBefore(node));
+      else if (remaining <= len) place(() => range.setStartAfter(node));
+      else remaining -= len;
+      return;
+    }
+    if (node.tagName === 'BR') {
+      if (remaining === 0) place(() => range.setStartBefore(node));
+      else remaining -= 1;
+      return;
+    }
+    for (const child of Array.from(node.childNodes)) {
+      walk(child);
+      if (placed) return;
+    }
+  };
+  for (const child of Array.from(el.childNodes)) {
+    walk(child);
+    if (placed) break;
+  }
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+};
+
 export const insertPartsAtCaret = (el: HTMLElement, text: string, imagePaths: string[], startNum: number): void => {
   let html = text.length > 0 ? textToHtml(text) : '';
   for (let i = 0; i < imagePaths.length; i++) {

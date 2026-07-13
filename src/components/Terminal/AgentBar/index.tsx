@@ -7,7 +7,7 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { readFooter, modeKey, prettyMode, prettyModel, looksLikeClaude, detectExitBanner, parseStatusLines, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES } from './constants';
-import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
+import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { ClaudeState } from '~/domain/interfaces/pty.interface';
 import type { ContentPart, ParsedStatus, SuggestTrigger, AgentBarProps, PromptSuggestion, AgentSuggestHandle } from './types';
@@ -51,6 +51,13 @@ const matchQuickSwitchId = (raw: string | undefined): string => {
   return MODEL_QUICK_SWITCHES.find((s) => s.id === m)?.id ?? '';
 };
 
+type UndoSnap = { text: string; images: string[]; caret: number };
+
+const UNDO_CAP = 200;
+
+const sameSnap = (a: UndoSnap, b: UndoSnap): boolean =>
+  a.text === b.text && a.images.length === b.images.length && a.images.every((p, i) => p === b.images[i]);
+
 const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   const out: Blob[] = [];
   const items = e.clipboardData?.items;
@@ -89,6 +96,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const lastSentRef = React.useRef(cloneDraft(EMPTY_DRAFT));
   const draftRef = React.useRef(cloneDraft(EMPTY_DRAFT));
   const silentRef = React.useRef(false);
+  const undoRef = React.useRef<UndoSnap[]>([]);
+  const redoRef = React.useRef<UndoSnap[]>([]);
+  const prevSnapRef = React.useRef<UndoSnap>({ text: '', images: [], caret: 0 });
+  const lastInputTypeRef = React.useRef('');
   const imgSeqRef = React.useRef(0);
   const submitSeqRef = React.useRef(0);
   const seenRef = React.useRef(false);
@@ -102,12 +113,30 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const isEmpty = isDraftEmpty(draft);
   const hidden = questionMode || manualHide;
 
+  const liveSnap = (): UndoSnap => {
+    const d = draftRef.current;
+    const el = editorRef.current;
+    const caret = el ? (getCaretOffset(el) ?? d.text.length) : d.text.length;
+    return { text: d.text, images: [...d.images], caret };
+  };
+
+  const checkpoint = () => {
+    const prev = prevSnapRef.current;
+    const stack = undoRef.current;
+    const top = stack[stack.length - 1];
+    if (top && sameSnap(top, prev)) return;
+    stack.push(prev);
+    if (stack.length > UNDO_CAP) stack.shift();
+  };
+
   const syncFromEditor = () => {
     const el = editorRef.current;
     if (!el) return;
     const next = serializeEditor(el);
     setDraft(next);
     draftRef.current = next;
+    prevSnapRef.current = liveSnap();
+    lastInputTypeRef.current = '';
   };
 
   const renderAndFocus = (next: { text: string; images: string[] }, focus = true) => {
@@ -128,7 +157,47 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     replaceEditor(el, next);
     silentRef.current = false;
     draftRef.current = next;
+    prevSnapRef.current = { text: next.text, images: [...next.images], caret: next.text.length };
+    lastInputTypeRef.current = '';
   };
+
+  const commitDraft = (next: { text: string; images: string[] }) => {
+    checkpoint();
+    redoRef.current = [];
+    applyDraft(next);
+  };
+
+  const restoreSnap = (snap: UndoSnap) => {
+    const el = editorRef.current;
+    if (!el) return;
+    const next = { text: snap.text, images: [...snap.images] };
+    setDraft(next);
+    applyDraft(next);
+    setCaretOffset(el, snap.caret);
+    prevSnapRef.current = snap;
+    histIdxRef.current = null;
+    setSuggest(null);
+  };
+
+  const doUndo = () => {
+    const live = liveSnap();
+    const stack = undoRef.current;
+    let snap = stack.pop();
+    while (snap && sameSnap(snap, live)) snap = stack.pop();
+    if (!snap) return;
+    redoRef.current.push(live);
+    restoreSnap(snap);
+  };
+
+  const doRedo = () => {
+    const snap = redoRef.current.pop();
+    if (!snap) return;
+    undoRef.current.push(liveSnap());
+    restoreSnap(snap);
+  };
+
+  const undoFnRef = React.useRef({ undo: doUndo, redo: doRedo });
+  undoFnRef.current = { undo: doUndo, redo: doRedo };
 
   React.useEffect(() => {
     const SCAN_MS = 350;
@@ -208,6 +277,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       setSuggest(null);
       histIdxRef.current = null;
       histDraftRef.current = cloneDraft(EMPTY_DRAFT);
+      undoRef.current = [];
+      redoRef.current = [];
+      prevSnapRef.current = { text: restored.text, images: [...restored.images], caret: restored.text.length };
+      lastInputTypeRef.current = '';
       renderAndFocus(restored, activeRef.current && (restored.text.length > 0 || restored.images.length > 0));
     } else {
       setStatus({});
@@ -280,6 +353,24 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   }, [claudeActive, active, hidden]);
 
   React.useEffect(() => {
+    if (!claudeActive) return;
+    const el = editorRef.current;
+    if (!el) return;
+    const onBeforeInput = (e: Event) => {
+      const t = (e as InputEvent).inputType;
+      if (t === 'historyUndo') {
+        e.preventDefault();
+        undoFnRef.current.undo();
+      } else if (t === 'historyRedo') {
+        e.preventDefault();
+        undoFnRef.current.redo();
+      }
+    };
+    el.addEventListener('beforeinput', onBeforeInput);
+    return () => el.removeEventListener('beforeinput', onBeforeInput);
+  }, [claudeActive]);
+
+  React.useEffect(() => {
     if (!modelMenu && !effortMenu) return;
     const onDown = (e: MouseEvent) => {
       if (!modelRef.current?.contains(e.target as Node)) setModelMenu(false);
@@ -340,7 +431,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     histDraftRef.current = cloneDraft(EMPTY_DRAFT);
     setSuggest(null);
     setDraft(cloneDraft(EMPTY_DRAFT));
-    applyDraft(cloneDraft(EMPTY_DRAFT));
+    commitDraft(cloneDraft(EMPTY_DRAFT));
     setSubmitting(true);
     try {
       await sendDraft(submission);
@@ -349,12 +440,21 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     }
   };
 
-  const handleInput = () => {
+  const handleInput = (e: React.FormEvent<HTMLDivElement>) => {
     const el = editorRef.current;
     if (!el || silentRef.current) return;
     const next = serializeEditor(el);
+    const ev = e.nativeEvent as InputEvent;
+    const inputType = ev.inputType ?? '';
+    const prev = prevSnapRef.current;
+    const wordBreak = inputType === 'insertText' && /\s/.test(ev.data ?? '') && !/\s$/.test(prev.text);
+    const lineBreak = inputType === 'insertLineBreak' || inputType === 'insertParagraph';
+    if (inputType !== lastInputTypeRef.current || wordBreak || lineBreak) checkpoint();
+    lastInputTypeRef.current = inputType;
+    redoRef.current = [];
     setDraft(next);
     draftRef.current = next;
+    prevSnapRef.current = liveSnap();
     histIdxRef.current = null;
     if (!next.text.startsWith('/')) {
       setSuggest(null);
@@ -373,6 +473,8 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       const chip = removeBtn.closest('[data-imgpath]');
       const el = editorRef.current;
       if (chip && el) {
+        checkpoint();
+        redoRef.current = [];
         removeChip(el, chip);
         syncFromEditor();
       }
@@ -422,7 +524,11 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     }
 
     const existing = draftRef.current.images.length;
-    if (text || paths.length > 0) insertPartsAtCaret(el, text, paths, existing + 1);
+    if (text || paths.length > 0) {
+      checkpoint();
+      redoRef.current = [];
+      insertPartsAtCaret(el, text, paths, existing + 1);
+    }
     syncFromEditor();
     histIdxRef.current = null;
 
@@ -471,7 +577,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     const doSubmit = submit && !noSubmit;
     const next = { text: name + (doSubmit ? '' : ' '), images: [] };
     setDraft(next);
-    applyDraft(next);
+    commitDraft(next);
     if (name === '/model') setSuggest({ kind: 'model', query: '' });
     else if (name === '/effort') setSuggest({ kind: 'effort', query: '' });
     else setSuggest(null);
@@ -481,7 +587,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const onEffortSelect = (item: PromptSuggestion, submit?: boolean) => {
     const next = { text: `/effort ${item.display}`, images: [] };
     setDraft(next);
-    applyDraft(next);
+    commitDraft(next);
     setSuggest(null);
     if (submit) void handleSend();
   };
@@ -489,7 +595,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const onModelSelect = (item: PromptSuggestion, submit?: boolean) => {
     const next = { text: `/model ${item.display}`, images: [] };
     setDraft(next);
-    applyDraft(next);
+    commitDraft(next);
     setSuggest(null);
     if (submit) void handleSend();
   };
@@ -514,7 +620,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       }
       const next = partsToDraft(hist[histIdxRef.current] ?? []);
       setDraft(next);
-      applyDraft(next);
+      commitDraft(next);
       setSuggest(null);
       return true;
     }
@@ -523,18 +629,26 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       histIdxRef.current++;
       const next = partsToDraft(hist[histIdxRef.current] ?? []);
       setDraft(next);
-      applyDraft(next);
+      commitDraft(next);
     } else {
       histIdxRef.current = null;
       const restored = cloneDraft(histDraftRef.current);
       setDraft(restored);
-      applyDraft(restored);
+      commitDraft(restored);
     }
     setSuggest(null);
     return true;
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (key === 'y' || e.shiftKey) doRedo();
+      else doUndo();
+      return;
+    }
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
@@ -557,7 +671,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
         setDraft(restored);
         histIdxRef.current = null;
         setSuggest(null);
-        applyDraft(restored);
+        commitDraft(restored);
       }
       return;
     }
