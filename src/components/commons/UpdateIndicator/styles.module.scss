@@ -1,0 +1,184 @@
+.root {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: center;
+  margin-right: 6px;
+}
+
+.trigger {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  color: var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+
+  &:hover {
+    background: var(--hover-1);
+  }
+}
+
+.err {
+  color: var(--danger);
+}
+
+.dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.panel {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 30;
+  width: 300px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.version {
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--accent);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--hover-1);
+}
+
+.current {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.notes {
+  max-height: 160px;
+  overflow-y: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+  border-radius: 6px;
+  background: var(--hover-1);
+  font-family: inherit;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.primary,
+.ghost {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: filter 0.12s ease, background 0.12s ease;
+}
+
+.primary {
+  flex: 1;
+  color: #fff;
+  background: var(--accent);
+
+  &:hover {
+    filter: brightness(1.1);
+  }
+}
+
+.ghost {
+  color: var(--text-muted);
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+}
+
+.track {
+  height: 4px;
+  margin-top: 12px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--hover-1);
+}
+
+.fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+
+.bytes {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--text-muted);
+}
+
+.text {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.errorText {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  color: var(--danger);
+}

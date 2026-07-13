@@ -5,6 +5,7 @@ import { X, Copy, Minus, Square, Settings as SettingsIcon } from 'lucide-react';
 import TabsBar from '~/components/commons/TabsBar';
 import Settings from '~/components/commons/Settings';
 import WorkspaceBar from '~/components/commons/WorkspaceBar';
+import UpdateIndicator from '~/components/commons/UpdateIndicator';
 
 import styles from './styles.module.scss';
 
@@ -58,6 +59,7 @@ const Titlebar = () => {
         <WorkspaceBar />
         <TabsBar />
         <div className={styles.controls}>
+          <UpdateIndicator />
           <button className={styles.btn} onClick={minimize} aria-label="Minimize">
             <Minus size={16} strokeWidth={1.5} />
           </button>

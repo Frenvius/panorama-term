@@ -1,0 +1,160 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies (frontend)
+        run: bun install --frozen-lockfile
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            sidecar-rs
+          shared-key: tauri-release
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' src-tauri/tauri.conf.json | head -1 | cut -d'"' -f4)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ ! -f CHANGELOG.md ]; then
+            echo "CHANGELOG.md not found" >&2
+            exit 1
+          fi
+
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) { found = 1; next }
+            }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' | awk 'NF {p=1} p' > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section found for version $VERSION" >&2
+            exit 1
+          fi
+
+          tac release-notes.md | awk 'NF {p=1} p' | tac > release-notes.trimmed.md
+          mv release-notes.trimmed.md release-notes.md
+
+          echo "::group::Release notes for v$VERSION"
+          cat release-notes.md
+          echo "::endgroup::"
+
+      - name: Build Tauri app
+        run: bun run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NSIS_DIR="src-tauri/target/release/bundle/nsis"
+          cp "$NSIS_DIR/Panorama_${VERSION}_x64-setup.exe" "$NSIS_DIR/panorama-setup.exe"
+
+      - name: Read signature file
+        id: signature
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SIG=$(cat "src-tauri/target/release/bundle/nsis/Panorama_${VERSION}_x64-setup.exe.sig")
+          echo "signature=$SIG" >> $GITHUB_OUTPUT
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: 'Panorama v${{ steps.version.outputs.version }}'
+          body_path: release-notes.md
+          files: |
+            src-tauri/target/release/bundle/nsis/panorama-setup.exe
+            src-tauri/target/release/bundle/nsis/Panorama_${{ steps.version.outputs.version }}_x64-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update updater.json
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          URL="https://github.com/Frenvius/panorama-term/releases/download/v${VERSION}/Panorama_${VERSION}_x64-setup.exe"
+          SIGNATURE='${{ steps.signature.outputs.signature }}'
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$(cat release-notes.md)" \
+            --arg pub_date "$PUB_DATE" \
+            --arg url "$URL" \
+            --arg signature "$SIGNATURE" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, signature: $signature}' \
+            > public/updater.json
+
+          echo "::group::updater.json"
+          cat public/updater.json
+          echo "::endgroup::"
+
+      - name: Commit updater.json
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          cp public/updater.json "$RUNNER_TEMP/updater.json"
+
+          for i in 1 2 3; do
+            git fetch origin main || { echo "fetch failed, retrying ($i/3)..."; sleep 2; continue; }
+            git checkout -f -B main FETCH_HEAD
+            cp "$RUNNER_TEMP/updater.json" public/updater.json
+            git add public/updater.json
+            git diff --cached --quiet && { echo "updater.json already up to date"; exit 0; }
+            git commit -m "chore: update updater.json for v${{ steps.version.outputs.version }}"
+            git push origin HEAD:main && exit 0
+            echo "Push failed, retrying ($i/3)..."
+            sleep 2
+          done
+          echo "Failed to push updater.json after 3 attempts" >&2
+          exit 1

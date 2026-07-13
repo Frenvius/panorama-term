@@ -1,0 +1,10 @@
+# Changelog
+
+## [0.1.0]
+
+### Added
+- Initial release: infinite canvas with terminal tiles, notes, frames, and workspaces.
+- Rust sidecar PTY host with Canvas 2D grid terminal rendering.
+- Claude agent bar with image paste and structured transcript state.
+- Desktop notifications for agent activity.
+- Auto-updater with in-app download and restart.
