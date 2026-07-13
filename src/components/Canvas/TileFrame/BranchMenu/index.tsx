@@ -56,7 +56,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
     const onOutside = (e: PointerEvent) => {
       const target = e.target as Node;
       if (rootRef.current?.contains(target)) return;
-      if ((target as Element).closest?.('[data-branch-overlay]')) return;
+      if ((target as Element).closest?.('[data-branch-overlay], [data-ctx-menu]')) return;
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
