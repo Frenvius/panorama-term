@@ -489,7 +489,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
     const blobs = clipboardImages(e);
-    const fallback = e.clipboardData?.getData('text/plain') ?? '';
+    const fallback = (e.clipboardData?.getData('text/plain') ?? '').trim();
     e.preventDefault();
 
     const saved = (() => {
