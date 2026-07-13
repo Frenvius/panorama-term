@@ -11,4 +11,25 @@
 
 .scrollable {
   overflow-y: auto;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--note-text) 30%, transparent);
+    border-radius: 4px;
+
+    &:hover {
+      background: color-mix(in srgb, var(--note-text) 50%, transparent);
+    }
+  }
+
+  &::-webkit-scrollbar-button {
+    display: none;
+  }
 }
