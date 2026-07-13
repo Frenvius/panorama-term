@@ -72,6 +72,8 @@ struct CwdSink {
     notifies: Vec<(String, String)>,
     progress: Option<(u8, u8)>,
     progress_changed: bool,
+    focused: Arc<AtomicBool>,
+    focus_reporting: Arc<AtomicBool>,
 }
 
 impl CwdSink {
@@ -213,6 +215,32 @@ impl vt100::Callbacks for CwdSink {
             self.clipboard = Some(text);
         }
     }
+
+    fn unhandled_csi(
+        &mut self,
+        _screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if i1 != Some(b'?') || (c != 'h' && c != 'l') {
+            return;
+        }
+        if !params.iter().any(|p| **p == [1004]) {
+            return;
+        }
+        let on = c == 'h';
+        self.focus_reporting.store(on, Ordering::Relaxed);
+        if on {
+            let seq: &[u8] = if self.focused.load(Ordering::Relaxed) {
+                b"\x1b[I"
+            } else {
+                b"\x1b[O"
+            };
+            self.responses.push(seq.to_vec());
+        }
+    }
 }
 
 const OSC52_MAX: usize = 128 * 1024;
@@ -296,6 +324,8 @@ struct Session {
     title: Mutex<Option<String>>,
     title_dirty: AtomicBool,
     events: Mutex<Vec<String>>,
+    focused: Arc<AtomicBool>,
+    focus_reporting: Arc<AtomicBool>,
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
@@ -1339,7 +1369,14 @@ fn spawn_session(
     drop(pair.slave);
 
     let seed = load_buffer(&p.tile_id);
-    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, CwdSink::default());
+    let focused = Arc::new(AtomicBool::new(true));
+    let focus_reporting = Arc::new(AtomicBool::new(false));
+    let sink = CwdSink {
+        focused: focused.clone(),
+        focus_reporting: focus_reporting.clone(),
+        ..Default::default()
+    };
+    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
     if !seed.is_empty() {
         parser.process(&seed);
         let _ = parser.callbacks_mut().take_clipboard();
@@ -1372,6 +1409,8 @@ fn spawn_session(
         title: Mutex::new(None),
         title_dirty: AtomicBool::new(false),
         events: Mutex::new(Vec::new()),
+        focused,
+        focus_reporting,
     });
 
     let s = session.clone();
@@ -1574,7 +1613,9 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
             }
         }
         if let Ok(mut w) = s.writer.lock() {
-            let _ = w.write_all(&seq);
+            for _ in 0..lines.max(1) {
+                let _ = w.write_all(&seq);
+            }
             let _ = w.flush();
         }
         return;
@@ -1617,7 +1658,11 @@ fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mod
         return;
     }
     let motion = kind == 2;
+    if motion && button == 3 && mouse != vt100::MouseProtocolMode::AnyMotion {
+        return;
+    }
     if motion
+        && button != 3
         && mouse != vt100::MouseProtocolMode::ButtonMotion
         && mouse != vt100::MouseProtocolMode::AnyMotion
     {
@@ -1646,6 +1691,17 @@ fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mod
     }
     if let Ok(mut w) = s.writer.lock() {
         let _ = w.write_all(&seq);
+        let _ = w.flush();
+    }
+}
+
+fn focus_session(s: &Session, focused: bool) {
+    let prev = s.focused.swap(focused, Ordering::Relaxed);
+    if prev == focused || !s.focus_reporting.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Ok(mut w) = s.writer.lock() {
+        let _ = w.write_all(if focused { b"\x1b[I" } else { b"\x1b[O" });
         let _ = w.flush();
     }
 }
@@ -1843,6 +1899,10 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             if cols >= 2 && rows >= 2 {
                 resize_session(s, cols, rows);
             }
+        }
+        Some("focus") => {
+            let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(true);
+            focus_session(s, focused);
         }
         Some("kill") => kill_session(s),
         _ => {}
@@ -2216,7 +2276,8 @@ async fn main() {
 mod tests {
     use super::{
         agent_event_ws_msg, decode_osc52, default_status_line, sanitize_event_text,
-        status_ws_msg, utf8_valid_len, CwdSink, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering,
+        OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
 
     #[test]
@@ -2321,6 +2382,24 @@ mod tests {
         assert_eq!(responses, vec![OSC_FG_RESPONSE.to_vec(), OSC_BG_RESPONSE.to_vec()]);
         assert_eq!(parser.callbacks_mut().take_title().as_deref(), Some("my title"));
         assert_eq!(parser.callbacks_mut().take_title(), None);
+    }
+
+    #[test]
+    fn focus_reporting_mode_tracked_and_reports_current_state() {
+        let focused = Arc::new(AtomicBool::new(true));
+        let reporting = Arc::new(AtomicBool::new(false));
+        let sink = CwdSink {
+            focused: focused.clone(),
+            focus_reporting: reporting.clone(),
+            ..Default::default()
+        };
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, sink);
+        parser.process(b"\x1b[?1004h");
+        assert!(reporting.load(Ordering::Relaxed));
+        assert_eq!(parser.callbacks_mut().take_responses(), vec![b"\x1b[I".to_vec()]);
+        parser.process(b"\x1b[?1004l");
+        assert!(!reporting.load(Ordering::Relaxed));
+        assert!(parser.callbacks_mut().take_responses().is_empty());
     }
 
     #[test]

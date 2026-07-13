@@ -107,6 +107,10 @@ export const sendPtyMouse = (
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'mouse', kind, button, col, row, mods }));
 };
 
+export const sendPtyFocus = (ws: WebSocket, focused: boolean): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'focus', focused }));
+};
+
 export const sendPtyKill = (ws: WebSocket): void => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'kill' }));
 };

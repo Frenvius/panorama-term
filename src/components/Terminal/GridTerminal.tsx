@@ -10,7 +10,7 @@ import { notifyClaude, clearNotify } from '~/components/commons/Notifications/br
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
-import { sendPtyKill, sendPtyMouse, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
+import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
 
 import type { GridFrame, ClaudeState } from '~/domain/interfaces/pty.interface';
 import type { Cell, Selection, UrlSpan } from '~/usecase/util/terminalSelection';
@@ -35,6 +35,7 @@ interface GridTerminalProps {
 
 const FONT = 12;
 const CELL_H = 15;
+const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
 const DEFAULT_FG = 0xc7d0e0;
@@ -89,6 +90,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const mouseFwdRef = React.useRef(false);
   const mouseBtnRef = React.useRef(0);
   const lastFwdRef = React.useRef({ row: -1, col: -1 });
+  const wheelAccRef = React.useRef(0);
   const pendingResumeRef = React.useRef(true);
   const prevKRef = React.useRef(k);
   const maskRef = React.useRef(false);
@@ -362,6 +364,8 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             }
           },
           onReady: (info) => {
+            const w = wsRef.current;
+            if (w) sendPtyFocus(w, activeRef.current && document.hasFocus());
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
             if (!info.resumeId || info.reused) return;
@@ -426,6 +430,20 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       dirtyRef.current = true;
     }, 530);
     return () => clearInterval(id);
+  }, [active]);
+
+  React.useEffect(() => {
+    const update = () => {
+      const ws = wsRef.current;
+      if (ws) sendPtyFocus(ws, activeRef.current && document.hasFocus());
+    };
+    update();
+    window.addEventListener('focus', update);
+    window.addEventListener('blur', update);
+    return () => {
+      window.removeEventListener('focus', update);
+      window.removeEventListener('blur', update);
+    };
   }, [active]);
 
   React.useEffect(() => {
@@ -563,6 +581,15 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       return;
     }
     if (!selectingRef.current || !selRef.current) {
+      const ws = wsRef.current;
+      const hoverFrame = frameRef.current;
+      if (ws && hoverFrame && hoverFrame.mouseMode === 4 && activeRef.current && !e.shiftKey) {
+        const cell = cellFromEvent(e);
+        if (cell && (cell.row !== lastFwdRef.current.row || cell.col !== lastFwdRef.current.col)) {
+          lastFwdRef.current = cell;
+          sendPtyMouse(ws, 2, 3, cell.col + 1, cell.row + 1, modBits(e));
+        }
+      }
       const canvas = canvasRef.current;
       if (canvas) {
         const frame = frameRef.current;
@@ -630,6 +657,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   };
 
   const onPointerLeave = () => {
+    if (!mouseFwdRef.current) lastFwdRef.current = { row: -1, col: -1 };
     if (!hoverRef.current) return;
     hoverRef.current = null;
     dirtyRef.current = true;
@@ -641,10 +669,14 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     const ws = wsRef.current;
     if (!ws) return;
     e.stopPropagation();
+    const px = e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX : e.deltaY;
+    wheelAccRef.current += px;
+    const lines = Math.trunc(wheelAccRef.current / WHEEL_LINE_PX);
+    if (lines === 0) return;
+    wheelAccRef.current -= lines * WHEEL_LINE_PX;
     const cell = cellFromEvent(e);
-    const dir = e.deltaY < 0 ? 1 : -1;
     clearSelection();
-    sendPtyScroll(ws, dir, 3, (cell?.col ?? 0) + 1, (cell?.row ?? 0) + 1);
+    sendPtyScroll(ws, lines < 0 ? 1 : -1, Math.abs(lines), (cell?.col ?? 0) + 1, (cell?.row ?? 0) + 1);
   };
 
   const sendData = React.useCallback((data: string) => {
