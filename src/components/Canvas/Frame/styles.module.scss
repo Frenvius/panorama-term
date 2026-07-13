@@ -3,7 +3,7 @@
   box-sizing: border-box;
   border-radius: 8px;
   pointer-events: none;
-  background: color-mix(in srgb, var(--frame-color) 8%, transparent);
+  background: color-mix(in srgb, var(--frame-color) 14%, transparent);
 }
 
 .frame::before {
