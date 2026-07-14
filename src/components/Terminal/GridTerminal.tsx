@@ -1,6 +1,7 @@
 import React from 'react';
 
 import AgentBar from '~/components/Terminal/AgentBar';
+import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import { termTheme, THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
@@ -28,7 +29,7 @@ interface GridTerminalProps {
   restartKey: number;
   onCwd: (id: string, cwd: string, branch?: string) => void;
   onOscTitle: (id: string, title: string) => void;
-  onClaudeActive?: (active: boolean) => void;
+  onAgentActive?: (type: AgentType | null) => void;
   onClaudeStatus?: (status: string) => void;
   onProgress?: (state: number, pct: number) => void;
 }
@@ -75,7 +76,7 @@ const fgOf = (w0: number): string => {
   return termTheme.ansi?.get(v) ?? hex(v);
 };
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onProgress }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onProgress }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
@@ -713,7 +714,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
           getLines={getLines}
           getStructured={getStructured}
           focusTerminal={focusTerminal}
-          onClaudeActive={onClaudeActive}
+          onAgentActive={onAgentActive}
         />
       </div>
     </>

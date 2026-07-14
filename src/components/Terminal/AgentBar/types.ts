@@ -1,5 +1,6 @@
 import type React from 'react';
 import type { ClaudeState } from '~/domain/interfaces/pty.interface';
+import type { AgentType } from './parse';
 
 export interface AgentBarProps {
   tileId: string;
@@ -8,7 +9,7 @@ export interface AgentBarProps {
   getLines: () => string[];
   getStructured: () => ClaudeState | null;
   focusTerminal: () => void;
-  onClaudeActive?: (active: boolean) => void;
+  onAgentActive?: (type: AgentType | null) => void;
 }
 
 export type SuggestTrigger = { kind: 'slash' | 'model' | 'effort'; query: string } | null;

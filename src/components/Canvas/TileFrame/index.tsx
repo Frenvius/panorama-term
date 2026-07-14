@@ -9,6 +9,8 @@ import NoteTile from '~/components/Canvas/NoteTile';
 import DiffViewer from '~/components/DiffViewer';
 import { noteTheme } from '~/usecase/util/note';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
+import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
@@ -67,10 +69,10 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
-  const [claudeLive, setClaudeLive] = React.useState(false);
-  const [claudeBusy, setClaudeBusy] = React.useState(false);
+  const [agentType, setAgentType] = React.useState<AgentType | null>(null);
+  const [agentBusy, setAgentBusy] = React.useState(false);
   const [progress, setProgress] = React.useState<{ state: number; pct: number } | null>(null);
-  const onClaudeStatus = (s: string) => setClaudeBusy(s === 'busy');
+  const onClaudeStatus = (s: string) => setAgentBusy(s === 'busy');
   const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });
 
   const startDrag = (e: React.PointerEvent) => {
@@ -121,9 +123,9 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const focusTile = () => onFocusTile(tile.id);
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
   const oscTitle = tile.oscTitle ? stripStarPrefix(tile.oscTitle).trim() : '';
-  const spinning = !tile.userTitle && claudeBusy && hasSpinnerPrefix(oscTitle);
+  const spinning = !tile.userTitle && agentBusy && hasSpinnerPrefix(oscTitle);
   const label = tile.userTitle
-    || (claudeLive && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
+    || (agentType && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
     || tile.cwd
     || tile.autoTitle
     || `${tile.type} · ${tile.id}`;
@@ -282,9 +284,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             />
           ) : (
             <span className={styles.title} data-empty={note && !tile.userTitle?.trim()} onDoubleClick={startTitleEdit}>
-              {claudeLive && !spinning && (
-                <span className={styles.claudeMark}>
-                  <ClaudeLogo size={11} />
+              {agentType && !spinning && (
+                <span className={styles.claudeMark} style={{ display: 'inline-flex', alignItems: 'center', marginRight: '4px' }}>
+                  {agentType === 'antigravity' && <AntigravityLogo size={11} />}
+                  {agentType === 'codex' && <CodexLogo size={11} />}
+                  {agentType === 'opencode' && <OpenCodeLogo size={11} />}
+                  {agentType === 'generic' && <GenericAgentLogo size={11} />}
+                  {agentType === 'claude' && <ClaudeLogo size={11} />}
                 </span>
               )}
               {noteLabel ?? label}
@@ -369,7 +375,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             cwd={tile.cwd}
             onCwd={onCwd}
             onOscTitle={onOscTitle}
-            onClaudeActive={setClaudeLive}
+            onAgentActive={setAgentType}
             onClaudeStatus={onClaudeStatus}
             onProgress={onProgress}
             restartKey={restartKey}

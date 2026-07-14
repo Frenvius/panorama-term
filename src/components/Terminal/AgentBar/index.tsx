@@ -4,8 +4,9 @@ import { Brain, Sparkles, ChevronDown } from 'lucide-react';
 import Suggest from './Suggest';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
-import { readFooter, modeKey, prettyMode, prettyModel, looksLikeClaude, detectExitBanner, parseStatusLines, detectSuggestTrigger } from './parse';
+import { readFooter, modeKey, prettyMode, prettyModel, detectAgent, type AgentType, detectExitBanner, parseStatusLines, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -71,8 +72,8 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   return out;
 };
 
-const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal, onClaudeActive }: AgentBarProps) => {
-  const [claudeActive, setClaudeActive] = React.useState(false);
+const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal, onAgentActive }: AgentBarProps) => {
+  const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
   const [history, setHistory] = React.useState<ContentPart[][]>(() => loadHistory());
   const [suggest, setSuggest] = React.useState<SuggestTrigger>(null);
@@ -114,19 +115,19 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const hidden = questionMode || manualHide;
 
   const liveSnap = (): UndoSnap => {
-    const d = draftRef.current;
     const el = editorRef.current;
-    const caret = el ? (getCaretOffset(el) ?? d.text.length) : d.text.length;
-    return { text: d.text, images: [...d.images], caret };
+    return {
+      text: draftRef.current.text,
+      images: [...draftRef.current.images],
+      caret: el ? getCaretOffset(el) ?? draftRef.current.text.length : draftRef.current.text.length
+    };
   };
 
   const checkpoint = () => {
-    const prev = prevSnapRef.current;
+    const live = liveSnap();
     const stack = undoRef.current;
-    const top = stack[stack.length - 1];
-    if (top && sameSnap(top, prev)) return;
-    stack.push(prev);
-    if (stack.length > UNDO_CAP) stack.shift();
+    if (stack.length === 0 || !sameSnap(stack[stack.length - 1], live)) stack.push(live);
+    if (stack.length > 50) stack.shift();
   };
 
   const syncFromEditor = () => {
@@ -208,17 +209,21 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
 
     const scan = () => {
       const lines = getLines();
-      const present = looksLikeClaude(lines.slice(-25).join('\n'));
+      const detected = detectAgent(lines.slice(-25).join('\n'));
       const now = Date.now();
-      if (present) {
+      if (detected) {
         lastSeenRef.current = now;
-        if (!seenRef.current) {
+        // If we already have a specific agent detected, don't let it downgrade to 'generic'
+        const currentType = seenRef.current ? agentType : null;
+        const isDowngradeToGeneric = detected === 'generic' && currentType && currentType !== 'generic';
+        
+        if (!seenRef.current || (!isDowngradeToGeneric && detected !== currentType)) {
           seenRef.current = true;
-          setClaudeActive(true);
+          setAgentType(detected);
         }
       } else if (seenRef.current && now - lastSeenRef.current > GONE_MS) {
         seenRef.current = false;
-        setClaudeActive(false);
+        setAgentType(null);
       }
       if (!seenRef.current) return;
 
@@ -254,15 +259,15 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     };
   }, [getLines, getStructured]);
 
-  const onClaudeActiveRef = React.useRef(onClaudeActive);
-  onClaudeActiveRef.current = onClaudeActive;
+  const onAgentActiveRef = React.useRef(onAgentActive);
+  onAgentActiveRef.current = onAgentActive;
 
   React.useEffect(() => {
-    onClaudeActiveRef.current?.(claudeActive);
-  }, [claudeActive]);
+    onAgentActiveRef.current?.(agentType);
+  }, [agentType]);
 
   React.useEffect(() => {
-    if (claudeActive) {
+    if (agentType) {
       let restored = cloneDraft(EMPTY_DRAFT);
       try {
         const raw = localStorage.getItem(draftKey(tileId));
@@ -290,10 +295,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       setSubmitting(false);
       setManualHide(false);
     }
-  }, [claudeActive, tileId]);
+  }, [agentType, tileId]);
 
   React.useEffect(() => {
-    if (!claudeActive) return;
+    if (!agentType) return;
     const t = setTimeout(() => {
       try {
         if (isDraftEmpty(draft)) localStorage.removeItem(draftKey(tileId));
@@ -303,14 +308,14 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [draft, claudeActive, tileId]);
+  }, [draft, agentType, tileId]);
 
   React.useEffect(() => {
     if (!active) {
       barOpenRef.current = null;
       return;
     }
-    const barOpen = claudeActive && !hidden;
+    const barOpen = agentType && !hidden;
     if (barOpenRef.current === barOpen) return;
     barOpenRef.current = barOpen;
     const el = editorRef.current;
@@ -320,10 +325,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       return;
     }
     focusTerminal();
-  }, [active, claudeActive, hidden, focusTerminal]);
+  }, [active, agentType, hidden, focusTerminal]);
 
   React.useEffect(() => {
-    if (!claudeActive || !active) return;
+    if (!agentType || !active) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
       if (e.key !== 'g' && e.key !== 'G') return;
@@ -333,10 +338,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [claudeActive, active]);
+  }, [agentType, active]);
 
   React.useEffect(() => {
-    if (!claudeActive || !active || hidden) return;
+    if (!agentType || !active || hidden) return;
     const onTab = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
       if (!document.hasFocus() || document.activeElement === editorRef.current) return;
@@ -350,10 +355,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     };
     window.addEventListener('keydown', onTab, true);
     return () => window.removeEventListener('keydown', onTab, true);
-  }, [claudeActive, active, hidden]);
+  }, [agentType, active, hidden]);
 
   React.useEffect(() => {
-    if (!claudeActive) return;
+    if (!agentType) return;
     const el = editorRef.current;
     if (!el) return;
     const onBeforeInput = (e: Event) => {
@@ -368,7 +373,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     };
     el.addEventListener('beforeinput', onBeforeInput);
     return () => el.removeEventListener('beforeinput', onBeforeInput);
-  }, [claudeActive]);
+  }, [agentType]);
 
   React.useEffect(() => {
     if (!modelMenu && !effortMenu) return;
@@ -538,6 +543,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   };
 
   const fetchSlash = React.useCallback((query: string): PromptSuggestion[] => {
+    if (agentType !== 'claude') return [];
     const q = query.toLowerCase();
     return CLAUDE_SLASH_COMMANDS.filter(
       (c) =>
@@ -770,19 +776,52 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     setEffortMenu(false);
   };
 
-  if (!claudeActive) return null;
+  const getAgentMetadata = () => {
+    switch (agentType) {
+      case 'antigravity':
+        return {
+          placeholder: 'Tell Antigravity what to do... (up-arrow history)',
+          logo: <AntigravityLogo size={18} className={styles.agentIcon} />
+        };
+      case 'codex':
+        return {
+          placeholder: 'Tell Codex what to do... (up-arrow history)',
+          logo: <CodexLogo size={18} className={styles.agentIcon} />
+        };
+      case 'opencode':
+        return {
+          placeholder: 'Tell OpenCode what to do... (up-arrow history)',
+          logo: <OpenCodeLogo size={18} className={styles.agentIcon} />
+        };
+      case 'generic':
+        return {
+          placeholder: 'Tell Agent what to do... (up-arrow history)',
+          logo: <GenericAgentLogo size={18} className={styles.agentIcon} />
+        };
+      case 'claude':
+      default:
+        return {
+          placeholder: 'Tell Claude what to do... (/ commands, up-arrow history)',
+          logo: <ClaudeLogo />
+        };
+    }
+  };
+
+  const meta = getAgentMetadata();
+
+  if (!agentType || agentType === 'opencode') return null;
 
   return (
     <>
       {manualHide && !questionMode && (
         <button className={styles.restore} title="Restore prompt (Ctrl+G)" onClick={restore}>
-          <ClaudeLogo />
+          {meta.logo}
         </button>
       )}
       <div className={styles.bar} style={hidden ? { display: 'none' } : undefined} onClick={focusEditor}>
         <div className={styles.row}>
           <div className={styles.logo} aria-hidden="true">
-            <ClaudeLogo />
+            {meta.logo}
           </div>
           <div
             ref={editorRef}
@@ -793,62 +832,64 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
             aria-label="Prompt input"
             className={styles.editor}
             suppressContentEditableWarning
-            data-placeholder="Tell Claude what to do... (/ commands, up-arrow history)"
+            data-placeholder={meta.placeholder}
             data-empty={isEmpty ? 'true' : undefined}
             onInput={handleInput}
             onPaste={handlePaste}
             onClick={handleEditorClick}
             onKeyDown={onKeyDown}
           />
-          <div className={styles.actions}>
-            <div className={styles.action} ref={effortRef}>
-              <button
-                type="button"
-                title={effort ? `Effort: ${effort}` : 'Set effort'}
-                className={styles.effort}
-                style={effortColor ? { color: effortColor } : undefined}
-                onClick={toggleEffortMenu}
-              >
-                <Brain size={14} />
-              </button>
-              {effortMenu && (
-                <div className={styles.menu}>
-                  {EFFORT_LEVELS.map((l) => (
-                    <button
-                      key={l.id}
-                      type="button"
-                      style={{ color: l.color }}
-                      onClick={pickEffort(l.id)}
-                      className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                    >
-                      {l.id}
-                      <span className={styles.menuSub}>{l.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+          {agentType === 'claude' && (
+            <div className={styles.actions}>
+              <div className={styles.action} ref={effortRef}>
+                <button
+                  type="button"
+                  title={effort ? `Effort: ${effort}` : 'Set effort'}
+                  className={styles.effort}
+                  style={effortColor ? { color: effortColor } : undefined}
+                  onClick={toggleEffortMenu}
+                >
+                  <Brain size={14} />
+                </button>
+                {effortMenu && (
+                  <div className={styles.menu}>
+                    {EFFORT_LEVELS.map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        style={{ color: l.color }}
+                        onClick={pickEffort(l.id)}
+                        className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                      >
+                        {l.id}
+                        <span className={styles.menuSub}>{l.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className={styles.action} ref={modelRef}>
+                <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
+                  {MODEL_QUICK_SWITCHES.find((m) => m.id === currentModelId)?.title ?? 'Model'}
+                  <ChevronDown size={11} />
+                </button>
+                {modelMenu && (
+                  <div className={styles.menu}>
+                    {MODEL_QUICK_SWITCHES.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={pickModel(m.id)}
+                        className={m.id === currentModelId ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                      >
+                        {m.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className={styles.action} ref={modelRef}>
-              <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
-                {MODEL_QUICK_SWITCHES.find((m) => m.id === currentModelId)?.title ?? 'Model'}
-                <ChevronDown size={11} />
-              </button>
-              {modelMenu && (
-                <div className={styles.menu}>
-                  {MODEL_QUICK_SWITCHES.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={pickModel(m.id)}
-                      className={m.id === currentModelId ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                    >
-                      {m.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          )}
         </div>
         <div className={styles.hints}>
           {submitting

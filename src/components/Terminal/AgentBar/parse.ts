@@ -41,19 +41,26 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
   return out;
 };
 
-export const looksLikeClaude = (text: string): boolean => {
-  if (/[╭╮╰╯]/.test(text)) return true;
+export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'generic';
+
+export const detectAgent = (text: string): AgentType | null => {
+  const lower = text.toLowerCase();
+  if (lower.includes('antigravity') || lower.includes('agy')) return 'antigravity';
+  if (lower.includes('codex') || lower.includes('github copilot') || lower.includes('copilot-cli')) return 'codex';
+  if (lower.includes('opencode')) return 'opencode';
+  if (lower.includes('claude code') || lower.includes('claude-code') || lower.includes('claudecode') || /\bclaude\b/i.test(text)) return 'claude';
+  
+  if (/[╭╮╰╯]/.test(text)) return 'generic';
   if (
     /\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)/i.test(
       text
     )
   ) {
-    return true;
+    return 'generic';
   }
-  if (/\[[^\]\n]*\b(opus|sonnet|haiku|fable)\b[^\]\n]*\]/i.test(text)) return true;
-  if (/\bClaude Code v\d/i.test(text)) return true;
-  if (/press ctrl-?c again/i.test(text)) return true;
-  return false;
+  if (/\[[^\]\n]*\b(opus|sonnet|haiku|fable)\b[^\]\n]*\]/i.test(text)) return 'generic';
+  if (/press ctrl-?c again/i.test(text)) return 'generic';
+  return null;
 };
 
 export const detectExitBanner = (lines: string[]): boolean =>
