@@ -378,6 +378,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             tileId={tile.id}
             cols={termCols}
             rows={termRows}
+            onContextMenu={openMenu}
           />
         </div>
       )}

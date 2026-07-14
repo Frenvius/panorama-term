@@ -31,6 +31,7 @@ interface GridTerminalProps {
   onClaudeActive?: (active: boolean) => void;
   onClaudeStatus?: (status: string) => void;
   onProgress?: (state: number, pct: number) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 const FONT = 12;
@@ -75,7 +76,7 @@ const fgOf = (w0: number): string => {
   return termTheme.ansi?.get(v) ?? hex(v);
 };
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onProgress }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onProgress, onContextMenu }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
@@ -703,6 +704,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
         onPointerCancel={onPointerUp}
+        onContextMenu={onContextMenu}
         className={styles.wasm}
       />
       <div className={styles.agentScale} style={{ width: `calc(100% / ${k})`, height: `calc(100% / ${k})`, transform: `scale(${k})` }}>
