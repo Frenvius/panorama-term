@@ -330,9 +330,21 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(
+            tauri_plugin_mcp_bridge::Builder::new()
+                .bind_address("127.0.0.1")
+                .base_port(9523)
+                .build(),
+        );
+    }
+
+    builder
         .setup(|app| {
             spawn_sidecar();
             create_notif_window(app.handle())?;
