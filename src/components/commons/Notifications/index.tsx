@@ -99,7 +99,10 @@ const NotificationOverlay = () => {
       void invoke('notif_layout', { height: 0 });
       return;
     }
-    if (toasts.some((t) => !heights[t.id])) return;
+    if (toasts.some((t) => !heights[t.id])) {
+      void invoke('notif_layout', { height: PAD_TOP + PAD_BOTTOM + 72 });
+      return;
+    }
 
     let top = 0;
     if (expanded) {
