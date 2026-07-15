@@ -83,7 +83,9 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const [claudeLive, setClaudeLive] = React.useState(false);
   const [claudeBusy, setClaudeBusy] = React.useState(false);
   const [progress, setProgress] = React.useState<{ state: number; pct: number } | null>(null);
+  const [diff, setDiff] = React.useState<{ a: number; r: number } | null>(null);
   const onClaudeStatus = (s: string) => setClaudeBusy(s === 'busy');
+  const onClaudeDiff = (a: number, r: number) => setDiff(a || r ? { a, r } : null);
   const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });
 
   const startDrag = (e: React.PointerEvent) => {
@@ -386,6 +388,12 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             </span>
           )}
           <div className={styles.actions}>
+            {!note && diff && (
+              <span className={styles.diffStat}>
+                <span className={styles.diffAdd}>+{diff.a}</span>
+                <span className={styles.diffDel}>-{diff.r}</span>
+              </span>
+            )}
             {note && (
               <button
                 className={tile.renderOnly ? `${styles.action} ${styles.rawOn}` : styles.action}
@@ -468,6 +476,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             onOscTitle={onOscTitle}
             onClaudeActive={setClaudeLive}
             onClaudeStatus={onClaudeStatus}
+            onClaudeDiff={onClaudeDiff}
             onProgress={onProgress}
             restartKey={restartKey}
             active={active}

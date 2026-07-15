@@ -32,6 +32,8 @@ export interface ClaudeState {
   thinking?: boolean;
   rateFiveHour?: number;
   rateSevenDay?: number;
+  linesAdded?: number;
+  linesRemoved?: number;
   reset?: boolean;
 }
 

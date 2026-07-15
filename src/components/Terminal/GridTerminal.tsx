@@ -30,6 +30,7 @@ interface GridTerminalProps {
   onOscTitle: (id: string, title: string) => void;
   onClaudeActive?: (active: boolean) => void;
   onClaudeStatus?: (status: string) => void;
+  onClaudeDiff?: (added: number, removed: number) => void;
   onProgress?: (state: number, pct: number) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }
@@ -76,7 +77,7 @@ const fgOf = (w0: number): string => {
   return termTheme.ansi?.get(v) ?? hex(v);
 };
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onProgress, onContextMenu }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
@@ -105,6 +106,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const onCwdRef = React.useRef(onCwd);
   const onOscTitleRef = React.useRef(onOscTitle);
   const onClaudeStatusRef = React.useRef(onClaudeStatus);
+  const onClaudeDiffRef = React.useRef(onClaudeDiff);
   const onProgressRef = React.useRef(onProgress);
   const agentEventsRef = React.useRef(false);
   const lastAgentEventRef = React.useRef(0);
@@ -116,6 +118,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   onCwdRef.current = onCwd;
   onOscTitleRef.current = onOscTitle;
   onClaudeStatusRef.current = onClaudeStatus;
+  onClaudeDiffRef.current = onClaudeDiff;
   onProgressRef.current = onProgress;
 
   const isWatching = React.useCallback((): boolean => {
@@ -328,6 +331,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             const { reset, ...rest } = state;
             if (reset) statusRef.current = undefined;
             claudeRef.current = reset ? rest : { ...claudeRef.current, ...rest };
+            onClaudeDiffRef.current?.(claudeRef.current.linesAdded ?? 0, claudeRef.current.linesRemoved ?? 0);
             const prev = statusRef.current;
             const next = state.status;
             if (next && next !== prev) {

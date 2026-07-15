@@ -176,6 +176,25 @@
   gap: 0;
 }
 
+.diffStat {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  align-items: center;
+  margin-right: 6px;
+  font-family: 'Hack', monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.diffAdd {
+  color: #5fb872;
+}
+
+.diffDel {
+  color: #e5534b;
+}
+
 .action {
   display: flex;
   align-items: center;

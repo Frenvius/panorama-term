@@ -511,6 +511,8 @@ struct ClaudeTracker {
     mode: Option<String>,
     perm: Option<String>,
     tokens: Option<u64>,
+    added: u64,
+    removed: u64,
     effort: Option<String>,
     default_model: Option<String>,
     status: Option<String>,
@@ -519,7 +521,63 @@ struct ClaudeTracker {
     reset: bool,
 }
 
+fn line_count(s: &str) -> u64 {
+    if s.is_empty() { 0 } else { s.lines().count() as u64 }
+}
+
+fn diff_lines(old: &str, new: &str) -> (u64, u64) {
+    let o: Vec<&str> = old.lines().collect();
+    let n: Vec<&str> = new.lines().collect();
+    let mut lead = 0;
+    while lead < o.len() && lead < n.len() && o[lead] == n[lead] {
+        lead += 1;
+    }
+    let mut trail = 0;
+    while trail < o.len() - lead && trail < n.len() - lead
+        && o[o.len() - 1 - trail] == n[n.len() - 1 - trail]
+    {
+        trail += 1;
+    }
+    ((n.len() - lead - trail) as u64, (o.len() - lead - trail) as u64)
+}
+
 impl ClaudeTracker {
+    fn count_edits(&mut self, content: &serde_json::Value) {
+        let Some(blocks) = content.as_array() else { return };
+        let field = |v: &serde_json::Value, k: &str| {
+            v.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string()
+        };
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+            let Some(input) = block.get("input") else { continue };
+            match block.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+                "Edit" => {
+                    let (a, r) = diff_lines(&field(input, "old_string"), &field(input, "new_string"));
+                    self.added += a;
+                    self.removed += r;
+                }
+                "Write" => self.added += line_count(&field(input, "content")),
+                "NotebookEdit" => {
+                    let (a, r) = diff_lines(&field(input, "old_source"), &field(input, "new_source"));
+                    self.added += a;
+                    self.removed += r;
+                }
+                "MultiEdit" => {
+                    if let Some(edits) = input.get("edits").and_then(|e| e.as_array()) {
+                        for e in edits {
+                            let (a, r) = diff_lines(&field(e, "old_string"), &field(e, "new_string"));
+                            self.added += a;
+                            self.removed += r;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn ingest(&mut self, line: &str) {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             return;
@@ -537,6 +595,16 @@ impl ClaudeTracker {
             }
             _ => {}
         }
+        if entry
+            .pointer("/attachment/hookName")
+            .and_then(|h| h.as_str())
+            .is_some_and(|n| n == "SessionStart:clear")
+        {
+            self.added = 0;
+            self.removed = 0;
+            self.tokens = None;
+            self.reset = true;
+        }
         let msg = entry.get("message");
         if msg.and_then(|m| m.get("role")).and_then(|r| r.as_str()) != Some("assistant") {
             return;
@@ -546,6 +614,9 @@ impl ClaudeTracker {
         }
         if let Some(tok) = msg.and_then(|m| m.get("usage")).and_then(usage_tokens) {
             self.tokens = Some(tok);
+        }
+        if let Some(content) = msg.and_then(|m| m.get("content")) {
+            self.count_edits(content);
         }
     }
 
@@ -634,6 +705,10 @@ impl ClaudeTracker {
         }
         if let Some(s) = &self.status {
             obj.insert("status".into(), s.clone().into());
+        }
+        if self.added > 0 || self.removed > 0 {
+            obj.insert("linesAdded".into(), self.added.into());
+            obj.insert("linesRemoved".into(), self.removed.into());
         }
         if self.reset {
             obj.insert("reset".into(), true.into());
@@ -2363,10 +2438,19 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_event_ws_msg, decode_osc52, default_status_line, sanitize_event_text,
+        agent_event_ws_msg, decode_osc52, default_status_line, diff_lines, sanitize_event_text,
         status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering,
         OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
+
+    #[test]
+    fn diff_lines_trims_common_context() {
+        assert_eq!(diff_lines("a\nb\nc", "a\nX\nc"), (1, 1));
+        assert_eq!(diff_lines("", "a\nb"), (2, 0));
+        assert_eq!(diff_lines("a\nb", ""), (0, 2));
+        assert_eq!(diff_lines("a\nb\nc", "a\nb\nc"), (0, 0));
+        assert_eq!(diff_lines("a\nb", "a\nb\nc\nd"), (2, 0));
+    }
 
     #[test]
     fn statusline_json_becomes_claude_msg() {
@@ -2540,6 +2624,21 @@ mod tests {
         let raw = r#"{"pid":105884,"sessionId":"abc-123","cwd":"C:\\Users\\x","status":"waiting"}"#;
         assert_eq!(super::status_from_session_json(raw, "abc-123").as_deref(), Some("waiting"));
         assert_eq!(super::status_from_session_json(raw, "other"), None);
+    }
+
+    #[test]
+    fn session_clear_resets_counters() {
+        let mut t = super::ClaudeTracker::default();
+        t.ingest(
+            r#"{"message":{"role":"assistant","usage":{"input_tokens":10},"content":[{"type":"tool_use","name":"Write","input":{"content":"a\nb\nc"}}]}}"#,
+        );
+        assert_eq!(t.tokens, Some(10));
+        assert_eq!(t.added, 3);
+        t.ingest(r#"{"type":"attachment","attachment":{"hookName":"SessionStart:clear"}}"#);
+        assert_eq!(t.tokens, None);
+        assert_eq!(t.added, 0);
+        assert_eq!(t.removed, 0);
+        assert!(t.reset);
     }
 
     #[test]
