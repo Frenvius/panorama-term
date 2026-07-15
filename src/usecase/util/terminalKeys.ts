@@ -27,7 +27,11 @@ export const keyToBytes = (e: KeyEvent): string | null => {
   if (metaKey) return null;
   const mod = 1 + (shiftKey ? 1 : 0) + (altKey ? 2 : 0) + (ctrlKey ? 4 : 0);
 
-  if (key === 'Backspace') return ctrlKey || altKey ? '\x1b\x7f' : '\x7f';
+  if (key === 'Backspace') {
+    if (ctrlKey) return '\x08';
+    if (altKey) return '\x1b\x7f';
+    return '\x7f';
+  }
   if (key === 'Delete' && ctrlKey) return '\x1bd';
   if (key === 'Tab') return shiftKey ? '\x1b[Z' : '\t';
   if (key === 'Enter') return shiftKey && !ctrlKey && !altKey ? '\x1b\r' : '\r';
