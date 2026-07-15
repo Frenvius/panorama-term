@@ -4,7 +4,7 @@ import type { EditorView } from '@codemirror/view';
 import { Group, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
 import { revealPath } from '~/adapter/shell/shell.client';
-import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
+import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
@@ -289,6 +289,23 @@ const Canvas = () => {
     if (editor) writeClipboard(editor.state.doc.toString());
   };
 
+  const copyNoteSelection = (id: string) => {
+    const editor = noteEditors[id];
+    if (!editor) return;
+    const { from, to } = editor.state.selection.main;
+    writeClipboard(from === to ? editor.state.doc.toString() : editor.state.sliceDoc(from, to));
+  };
+
+  const pasteNote = async (id: string) => {
+    const editor = noteEditors[id];
+    if (!editor) return;
+    const text = await readClipboard();
+    if (!text) return;
+    const { from, to } = editor.state.selection.main;
+    editor.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length } });
+    editor.focus();
+  };
+
   const registerEditor = React.useCallback((id: string, editor: EditorView | null) => {
     setNoteEditors((prev) => {
       if (editor) return { ...prev, [id]: editor };
@@ -423,6 +440,8 @@ const Canvas = () => {
               onNoteEditor={registerEditor}
               onNoteTitle={setNoteTitle}
               onCopyNote={copyNote}
+              onCopyNoteSelection={copyNoteSelection}
+              onPasteNote={pasteNote}
               onToggleRaw={toggleNoteRaw}
               onRename={setTileTitle}
               onCopyPath={copyTilePath}
