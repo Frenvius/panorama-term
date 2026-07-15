@@ -5,6 +5,7 @@ export type CommandId =
   | 'tile.new'
   | 'note.new'
   | 'tile.close'
+  | 'tile.reopen'
   | 'view.resetZoom'
   | 'view.navigator'
   | 'diff.close'
@@ -28,6 +29,7 @@ export const KEYBINDINGS: Command[] = [
   { id: 'tile.new', label: 'New terminal', group: 'Canvas', defaultCombo: 'mod+t' },
   { id: 'note.new', label: 'New note', group: 'Canvas', defaultCombo: 'mod+shift+n' },
   { id: 'tile.close', label: 'Close active tile', group: 'Canvas', defaultCombo: 'mod+w' },
+  { id: 'tile.reopen', label: 'Reopen closed tile', group: 'Canvas', defaultCombo: 'mod+shift+t' },
   { id: 'tile.fullscreen', label: 'Toggle fullscreen', group: 'Canvas', defaultCombo: 'mod+shift+f' },
   { id: 'view.resetZoom', label: 'Reset zoom', group: 'View', defaultCombo: 'mod+0' },
   { id: 'view.navigator', label: 'Toggle navigator', group: 'View', defaultCombo: 'mod+b' },

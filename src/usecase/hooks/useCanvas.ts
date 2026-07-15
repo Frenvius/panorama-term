@@ -45,6 +45,25 @@ type PanOrigin = { ox: number; oy: number; vx: number; vy: number; moved: boolea
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
+const CLOSED_KEY = 'panorama:closedTiles';
+const CLOSED_MAX = 20;
+
+const loadClosed = (ws: string | null): Tile[] => {
+  if (!ws) return [];
+  try {
+    return JSON.parse(localStorage.getItem(`${CLOSED_KEY}:${ws}`) || '[]');
+  } catch {
+    return [];
+  }
+};
+
+const saveClosed = (ws: string | null, stack: Tile[]): void => {
+  if (!ws) return;
+  try {
+    localStorage.setItem(`${CLOSED_KEY}:${ws}`, JSON.stringify(stack.slice(-CLOSED_MAX)));
+  } catch {}
+};
+
 const FOCUS_MS = 350;
 
 const FRAME_PAD = 2 * CELL;
@@ -286,6 +305,10 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
 
   const closeTile = React.useCallback((id: string) => {
     const closing = tilesRef.current.find((t) => t.id === id);
+    if (closing) {
+      const ws = wsIdRef.current;
+      saveClosed(ws, [...loadClosed(ws), closing]);
+    }
     if (closing?.type === 'note') {
       for (const termId of closing.linkedTo ?? []) void unlinkNote(id, termId).catch(() => {});
       if (wsIdRef.current) void deleteNote(wsIdRef.current, id).catch(() => {});
@@ -302,6 +325,20 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     );
     setActiveTile((a) => (a === id ? null : a));
     void killPtySession(id);
+  }, []);
+
+  const reopenTile = React.useCallback(() => {
+    const ws = wsIdRef.current;
+    const stack = loadClosed(ws);
+    const tile = stack.pop();
+    saveClosed(ws, stack);
+    if (!tile) return;
+    setTiles((prev) => {
+      if (prev.some((t) => t.id === tile.id)) return prev;
+      const zIndex = prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
+      return [...prev, { ...tile, zIndex, ptySessionId: undefined }];
+    });
+    setActiveTile(tile.id);
   }, []);
 
   const duplicateTile = React.useCallback((id: string) => {
@@ -763,6 +800,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     unlinkNoteFrom,
     dragFrame,
     closeTile,
+    reopenTile,
     snapFrame,
     activeTile,
     setTileCwd,

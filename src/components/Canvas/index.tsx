@@ -74,6 +74,7 @@ const Canvas = () => {
     unlinkNoteFrom,
     dragFrame,
     closeTile,
+    reopenTile,
     snapFrame,
     activeTile,
     resetZoom,
@@ -202,6 +203,10 @@ const Canvas = () => {
         closeTile(id);
         return true;
       }
+      if (cmd === 'tile.reopen') {
+        reopenTile();
+        return true;
+      }
       if (cmd === 'view.resetZoom') {
         resetZoom();
         return true;
@@ -222,7 +227,7 @@ const Canvas = () => {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleFs, addTile, addNote, closeTile, resetZoom]);
+  }, [toggleFs, addTile, addNote, closeTile, reopenTile, resetZoom]);
 
   React.useEffect(() => {
     if (!fsId) return;
