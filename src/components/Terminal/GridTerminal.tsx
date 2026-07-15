@@ -373,7 +373,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             const id = info.resumeId;
             setTimeout(() => {
               const w = wsRef.current;
-              if (w) sendPtyInput(w, `claude --resume ${id}\r`);
+              if (w) sendPtyInput(w, ` claude --resume ${id}\r`);
             }, 900);
           }
         }

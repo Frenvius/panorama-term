@@ -1293,6 +1293,20 @@ fn powershell_osc7_snippet() -> String {
     .join("\r\n")
 }
 
+fn powershell_history_filter_snippet() -> String {
+    [
+        "",
+        "if ($env:PANORAMA_TERMINAL -and (Get-Module -ListAvailable PSReadLine)) {",
+        "    Set-PSReadLineOption -AddToHistoryHandler {",
+        "        param($__panoLine)",
+        r"        return ($__panoLine -notmatch '^\s*claude --resume ')",
+        "    }",
+        "}",
+        "",
+    ]
+    .join("\r\n")
+}
+
 fn ensure_powershell_profile_osc7(shell: &str) {
     if !cfg!(windows) {
         return;
@@ -1325,7 +1339,16 @@ fn ensure_powershell_profile_osc7(shell: &str) {
             return;
         }
         let existing = std::fs::read_to_string(&profile_path).unwrap_or_default();
-        if existing.contains("__panoOldPrompt") {
+        let blocks = [
+            ("__panoOldPrompt", powershell_osc7_snippet()),
+            ("__panoLine", powershell_history_filter_snippet()),
+        ];
+        let missing: Vec<&str> = blocks
+            .iter()
+            .filter(|(marker, _)| !existing.contains(marker))
+            .map(|(_, snippet)| snippet.as_str())
+            .collect();
+        if missing.is_empty() {
             return;
         }
         if let Some(parent) = Path::new(&profile_path).parent() {
@@ -1336,7 +1359,9 @@ fn ensure_powershell_profile_osc7(shell: &str) {
             .append(true)
             .open(&profile_path)
         {
-            let _ = f.write_all(powershell_osc7_snippet().as_bytes());
+            for snippet in missing {
+                let _ = f.write_all(snippet.as_bytes());
+            }
         }
     });
 }
