@@ -40,6 +40,7 @@ const CELL_H = 15;
 const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
+const NOTIFY_IDLE_GRACE_MS = 10000;
 const DEFAULT_FG = 0xc7d0e0;
 const QUAD = [0b0010, 0b0001, 0b1000, 0b1011, 0b1001, 0b1110, 0b1101, 0b0100, 0b0110, 0b0111];
 
@@ -110,6 +111,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const onProgressRef = React.useRef(onProgress);
   const agentEventsRef = React.useRef(false);
   const lastAgentEventRef = React.useRef(0);
+  const lastNotifyRef = React.useRef(0);
   activeRef.current = active;
   visibleRef.current = visible;
   kRef.current = k;
@@ -363,11 +365,14 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
             }
             if (isWatching()) return;
             if (evt.event === 'stop') {
+              lastNotifyRef.current = Date.now();
               notifyClaude(tileId, 'finished', evt.response || undefined);
             } else if (evt.event === 'permission') {
               const detail = [evt.toolName, evt.message].filter(Boolean).join(': ');
+              lastNotifyRef.current = Date.now();
               notifyClaude(tileId, 'permission', detail || undefined);
             } else if (evt.event === 'notification') {
+              if (Date.now() - lastNotifyRef.current < NOTIFY_IDLE_GRACE_MS) return;
               if (!document.hasFocus()) notifyClaude(tileId, 'idle', evt.message || undefined);
             }
           },

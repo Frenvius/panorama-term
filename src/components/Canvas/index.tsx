@@ -26,6 +26,9 @@ import styles from './styles.module.scss';
 
 const FS_ANIM = 170;
 const DIFF_ANIM = 130;
+
+let pendingFocusTileId: string | null = null;
+
 const DBLCLICK_MS = 400;
 const ALERTS_KEY = 'panorama:alerts';
 
@@ -46,7 +49,7 @@ interface Menu {
 }
 
 const Canvas = () => {
-  const { activeId, activeState, saveActiveState } = useWorkspace();
+  const { activeId, activeState, saveActiveState, tabs, activeTabId, moveTileToTab } = useWorkspace();
   const {
     view,
     tiles,
@@ -106,6 +109,20 @@ const Canvas = () => {
   React.useEffect(() => {
     localStorage.setItem('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
+
+  React.useEffect(() => {
+    if (pendingFocusTileId) {
+      const id = pendingFocusTileId;
+      const tile = tiles.find((t) => t.id === id);
+      if (tile) {
+        pendingFocusTileId = null;
+        setTimeout(() => {
+          activateTile(id);
+          focusTile(id, false);
+        }, 150);
+      }
+    }
+  }, [tiles, activeTabId, focusTile, activateTile]);
 
   const [diff, setDiff] = React.useState<{ root: string; file: string } | null>(null);
   const [diffFiles, setDiffFiles] = React.useState<string[]>([]);
@@ -497,6 +514,14 @@ const Canvas = () => {
     setDiff({ root: diff.root, file: diffFiles[diffAt + step] });
   };
 
+  const moveTileToTabWrapper = React.useCallback(
+    (tileId: string, targetTabId: string) => {
+      pendingFocusTileId = tileId;
+      void moveTileToTab(tileId, { tiles, frames, view }, targetTabId);
+    },
+    [moveTileToTab, tiles, frames, view]
+  );
+
   useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert, onClear: clearAlert });
 
   React.useEffect(() => {
@@ -617,6 +642,9 @@ const Canvas = () => {
               onDuplicate={duplicateTile}
               onTogglePin={togglePin}
               onToggleSelect={toggleSelect}
+              onMoveToTab={moveTileToTabWrapper}
+              tabs={tabs}
+              activeTabId={activeTabId}
               active={t.id === activeTile}
               selected={selected.has(t.id)}
               alert={alerts.get(t.id) ?? null}
