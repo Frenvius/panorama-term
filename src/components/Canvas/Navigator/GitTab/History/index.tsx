@@ -30,6 +30,9 @@ const subject = (row: LogRow): string => row.message.split('\n', 1)[0];
 
 const refsLabel = (refs: string): string => refs.replace(/^HEAD -> /, '');
 
+const sameLog = (prev: LogRow[], next: LogRow[]): boolean =>
+  prev.length === next.length && prev.every((row, at) => row.short === next[at].short && row.refs === next[at].refs);
+
 const startOfDay = (at: Date): number => new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
 
 const stamp = (raw: string): string => {
@@ -101,21 +104,35 @@ const History = ({ root }: HistoryProps) => {
   const [local, setLocal] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<{ x: number; y: number; row: LogRow } | null>(null);
 
-  const load = React.useCallback(() => {
-    setBusy(true);
-    gitUnpushedCommits(root)
-      .then((ahead) => setLocal(new Set(ahead.map((entry) => entry.short))))
-      .catch(() => setLocal(new Set()));
-    gitLogGraph(root, limit)
-      .then((next) => {
-        setRows(next);
-        setError(null);
-      })
-      .catch((err: unknown) => setError(typeof err === 'string' ? err : String(err)))
-      .finally(() => setBusy(false));
-  }, [root, limit]);
+  const fetchLog = React.useCallback(
+    (quiet: boolean) => {
+      if (!quiet) setBusy(true);
+      gitUnpushedCommits(root)
+        .then((ahead) => setLocal(new Set(ahead.map((entry) => entry.short))))
+        .catch(() => setLocal(new Set()));
+      gitLogGraph(root, limit)
+        .then((next) => {
+          setRows((prev) => (prev && sameLog(prev, next) ? prev : next));
+          setError(null);
+        })
+        .catch((err: unknown) => {
+          if (!quiet) setError(typeof err === 'string' ? err : String(err));
+        })
+        .finally(() => {
+          if (!quiet) setBusy(false);
+        });
+    },
+    [root, limit]
+  );
+
+  const load = React.useCallback(() => fetchLog(false), [fetchLog]);
 
   React.useEffect(load, [load]);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => fetchLog(true), 5000);
+    return () => window.clearInterval(timer);
+  }, [fetchLog]);
 
   React.useEffect(() => {
     gitRemoteUrl(root)
