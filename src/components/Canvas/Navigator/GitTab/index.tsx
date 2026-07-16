@@ -48,6 +48,15 @@ interface GitTabProps {
 
 const stopClick = (e: React.MouseEvent) => e.stopPropagation();
 
+const VIEW_KEY = 'panorama:gitView';
+const VIEWS = ['changes', 'history'] as const;
+type View = (typeof VIEWS)[number];
+
+const savedView = (): View => {
+  const raw = localStorage.getItem(VIEW_KEY);
+  return VIEWS.includes(raw as View) ? (raw as View) : 'changes';
+};
+
 const STATUS_COLOR: Record<string, string> = {
   modified: '#6897bb',
   added: '#629755',
@@ -134,7 +143,7 @@ const TriCheckbox = ({ state, onChange }: TriCheckboxProps) => {
 
 const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const listRef = React.useRef<HTMLDivElement>(null);
-  const [view, setView] = React.useState<'changes' | 'history'>('changes');
+  const [view, setView] = React.useState<View>(savedView);
   const [status, setStatus] = React.useState<StatusSnapshot | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(() => new Set());
   const [msg, setMsg] = React.useState('');
@@ -157,6 +166,10 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
   const commitRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    localStorage.setItem(VIEW_KEY, view);
+  }, [view]);
 
   React.useEffect(() => {
     if (!history && !amendMenu) return;
