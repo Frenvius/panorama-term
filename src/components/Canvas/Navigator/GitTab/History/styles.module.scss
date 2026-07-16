@@ -102,16 +102,22 @@
     }
 
     .side {
-      flex: none;
+      display: contents;
     }
 
     .subject {
-      flex: 1;
+      flex: 1 1 auto;
+    }
+
+    .refs {
+      flex: 0 100 auto;
+      min-width: 48px;
+      max-width: 200px;
     }
 
     .author {
       flex: none;
-      max-width: 120px;
+      max-width: 160px;
     }
 
     .date {

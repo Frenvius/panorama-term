@@ -28,6 +28,8 @@ const author = (row: LogRow): string => (row.committer === row.author ? row.auth
 
 const subject = (row: LogRow): string => row.message.split('\n', 1)[0];
 
+const refsLabel = (refs: string): string => refs.replace(/^HEAD -> /, '');
+
 const startOfDay = (at: Date): number => new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
 
 const stamp = (raw: string): string => {
@@ -187,7 +189,11 @@ const History = ({ root }: HistoryProps) => {
                   {subject(row)}
                 </span>
                 <span className={styles.side}>
-                  {row.refs && <span className={styles.refs}>{row.refs}</span>}
+                  {row.refs && (
+                    <span className={styles.refs} title={row.refs}>
+                      {refsLabel(row.refs)}
+                    </span>
+                  )}
                   <span className={styles.author} title={author(row)}>
                     {author(row)}
                   </span>
