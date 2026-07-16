@@ -257,7 +257,6 @@ export const insertPartsAtCaret = (el: HTMLElement, text: string, imagePaths: st
   const sel = window.getSelection();
   sel?.removeAllRanges();
   sel?.addRange(range);
-  document.execCommand('insertText', false, ' ');
 };
 
 const getCaretRect = (el: HTMLElement): DOMRect | null => {
