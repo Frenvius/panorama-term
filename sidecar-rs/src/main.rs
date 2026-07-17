@@ -1324,6 +1324,7 @@ struct Params {
     cwd: Option<String>,
     shell: Option<String>,
     target: Option<String>,
+    elevated: bool,
 }
 
 fn default_shell() -> String {
@@ -1549,7 +1550,16 @@ fn spawn_session(
         })
         .map_err(|e| format!("openpty: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(&shell);
+    let mut cmd = if p.elevated {
+        if !command_exists("gsudo.exe") {
+            return Err("gsudo not found - install it with: winget install gerardog.gsudo".into());
+        }
+        let mut c = CommandBuilder::new("gsudo.exe");
+        c.arg(&shell);
+        c
+    } else {
+        CommandBuilder::new(&shell)
+    };
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("PANORAMA_TERMINAL", "1");
@@ -2351,6 +2361,7 @@ async fn handle_conn(mut stream: TcpStream) {
             cwd: q.get("cwd").cloned(),
             shell: q.get("shell").cloned(),
             target: q.get("target").cloned(),
+            elevated: q.get("elevated").map(|v| v == "1").unwrap_or(false),
         };
         let ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
         handle_ws(ws, params).await;

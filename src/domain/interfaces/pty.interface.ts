@@ -10,6 +10,11 @@ export interface PtyExitMessage {
   t: 'exit';
 }
 
+export interface PtyErrorMessage {
+  t: 'error';
+  msg: string;
+}
+
 export interface PtyCwdMessage {
   t: 'cwd';
   cwd: string;
@@ -80,6 +85,7 @@ export interface PtyProgressMessage {
 export type PtyServerMessage =
   | PtyReadyMessage
   | PtyExitMessage
+  | PtyErrorMessage
   | PtyCwdMessage
   | PtyClaudeMessage
   | PtyClipboardMessage

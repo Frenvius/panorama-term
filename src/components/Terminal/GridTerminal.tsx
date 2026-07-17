@@ -27,6 +27,7 @@ interface GridTerminalProps {
   active: boolean;
   visible: boolean;
   k: number;
+  elevated: boolean;
   restartKey: number;
   onCwd: (id: string, cwd: string, branch?: string) => void;
   onOscTitle: (id: string, title: string) => void;
@@ -119,7 +120,7 @@ const fgOf = (w0: number): string => {
   return termTheme.ansi?.get(v) ?? hex(v);
 };
 
-const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, elevated, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const [resumeId, setResumeId] = React.useState<string | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
@@ -145,6 +146,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   const activeRef = React.useRef(active);
   const visibleRef = React.useRef(visible);
   const kRef = React.useRef(k);
+  const elevatedRef = React.useRef(elevated);
   const colsRef = React.useRef(cols);
   const rowsRef = React.useRef(rows);
   const onCwdRef = React.useRef(onCwd);
@@ -158,6 +160,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   activeRef.current = active;
   visibleRef.current = visible;
   kRef.current = k;
+  elevatedRef.current = elevated;
   colsRef.current = cols;
   rowsRef.current = rows;
   onCwdRef.current = onCwd;
@@ -368,7 +371,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     const connect = () => {
       if (disposed) return;
       const ws = openPtyConnection(
-        { tileId, cwd, cols: colsRef.current, rows: rowsRef.current, target },
+        { tileId, cwd, cols: colsRef.current, rows: rowsRef.current, target, elevated: elevatedRef.current },
         {
           acceptGrid: () => visibleRef.current && !document.hidden,
           onGrid: (frame) => {

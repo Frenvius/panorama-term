@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, Link2, PinOff, Copy, Focus, Pencil, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste } from 'lucide-react';
+import { X, Pin, Link2, PinOff, Copy, Focus, Pencil, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
@@ -141,7 +141,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   };
 
   const [restartKey, setRestartKey] = React.useState(0);
+  const [elevated, setElevated] = React.useState(false);
   const restartTile = () => setRestartKey((n) => n + 1);
+
+  const toggleElevated = () => {
+    setElevated((v) => !v);
+    setRestartKey((n) => n + 1);
+  };
   const closeTile = () => onClose(tile.id);
   const focusTile = () => onFocusTile(tile.id, true);
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
@@ -306,6 +312,11 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyPath, disabled: !tile.cwd },
         'separator',
         { label: 'Restart terminal', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: restartTile },
+        {
+          label: elevated ? 'Restart as user' : 'Restart as administrator',
+          icon: <ShieldCheck size={15} strokeWidth={1.75} />,
+          onSelect: toggleElevated
+        },
         { label: 'Focus', icon: <Focus size={15} strokeWidth={1.75} />, onSelect: focusTile },
         fullscreenItem,
         'separator',
@@ -484,6 +495,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             onClaudeDiff={onClaudeDiff}
             onProgress={onProgress}
             restartKey={restartKey}
+            elevated={elevated}
             active={active}
             visible={visible && !hidden}
             tileId={tile.id}
