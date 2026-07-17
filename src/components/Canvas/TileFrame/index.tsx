@@ -377,7 +377,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   <ClaudeLogo size={11} />
                 </span>
               )}
-              {noteLabel ?? label}
+              <span className={styles.label}>{noteLabel ?? label}</span>
               {folder && folder !== label && (
                 <span className={styles.folder} data-tooltip={tile.cwd}>
                   {folder}
