@@ -469,8 +469,8 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     const animate = () => {
       const v = viewRef.current;
       const target = restTarget(v.k, maxZoom());
-      let k = v.k + (target - v.k) * 0.15;
-      const done = Math.abs(k - target) < 0.001;
+      let k = v.k + (target - v.k) * 0.4;
+      const done = Math.abs(k - target) < 0.002;
       if (done) k = target;
       const ratio = k / v.k - 1;
       const next = { k, x: v.x - (focal.current.x - v.x) * ratio, y: v.y - (focal.current.y - v.y) * ratio };
@@ -525,6 +525,9 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     const tileId = tileEl?.getAttribute('data-tile') ?? null;
     const pan = e.button === 1;
     if (!pan && tileId && tileId === activeTile) return;
+    cancelAnimationFrame(snapRaf.current);
+    snapRaf.current = 0;
+    clearTimeout(snapTimer.current);
     if (pan) e.preventDefault();
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     if (!pan && !tileId && e.button === 0) {
@@ -578,6 +581,8 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     }
     const p = panRef.current;
     panRef.current = null;
+    const k = viewRef.current.k;
+    if (k > maxZoom() || k < ZOOM_MIN) snapBack();
     if (p && !p.moved && !p.pan) {
       if (p.activateId && selectedRef.current.has(p.activateId)) return;
       setActiveTile(p.activateId);
