@@ -80,6 +80,7 @@ const fgOf = (w0: number): string => {
 
 const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey, onCwd, onOscTitle, onClaudeActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
   const frameRef = React.useRef<GridFrame | null>(null);
   const claudeRef = React.useRef<ClaudeState | null>(null);
@@ -122,6 +123,8 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   onClaudeStatusRef.current = onClaudeStatus;
   onClaudeDiffRef.current = onClaudeDiff;
   onProgressRef.current = onProgress;
+
+  const focusTerminal = React.useCallback(() => textareaRef.current?.focus({ preventScroll: true }), []);
 
   const isWatching = React.useCallback((): boolean => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -438,12 +441,13 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     blinkRef.current = true;
     dirtyRef.current = true;
     if (!active) return;
+    focusTerminal();
     const id = setInterval(() => {
       blinkRef.current = !blinkRef.current;
       dirtyRef.current = true;
     }, 530);
     return () => clearInterval(id);
-  }, [active]);
+  }, [active, focusTerminal]);
 
   React.useEffect(() => {
     const update = () => {
@@ -642,7 +646,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     dirtyRef.current = true;
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const ws = wsRef.current;
     if (!ws) return;
     const mod = e.ctrlKey || e.metaKey;
@@ -663,12 +667,36 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       clearSelection();
       return;
     }
+    
+    // Let standard characters and dead keys pass through to the textarea for native OS composition.
+    if ((e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === 'Dead') {
+      return;
+    }
+
     const bytes = keyToBytes(e);
     if (bytes === null) return;
     e.preventDefault();
     blinkRef.current = true;
     clearSelection();
     sendPtyInput(ws, bytes);
+  };
+
+  const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    
+    // Check if browser native input composition is active (to ignore intermediate accent states)
+    const nativeEvent = e.nativeEvent as InputEvent;
+    if (nativeEvent.isComposing) return;
+    
+    const target = e.target as HTMLTextAreaElement;
+    const val = target.value;
+    if (val) {
+      blinkRef.current = true;
+      clearSelection();
+      sendPtyInput(ws, val);
+      target.value = '';
+    }
   };
 
   const onPointerLeave = () => {
@@ -703,18 +731,52 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
 
   const getStructured = React.useCallback(() => claudeRef.current, []);
 
-  const focusTerminal = React.useCallback(() => canvasRef.current?.focus({ preventScroll: true }), []);
+  const isLinux = React.useMemo(() => /linux/i.test(navigator.userAgent), []);
+
+  const onCanvasFocus = () => {
+    if (isLinux) textareaRef.current?.focus({ preventScroll: true });
+  };
+
+  const onCanvasKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (isLinux) return;
+    onKeyDown(e as any);
+  };
 
   return (
     <>
+      {isLinux && (
+        <textarea
+          ref={textareaRef}
+          style={{
+            position: 'absolute',
+            left: '-9999px',
+            top: '-9999px',
+            width: '1px',
+            height: '1px',
+            opacity: 0,
+            pointerEvents: 'none'
+          }}
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
+          onInput={onInput}
+        />
+      )}
       <canvas
         ref={canvasRef}
         style={{ top: 'auto', bottom: devicePx(6 * k), height: devicePx(rows * CELL_H * k) }}
         tabIndex={-1}
         onWheel={onWheel}
-        onKeyDown={onKeyDown}
+        onKeyDown={onCanvasKeyDown}
+        onFocus={onCanvasFocus}
         onPointerUp={onPointerUp}
-        onPointerDown={onPointerDown}
+        onPointerDown={(e) => {
+          if (isLinux) {
+            focusTerminal();
+          } else {
+            canvasRef.current?.focus({ preventScroll: true });
+          }
+          onPointerDown(e);
+        }}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
         onPointerCancel={onPointerUp}
