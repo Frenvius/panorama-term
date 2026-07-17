@@ -1,8 +1,9 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, Link2, PinOff, Copy, Focus, Pencil, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste } from 'lucide-react';
+import { X, Pin, Link2, PinOff, Copy, Focus, Pencil, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import NoteTile from '~/components/Canvas/NoteTile';
@@ -64,6 +65,9 @@ interface TileFrameProps {
   onLink: (noteId: string, termId: string) => void;
   onUnlink: (noteId: string, termId: string) => void;
   onLinkDragStart: (noteId: string, e: React.PointerEvent) => void;
+  tabs: TabMeta[];
+  activeTabId: string | null;
+  onMoveToTab: (id: string, targetTabId: string) => void;
 }
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
@@ -77,7 +81,7 @@ const devicePx = (v: number): number => {
   return Math.round(v * dpr) / dpr;
 };
 
-const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
@@ -301,6 +305,22 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     closeItem
   ];
 
+  const otherTabs = tabs.filter((t) => t.id !== activeTabId);
+  if (otherTabs.length > 0) {
+    const moveItem: ContextMenuEntry = {
+      label: 'Move to Tab',
+      icon: <ArrowLeftRight size={15} strokeWidth={1.75} />,
+      submenu: otherTabs.map((t) => ({
+        label: t.name,
+        onSelect: () => onMoveToTab(tile.id, t.id)
+      }))
+    };
+    const noteCloseIndex = noteMenuItems.findIndex((item) => typeof item !== 'string' && item.label === 'Close');
+    if (noteCloseIndex !== -1) {
+      noteMenuItems.splice(noteCloseIndex, 0, moveItem, 'separator');
+    }
+  }
+
   const menuItems: ContextMenuEntry[] = note
     ? noteMenuItems
     : [
@@ -322,6 +342,21 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         'separator',
         closeItem
       ];
+
+  if (otherTabs.length > 0 && !note) {
+    const moveItem: ContextMenuEntry = {
+      label: 'Move to Tab',
+      icon: <ArrowLeftRight size={15} strokeWidth={1.75} />,
+      submenu: otherTabs.map((t) => ({
+        label: t.name,
+        onSelect: () => onMoveToTab(tile.id, t.id)
+      }))
+    };
+    const termCloseIndex = menuItems.findIndex((item) => typeof item !== 'string' && item.label === 'Close');
+    if (termCloseIndex !== -1) {
+      menuItems.splice(termCloseIndex, 0, moveItem, 'separator');
+    }
+  }
 
   const inset = TILE_GAP / 2;
   const ek = fullscreen ? 1 : k;
