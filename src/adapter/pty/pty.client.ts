@@ -20,6 +20,7 @@ export interface PtyConnectionParams {
 }
 
 export interface PtyHandlers {
+  acceptGrid: () => boolean;
   onExit: () => void;
   onReady: (info: PtyReadyInfo) => void;
   onGrid: (frame: GridFrame) => void;
@@ -78,6 +79,7 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       else if (msg.t === 'progress') handlers.onProgress(msg.state, msg.pct);
       return;
     }
+    if (!handlers.acceptGrid()) return;
     const frame = parseGridFrame(e.data as ArrayBuffer);
     if (frame) handlers.onGrid(frame);
   };
@@ -109,6 +111,10 @@ export const sendPtyMouse = (
 
 export const sendPtyFocus = (ws: WebSocket, focused: boolean): void => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'focus', focused }));
+};
+
+export const sendPtyVisible = (ws: WebSocket, visible: boolean): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'visible', visible }));
 };
 
 export const sendPtyKill = (ws: WebSocket): void => {

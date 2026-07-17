@@ -346,6 +346,7 @@ struct Session {
     dirty: AtomicBool,
     raw_dirty: AtomicBool,
     exited: AtomicBool,
+    visible: AtomicBool,
     cols: AtomicU16,
     rows: AtomicU16,
     scrollback: AtomicUsize,
@@ -1594,6 +1595,7 @@ fn spawn_session(
         dirty: AtomicBool::new(true),
         raw_dirty: AtomicBool::new(false),
         exited: AtomicBool::new(false),
+        visible: AtomicBool::new(true),
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
@@ -2101,6 +2103,13 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(true);
             focus_session(s, focused);
         }
+        Some("visible") => {
+            let visible = v.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
+            s.visible.store(visible, Ordering::Relaxed);
+            if visible {
+                s.dirty.store(true, Ordering::Relaxed);
+            }
+        }
         Some("kill") => kill_session(s),
         _ => {}
     }
@@ -2138,9 +2147,11 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     }
     session.dirty.store(false, Ordering::Relaxed);
 
-    let mut tick = tokio::time::interval(Duration::from_millis(33));
+    let mut tick = tokio::time::interval(Duration::from_millis(60));
     let mut claude = ClaudeTracker::default();
     let mut claude_tick = tokio::time::interval(Duration::from_millis(800));
+    let mut last_frame = tokio::time::Instant::now();
+    const UNFOCUSED_FRAME_MS: u64 = 250;
     loop {
         tokio::select! {
             _ = claude_tick.tick() => {
@@ -2155,7 +2166,13 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                     let _ = tx.send(Message::Text("{\"t\":\"exit\"}".into())).await;
                     break;
                 }
-                if session.dirty.swap(false, Ordering::Relaxed) {
+                if session.visible.load(Ordering::Relaxed)
+                    && session.dirty.load(Ordering::Relaxed)
+                    && (session.focused.load(Ordering::Relaxed)
+                        || last_frame.elapsed() >= Duration::from_millis(UNFOCUSED_FRAME_MS))
+                {
+                    session.dirty.store(false, Ordering::Relaxed);
+                    last_frame = tokio::time::Instant::now();
                     if tx.send(Message::Binary(build_frame(&session))).await.is_err() {
                         break;
                     }

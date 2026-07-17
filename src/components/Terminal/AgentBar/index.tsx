@@ -34,6 +34,9 @@ const loadHistory = (): ContentPart[][] => {
 
 const historyKey = (draft: { text: string }): string => draft.text.trim();
 
+const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
+  a.mode === b.mode && a.model === b.model && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
+
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const progressColor = (p: number): string =>
@@ -104,6 +107,8 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const submitSeqRef = React.useRef(0);
   const seenRef = React.useRef(false);
   const lastSeenRef = React.useRef(0);
+  const lastLinesRef = React.useRef<string[] | null>(null);
+  const lastPresentRef = React.useRef(false);
   const barOpenRef = React.useRef<boolean | null>(null);
   const activeRef = React.useRef(active);
   historyRef.current = history;
@@ -208,8 +213,21 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
 
     const scan = () => {
       const lines = getLines();
-      const present = looksLikeClaude(lines.slice(-25).join('\n'));
       const now = Date.now();
+      if (lines === lastLinesRef.current) {
+        if (seenRef.current) {
+          if (!lastPresentRef.current && now - lastSeenRef.current > GONE_MS) {
+            seenRef.current = false;
+            setClaudeActive(false);
+          } else {
+            setStructured(getStructured());
+          }
+        }
+        return;
+      }
+      lastLinesRef.current = lines;
+      const present = looksLikeClaude(lines.slice(-25).join('\n'));
+      lastPresentRef.current = present;
       if (present) {
         lastSeenRef.current = now;
         if (!seenRef.current) {
@@ -223,8 +241,12 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       if (!seenRef.current) return;
 
       const footer = readFooter(lines);
-      setStatus(parseStatusLines(footer.status));
-      if (footer.model) setScraped(footer.model);
+      const nextStatus = parseStatusLines(footer.status);
+      setStatus((prev) => (sameStatus(prev, nextStatus) ? prev : nextStatus));
+      const model = footer.model;
+      if (model) {
+        setScraped((prev) => (prev && prev.model === model.model && prev.contextInfo === model.contextInfo ? prev : model));
+      }
       setStructured(getStructured());
 
       const qm = footer.questionMode;

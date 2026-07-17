@@ -10,7 +10,7 @@ import { notifyClaude, clearNotify } from '~/components/commons/Notifications/br
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
-import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, openPtyConnection } from '~/adapter/pty/pty.client';
+import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, sendPtyVisible, openPtyConnection } from '~/adapter/pty/pty.client';
 
 import type { GridFrame, ClaudeState } from '~/domain/interfaces/pty.interface';
 import type { Cell, Selection, UrlSpan } from '~/usecase/util/terminalSelection';
@@ -43,6 +43,7 @@ const CLICK_MS = 400;
 const NOTIFY_IDLE_GRACE_MS = 10000;
 const DEFAULT_FG = 0xc7d0e0;
 const QUAD = [0b0010, 0b0001, 0b1000, 0b1011, 0b1001, 0b1110, 0b1101, 0b0100, 0b0110, 0b0111];
+const NO_LINES: string[] = [];
 
 let cellW = 7.23;
 let fontReady = false;
@@ -71,7 +72,19 @@ const ensureFont = (): Promise<void> => {
   });
 };
 
-const hex = (v: number): string => '#' + (v & 0xffffff).toString(16).padStart(6, '0');
+const hexCache = new Map<number, string>();
+const hex = (v: number): string => {
+  const key = v & 0xffffff;
+  let out = hexCache.get(key);
+  if (!out) {
+    if (hexCache.size > 4096) hexCache.clear();
+    out = '#' + key.toString(16).padStart(6, '0');
+    hexCache.set(key, out);
+  }
+  return out;
+};
+
+const ASTRAL = /[\uD800-\uDBFF]/;
 const fgOf = (w0: number): string => {
   const v = w0 & 0xffffff;
   if (v === DEFAULT_FG) return termTheme.fg;
@@ -236,7 +249,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     const yOff = (CELL_H - FONT) / 2;
     for (let r = 0; r < nRows; r++) {
       const line = lines[r] ?? '';
-      const cells = Array.from(line);
+      const cells = ASTRAL.test(line) ? Array.from(line) : line;
       for (let c = 0; c < nCols; c++) {
         const i = (r * nCols + c) * 2;
         const w0 = attrs[i] ?? 0;
@@ -327,6 +340,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
       const ws = openPtyConnection(
         { tileId, cwd, cols: colsRef.current, rows: rowsRef.current, target },
         {
+          acceptGrid: () => visibleRef.current && !document.hidden,
           onGrid: (frame) => {
             frameRef.current = frame;
             dirtyRef.current = true;
@@ -378,7 +392,10 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
           },
           onReady: (info) => {
             const w = wsRef.current;
-            if (w) sendPtyFocus(w, activeRef.current && document.hasFocus());
+            if (w) {
+              sendPtyFocus(w, activeRef.current && document.hasFocus());
+              sendPtyVisible(w, visibleRef.current && !document.hidden);
+            }
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
             if (!info.resumeId || info.reused) return;
@@ -423,6 +440,11 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     dirtyRef.current = true;
   }, [k, visible]);
 
+  React.useEffect(() => {
+    const ws = wsRef.current;
+    if (ws) sendPtyVisible(ws, visible && !document.hidden);
+  }, [visible]);
+
   const lastRestartRef = React.useRef(restartKey);
   React.useEffect(() => {
     if (lastRestartRef.current === restartKey) return;
@@ -448,14 +470,19 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
   React.useEffect(() => {
     const update = () => {
       const ws = wsRef.current;
-      if (ws) sendPtyFocus(ws, activeRef.current && document.hasFocus());
+      if (ws) {
+        sendPtyFocus(ws, activeRef.current && document.hasFocus());
+        sendPtyVisible(ws, visibleRef.current && !document.hidden);
+      }
     };
     update();
     window.addEventListener('focus', update);
     window.addEventListener('blur', update);
+    document.addEventListener('visibilitychange', update);
     return () => {
       window.removeEventListener('focus', update);
       window.removeEventListener('blur', update);
+      document.removeEventListener('visibilitychange', update);
     };
   }, [active]);
 
@@ -699,7 +726,7 @@ const GridTerminal = ({ tileId, cwd, cols, rows, active, visible, k, restartKey,
     if (ws) sendPtyInput(ws, data);
   }, []);
 
-  const getLines = React.useCallback(() => frameRef.current?.lines ?? [], []);
+  const getLines = React.useCallback(() => frameRef.current?.lines ?? NO_LINES, []);
 
   const getStructured = React.useCallback(() => claudeRef.current, []);
 
