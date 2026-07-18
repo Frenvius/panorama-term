@@ -80,11 +80,6 @@ const FS_PAD = 28;
 
 const DRAG_THRESHOLD = 4;
 
-const devicePx = (v: number): number => {
-  const dpr = window.devicePixelRatio || 1;
-  return Math.round(v * dpr) / dpr;
-};
-
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
@@ -710,44 +705,30 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             <NoteTile tile={tile} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
           )}
           {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} embedded />}
+          {term && (
+            <GridTerminal
+              sessionId={tile.ptySessionId}
+              readOnly={runView}
+              cwd={runView ? tile.runCwd : tile.cwd}
+              onCwd={onCwd}
+              onOscTitle={onOscTitle}
+              onClaudeActive={setClaudeLive}
+              onClaudeStatus={onClaudeStatus}
+              onClaudeDiff={onClaudeDiff}
+              onProgress={onProgress}
+              restartKey={restartKey}
+              elevated={elevated}
+              active={active}
+              visible={visible && !hidden}
+              tileId={tile.id}
+              cols={termCols}
+              rows={termRows}
+              onContextMenu={openMenu}
+            />
+          )}
           {!note && !code && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
         </div>
       </div>
-      {term && (
-        <div
-          data-tile={tile.id}
-          className={anim ? `${styles.termLayer} ${anim}` : styles.termLayer}
-          style={{
-            top: devicePx(sy + (TILE_HEADER + 4) * ek),
-            left: devicePx(sx + 4 * ek),
-            width: devicePx((bodyW - 8) * ek),
-            height: devicePx((bodyH - TILE_HEADER - 5) * ek),
-            zIndex: z,
-            ...gone
-          }}
-        >
-          <GridTerminal
-            k={ek}
-            sessionId={tile.ptySessionId}
-            readOnly={runView}
-            cwd={runView ? tile.runCwd : tile.cwd}
-            onCwd={onCwd}
-            onOscTitle={onOscTitle}
-            onClaudeActive={setClaudeLive}
-            onClaudeStatus={onClaudeStatus}
-            onClaudeDiff={onClaudeDiff}
-            onProgress={onProgress}
-            restartKey={restartKey}
-            elevated={elevated}
-            active={active}
-            visible={visible && !hidden}
-            tileId={tile.id}
-            cols={termCols}
-            rows={termRows}
-            onContextMenu={openMenu}
-          />
-        </div>
-      )}
       {!fullscreen && (
         <div data-tile={tile.id} className={styles.handles} style={{ top: sy, left: sx, zIndex: z, ...box, ...gone }}>
           {HANDLES.map((dir) => (
