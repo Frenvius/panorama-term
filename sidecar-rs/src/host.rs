@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -101,10 +102,13 @@ struct SessionState {
     subs: Vec<SubEntry>,
 }
 
-pub(crate) struct HostSession {
+struct HostSession {
     key: String,
     pid: u32,
+    cols: u16,
+    rows: u16,
     alive: Arc<AtomicBool>,
+    exit_once: Arc<AtomicBool>,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
@@ -115,6 +119,8 @@ pub(crate) struct HostSession {
 
 pub(crate) struct HostInner {
     pub(crate) sessions: Mutex<HashMap<String, Arc<HostSession>>>,
+    brain_out: Mutex<Option<Sender<Vec<u8>>>>,
+    brain_gen: AtomicU64,
 }
 
 pub struct Host {
@@ -132,6 +138,8 @@ impl Host {
         Host {
             inner: Arc::new(HostInner {
                 sessions: Mutex::new(HashMap::new()),
+                brain_out: Mutex::new(None),
+                brain_gen: AtomicU64::new(0),
             }),
         }
     }
@@ -150,9 +158,88 @@ impl Host {
         }
     }
 
+    pub fn pid_of(&self, key: &str) -> Option<u32> {
+        let sess = self.inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sess.get(key).map(|s| s.pid)
+    }
+}
+
+pub fn run_host_server(port: u16) {
+    let host = Host::new();
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("host bind {port}: {e}"));
+    eprintln!("[host] listening on 127.0.0.1:{port}");
+    loop {
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                eprintln!("[host] brain connected from {addr}");
+                let h = host.clone();
+                std::thread::spawn(move || bridge_connection(h, stream));
+            }
+            Err(e) => eprintln!("[host] accept error: {e}"),
+        }
+    }
+}
+
+fn bridge_connection(host: Host, stream: TcpStream) {
+    let write_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[host] tcp clone failed: {e}");
+            return;
+        }
+    };
+
+    let (in_tx, in_rx) = channel::<Vec<u8>>();
+    let (out_tx, out_rx) = channel::<Vec<u8>>();
+
+    host.start(in_rx, out_tx);
+
+    std::thread::spawn(move || {
+        let mut ws = write_stream;
+        while let Ok(frame) = out_rx.recv() {
+            if ws.write_all(&frame).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut rs = stream;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        match rs.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                pending.extend_from_slice(&buf[..n]);
+                let mut offset = 0;
+                while offset + 4 < pending.len() {
+                    let len = u32::from_be_bytes([
+                        pending[offset],
+                        pending[offset + 1],
+                        pending[offset + 2],
+                        pending[offset + 3],
+                    ]) as usize;
+                    if len == 0 {
+                        break;
+                    }
+                    let total = 4 + len;
+                    if pending.len() < offset + total {
+                        break;
+                    }
+                    let _ = in_tx.send(pending[offset..offset + total].to_vec());
+                    offset += total;
+                }
+                pending.drain(0..offset);
+            }
+        }
+    }
+    eprintln!("[host] brain disconnected");
 }
 
 fn run_dispatch(inner: Arc<HostInner>, inbound: Receiver<Vec<u8>>, outbound: Sender<Vec<u8>>) {
+    let my_gen = inner.brain_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    *inner.brain_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(outbound.clone());
     let mut pending: Vec<u8> = Vec::new();
     loop {
         let bytes = match inbound.recv() {
@@ -164,6 +251,9 @@ fn run_dispatch(inner: Arc<HostInner>, inbound: Receiver<Vec<u8>>, outbound: Sen
             pending.drain(0..consumed);
             handle_frame(&inner, kind, &payload, &outbound);
         }
+    }
+    if inner.brain_gen.load(Ordering::SeqCst) == my_gen {
+        *inner.brain_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -201,6 +291,43 @@ fn handle_frame(inner: &Arc<HostInner>, kind: u8, payload: &[u8], outbound: &Sen
             }
         }
         _ => {}
+    }
+}
+
+fn emit_session_exit(
+    exit_once: &Arc<AtomicBool>,
+    alive: &Arc<AtomicBool>,
+    inner: &Arc<HostInner>,
+    key: &str,
+    child_arc: &Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    state: &Arc<Mutex<SessionState>>,
+) {
+    if exit_once.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    alive.store(false, Ordering::Relaxed);
+    state.lock().unwrap_or_else(|e| e.into_inner()).subs.clear();
+    let exit_code: Option<u32> = (0..10).find_map(|i| {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        child_arc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_wait()
+            .ok()
+            .flatten()
+            .and_then(|st| Some(st.exit_code()))
+    });
+    let event = serde_json::json!({
+        "kind": "exit",
+        "key": key,
+        "code": exit_code,
+    })
+    .to_string();
+    let frame = encode(KIND_EVENT, event.as_bytes());
+    if let Some(tx) = inner.brain_out.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(frame);
     }
 }
 
@@ -294,6 +421,18 @@ fn dispatch_rpc(
             let _ = s.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
             Ok(serde_json::json!({}))
         }
+        "snapshot" => {
+            let key = v["key"].as_str().ok_or("missing key")?;
+            let sess = inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sess.get(key).ok_or("session not found")?;
+            let st = s.state.lock().unwrap_or_else(|e| e.into_inner());
+            let base = st.ring.base;
+            let data = st.ring.snapshot();
+            let total = base + data.len() as u64;
+            drop(st);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+            Ok(serde_json::json!({ "base": base, "total": total, "data": encoded }))
+        }
         "list" => {
             let sess = inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let list: Vec<serde_json::Value> = sess
@@ -308,6 +447,8 @@ fn dispatch_rpc(
                     serde_json::json!({
                         "key": s.key,
                         "pid": s.pid,
+                        "cols": s.cols,
+                        "rows": s.rows,
                         "alive": s.alive.load(Ordering::Relaxed),
                         "total": total,
                     })
@@ -329,7 +470,7 @@ fn host_spawn(
     args: Vec<String>,
     env: Vec<(String, String)>,
     seed: Vec<u8>,
-    outbound: Sender<Vec<u8>>,
+    _outbound: Sender<Vec<u8>>,
 ) -> Result<u32, String> {
     let cwd = cwd
         .or_else(|| std::env::var("USERPROFILE").ok())
@@ -371,6 +512,7 @@ fn host_spawn(
     drop(pair.slave);
 
     let alive = Arc::new(AtomicBool::new(true));
+    let exit_once = Arc::new(AtomicBool::new(false));
     let state = Arc::new(Mutex::new(SessionState {
         ring: RawRing::new(seed),
         subs: Vec::new(),
@@ -380,7 +522,10 @@ fn host_spawn(
     let session = Arc::new(HostSession {
         key: key.clone(),
         pid,
+        cols,
+        rows,
         alive: alive.clone(),
+        exit_once: exit_once.clone(),
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
         child: child_arc.clone(),
@@ -393,15 +538,13 @@ fn host_spawn(
         .unwrap_or_else(|e| e.into_inner())
         .insert(key.clone(), session);
 
-    let exit_once = Arc::new(AtomicBool::new(false));
-
     {
-        let state = state.clone();
-        let alive = alive.clone();
-        let child_arc = child_arc.clone();
-        let exit_once = exit_once.clone();
-        let outbound = outbound.clone();
-        let key = key.clone();
+        let inner_r = inner.clone();
+        let alive_r = alive.clone();
+        let exit_once_r = exit_once.clone();
+        let state_r = state.clone();
+        let child_r = child_arc.clone();
+        let key_r = key.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
@@ -410,10 +553,11 @@ fn host_spawn(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut st = state_r.lock().unwrap_or_else(|e| e.into_inner());
                         let pre = st.ring.len_total();
                         st.ring.push(chunk);
-                        let frame = encode(KIND_DATA, &encode_data_payload(&key, pre, chunk));
+                        let frame =
+                            encode(KIND_DATA, &encode_data_payload(&key_r, pre, chunk));
                         st.subs.retain(|sub| {
                             if pre >= sub.min_offset {
                                 sub.tx.send(frame.clone()).is_ok()
@@ -424,57 +568,48 @@ fn host_spawn(
                     }
                 }
             }
-            emit_session_exit(&exit_once, &alive, &state, &child_arc, &key, &outbound);
+            emit_session_exit(
+                &exit_once_r,
+                &alive_r,
+                &inner_r,
+                &key_r,
+                &child_r,
+                &state_r,
+            );
         });
     }
 
     {
-        let state = state.clone();
-        let alive = alive.clone();
-        let child_arc = child_arc.clone();
+        let inner_w = inner.clone();
+        let alive_w = alive.clone();
+        let exit_once_w = exit_once.clone();
+        let state_w = state.clone();
+        let child_w = child_arc.clone();
+        let key_w = key.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(300));
-            if exit_once.load(Ordering::Relaxed) {
+            if exit_once_w.load(Ordering::Relaxed) {
                 return;
             }
-            let done = {
-                let mut c = child_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let exited = {
+                let mut c = child_w.lock().unwrap_or_else(|e| e.into_inner());
                 c.try_wait().ok().flatten().is_some()
             };
-            if done {
-                emit_session_exit(&exit_once, &alive, &state, &child_arc, &key, &outbound);
+            if exited {
+                emit_session_exit(
+                    &exit_once_w,
+                    &alive_w,
+                    &inner_w,
+                    &key_w,
+                    &child_w,
+                    &state_w,
+                );
                 return;
             }
         });
     }
 
     Ok(pid)
-}
-
-fn emit_session_exit(
-    exit_once: &AtomicBool,
-    alive: &AtomicBool,
-    state: &Mutex<SessionState>,
-    child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    key: &str,
-    outbound: &Sender<Vec<u8>>,
-) {
-    if exit_once.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    alive.store(false, Ordering::Relaxed);
-    state.lock().unwrap_or_else(|e| e.into_inner()).subs.clear();
-    let code: Option<u32> = {
-        let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
-        (0..10).find_map(|i| {
-            if i > 0 {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            c.try_wait().ok().flatten().map(|st| st.exit_code())
-        })
-    };
-    let event = serde_json::json!({ "kind": "exit", "key": key, "code": code }).to_string();
-    let _ = outbound.send(encode(KIND_EVENT, event.as_bytes()));
 }
 
 fn host_subscribe(
@@ -591,6 +726,53 @@ mod tests {
             "seed": "",
         });
         encode(KIND_RPC, rpc.to_string().as_bytes())
+    }
+
+    #[test]
+    fn tcp_bridge_framing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let host = Host::new();
+
+        std::thread::spawn(move || {
+            if let Ok((conn, _)) = listener.accept() {
+                bridge_connection(host, conn);
+            }
+        });
+
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut client_r = client.try_clone().unwrap();
+
+        let list_rpc = serde_json::json!({"id": 1u64, "op": "list"});
+        let frame = encode(KIND_RPC, list_rpc.to_string().as_bytes());
+        let mut client_w = client;
+        client_w.write_all(&frame).unwrap();
+
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got_reply = false;
+        while Instant::now() < deadline {
+            client_r.set_read_timeout(Some(Duration::from_millis(200))).ok();
+            match client_r.read(&mut buf) {
+                Ok(0) | Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                Ok(n) => {
+                    pending.extend_from_slice(&buf[..n]);
+                    if let Some((k, p, _)) = decode(&pending) {
+                        if k == KIND_RPC_REPLY {
+                            let v: serde_json::Value = serde_json::from_slice(&p).unwrap();
+                            assert_eq!(v["id"], 1u64);
+                            assert!(v["ok"].as_bool().unwrap_or(false));
+                            assert!(v["sessions"].as_array().is_some());
+                            got_reply = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(got_reply, "did not receive list reply over TCP");
     }
 
     #[test]

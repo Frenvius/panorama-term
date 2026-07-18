@@ -23,12 +23,11 @@ enum ConsumerMsg {
 }
 
 struct HostHandle {
-    host: host::Host,
     tx: MpscSender<Vec<u8>>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, MpscSender<serde_json::Value>>>,
     consumers: Mutex<HashMap<String, MpscSender<ConsumerMsg>>>,
-    outbound_rx: Mutex<Option<MpscReceiver<Vec<u8>>>>,
+    reader_stream: Mutex<Option<std::net::TcpStream>>,
 }
 
 impl HostHandle {
@@ -116,52 +115,91 @@ impl HostHandle {
     }
 
     fn snapshot(&self, key: &str) -> Vec<u8> {
-        self.host.snapshot(key)
+        let reply = match self.rpc_raw(serde_json::json!({"op": "snapshot", "key": key})) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        if !reply["ok"].as_bool().unwrap_or(false) {
+            return Vec::new();
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(reply["data"].as_str().unwrap_or(""))
+            .unwrap_or_default()
     }
-
 }
 
-fn brain_dispatcher(h: &'static HostHandle, out_rx: MpscReceiver<Vec<u8>>) {
+fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
+    use std::io::Read;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 65536];
     loop {
-        let frame = match out_rx.recv() {
-            Ok(f) => f,
-            Err(_) => break,
-        };
-        let (kind, payload) = match host::decode(&frame).map(|(k, p, _)| (k, p)) {
-            Some(x) => x,
-            None => continue,
-        };
-        match kind {
-            host::KIND_DATA => {
-                if let Some((key, _offset, bytes)) = host::decode_data_payload(&payload) {
-                    let consumers = h.consumers.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(tx) = consumers.get(&key) {
-                        let _ = tx.send(ConsumerMsg::Data(bytes));
-                    }
-                }
-            }
-            host::KIND_RPC_REPLY => {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    let id = v["id"].as_u64().unwrap_or(u64::MAX);
-                    let mut pending = h.pending.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(tx) = pending.remove(&id) {
-                        let _ = tx.send(v);
-                    }
-                }
-            }
-            host::KIND_EVENT => {
-                if let Ok(ev) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    if ev["kind"] == "exit" {
-                        let key = ev["key"].as_str().unwrap_or("").to_string();
-                        let code = ev["code"].as_u64().map(|c| c as u32);
-                        let consumers = h.consumers.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(tx) = consumers.get(&key) {
-                            let _ = tx.send(ConsumerMsg::Exit { code });
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                pending.extend_from_slice(&buf[..n]);
+                while let Some((kind, payload, consumed)) = host::decode(&pending) {
+                    pending.drain(0..consumed);
+                    match kind {
+                        host::KIND_DATA => {
+                            if let Some((key, _offset, bytes)) =
+                                host::decode_data_payload(&payload)
+                            {
+                                let consumers =
+                                    h.consumers.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(tx) = consumers.get(&key) {
+                                    let _ = tx.send(ConsumerMsg::Data(bytes));
+                                }
+                            }
                         }
+                        host::KIND_RPC_REPLY => {
+                            if let Ok(v) =
+                                serde_json::from_slice::<serde_json::Value>(&payload)
+                            {
+                                let id = v["id"].as_u64().unwrap_or(u64::MAX);
+                                let mut p =
+                                    h.pending.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(tx) = p.remove(&id) {
+                                    let _ = tx.send(v);
+                                }
+                            }
+                        }
+                        host::KIND_EVENT => {
+                            if let Ok(ev) =
+                                serde_json::from_slice::<serde_json::Value>(&payload)
+                            {
+                                if ev["kind"] == "exit" {
+                                    let key =
+                                        ev["key"].as_str().unwrap_or("").to_string();
+                                    let code = ev["code"].as_u64().map(|c| c as u32);
+                                    let consumers =
+                                        h.consumers.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(tx) = consumers.get(&key) {
+                                        let _ = tx.send(ConsumerMsg::Exit { code });
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
-            _ => {}
+        }
+    }
+}
+
+fn host_port() -> u16 {
+    std::env::var("PANORAMA_HOST_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9778)
+}
+
+fn connect_to_host() -> std::net::TcpStream {
+    let port = host_port();
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(s) => return s,
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
 }
@@ -169,31 +207,133 @@ fn brain_dispatcher(h: &'static HostHandle, out_rx: MpscReceiver<Vec<u8>>) {
 fn host_handle() -> &'static HostHandle {
     static H: OnceLock<HostHandle> = OnceLock::new();
     H.get_or_init(|| {
-        let (in_tx, in_rx) = mpsc_channel::<Vec<u8>>();
-        let (out_tx, out_rx) = mpsc_channel::<Vec<u8>>();
-        let h = host::Host::new();
-        h.start(in_rx, out_tx);
+        let stream = connect_to_host();
+        let write_stream = stream.try_clone().expect("tcp clone");
+        let (writer_tx, writer_rx) = mpsc_channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut ws = write_stream;
+            while let Ok(frame) = writer_rx.recv() {
+                if ws.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+        });
         HostHandle {
-            host: h,
-            tx: in_tx,
+            tx: writer_tx,
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             consumers: Mutex::new(HashMap::new()),
-            outbound_rx: Mutex::new(Some(out_rx)),
+            reader_stream: Mutex::new(Some(stream)),
         }
     });
     static DISP: OnceLock<()> = OnceLock::new();
     DISP.get_or_init(|| {
         let handle: &'static HostHandle = H.get().unwrap();
-        let rx = handle
-            .outbound_rx
+        let stream = handle
+            .reader_stream
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .unwrap();
-        std::thread::spawn(move || brain_dispatcher(handle, rx));
+        std::thread::spawn(move || brain_dispatcher(handle, stream));
     });
     H.get().unwrap()
+}
+
+fn reconnect_sessions() {
+    let reply = match host_handle().rpc_raw(serde_json::json!({"op": "list"})) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let empty = vec![];
+    let session_list = reply["sessions"].as_array().unwrap_or(&empty).clone();
+    for si in &session_list {
+        let key = si["key"].as_str().unwrap_or("").to_string();
+        if key.is_empty() {
+            continue;
+        }
+        let alive = si["alive"].as_bool().unwrap_or(false);
+        let pid = si["pid"].as_u64().unwrap_or(0) as u32;
+        let cols = (si["cols"].as_u64().unwrap_or(220) as u16).max(2);
+        let rows = (si["rows"].as_u64().unwrap_or(50) as u16).max(2);
+        let snap_total = si["total"].as_u64().unwrap_or(0);
+
+        let raw = host_handle().snapshot(&key);
+
+        let focused = Arc::new(AtomicBool::new(false));
+        let focus_reporting = Arc::new(AtomicBool::new(false));
+        let sink = CwdSink {
+            focused: focused.clone(),
+            focus_reporting: focus_reporting.clone(),
+            ..Default::default()
+        };
+        let mut parser =
+            vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
+        if !raw.is_empty() {
+            parser.process(&raw);
+            let _ = parser.callbacks_mut().take_clipboard();
+            let _ = parser.callbacks_mut().take_responses();
+            let _ = parser.callbacks_mut().take_agent_events();
+            let _ = parser.callbacks_mut().take_notifies();
+            let _ = parser.callbacks_mut().take_progress();
+        }
+
+        let run = if key.starts_with("run:") || key.starts_with("build:") {
+            let run_kind = if key.starts_with("build:") { "build" } else { "run" };
+            let mut log = RunLog::new();
+            if !raw.is_empty() {
+                if let Ok(text) = std::str::from_utf8(&raw) {
+                    log.feed(text);
+                }
+            }
+            Some(RunState {
+                cmd: key.clone(),
+                cwd: String::new(),
+                kind: run_kind.to_string(),
+                started: Instant::now(),
+                log: Mutex::new(log),
+                exit: Mutex::new(None),
+            })
+        } else {
+            None
+        };
+
+        let session = Arc::new(Session {
+            tile_id: key.clone(),
+            shell: key.clone(),
+            pid,
+            parser: Mutex::new(parser),
+            dirty: AtomicBool::new(true),
+            exited: AtomicBool::new(!alive),
+            visible: AtomicBool::new(true),
+            cols: AtomicU16::new(cols),
+            rows: AtomicU16::new(rows),
+            scrollback: AtomicUsize::new(0),
+            cwd: Mutex::new(None),
+            cwd_dirty: AtomicBool::new(false),
+            branch: Mutex::new(None),
+            cmd: Mutex::new(None),
+            clipboard: Mutex::new(None),
+            clipboard_dirty: AtomicBool::new(false),
+            title: Mutex::new(None),
+            title_dirty: AtomicBool::new(false),
+            events: Mutex::new(Vec::new()),
+            focused,
+            focus_reporting,
+            run,
+        });
+
+        if alive {
+            let (consumer_tx, consumer_rx) = mpsc_channel::<ConsumerMsg>();
+            host_handle().register_consumer(&key, consumer_tx);
+            let _ = host_handle().subscribe(&key, snap_total);
+            let s = session.clone();
+            std::thread::spawn(move || run_consumer_loop(s, consumer_rx, None));
+        }
+
+        sessions().lock().unwrap().insert(key, session);
+    }
 }
 
 const PORT: u16 = 9777;
@@ -2170,140 +2310,144 @@ fn spawn_session(
     });
 
     let s = session.clone();
-    std::thread::spawn(move || {
-        let mut permit = Some(permit);
-        let mut carry: Vec<u8> = Vec::new();
-        loop {
-            match consumer_rx.recv() {
-                Ok(ConsumerMsg::Data(raw)) => {
-                    permit.take();
-                    let mut data = Vec::with_capacity(carry.len() + raw.len());
-                    data.append(&mut carry);
-                    data.extend_from_slice(&raw);
-                    let valid = utf8_valid_len(&data);
-                    if valid < data.len() {
-                        carry.extend_from_slice(&data[valid..]);
-                    }
-                    let chunk = &data[..valid];
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    let responses = {
-                        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-                        p.process(chunk);
-                        if let Some(new_cwd) = p.callbacks_mut().take_changed() {
-                            *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
-                            s.cwd_dirty.store(true, Ordering::Relaxed);
-                        }
-                        if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
-                            let branch = git_branch(&prompt_cwd);
-                            {
-                                let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
-                                if *cur != branch {
-                                    *cur = branch;
-                                    s.cwd_dirty.store(true, Ordering::Relaxed);
-                                }
-                            }
-                            let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
-                            if let Some((start, cmd)) = done {
-                                let secs = start.elapsed().as_secs();
-                                if secs >= LONG_CMD_SECS {
-                                    let msg = serde_json::json!({
-                                        "t": "notify",
-                                        "title": cmd,
-                                        "body": format!("Finished in {}", fmt_duration(secs)),
-                                    });
-                                    s.events
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .push(msg.to_string());
-                                }
-                            }
-                        }
-                        if let Some(text) = p.callbacks_mut().take_clipboard() {
-                            *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) =
-                                Some(text);
-                            s.clipboard_dirty.store(true, Ordering::Relaxed);
-                        }
-                        if let Some(title) = p.callbacks_mut().take_title() {
-                            if title != s.shell {
-                                *s.title.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    Some(title);
-                                s.title_dirty.store(true, Ordering::Relaxed);
-                            }
-                        }
-                        let mut outgoing: Vec<String> = Vec::new();
-                        for body in p.callbacks_mut().take_agent_events() {
-                            if let Some(msg) = agent_event_ws_msg(&body) {
-                                outgoing.push(msg);
-                            }
-                        }
-                        for (title, body) in p.callbacks_mut().take_notifies() {
-                            let msg = serde_json::json!({
-                                "t": "notify",
-                                "title": title,
-                                "body": body,
-                            });
-                            outgoing.push(msg.to_string());
-                        }
-                        if let Some((state, pct)) = p.callbacks_mut().take_progress() {
-                            let msg = serde_json::json!({
-                                "t": "progress",
-                                "state": state,
-                                "pct": pct,
-                            });
-                            outgoing.push(msg.to_string());
-                        }
-                        if !outgoing.is_empty() {
-                            s.events
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .extend(outgoing);
-                        }
-                        p.callbacks_mut().take_responses()
-                    };
-                    for resp in &responses {
-                        host_handle().write(&s.tile_id, resp);
-                    }
-                    if let Some(run) = &s.run {
-                        if let Ok(text) = std::str::from_utf8(chunk) {
-                            run.log.lock().unwrap_or_else(|e| e.into_inner()).feed(text);
-                        }
-                    }
-                    s.dirty.store(true, Ordering::Relaxed);
-                }
-                Ok(ConsumerMsg::Exit { code }) => {
-                    s.exited.store(true, Ordering::Relaxed);
-                    s.dirty.store(true, Ordering::Relaxed);
-                    if let Some(run) = &s.run {
-                        let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
-                        if exit.is_none() {
-                            *exit = code;
-                        }
-                    }
-                    flush_session(&s);
-                    if s.run.is_none() {
-                        sessions().lock().unwrap().remove(&s.tile_id);
-                    }
-                    return;
-                }
-                Err(_) => {
-                    s.exited.store(true, Ordering::Relaxed);
-                    s.dirty.store(true, Ordering::Relaxed);
-                    flush_session(&s);
-                    if s.run.is_none() {
-                        sessions().lock().unwrap().remove(&s.tile_id);
-                    }
-                    return;
-                }
-            }
-        }
-    });
+    std::thread::spawn(move || run_consumer_loop(s, consumer_rx, Some(permit)));
 
     if session.run.is_none() {
         inject_osc7(&session, &shell);
     }
     Ok(session)
+}
+
+fn run_consumer_loop(
+    s: Arc<Session>,
+    consumer_rx: MpscReceiver<ConsumerMsg>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
+    let mut permit = permit;
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        match consumer_rx.recv() {
+            Ok(ConsumerMsg::Data(raw)) => {
+                permit.take();
+                let mut data = Vec::with_capacity(carry.len() + raw.len());
+                data.append(&mut carry);
+                data.extend_from_slice(&raw);
+                let valid = utf8_valid_len(&data);
+                if valid < data.len() {
+                    carry.extend_from_slice(&data[valid..]);
+                }
+                let chunk = &data[..valid];
+                if chunk.is_empty() {
+                    continue;
+                }
+                let responses = {
+                    let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    p.process(chunk);
+                    if let Some(new_cwd) = p.callbacks_mut().take_changed() {
+                        *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
+                        s.cwd_dirty.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
+                        let branch = git_branch(&prompt_cwd);
+                        {
+                            let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
+                            if *cur != branch {
+                                *cur = branch;
+                                s.cwd_dirty.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some((start, cmd)) = done {
+                            let secs = start.elapsed().as_secs();
+                            if secs >= LONG_CMD_SECS {
+                                let msg = serde_json::json!({
+                                    "t": "notify",
+                                    "title": cmd,
+                                    "body": format!("Finished in {}", fmt_duration(secs)),
+                                });
+                                s.events
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(msg.to_string());
+                            }
+                        }
+                    }
+                    if let Some(text) = p.callbacks_mut().take_clipboard() {
+                        *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                        s.clipboard_dirty.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(title) = p.callbacks_mut().take_title() {
+                        if title != s.shell {
+                            *s.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
+                            s.title_dirty.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    let mut outgoing: Vec<String> = Vec::new();
+                    for body in p.callbacks_mut().take_agent_events() {
+                        if let Some(msg) = agent_event_ws_msg(&body) {
+                            outgoing.push(msg);
+                        }
+                    }
+                    for (title, body) in p.callbacks_mut().take_notifies() {
+                        let msg = serde_json::json!({
+                            "t": "notify",
+                            "title": title,
+                            "body": body,
+                        });
+                        outgoing.push(msg.to_string());
+                    }
+                    if let Some((state, pct)) = p.callbacks_mut().take_progress() {
+                        let msg = serde_json::json!({
+                            "t": "progress",
+                            "state": state,
+                            "pct": pct,
+                        });
+                        outgoing.push(msg.to_string());
+                    }
+                    if !outgoing.is_empty() {
+                        s.events
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend(outgoing);
+                    }
+                    p.callbacks_mut().take_responses()
+                };
+                for resp in &responses {
+                    host_handle().write(&s.tile_id, resp);
+                }
+                if let Some(run) = &s.run {
+                    if let Ok(text) = std::str::from_utf8(chunk) {
+                        run.log.lock().unwrap_or_else(|e| e.into_inner()).feed(text);
+                    }
+                }
+                s.dirty.store(true, Ordering::Relaxed);
+            }
+            Ok(ConsumerMsg::Exit { code }) => {
+                s.exited.store(true, Ordering::Relaxed);
+                s.dirty.store(true, Ordering::Relaxed);
+                if let Some(run) = &s.run {
+                    let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
+                    if exit.is_none() {
+                        *exit = code;
+                    }
+                }
+                flush_session(&s);
+                if s.run.is_none() {
+                    sessions().lock().unwrap().remove(&s.tile_id);
+                }
+                return;
+            }
+            Err(_) => {
+                s.exited.store(true, Ordering::Relaxed);
+                s.dirty.store(true, Ordering::Relaxed);
+                flush_session(&s);
+                if s.run.is_none() {
+                    sessions().lock().unwrap().remove(&s.tile_id);
+                }
+                return;
+            }
+        }
+    }
 }
 
 const MAX_CONCURRENT_BOOT: usize = 3;
@@ -3238,6 +3382,10 @@ async fn handle_conn(mut stream: TcpStream) {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("host") {
+        host::run_host_server(host_port());
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("record-agent") {
         record_agent();
         return;
@@ -3258,6 +3406,7 @@ async fn main() {
     if let Some(path) = fresh_path() {
         std::env::set_var("PATH", path);
     }
+    tokio::task::block_in_place(|| reconnect_sessions());
     install_claude_hook();
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
