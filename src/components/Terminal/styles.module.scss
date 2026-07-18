@@ -21,6 +21,7 @@
 
   span {
     display: inline-block;
+    box-sizing: content-box;
     height: 15.5px;
     margin-right: -0.5px;
     padding-right: 0.5px;
