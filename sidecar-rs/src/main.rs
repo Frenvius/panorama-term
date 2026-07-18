@@ -2336,7 +2336,7 @@ fn spawn_session(
 
     let (consumer_tx, consumer_rx) = mpsc_channel::<ConsumerMsg>();
     host_handle().register_consumer(&p.tile_id, consumer_tx);
-    host_handle().subscribe(&p.tile_id, 0)?;
+    host_handle().subscribe(&p.tile_id, seed.len() as u64)?;
 
     let run = p.spawn_cmd.as_ref().map(|run_cmd| RunState {
         cmd: run_cmd.clone(),
