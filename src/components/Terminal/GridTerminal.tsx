@@ -69,7 +69,33 @@ const fgOf = (w0: number): string => {
 
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
-const isSym = (cp: number): boolean => (cp >= 0x2600 && cp <= 0x27bf) || cp === 0x2217;
+const isSym = (cp: number): boolean =>
+  (cp >= 0x2300 && cp <= 0x23ff) || (cp >= 0x25a0 && cp <= 0x27bf) || cp === 0x2217;
+
+let symCtx: CanvasRenderingContext2D | null = null;
+let symRefInk = 0;
+const symScaleCache = new Map<number, number>();
+
+const inkOf = (ch: string): number => {
+  if (!symCtx) symCtx = document.createElement('canvas').getContext('2d');
+  if (!symCtx) return 0;
+  symCtx.font = "12px 'Segoe UI Symbol'";
+  const m = symCtx.measureText(ch);
+  const h = (m.actualBoundingBoxAscent ?? 0) + (m.actualBoundingBoxDescent ?? 0);
+  const w = (m.actualBoundingBoxLeft ?? 0) + (m.actualBoundingBoxRight ?? 0);
+  return Math.max(h, w);
+};
+
+const symScale = (cp: number, ch: string): number => {
+  let s = symScaleCache.get(cp);
+  if (s === undefined) {
+    if (!symRefInk) symRefInk = inkOf('✻') || 9;
+    const ink = inkOf(ch);
+    s = ink > 0 ? Math.min(1.5, Math.max(0.7, symRefInk / ink)) : 1;
+    symScaleCache.set(cp, s);
+  }
+  return s;
+};
 
 const isWide = (cp: number): boolean =>
   cp >= 0x1100 &&
@@ -138,7 +164,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
       flush();
       runStyle = '';
       const isDefault = (w0 & 0xffffff) === DEFAULT_FG && !bold && !hasBg;
-      const symStyle = `width:7.23px;text-align:center;font-family:'Segoe UI Symbol',monospace${
+      const symStyle = `width:7.23px;text-align:center;font-family:'Segoe UI Symbol',monospace;font-size:${(12 * symScale(cp, ch)).toFixed(2)}px${
         isDefault ? '' : `;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${hex(w1)}` : ''}`
       }`;
       html += `<span style="${symStyle}">${esc(ch)}</span>`;
