@@ -107,6 +107,7 @@ struct HostSession {
     pid: u32,
     cols: u16,
     rows: u16,
+    meta: serde_json::Value,
     alive: Arc<AtomicBool>,
     exit_once: Arc<AtomicBool>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -373,6 +374,7 @@ fn dispatch_rpc(
                 args,
                 env,
                 seed,
+                v["meta"].clone(),
                 outbound.clone(),
             )?;
             Ok(serde_json::json!({ "pid": pid }))
@@ -451,6 +453,7 @@ fn dispatch_rpc(
                         "rows": s.rows,
                         "alive": s.alive.load(Ordering::Relaxed),
                         "total": total,
+                        "meta": s.meta,
                     })
                 })
                 .collect();
@@ -470,6 +473,7 @@ fn host_spawn(
     args: Vec<String>,
     env: Vec<(String, String)>,
     seed: Vec<u8>,
+    meta: serde_json::Value,
     _outbound: Sender<Vec<u8>>,
 ) -> Result<u32, String> {
     let cwd = cwd
@@ -525,6 +529,7 @@ fn host_spawn(
         pid,
         cols,
         rows,
+        meta,
         alive: alive.clone(),
         exit_once: exit_once.clone(),
         writer: Mutex::new(writer),

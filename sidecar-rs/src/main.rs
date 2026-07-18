@@ -52,6 +52,7 @@ impl HostHandle {
         args: &[String],
         env: &[(String, String)],
         seed: &[u8],
+        meta: serde_json::Value,
     ) -> Result<u32, String> {
         let seed_b64 = base64::engine::general_purpose::STANDARD.encode(seed);
         let reply = self.rpc_raw(serde_json::json!({
@@ -64,6 +65,7 @@ impl HostHandle {
             "args": args,
             "env": env.iter().map(|(k, v)| [k, v]).collect::<Vec<_>>(),
             "seed": seed_b64,
+            "meta": meta,
         }))?;
         if !reply["ok"].as_bool().unwrap_or(false) {
             return Err(reply["err"].as_str().unwrap_or("spawn failed").to_string());
@@ -280,7 +282,10 @@ fn reconnect_sessions() {
         }
 
         let run = if key.starts_with("run:") || key.starts_with("build:") {
-            let run_kind = if key.starts_with("build:") { "build" } else { "run" };
+            let meta = &si["meta"];
+            let run_kind = meta["kind"]
+                .as_str()
+                .unwrap_or(if key.starts_with("build:") { "build" } else { "run" });
             let mut log = RunLog::new();
             if !raw.is_empty() {
                 if let Ok(text) = std::str::from_utf8(&raw) {
@@ -288,8 +293,8 @@ fn reconnect_sessions() {
                 }
             }
             Some(RunState {
-                cmd: key.clone(),
-                cwd: String::new(),
+                cmd: meta["cmd"].as_str().unwrap_or(&key).to_string(),
+                cwd: meta["cwd"].as_str().unwrap_or("").to_string(),
                 kind: run_kind.to_string(),
                 started: Instant::now(),
                 log: Mutex::new(log),
@@ -2331,8 +2336,16 @@ fn spawn_session(
         let _ = parser.callbacks_mut().take_progress();
     }
 
+    let meta = match &p.spawn_cmd {
+        Some(run_cmd) => serde_json::json!({
+            "cmd": run_cmd,
+            "cwd": norm_cwd(&cwd),
+            "kind": p.run_kind,
+        }),
+        None => serde_json::Value::Null,
+    };
     let pid =
-        host_handle().spawn_pty(&p.tile_id, &cwd, cols, rows, &exe, &args, &env, &seed)?;
+        host_handle().spawn_pty(&p.tile_id, &cwd, cols, rows, &exe, &args, &env, &seed, meta)?;
 
     let (consumer_tx, consumer_rx) = mpsc_channel::<ConsumerMsg>();
     host_handle().register_consumer(&p.tile_id, consumer_tx);
