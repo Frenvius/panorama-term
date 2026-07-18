@@ -379,6 +379,18 @@ fn brain_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("sidecar"))
 }
 
+fn brain_run_copy(bin: &Path) -> PathBuf {
+    if !cfg!(debug_assertions) {
+        return bin.to_path_buf();
+    }
+    let dst = std::env::temp_dir().join("panorama-brain.exe");
+    if std::fs::copy(bin, &dst).is_ok() {
+        dst
+    } else {
+        bin.to_path_buf()
+    }
+}
+
 fn brain_alive() -> bool {
     let addr = format!("127.0.0.1:{}", port());
     addr.parse()
@@ -397,7 +409,8 @@ fn supervise_brain() {
             std::thread::sleep(Duration::from_millis(1000));
             continue;
         }
-        let mut cmd = std::process::Command::new(&bin);
+        let exe = brain_run_copy(&bin);
+        let mut cmd = std::process::Command::new(&exe);
         cmd.arg(DAEMON_ARG)
             .env("PANORAMA_HOST_PORT", &host_p)
             .env("PANORAMA_SIDECAR_PORT", &brain_p)
