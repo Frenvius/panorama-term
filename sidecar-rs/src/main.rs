@@ -14,6 +14,8 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod host;
+
 const PORT: u16 = 9777;
 const DAEMON_ARG: &str = "--daemon";
 
@@ -566,6 +568,44 @@ fn run_lookup(kind: &str, tile: Option<&str>, cwd: Option<&str>) -> Option<Arc<S
     }
 }
 
+pub(crate) struct RawRing {
+    pub(crate) buf: Vec<u8>,
+    pub(crate) base: u64,
+}
+
+impl RawRing {
+    pub(crate) fn new(seed: Vec<u8>) -> Self {
+        Self { base: 0, buf: seed }
+    }
+
+    pub(crate) fn push(&mut self, data: &[u8]) {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() > RAW_CAP {
+            let cut = self.buf.len() - RAW_CAP;
+            self.buf.drain(0..cut);
+            self.base += cut as u64;
+        }
+    }
+
+    pub(crate) fn len_total(&self) -> u64 {
+        self.base + self.buf.len() as u64
+    }
+
+    pub(crate) fn since(&self, offset: u64) -> (u64, Vec<u8>) {
+        let total = self.len_total();
+        if offset >= total {
+            return (total, Vec::new());
+        }
+        let start = offset.max(self.base);
+        let skip = (start - self.base) as usize;
+        (start, self.buf[skip..].to_vec())
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<u8> {
+        self.buf.clone()
+    }
+}
+
 struct Session {
     tile_id: String,
     shell: String,
@@ -573,7 +613,7 @@ struct Session {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    raw: Mutex<Vec<u8>>,
+    raw: Mutex<RawRing>,
     dirty: AtomicBool,
     raw_dirty: AtomicBool,
     exited: AtomicBool,
@@ -622,7 +662,7 @@ fn flush_session(s: &Session) {
     if s.run.is_some() || !s.raw_dirty.swap(false, Ordering::Relaxed) {
         return;
     }
-    let data = s.raw.lock().map(|r| r.clone()).unwrap_or_default();
+    let data = s.raw.lock().map(|r| r.snapshot()).unwrap_or_default();
     if let Some(p) = buffer_path(&s.tile_id) {
         let _ = std::fs::write(p, &data);
     }
@@ -1956,7 +1996,7 @@ fn spawn_session(
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
-        raw: Mutex::new(seed),
+        raw: Mutex::new(RawRing::new(seed)),
         dirty: AtomicBool::new(true),
         raw_dirty: AtomicBool::new(false),
         exited: AtomicBool::new(false),
@@ -2078,11 +2118,7 @@ fn spawn_session(
                         }
                     }
                     if let Ok(mut raw) = s.raw.lock() {
-                        raw.extend_from_slice(chunk);
-                        if raw.len() > RAW_CAP {
-                            let cut = raw.len() - RAW_CAP;
-                            raw.drain(0..cut);
-                        }
+                        raw.push(chunk);
                     }
                     s.raw_dirty.store(true, Ordering::Relaxed);
                     s.dirty.store(true, Ordering::Relaxed);
@@ -2900,7 +2936,7 @@ async fn handle_conn(mut stream: TcpStream) {
         let lines = q.get("lines").and_then(|l| l.parse().ok()).unwrap_or(1000usize);
         let (raw, cols) = match sessions().lock().unwrap().get(&tid).cloned() {
             Some(s) => (
-                s.raw.lock().map(|r| r.clone()).unwrap_or_default(),
+                s.raw.lock().map(|r| r.snapshot()).unwrap_or_default(),
                 s.cols.load(Ordering::Relaxed),
             ),
             None => (load_buffer(&tid), 80),
@@ -3390,6 +3426,47 @@ mod tests {
     #[test]
     fn cwd_slug_replaces_separators() {
         assert_eq!(super::cwd_slug("D:/workspace/panorama-term"), "D--workspace-panorama-term");
+    }
+
+    #[test]
+    fn raw_ring_monotonic_offsets() {
+        let mut r = super::RawRing::new(vec![1, 2, 3]);
+        assert_eq!(r.len_total(), 3);
+        assert_eq!(r.base, 0);
+        assert_eq!(r.snapshot(), vec![1, 2, 3]);
+
+        let fill = vec![0u8; super::RAW_CAP - 3];
+        r.push(&fill);
+        assert_eq!(r.len_total(), super::RAW_CAP as u64);
+        assert_eq!(r.base, 0);
+
+        r.push(&[9, 8, 7]);
+        assert_eq!(r.base, 3);
+        assert_eq!(r.len_total(), super::RAW_CAP as u64 + 3);
+        assert_eq!(r.buf.len(), super::RAW_CAP);
+        assert_eq!(&r.buf[super::RAW_CAP - 3..], &[9, 8, 7]);
+
+        let (start, bytes) = r.since(0);
+        assert_eq!(start, 3);
+        assert_eq!(bytes.len(), super::RAW_CAP);
+
+        let (start2, bytes2) = r.since(3);
+        assert_eq!(start2, 3);
+        assert_eq!(bytes2.len(), super::RAW_CAP);
+
+        let mid = super::RAW_CAP as u64;
+        let (start3, bytes3) = r.since(mid);
+        assert_eq!(start3, mid);
+        assert_eq!(bytes3, vec![9, 8, 7]);
+
+        let total = r.len_total();
+        let (start4, bytes4) = r.since(total);
+        assert_eq!(start4, total);
+        assert!(bytes4.is_empty());
+
+        let (start5, bytes5) = r.since(total + 99);
+        assert_eq!(start5, total);
+        assert!(bytes5.is_empty());
     }
 
     #[test]
