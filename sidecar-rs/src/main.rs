@@ -371,6 +371,55 @@ fn daemonize() {
         }
     }
 }
+fn brain_bin() -> PathBuf {
+    std::env::var("PANORAMA_BRAIN_BIN")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("sidecar"))
+}
+
+fn brain_alive() -> bool {
+    let addr = format!("127.0.0.1:{}", port());
+    addr.parse()
+        .ok()
+        .map(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
+        .unwrap_or(false)
+}
+
+fn supervise_brain() {
+    use std::process::Stdio;
+    let bin = brain_bin();
+    let host_p = host_port().to_string();
+    let brain_p = port().to_string();
+    std::thread::spawn(move || loop {
+        if brain_alive() {
+            std::thread::sleep(Duration::from_millis(1000));
+            continue;
+        }
+        let mut cmd = std::process::Command::new(&bin);
+        cmd.arg(DAEMON_ARG)
+            .env("PANORAMA_HOST_PORT", &host_p)
+            .env("PANORAMA_SIDECAR_PORT", &brain_p)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(e) => eprintln!("[host] failed to spawn brain: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+    });
+}
+
 const DEFAULT_FG: u32 = 0xC7_D0_E0;
 const DEFAULT_BG: u32 = 0x0B_0E_14;
 
@@ -3383,6 +3432,7 @@ async fn handle_conn(mut stream: TcpStream) {
 #[tokio::main]
 async fn main() {
     if std::env::args().nth(1).as_deref() == Some("host") {
+        supervise_brain();
         host::run_host_server(host_port());
         return;
     }
