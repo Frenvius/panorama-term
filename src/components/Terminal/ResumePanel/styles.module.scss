@@ -80,7 +80,7 @@ $accent: #d97757;
   align-items: flex-start;
   gap: 16px;
   min-height: 0;
-  padding-right: 4px;
+  padding-right: 14px;
   overflow-y: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -88,6 +88,7 @@ $accent: #d97757;
 
   &[data-scroll='on'] {
     overflow-y: auto;
+    padding-right: 4px;
 
     .code {
       overflow-x: auto;
