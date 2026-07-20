@@ -11,6 +11,17 @@ mod docker;
 mod notes;
 mod claude;
 
+pub(crate) fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 const SIDECAR_PORT: u16 = 9777;
 const HOST_PORT: u16 = 9778;
 const NOTIF_WIDTH: f64 = 448.0;
@@ -303,7 +314,7 @@ fn set_pending_count(app: tauri::AppHandle, count: u32) -> Result<(), String> {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     let spawn = |cmd: &str, args: &[&str]| {
-        std::process::Command::new(cmd)
+        hidden_command(cmd)
             .args(args)
             .spawn()
             .map(|_| ())
@@ -320,7 +331,7 @@ fn open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn reveal_path(path: String) -> Result<(), String> {
     let spawn = |cmd: &str, args: &[&str]| {
-        std::process::Command::new(cmd)
+        hidden_command(cmd)
             .args(args)
             .spawn()
             .map(|_| ())

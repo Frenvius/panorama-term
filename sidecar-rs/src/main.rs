@@ -1539,11 +1539,11 @@ fn load_statusline_chain() -> Option<String> {
 
 fn run_chained_statusline(command: &str, input: &str) -> Option<String> {
     let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new(resolve_powershell());
+        let mut c = hidden_command(&resolve_powershell());
         c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
         c
     } else {
-        let mut c = std::process::Command::new("sh");
+        let mut c = hidden_command("sh");
         c.args(["-c", command]);
         c
     };

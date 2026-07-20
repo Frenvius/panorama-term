@@ -1,5 +1,4 @@
 use std::fs;
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +29,7 @@ struct PsLine {
 }
 
 fn run_docker(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("docker")
+    let out = crate::hidden_command("docker")
         .args(args)
         .output()
         .map_err(|e| format!("docker: {}", e))?;
@@ -90,7 +89,7 @@ pub async fn docker_engine(action: String) -> Result<(), String> {
     if verb == "start" {
         suppress_desktop_ui();
     }
-    Command::new("docker")
+    crate::hidden_command("docker")
         .args(["desktop", verb])
         .spawn()
         .map_err(|e| format!("docker desktop {}: {}", verb, e))?;

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -80,7 +79,7 @@ pub struct CommitMessageEntry {
 }
 
 fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -142,7 +141,7 @@ fn remote_names(repo: &str) -> Vec<String> {
 }
 
 fn head_name(repo: &str) -> Option<String> {
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .arg("-C")
         .arg(repo)
         .args(["symbolic-ref", "--short", "HEAD"])
@@ -421,7 +420,7 @@ fn repo_root(path: &str) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
     let path = repo_root(&path)?;
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .arg("-C")
         .arg(&path)
         .args(["status", "--porcelain=v1", "-uall", "-z"])
@@ -467,7 +466,7 @@ pub async fn git_commit(path: String, files: Vec<String>, message: String, amend
     let path = repo_root(&path)?;
 
     if !files.is_empty() {
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::hidden_command("git");
         cmd.arg("-C").arg(&path).arg("add").arg("--");
         for f in &files {
             cmd.arg(f);
