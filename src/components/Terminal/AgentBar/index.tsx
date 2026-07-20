@@ -6,7 +6,7 @@ import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
-import { readFooter, modeKey, prettyMode, prettyModel, detectAgent, type AgentType, detectExitBanner, parseStatusLines, detectSuggestTrigger } from './parse';
+import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, detectExitBanner, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, ANTIGRAVITY_SLASH_COMMANDS, MODEL_QUICK_SWITCHES } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -118,6 +118,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   activeRef.current = active;
   agentTypeRef.current = agentType;
 
+  const agentPresent = agentType !== null;
   const isEmpty = isDraftEmpty(draft);
   const hidden = questionMode || manualHide;
 
@@ -231,39 +232,18 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
         return;
       }
       lastLinesRef.current = lines;
-      const detected = detectAgent(bufferText);
-      lastPresentRef.current = detected;
+      const present = hasAgentUi(bufferText);
+      lastPresentRef.current = present;
 
-      if (detected) {
+      if (present) {
         lastSeenRef.current = now;
-        const isSpecific = (type: AgentType | null) => type && type !== 'generic';
-
-        if (isSpecific(detected)) {
-          if (!seenRef.current || detected !== currentType) {
-            seenRef.current = true;
-            setAgentType(detected);
-          }
-        } else if (detected === 'generic') {
-          if (!seenRef.current || currentType === 'generic') {
-            seenRef.current = true;
-            setAgentType('generic');
-          }
+        seenRef.current = true;
+        if (!currentType || currentType === 'generic') {
+          setAgentType(detectAgentIdentity(lines.join('\n')) ?? 'generic');
         }
-      } else {
-        const isSpecific = (type: AgentType | null) => type && type !== 'generic';
-
-        if (seenRef.current) {
-          if (isSpecific(currentType)) {
-            const isExiting = detectExitBanner(lines) || /exiting/i.test(bufferText);
-            if (isExiting) {
-              seenRef.current = false;
-              setAgentType(null);
-            }
-          } else if (now - lastSeenRef.current > GONE_MS) {
-            seenRef.current = false;
-            setAgentType(null);
-          }
-        }
+      } else if (seenRef.current && now - lastSeenRef.current > GONE_MS) {
+        seenRef.current = false;
+        setAgentType(null);
       }
       if (!seenRef.current) return;
 
@@ -311,7 +291,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   }, [agentType]);
 
   React.useEffect(() => {
-    if (agentType) {
+    if (agentPresent) {
       let restored = cloneDraft(EMPTY_DRAFT);
       try {
         const raw = localStorage.getItem(draftKey(tileId));
@@ -339,7 +319,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       setSubmitting(false);
       setManualHide(false);
     }
-  }, [agentType, tileId]);
+  }, [agentPresent, tileId]);
 
   React.useEffect(() => {
     if (!agentType) return;

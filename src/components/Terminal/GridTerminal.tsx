@@ -8,7 +8,7 @@ import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
-import { detectAgent } from '~/components/Terminal/AgentBar/parse';
+import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
@@ -381,7 +381,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             const candidate = resumeCandidateRef.current;
             if (!candidate) return;
             resumeCandidateRef.current = null;
-            if (!detectAgent(frame.lines.join('\n'))) setResumeId(candidate);
+            if (!hasAgentUi(frame.lines.join('\n'))) setResumeId(candidate);
           },
           onExit: () => {
             exited = true;

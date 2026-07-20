@@ -43,25 +43,19 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
 
 export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'generic';
 
-export const detectAgent = (text: string): AgentType | null => {
-  const lower = text.toLowerCase();
-  if (lower.includes('antigravity') || lower.includes('agy')) return 'antigravity';
-  if (lower.includes('codex') || lower.includes('github copilot') || lower.includes('copilot-cli')) return 'codex';
-  if (lower.includes('opencode')) return 'opencode';
-  if (lower.includes('claude code') || lower.includes('claude-code') || lower.includes('claudecode') || /\bclaude\b/i.test(text)) return 'claude';
-  
-  if (/[╭╮╰╯]/.test(text)) return 'generic';
-  if (
-    /\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)/i.test(
-      text
-    )
-  ) {
-    return 'generic';
-  }
-  if (/\[[^\]\n]*\b(opus|sonnet|haiku|fable)\b[^\]\n]*\]/i.test(text)) return 'generic';
-  if (/press ctrl-?c again/i.test(text)) return 'generic';
-  return null;
-};
+const AGENT_UI = /[╭╮╰╯]|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
+
+export const hasAgentUi = (text: string): boolean => AGENT_UI.test(text);
+
+const AGENT_SIGNATURES: [AgentType, RegExp][] = [
+  ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code/i],
+  ['codex', /openai codex|codex cli|\bcodex\b\s+v\d|>_\s*codex/i],
+  ['antigravity', /welcome to antigravity|antigravity cli|\bantigravity\b\s+v\d|>_\s*antigravity/i],
+  ['opencode', /welcome to opencode|opencode cli|\bopencode\b\s+v\d/i]
+];
+
+export const detectAgentIdentity = (text: string): AgentType | null =>
+  AGENT_SIGNATURES.find(([, re]) => re.test(text))?.[0] ?? null;
 
 export const detectExitBanner = (lines: string[]): boolean =>
   lines.some((line) => /press ctrl-?c again/i.test(line));
