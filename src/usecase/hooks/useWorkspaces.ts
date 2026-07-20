@@ -2,6 +2,7 @@ import React from 'react';
 
 import type { TabMeta, CanvasState, WorkspaceMeta } from '~/domain/interfaces/workspace.interface';
 import { workspaceService } from '~/usecase/service/workspace.service';
+import { toStored, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 
 export const useWorkspaces = () => {
   const [tabs, setTabs] = React.useState<TabMeta[]>([]);
@@ -112,6 +113,24 @@ export const useWorkspaces = () => {
     [activeId, refreshTabsMeta]
   );
 
+  const moveTileToTab = React.useCallback(
+    async (tileId: string, current: RuntimeCanvas, targetTabId: string) => {
+      if (!activeId || !activeTabId || targetTabId === activeTabId) return;
+      const tile = current.tiles.find((t) => t.id === tileId);
+      if (!tile) return;
+      const source = toStored({ ...current, tiles: current.tiles.filter((t) => t.id !== tileId) });
+      await workspaceService.saveTabState(activeId, activeTabId, source);
+      const target = await workspaceService.loadTabState(activeId, targetTabId);
+      if (!target) return;
+      const zIndex = Math.max(0, ...target.tiles.map((t) => t.zIndex)) + 1;
+      target.tiles = [...target.tiles, { ...tile, zIndex }];
+      await workspaceService.saveTabState(activeId, targetTabId, target);
+      await workspaceService.setActiveTab(activeId, targetTabId);
+      await loadTabs(activeId, targetTabId);
+    },
+    [activeId, activeTabId, loadTabs]
+  );
+
   const saveActiveState = React.useCallback((state: CanvasState) => {
     void workspaceService.saveActiveState(state);
   }, []);
@@ -134,6 +153,7 @@ export const useWorkspaces = () => {
       createWorkspace,
       deleteWorkspace,
       renameWorkspace,
+      moveTileToTab,
       saveActiveState,
       setWorkspaceColor
     }),
@@ -152,6 +172,7 @@ export const useWorkspaces = () => {
       createWorkspace,
       deleteWorkspace,
       renameWorkspace,
+      moveTileToTab,
       saveActiveState,
       setWorkspaceColor
     ]

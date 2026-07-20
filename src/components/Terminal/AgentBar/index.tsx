@@ -57,8 +57,6 @@ const matchQuickSwitchId = (raw: string | undefined): string => {
 
 type UndoSnap = { text: string; images: string[]; caret: number };
 
-const UNDO_CAP = 200;
-
 const sameSnap = (a: UndoSnap, b: UndoSnap): boolean =>
   a.text === b.text && a.images.length === b.images.length && a.images.every((p, i) => p === b.images[i]);
 
