@@ -48,14 +48,20 @@ const AGENT_UI = /[╭╮╰╯]|\besc to interrupt\b|\?\s*for shortcuts|auto-?a
 export const hasAgentUi = (text: string): boolean => AGENT_UI.test(text);
 
 const AGENT_SIGNATURES: [AgentType, RegExp][] = [
-  ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code/i],
+  ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code|\/help for help/i],
   ['codex', /openai codex|codex cli|\bcodex\b\s+v\d|>_\s*codex/i],
   ['antigravity', /welcome to antigravity|antigravity cli|\bantigravity\b\s+v\d|>_\s*antigravity/i],
   ['opencode', /welcome to opencode|opencode cli|\bopencode\b\s+v\d/i]
 ];
 
+const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
+  ['claude', /\[[^\]\n]*\b(opus|sonnet|haiku|fable)\b[^\]\n]*\]|\b(opus|sonnet|haiku)\s+[\d.]+/i],
+  ['codex', /\bgpt-[\d.]|\bo\d-(?:mini|preview)\b/i],
+  ['antigravity', /\bgemini[\s-][\d.]/i]
+];
+
 export const detectAgentIdentity = (text: string): AgentType | null =>
-  AGENT_SIGNATURES.find(([, re]) => re.test(text))?.[0] ?? null;
+  (AGENT_SIGNATURES.find(([, re]) => re.test(text)) ?? AGENT_MODEL_HINTS.find(([, re]) => re.test(text)))?.[0] ?? null;
 
 export const detectExitBanner = (lines: string[]): boolean =>
   lines.some((line) => /press ctrl-?c again/i.test(line));

@@ -224,7 +224,9 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
             seenRef.current = false;
             setAgentType(null);
           } else {
-            setStructured(getStructured());
+            const live = getStructured();
+            if (live && currentType === 'generic') setAgentType('claude');
+            setStructured(live);
           }
         }
         return;
@@ -237,7 +239,8 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
         lastSeenRef.current = now;
         seenRef.current = true;
         if (!currentType || currentType === 'generic') {
-          setAgentType(detectAgentIdentity(lines.join('\n')) ?? 'generic');
+          const identity = getStructured() ? 'claude' : detectAgentIdentity(lines.join('\n'));
+          if (identity || !currentType) setAgentType(identity ?? 'generic');
         }
       } else if (seenRef.current && now - lastSeenRef.current > GONE_MS) {
         seenRef.current = false;
