@@ -6,6 +6,12 @@ const release = process.argv.includes('--release');
 const profile = release ? 'release' : 'debug';
 const ext = process.platform === 'win32' ? '.exe' : '';
 
+const win = process.platform === 'win32';
+for (const name of ['panorama-host', 'panorama-brain', 'sidecar']) {
+  if (win) spawnSync('taskkill', ['/IM', `${name}.exe`, '/F'], { stdio: 'ignore' });
+  else spawnSync('pkill', ['-x', name], { stdio: 'ignore' });
+}
+
 const args = ['build', '--manifest-path', 'sidecar-rs/Cargo.toml'];
 if (release) args.push('--release');
 

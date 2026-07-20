@@ -10,6 +10,7 @@
     "ui:dev": "bun scripts/dev.ts",
     "ui:build": "vite build",
     "sidecar": "bun scripts/sidecar.ts",
+    "sidecar:release": "bun scripts/sidecar.ts --release",
     "tauri": "tauri"
   },
   "dependencies": {
