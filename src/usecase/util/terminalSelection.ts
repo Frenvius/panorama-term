@@ -24,27 +24,57 @@ export const wordSelection = (line: string, row: number, col: number): Selection
   return { a: { row, col: c0 }, b: { row, col: c1 } };
 };
 
-export interface UrlSpan {
-  url: string;
+export interface UrlSegment {
   row: number;
   c0: number;
   c1: number;
 }
 
-export const urlSpanAt = (line: string, row: number, col: number): UrlSpan | null => {
-  const chars = Array.from(line);
-  const isUrlChar = (c: string | undefined): boolean => c !== undefined && c !== ' ' && c !== '\t';
-  if (!isUrlChar(chars[col])) return null;
-  let s = col;
-  let e = col;
-  while (s > 0 && isUrlChar(chars[s - 1])) s--;
-  while (e < chars.length - 1 && isUrlChar(chars[e + 1])) e++;
-  const token = chars.slice(s, e + 1).join('');
-  const m = token.match(/https?:\/\/\S+/i);
+export interface UrlSpan {
+  url: string;
+  segments: UrlSegment[];
+}
+
+const isUrlChar = (c: string | undefined): boolean => c !== undefined && c !== ' ' && c !== '\t';
+
+export const urlSpanAt = (lines: string[], cols: number, row: number, col: number): UrlSpan | null => {
+  const rowChars = (r: number): string[] => {
+    const c = Array.from(lines[r] ?? '');
+    while (c.length < cols) c.push(' ');
+    return c;
+  };
+  const wrapped = (r: number): boolean => isUrlChar(rowChars(r)[cols - 1]);
+
+  let top = row;
+  while (top > 0 && wrapped(top - 1)) top--;
+  let bot = row;
+  while (bot < lines.length - 1 && wrapped(bot)) bot++;
+
+  const block: string[] = [];
+  for (let r = top; r <= bot; r++) block.push(...rowChars(r));
+
+  const g = (row - top) * cols + col;
+  if (!isUrlChar(block[g])) return null;
+  let s = g;
+  let e = g;
+  while (s > 0 && isUrlChar(block[s - 1])) s--;
+  while (e < block.length - 1 && isUrlChar(block[e + 1])) e++;
+
+  const m = block.slice(s, e + 1).join('').match(/https?:\/\/\S+/i);
   if (!m || m.index === undefined) return null;
   const url = m[0].replace(/[.,;:!?)\]}'"]+$/, '');
-  const c0 = s + m.index;
-  return { url, row, c0, c1: c0 + Array.from(url).length - 1 };
+  const g0 = s + m.index;
+  const g1 = g0 + Array.from(url).length - 1;
+
+  const segments: UrlSegment[] = [];
+  for (let gi = g0; gi <= g1; ) {
+    const r = top + Math.floor(gi / cols);
+    const c0 = gi % cols;
+    const c1 = Math.min(cols - 1, c0 + (g1 - gi));
+    segments.push({ row: r, c0, c1 });
+    gi += c1 - c0 + 1;
+  }
+  return { url, segments };
 };
 
 export const lineSelection = (row: number, cols: number): Selection => ({

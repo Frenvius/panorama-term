@@ -55,6 +55,16 @@ export interface FileDiff {
   crlf: boolean;
 }
 
+export interface LogRow {
+  short: string;
+  parents: string[];
+  author: string;
+  committer: string;
+  date: string;
+  refs: string;
+  message: string;
+}
+
 export interface CommitMessageEntry {
   short: string;
   subject: string;

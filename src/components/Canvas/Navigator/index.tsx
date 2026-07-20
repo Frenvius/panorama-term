@@ -29,6 +29,7 @@ import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import GitTab from '~/components/Canvas/Navigator/GitTab';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
 import DockerTab from '~/components/Canvas/Navigator/DockerTab';
+import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { groupByFrame } from '~/usecase/util/frame';
@@ -60,6 +61,7 @@ interface NavigatorProps {
   frames: Frame[];
   activeTile: string | null;
   alerts: Map<string, NotifyKind>;
+  agents: Map<string, 'idle' | 'busy'>;
   onNewTile: () => void;
   onFocusTile: (id: string, zoomToMax?: boolean) => void;
   onFocusFrame: (id: string) => void;
@@ -72,12 +74,29 @@ interface NavigatorProps {
 }
 
 const WIDTH_KEY = 'panorama:navWidth';
+const COLLAPSED_KEY = 'panorama:navCollapsed';
+const TAB_KEY = 'panorama:navTab';
+const TABS = ['files', 'tiles', 'git', 'docker'] as const;
+type Tab = (typeof TABS)[number];
+
+const savedTab = (): Tab => {
+  const raw = localStorage.getItem(TAB_KEY);
+  return TABS.includes(raw as Tab) ? (raw as Tab) : 'files';
+};
 const MIN_WIDTH = 200;
-const MAX_WIDTH = 560;
+const MAX_WIDTH = 800;
 
 const savedWidth = (): number => {
   const raw = Number(localStorage.getItem(WIDTH_KEY));
   return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : 248;
+};
+
+const savedCollapsed = (): Set<string> => {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]'));
+  } catch {
+    return new Set();
+  }
 };
 
 const Navigator = ({
@@ -85,6 +104,7 @@ const Navigator = ({
   frames,
   activeTile,
   alerts,
+  agents,
   onNewTile,
   onFocusTile,
   onFocusFrame,
@@ -95,17 +115,24 @@ const Navigator = ({
   onOpenDiff,
   onClose
 }: NavigatorProps) => {
-  const [tab, setTab] = React.useState<'files' | 'tiles' | 'git' | 'docker'>('files');
+  const [tab, setTab] = React.useState<Tab>(savedTab);
   const [hasDocker, setHasDocker] = React.useState(false);
+
+  React.useEffect(() => {
+    localStorage.setItem(TAB_KEY, tab);
+  }, [tab]);
   const [width, setWidth] = React.useState(savedWidth);
 
   React.useEffect(() => {
     dockerAvailable()
-      .then(setHasDocker)
+      .then((ok) => {
+        setHasDocker(ok);
+        if (!ok) setTab((t) => (t === 'docker' ? 'files' : t));
+      })
       .catch(() => setHasDocker(false));
   }, []);
   const [query, setQuery] = React.useState('');
-  const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = React.useState<Set<string>>(savedCollapsed);
   const [renaming, setRenaming] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState('');
   const [menu, setMenu] = React.useState<Menu | null>(null);
@@ -140,6 +167,7 @@ const Navigator = ({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
       return next;
     });
   };
@@ -223,6 +251,7 @@ const Navigator = ({
 
   const row = (tile: Tile, nested: boolean) => {
     const { Icon, color } = TYPE_ICON[tile.type] ?? TYPE_ICON.term;
+    const agent = agents.get(tile.id);
     const select = () => onFocusTile(tile.id);
     const zoom = () => onFocusTile(tile.id, true);
     const contextMenu = (e: React.MouseEvent) => openTileMenu(e, tile);
@@ -252,6 +281,19 @@ const Navigator = ({
           <span className={styles.name}>{tileLabel(tile)}</span>
         )}
         {alerts.has(tile.id) && <span className={styles.dot} />}
+        {agent && (
+          <span className={styles.agent} data-tooltip={agent === 'busy' ? 'Agent working' : 'Agent idle'}>
+            {agent === 'busy' ? (
+              <span className={styles.dots}>
+                <span />
+                <span />
+                <span />
+              </span>
+            ) : (
+              <ClaudeLogo size={11} />
+            )}
+          </span>
+        )}
       </div>
     );
   };
@@ -357,6 +399,11 @@ const Navigator = ({
               const children = (members.get(frame.id) ?? []).filter(matches);
               const shut = collapsed.has(frame.id);
               const alerted = children.some((c) => alerts.has(c.id));
+              const frameAgent = children.some((c) => agents.get(c.id) === 'busy')
+                ? 'busy'
+                : children.some((c) => agents.get(c.id))
+                  ? 'idle'
+                  : null;
               const toggle = () => toggleFrame(frame.id);
               const goto = (e: React.MouseEvent) => {
                 e.stopPropagation();
@@ -370,6 +417,19 @@ const Navigator = ({
                     <span className={styles.swatch} style={{ background: frame.color }} />
                     <span className={styles.name}>{frame.title}</span>
                     {alerted && <span className={styles.dot} />}
+                    {frameAgent && (
+                      <span className={styles.agent} data-tooltip={frameAgent === 'busy' ? 'Agent working' : 'Agent idle'}>
+                        {frameAgent === 'busy' ? (
+                          <span className={styles.dots}>
+                            <span />
+                            <span />
+                            <span />
+                          </span>
+                        ) : (
+                          <ClaudeLogo size={11} />
+                        )}
+                      </span>
+                    )}
                     <span className={styles.count}>{children.length}</span>
                     <button className={styles.goto} onClick={goto} aria-label="Go to frame">
                       <Crosshair size={12} strokeWidth={2} />

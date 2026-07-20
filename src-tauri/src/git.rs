@@ -44,6 +44,17 @@ pub struct CommitInfo {
 }
 
 #[derive(Serialize)]
+pub struct LogRow {
+    short: String,
+    parents: Vec<String>,
+    author: String,
+    committer: String,
+    date: String,
+    refs: String,
+    message: String,
+}
+
+#[derive(Serialize)]
 pub struct FileChange {
     path: String,
     name: String,
@@ -483,6 +494,57 @@ pub async fn git_log_messages(path: String, limit: Option<u32>) -> Result<Vec<Co
         &["log", "--format=%x1e%h%x1f%ad%x1f%B", "--date=short", "-n", &n],
     )?;
     Ok(parse_commit_entries(&out))
+}
+
+fn parse_log_rows(raw: &str) -> Vec<LogRow> {
+    let mut rows = Vec::new();
+    for chunk in raw.split('\x1e') {
+        let chunk = chunk.trim_start_matches('\n');
+        if chunk.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = chunk.splitn(7, '\x1f').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        rows.push(LogRow {
+            short: parts[0].to_string(),
+            parents: parts[1].split_whitespace().map(str::to_string).collect(),
+            author: parts[2].to_string(),
+            committer: parts[3].to_string(),
+            date: parts[4].to_string(),
+            refs: parts[5].trim().to_string(),
+            message: parts[6].trim_end().to_string(),
+        });
+    }
+    rows
+}
+
+#[tauri::command]
+pub async fn git_log_graph(path: String, limit: Option<u32>) -> Result<Vec<LogRow>, String> {
+    let n = limit.unwrap_or(200).to_string();
+    let out = run_git(
+        &path,
+        &[
+            "log",
+            "--format=%x1e%h%x1f%p%x1f%an%x1f%cn%x1f%ad%x1f%D%x1f%B",
+            "--date=format:%Y-%m-%d %H:%M",
+            "-n",
+            &n,
+        ],
+    )?;
+    Ok(parse_log_rows(&out))
+}
+
+#[tauri::command]
+pub async fn git_remote_url(path: String) -> Result<String, String> {
+    let names = remote_names(&path);
+    let name = if names.iter().any(|n| n == "origin") {
+        "origin".to_string()
+    } else {
+        names.into_iter().next().ok_or("no remote")?
+    };
+    Ok(run_git(&path, &["remote", "get-url", &name])?.trim().to_string())
 }
 
 #[tauri::command]

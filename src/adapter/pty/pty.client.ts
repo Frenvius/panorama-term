@@ -17,9 +17,12 @@ export interface PtyConnectionParams {
   tileId: string;
   cwd?: string;
   target?: string;
+  elevated?: boolean;
+  attach?: boolean;
 }
 
 export interface PtyHandlers {
+  acceptGrid: () => boolean;
   onExit: () => void;
   onReady: (info: PtyReadyInfo) => void;
   onGrid: (frame: GridFrame) => void;
@@ -58,10 +61,12 @@ const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
 };
 
 export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHandlers): WebSocket => {
-  const { tileId, cols, rows, cwd, target } = params;
+  const { tileId, cols, rows, cwd, target, elevated, attach } = params;
   let query = `tileId=${encodeURIComponent(tileId)}&cols=${cols}&rows=${rows}`;
   if (cwd) query += `&cwd=${encodeURIComponent(cwd)}`;
   if (target) query += `&target=${encodeURIComponent(target)}`;
+  if (elevated) query += '&elevated=1';
+  if (attach) query += '&attach=1';
   const ws = new WebSocket(`${SIDECAR_WS}/pty?${query}`);
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (e) => {
@@ -69,6 +74,7 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       const msg = JSON.parse(e.data) as PtyServerMessage;
       if (msg.t === 'ready') handlers.onReady({ reused: msg.reused, cols: msg.cols, rows: msg.rows, resumeId: msg.resumeId });
       else if (msg.t === 'exit') handlers.onExit();
+      else if (msg.t === 'error') handlers.onNotify('Terminal', msg.msg);
       else if (msg.t === 'cwd') handlers.onCwd(msg.cwd, msg.branch ?? undefined);
       else if (msg.t === 'claude') handlers.onClaude(msg);
       else if (msg.t === 'clipboard') handlers.onClipboard(msg.text);
@@ -78,6 +84,7 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       else if (msg.t === 'progress') handlers.onProgress(msg.state, msg.pct);
       return;
     }
+    if (!handlers.acceptGrid()) return;
     const frame = parseGridFrame(e.data as ArrayBuffer);
     if (frame) handlers.onGrid(frame);
   };
@@ -109,6 +116,14 @@ export const sendPtyMouse = (
 
 export const sendPtyFocus = (ws: WebSocket, focused: boolean): void => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'focus', focused }));
+};
+
+export const sendPtyVisible = (ws: WebSocket, visible: boolean): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'visible', visible }));
+};
+
+export const sendPtyDismissAgent = (ws: WebSocket): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'dismissAgent' }));
 };
 
 export const sendPtyKill = (ws: WebSocket): void => {

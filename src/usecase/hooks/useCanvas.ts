@@ -1,4 +1,5 @@
 import React from 'react';
+import { listen } from '@tauri-apps/api/event';
 
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
@@ -8,7 +9,9 @@ import { tileInFrame } from '~/usecase/util/frame';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
+import { linkNote, unlinkNote, deleteNote, linkTerm, unlinkTerm } from '~/adapter/notes/notes.client';
 import { computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap';
+import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import {
@@ -42,6 +45,25 @@ type PanOrigin = { ox: number; oy: number; vx: number; vy: number; moved: boolea
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
+const CLOSED_KEY = 'panorama:closedTiles';
+const CLOSED_MAX = 20;
+
+const loadClosed = (ws: string | null): Tile[] => {
+  if (!ws) return [];
+  try {
+    return JSON.parse(localStorage.getItem(`${CLOSED_KEY}:${ws}`) || '[]');
+  } catch {
+    return [];
+  }
+};
+
+const saveClosed = (ws: string | null, stack: Tile[]): void => {
+  if (!ws) return;
+  try {
+    localStorage.setItem(`${CLOSED_KEY}:${ws}`, JSON.stringify(stack.slice(-CLOSED_MAX)));
+  } catch {}
+};
+
 const FOCUS_MS = 350;
 
 const FRAME_PAD = 2 * CELL;
@@ -63,10 +85,13 @@ const EMPTY: RuntimeCanvas = { tiles: [], frames: [], view: { x: 0, y: 0, k: 1 }
 
 interface UseCanvasArgs {
   seed: CanvasState | null;
+  wsId: string | null;
   onPersist: (state: CanvasState) => void;
 }
 
-export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
+export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
+  const wsIdRef = React.useRef(wsId);
+  wsIdRef.current = wsId;
   const initial = React.useRef(seed ? toRuntime(seed) : EMPTY);
   const [frames, setFrames] = React.useState<Frame[]>(initial.current.frames);
   const [tiles, setTiles] = React.useState<Tile[]>(initial.current.tiles);
@@ -99,6 +124,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
   const panRef = React.useRef<PanOrigin | null>(null);
   const resizeRaw = React.useRef<{ id: string; x: number; y: number; width: number; height: number } | null>(null);
   const lastTermSize = React.useRef<{ width: number; height: number } | null>(null);
+  const mouseRef = React.useRef<{ x: number; y: number } | null>(null);
 
   React.useEffect(() => {
     const id = setTimeout(() => onPersist(toStored({ tiles, view, frames })), 400);
@@ -167,6 +193,17 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     return () => bg.removeEventListener('scroll', onScroll);
   }, []);
 
+  React.useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const rect = bgRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const v = viewRef.current;
+      mouseRef.current = { x: (e.clientX - rect.left - v.x) / v.k, y: (e.clientY - rect.top - v.y) / v.k };
+    };
+    window.addEventListener('pointermove', onMove);
+    return () => window.removeEventListener('pointermove', onMove);
+  }, []);
+
   React.useEffect(
     () => () => {
       cancelAnimationFrame(snapRaf.current);
@@ -177,10 +214,11 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     []
   );
 
-  const addTile = React.useCallback((center?: { x: number; y: number }) => {
+  const addTile = React.useCallback((at?: { x: number; y: number }) => {
     setView((v) => {
-      const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
-      const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
+      const p = at ?? mouseRef.current;
+      const cx = p ? p.x : (window.innerWidth / 2 - v.x) / v.k;
+      const cy = p ? p.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => {
         const last = lastTermSize.current ?? [...prev].reverse().find((t) => t.type === 'term');
         const width = last?.width ?? TILE_WIDTH;
@@ -190,8 +228,8 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
           {
             id: createId(),
             type: 'term',
-            x: cx - width / 2,
-            y: cy - height / 2,
+            x: cx,
+            y: cy,
             width,
             height,
             zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
@@ -199,6 +237,37 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
         ];
       });
       return v;
+    });
+  }, []);
+
+  const addRunView = React.useCallback((srcId: string, cwd: string, sessionId: string, cmd: string) => {
+    setTiles((prev) => {
+      const existing = prev.find((t) => t.runCwd && t.ptySessionId === sessionId);
+      if (existing) {
+        setActiveTile(existing.id);
+        return prev;
+      }
+      const src = prev.find((t) => t.id === srcId);
+      const width = src?.width ?? TILE_WIDTH;
+      const height = src?.height ?? TILE_HEIGHT;
+      const id = createId();
+      setActiveTile(id);
+      return [
+        ...prev,
+        {
+          id,
+          type: 'term' as const,
+          runCwd: cwd,
+          ptySessionId: sessionId,
+          cwd,
+          autoTitle: cmd,
+          x: src ? src.x + src.width : 0,
+          y: src ? src.y : 0,
+          width,
+          height,
+          zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
+        }
+      ];
     });
   }, []);
 
@@ -252,10 +321,97 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
+  React.useEffect(() => {
+    const off = listen<{ noteId: string; content: string }>('note:changed', (e) => {
+      const { noteId, content } = e.payload;
+      setTiles((prev) => prev.map((t) => (t.id === noteId && t.type === 'note' && t.content !== content ? { ...t, content } : t)));
+    });
+    return () => {
+      void off.then((un) => un());
+    };
+  }, []);
+
+  const bindKey = React.useCallback((id: string) => {
+    const tile = tilesRef.current.find((t) => t.id === id);
+    return tile?.ptySessionId ?? id;
+  }, []);
+
+  const linkNoteTo = React.useCallback((noteId: string, termId: string) => {
+    const note = tilesRef.current.find((t) => t.id === noteId);
+    if (!note || !wsIdRef.current) return;
+    setTiles((prev) =>
+      prev.map((t) => (t.id === noteId ? { ...t, linkedTo: [...new Set([...(t.linkedTo ?? []), termId])] } : t))
+    );
+    void linkNote(wsIdRef.current, noteId, bindKey(termId), noteLinkTitle(note)).catch(() => {});
+  }, [bindKey]);
+
+  const unlinkNoteFrom = React.useCallback((noteId: string, termId: string) => {
+    setTiles((prev) =>
+      prev.map((t) => (t.id === noteId ? { ...t, linkedTo: (t.linkedTo ?? []).filter((id) => id !== termId) } : t))
+    );
+    void unlinkNote(noteId, bindKey(termId)).catch(() => {});
+  }, [bindKey]);
+
+  const linkTermTo = React.useCallback((termId: string, peerId: string) => {
+    const a = tilesRef.current.find((t) => t.id === termId);
+    const b = tilesRef.current.find((t) => t.id === peerId);
+    if (!a || !b || termId === peerId || (b.linkedTo ?? []).includes(termId)) return;
+    setTiles((prev) =>
+      prev.map((t) => (t.id === termId ? { ...t, linkedTo: [...new Set([...(t.linkedTo ?? []), peerId])] } : t))
+    );
+    void linkTerm(bindKey(termId), termName(a), bindKey(peerId), termName(b)).catch(() => {});
+  }, [bindKey]);
+
+  const unlinkTermFrom = React.useCallback((termId: string, peerId: string) => {
+    setTiles((prev) =>
+      prev.map((t) =>
+        t.id === termId || t.id === peerId
+          ? { ...t, linkedTo: (t.linkedTo ?? []).filter((id) => id !== termId && id !== peerId) }
+          : t
+      )
+    );
+    void unlinkTerm(bindKey(termId), bindKey(peerId)).catch(() => {});
+  }, [bindKey]);
+
   const closeTile = React.useCallback((id: string) => {
-    setTiles((prev) => prev.filter((t) => t.id !== id));
+    const closing = tilesRef.current.find((t) => t.id === id);
+    if (closing && !closing.runCwd) {
+      const ws = wsIdRef.current;
+      saveClosed(ws, [...loadClosed(ws), closing]);
+    }
+    if (closing?.type === 'note') {
+      for (const termId of closing.linkedTo ?? []) void unlinkNote(id, bindKey(termId)).catch(() => {});
+      if (wsIdRef.current) void deleteNote(wsIdRef.current, id).catch(() => {});
+    }
+    if (closing?.type === 'term') {
+      for (const peerId of closing.linkedTo ?? []) void unlinkTerm(bindKey(id), bindKey(peerId)).catch(() => {});
+      for (const t of tilesRef.current) {
+        if (!(t.linkedTo ?? []).includes(id)) continue;
+        if (t.type === 'note') void unlinkNote(t.id, bindKey(id)).catch(() => {});
+        if (t.type === 'term') void unlinkTerm(bindKey(t.id), bindKey(id)).catch(() => {});
+      }
+    }
+    setTiles((prev) =>
+      prev
+        .filter((t) => t.id !== id)
+        .map((t) => ((t.linkedTo ?? []).includes(id) ? { ...t, linkedTo: (t.linkedTo ?? []).filter((x) => x !== id) } : t))
+    );
     setActiveTile((a) => (a === id ? null : a));
     void killPtySession(id);
+  }, [bindKey]);
+
+  const reopenTile = React.useCallback(() => {
+    const ws = wsIdRef.current;
+    const stack = loadClosed(ws);
+    const tile = stack.pop();
+    saveClosed(ws, stack);
+    if (!tile) return;
+    setTiles((prev) => {
+      if (prev.some((t) => t.id === tile.id)) return prev;
+      const zIndex = prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
+      return [...prev, { ...tile, zIndex, ptySessionId: undefined }];
+    });
+    setActiveTile(tile.id);
   }, []);
 
   const duplicateTile = React.useCallback((id: string) => {
@@ -386,8 +542,8 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     const animate = () => {
       const v = viewRef.current;
       const target = restTarget(v.k, maxZoom());
-      let k = v.k + (target - v.k) * 0.15;
-      const done = Math.abs(k - target) < 0.001;
+      let k = v.k + (target - v.k) * 0.4;
+      const done = Math.abs(k - target) < 0.002;
       if (done) k = target;
       const ratio = k / v.k - 1;
       const next = { k, x: v.x - (focal.current.x - v.x) * ratio, y: v.y - (focal.current.y - v.y) * ratio };
@@ -442,6 +598,9 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     const tileId = tileEl?.getAttribute('data-tile') ?? null;
     const pan = e.button === 1;
     if (!pan && tileId && tileId === activeTile) return;
+    cancelAnimationFrame(snapRaf.current);
+    snapRaf.current = 0;
+    clearTimeout(snapTimer.current);
     if (pan) e.preventDefault();
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     if (!pan && !tileId && e.button === 0) {
@@ -467,7 +626,7 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     const p = panRef.current;
     if (!p) return;
     if (!p.moved && Math.hypot(e.clientX - p.ox, e.clientY - p.oy) > 4) p.moved = true;
-    setView((v) => ({ ...v, x: p.vx + (e.clientX - p.ox), y: p.vy + (e.clientY - p.oy) }));
+    if (p.pan) setView((v) => ({ ...v, x: p.vx + (e.clientX - p.ox), y: p.vy + (e.clientY - p.oy) }));
   };
 
   const endPan = () => {
@@ -495,6 +654,8 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     }
     const p = panRef.current;
     panRef.current = null;
+    const k = viewRef.current.k;
+    if (k > maxZoom() || k < ZOOM_MIN) snapBack();
     if (p && !p.moved && !p.pan) {
       if (p.activateId && selectedRef.current.has(p.activateId)) return;
       setActiveTile(p.activateId);
@@ -708,13 +869,19 @@ export const useCanvas = ({ seed, onPersist }: UseCanvasArgs) => {
     onWheel,
     addTile,
     addCode,
+    addRunView,
     patchTile,
     addFrame,
     duplicateTile,
     moveTile,
     snapTile,
+    linkNoteTo,
+    unlinkNoteFrom,
+    linkTermTo,
+    unlinkTermFrom,
     dragFrame,
     closeTile,
+    reopenTile,
     snapFrame,
     activeTile,
     setTileCwd,

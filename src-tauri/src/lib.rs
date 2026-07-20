@@ -1,5 +1,5 @@
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -8,13 +8,28 @@ use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuil
 mod git;
 mod store;
 mod docker;
+mod notes;
+mod claude;
 
 const SIDECAR_PORT: u16 = 9777;
+const HOST_PORT: u16 = 9778;
 const NOTIF_WIDTH: f64 = 448.0;
 
-fn sidecar_alive() -> bool {
-    let addr = format!("127.0.0.1:{SIDECAR_PORT}").parse().unwrap();
+fn host_alive() -> bool {
+    let addr = format!("127.0.0.1:{HOST_PORT}").parse().unwrap();
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+fn host_bin(brain: &Path) -> PathBuf {
+    if !cfg!(debug_assertions) {
+        return brain.to_path_buf();
+    }
+    let dst = std::env::temp_dir().join("panorama-host.exe");
+    if std::fs::copy(brain, &dst).is_ok() {
+        dst
+    } else {
+        brain.to_path_buf()
+    }
 }
 
 fn sidecar_bin() -> PathBuf {
@@ -36,7 +51,7 @@ fn sidecar_bin() -> PathBuf {
 }
 
 fn spawn_sidecar() {
-    if sidecar_alive() {
+    if host_alive() {
         return;
     }
     let bin = sidecar_bin();
@@ -44,9 +59,16 @@ fn spawn_sidecar() {
         eprintln!("[panorama] sidecar binary missing: {}", bin.display());
         return;
     }
+    let host = host_bin(&bin);
     let make = || {
-        let mut cmd = Command::new(&bin);
-        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut cmd = Command::new(&host);
+        cmd.arg("host")
+            .env("PANORAMA_BRAIN_BIN", &bin)
+            .env("PANORAMA_HOST_PORT", HOST_PORT.to_string())
+            .env("PANORAMA_SIDECAR_PORT", SIDECAR_PORT.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         cmd
     };
 
@@ -132,6 +154,20 @@ fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn spawn_notif_topmost_guard(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(700));
+        match app.get_webview_window("notif") {
+            Some(notif) => {
+                if notif.is_visible().unwrap_or(false) {
+                    let _ = notif.set_always_on_top(true);
+                }
+            }
+            None => break,
+        }
+    });
+}
+
 #[tauri::command]
 fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     let win = app.get_webview_window("notif").ok_or("no overlay window")?;
@@ -165,8 +201,8 @@ fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
 
     if !win.is_visible().map_err(|e| e.to_string())? {
         win.show().map_err(|e| e.to_string())?;
-        win.set_always_on_top(true).map_err(|e| e.to_string())?;
     }
+    win.set_always_on_top(true).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -328,6 +364,148 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(out)
 }
 
+fn run_watchers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>>> =
+        std::sync::OnceLock::new();
+    W.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+static NEXT_RUN_WATCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+#[tauri::command]
+fn run_watch_manifests(app: tauri::AppHandle, path: String) -> Result<u32, String> {
+    use notify::Watcher;
+    use tauri::Emitter;
+    let dir = PathBuf::from(&path);
+    let root = path.clone();
+    let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+        let Ok(event) = res else { return };
+        if event.kind.is_access() {
+            return;
+        }
+        let relevant = event.paths.iter().any(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n == "package.json" || n == "Cargo.toml" || n.ends_with(".sln") || n.ends_with(".csproj")
+            })
+        });
+        if relevant {
+            let _ = app.emit("run:manifests", serde_json::json!({ "path": root }));
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(&dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+    let id = NEXT_RUN_WATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    run_watchers().lock().unwrap().insert(id, watcher);
+    Ok(id)
+}
+
+#[tauri::command]
+fn run_unwatch_manifests(id: u32) {
+    run_watchers().lock().unwrap().remove(&id);
+}
+
+#[tauri::command]
+fn run_commands(path: String) -> Vec<String> {
+    let dir = std::path::Path::new(&path);
+    let mut out = Vec::new();
+    if let Ok(raw) = std::fs::read_to_string(dir.join("package.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(scripts) = v.get("scripts").and_then(|s| s.as_object()) {
+                for name in scripts.keys() {
+                    out.push(format!("bun run {name}"));
+                }
+            }
+        }
+    }
+    if dir.join("Cargo.toml").exists() {
+        out.push("cargo run".into());
+        out.push("cargo build".into());
+    }
+    dotnet_commands(dir, &mut out);
+    out
+}
+
+fn xml_tag(src: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let s = src.find(&open)? + open.len();
+    let e = src[s..].find(&close)? + s;
+    let v = src[s..e].trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+fn msbuild_env(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("$(") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find(')') {
+            Some(j) => {
+                out.push_str("$env:");
+                out.push_str(&rest[i + 2..i + j]);
+                rest = &rest[i + j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn dotnet_commands(dir: &std::path::Path, out: &mut Vec<String>) {
+    let mut csprojs: Vec<PathBuf> = Vec::new();
+    let mut has_sln = false;
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        match p.extension().and_then(|x| x.to_str()) {
+            Some("sln") => {
+                has_sln = true;
+                if let Ok(s) = std::fs::read_to_string(&p) {
+                    for line in s.lines().filter(|l| l.starts_with("Project(")) {
+                        if let Some(rel) = line.split('"').find(|seg| seg.ends_with(".csproj")) {
+                            csprojs.push(dir.join(rel));
+                        }
+                    }
+                }
+            }
+            Some("csproj") => csprojs.push(p),
+            _ => {}
+        }
+    }
+    if !has_sln && csprojs.is_empty() {
+        return;
+    }
+    out.push("dotnet build".into());
+    csprojs.sort();
+    csprojs.dedup();
+    for p in csprojs {
+        let Ok(src) = std::fs::read_to_string(&p) else { continue };
+        if let Some(prog) = xml_tag(&src, "StartProgram") {
+            let prog = msbuild_env(&prog);
+            let args = xml_tag(&src, "StartArguments").unwrap_or_default();
+            let launch = format!("& \"{prog}\" {args}").trim_end().to_string();
+            out.push(match xml_tag(&src, "StartWorkingDirectory").map(|w| msbuild_env(&w)) {
+                Some(wd) => format!("Set-Location \"{wd}\"; {launch}"),
+                None => launch,
+            });
+        } else if src.contains("<Project Sdk=")
+            && xml_tag(&src, "OutputType").is_some_and(|t| t.eq_ignore_ascii_case("exe"))
+        {
+            let rel = p.strip_prefix(dir).ok().and_then(|r| r.to_str().map(String::from));
+            out.push(match rel {
+                Some(r) if r.contains(['/', '\\']) => format!("dotnet run --project {r}"),
+                _ => "dotnet run".into(),
+            });
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -348,11 +526,24 @@ pub fn run() {
         .setup(|app| {
             spawn_sidecar();
             create_notif_window(app.handle())?;
+            spawn_notif_topmost_guard(app.handle().clone());
+            notes::start_notes_watch(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
-                window.app_handle().exit(0);
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                tauri::WindowEvent::Destroyed => window.app_handle().exit(0),
+                tauri::WindowEvent::Focused(true) => {
+                    if let Some(notif) = window.app_handle().get_webview_window("notif") {
+                        if notif.is_visible().unwrap_or(false) {
+                            let _ = notif.set_always_on_top(true);
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -363,6 +554,9 @@ pub fn run() {
             set_pending_count,
             reveal_path,
             read_dir,
+            run_commands,
+            run_watch_manifests,
+            run_unwatch_manifests,
             open_url,
             store::store_read,
             store::store_write,
@@ -385,6 +579,8 @@ pub fn run() {
             git::git_status,
             git::git_commit,
             git::git_log_messages,
+            git::git_log_graph,
+            git::git_remote_url,
             git::git_unpushed_commits,
             git::git_diff_file,
             git::git_add_ignore,
@@ -395,7 +591,15 @@ pub fn run() {
             docker::docker_available,
             docker::docker_ps,
             docker::docker_action,
-            docker::docker_engine
+            docker::docker_engine,
+            notes::link_note,
+            notes::unlink_note,
+            notes::link_term,
+            notes::unlink_term,
+            notes::read_note,
+            notes::write_note,
+            notes::delete_note,
+            claude::claude_session_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

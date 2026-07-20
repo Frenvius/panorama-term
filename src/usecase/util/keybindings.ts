@@ -5,8 +5,11 @@ export type CommandId =
   | 'tile.new'
   | 'note.new'
   | 'tile.close'
+  | 'tile.reopen'
+  | 'tile.focus'
   | 'view.resetZoom'
   | 'view.navigator'
+  | 'view.palette'
   | 'diff.close'
   | 'diff.prevChunk'
   | 'diff.nextChunk'
@@ -28,9 +31,12 @@ export const KEYBINDINGS: Command[] = [
   { id: 'tile.new', label: 'New terminal', group: 'Canvas', defaultCombo: 'mod+t' },
   { id: 'note.new', label: 'New note', group: 'Canvas', defaultCombo: 'mod+shift+n' },
   { id: 'tile.close', label: 'Close active tile', group: 'Canvas', defaultCombo: 'mod+w' },
+  { id: 'tile.reopen', label: 'Reopen closed tile', group: 'Canvas', defaultCombo: 'mod+shift+t' },
   { id: 'tile.fullscreen', label: 'Toggle fullscreen', group: 'Canvas', defaultCombo: 'mod+shift+f' },
+  { id: 'tile.focus', label: 'Focus active tile', group: 'Canvas', defaultCombo: 'alt+f' },
   { id: 'view.resetZoom', label: 'Reset zoom', group: 'View', defaultCombo: 'mod+0' },
   { id: 'view.navigator', label: 'Toggle navigator', group: 'View', defaultCombo: 'mod+b' },
+  { id: 'view.palette', label: 'Go to tile', group: 'View', defaultCombo: 'shift shift' },
   { id: 'diff.close', label: 'Close viewer', group: 'Diff viewer', defaultCombo: 'escape' },
   { id: 'diff.prevChunk', label: 'Previous difference', group: 'Diff viewer', defaultCombo: 'alt+arrowup' },
   { id: 'diff.nextChunk', label: 'Next difference', group: 'Diff viewer', defaultCombo: 'alt+arrowdown' },
@@ -99,6 +105,7 @@ export const setCapturing = (value: boolean): void => {
 export const isCapturing = (): boolean => capturing;
 
 const TOKENS: Record<string, string> = {
+  'shift shift': 'Double Shift',
   mod: IS_MAC ? 'Cmd' : 'Ctrl',
   alt: IS_MAC ? 'Option' : 'Alt',
   shift: 'Shift',

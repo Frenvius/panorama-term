@@ -1,20 +1,25 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, PinOff, Copy, Focus, Pencil, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, GitBranch, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste } from 'lucide-react';
+import { X, Pin, Play, Minus, Check, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import NoteTile from '~/components/Canvas/NoteTile';
 import DiffViewer from '~/components/DiffViewer';
 import { noteTheme } from '~/usecase/util/note';
+import { parseFrontTitle } from '~/usecase/util/noteMeta';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
+import { useRun } from '~/usecase/hooks/useRun';
+import { stopRun } from '~/adapter/run/run.client';
 import { useBranches } from '~/usecase/hooks/useBranches';
+import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { useAheadBehind } from '~/usecase/hooks/useAheadBehind';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
@@ -38,11 +43,12 @@ interface TileFrameProps {
   onClose: (id: string) => void;
   onSnap: (id: string) => void;
   onActivate: (id: string) => void;
-  onFocusTile: (id: string) => void;
+  onFocusTile: (id: string, zoomToMax?: boolean) => void;
   onToggleFullscreen: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
   onResize: (id: string, dir: string, dx: number, dy: number) => void;
   onCwd: (id: string, cwd: string, branch?: string) => void;
+  onAgentState: (id: string, live: boolean, busy: boolean) => void;
   onOscTitle: (id: string, title: string) => void;
   onNoteChange: (id: string, content: string) => void;
   onNoteEditor: (id: string, editor: EditorView | null) => void;
@@ -57,25 +63,39 @@ interface TileFrameProps {
   onDuplicate: (id: string) => void;
   onTogglePin: (id: string) => void;
   onToggleSelect: (id: string) => void;
+  onOpenRunOutput: (srcId: string, cwd: string, sessionId: string, cmd: string) => void;
+  wsId: string | null;
+  linkActive: boolean;
+  linkTarget: { id: string; name: string } | null;
+  linkedTerms: { id: string; name: string }[];
+  onLink: (noteId: string, termId: string) => void;
+  onUnlink: (noteId: string, termId: string) => void;
+  onLinkDragStart: (noteId: string, e: React.PointerEvent) => void;
+  tabs: TabMeta[];
+  activeTabId: string | null;
+  onMoveToTab: (id: string, targetTabId: string) => void;
 }
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
 const FS_PAD = 28;
 
-const devicePx = (v: number): number => {
-  const dpr = window.devicePixelRatio || 1;
-  return Math.round(v * dpr) / dpr;
-};
+const DRAG_THRESHOLD = 4;
 
-const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
-  const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [agentBusy, setAgentBusy] = React.useState(false);
   const [progress, setProgress] = React.useState<{ state: number; pct: number } | null>(null);
+  const [diff, setDiff] = React.useState<{ a: number; r: number } | null>(null);
   const onClaudeStatus = (s: string) => setAgentBusy(s === 'busy');
+  React.useEffect(() => {
+    onAgentState(tile.id, claudeLive, claudeBusy);
+  }, [tile.id, claudeLive, claudeBusy, onAgentState]);
+  React.useEffect(() => () => onAgentState(tile.id, false, false), [tile.id, onAgentState]);
+  const onClaudeDiff = (a: number, r: number) => setDiff(a || r ? { a, r } : null);
   const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });
 
   const startDrag = (e: React.PointerEvent) => {
@@ -87,18 +107,24 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     }
     if (!selected) onActivate(tile.id);
     if (tile.pinned) return;
-    (e.target as Element).setPointerCapture(e.pointerId);
-    drag.current = { sx: e.clientX, sy: e.clientY, ox: tile.x, oy: tile.y };
+    if ((e.target as Element).closest('button, input')) return;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    drag.current = { sx: e.clientX, sy: e.clientY, ox: tile.x, oy: tile.y, pid: e.pointerId, on: false };
   };
   const onDrag = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) return;
+    if (!d.on) {
+      if (Math.abs(e.clientX - d.sx) < DRAG_THRESHOLD && Math.abs(e.clientY - d.sy) < DRAG_THRESHOLD) return;
+      d.on = true;
+    }
     onMove(tile.id, d.ox + (e.clientX - d.sx) / k, d.oy + (e.clientY - d.sy) / k);
   };
   const endDrag = () => {
-    if (!drag.current) return;
+    const d = drag.current;
+    if (!d) return;
     drag.current = null;
-    onSnap(tile.id);
+    if (d.on) onSnap(tile.id);
   };
 
   const startResize = (dir: string) => (e: React.PointerEvent) => {
@@ -121,29 +147,164 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   };
 
   const [restartKey, setRestartKey] = React.useState(0);
+  const [elevated, setElevated] = React.useState(false);
   const restartTile = () => setRestartKey((n) => n + 1);
+
+  const toggleElevated = () => {
+    setElevated((v) => !v);
+    setRestartKey((n) => n + 1);
+  };
   const closeTile = () => onClose(tile.id);
-  const focusTile = () => onFocusTile(tile.id);
+  const focusTile = () => onFocusTile(tile.id, true);
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
   const oscTitle = tile.oscTitle ? stripStarPrefix(tile.oscTitle).trim() : '';
   const spinning = !tile.userTitle && agentBusy && hasSpinnerPrefix(oscTitle);
-  const label = tile.userTitle
-    || (agentType && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
-    || tile.cwd
-    || tile.autoTitle
-    || `${tile.type} · ${tile.id}`;
+  const label = tile.runCwd
+    ? tile.userTitle || tile.autoTitle || 'run'
+    : tile.userTitle
+      || (agentType && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
+      || tile.cwd
+      || tile.autoTitle
+      || `${tile.type} · ${tile.id}`;
   const folder = tile.cwd && label !== tile.cwd ? tile.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
 
   const note = tile.type === 'note';
   const code = tile.type === 'code';
+  const runView = Boolean(tile.runCwd);
+  const runCwd = tile.type === 'term' ? tile.runCwd ?? tile.cwd : undefined;
+  const runTile = tile.type === 'term' ? (runView ? tile.ptySessionId?.replace(/^(run|build):/, '') : tile.id) : undefined;
+  const viewKind = runView && tile.ptySessionId?.startsWith('build:') ? ('build' as const) : ('run' as const);
+  const run = useRun(runCwd, runTile, viewKind);
+  const build = useRun(runView ? undefined : runCwd, runView ? undefined : tile.id, 'build');
+  const running = run.status.state === 'running';
+  const runFailed = run.status.state === 'exited' && (run.status.exitCode ?? 0) !== 0;
+  const building = build.status.state === 'running';
+  const buildOk = build.status.state === 'exited' && (build.status.exitCode ?? 0) === 0;
+  const buildFailed = build.status.state === 'exited' && (build.status.exitCode ?? 0) !== 0;
+  const showRunBtn = tile.type === 'term' && !runView && Boolean(tile.cwd) && (run.commands.length > 0 || run.status.state !== 'none');
+  const showBuildBtn = tile.type === 'term' && !runView && Boolean(tile.cwd) && (build.commands.length > 0 || build.status.state !== 'none');
+  const [runMenu, setRunMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const [buildMenu, setBuildMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const [killMenu, setKillMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const closeRunMenu = () => setRunMenu(null);
+  const closeBuildMenu = () => setBuildMenu(null);
+  const closeKillMenu = () => setKillMenu(null);
+
+  React.useEffect(() => {
+    if (!run.crashed) return;
+    run.clearCrashed();
+    if (!runView) notifyClaude(tile.id, 'generic', `${run.crashed.cmd ?? 'run'} exited with code ${run.crashed.exitCode ?? '?'}`, 'Run crashed');
+  }, [run, runView, tile.id]);
+
+  React.useEffect(() => {
+    if (!build.crashed) return;
+    build.clearCrashed();
+    notifyClaude(tile.id, 'generic', `${build.crashed.cmd ?? 'build'} exited with code ${build.crashed.exitCode ?? '?'}`, 'Build failed');
+  }, [build, tile.id]);
+
+  const buildStop = build.stop;
+  React.useEffect(() => {
+    if (!buildOk) return;
+    const t = setTimeout(() => buildStop(), 3000);
+    return () => clearTimeout(t);
+  }, [buildOk, buildStop]);
+
+  const menuAtButton = (e: React.MouseEvent): { x: number; y: number } => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return { x: r.left, y: r.bottom + 4 };
+  };
+
+  const openRunOutput = () => {
+    const sid = run.status.sessionId;
+    if (sid && tile.cwd) onOpenRunOutput(tile.id, tile.cwd, sid, run.status.cmd ?? run.defaultCmd ?? 'run');
+  };
+
+  const onRunClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (running) run.stop();
+    else if (run.status.state === 'exited') run.start(run.status.cmd);
+    else run.start();
+  };
+
+  const onRunCaret = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRunMenu(menuAtButton(e));
+  };
+
+  const onBuildClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (building) build.stop(true);
+    else build.start();
+  };
+
+  const onBuildCaret = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setBuildMenu(menuAtButton(e));
+  };
+
+  const openBuildOutput = () => {
+    const sid = build.status.sessionId;
+    if (sid && tile.cwd) onOpenRunOutput(tile.id, tile.cwd, sid, build.status.cmd ?? build.defaultCmd ?? 'build');
+  };
+
+  const buildMenuItems: ContextMenuEntry[] = building
+    ? [
+        { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openBuildOutput },
+        'separator',
+        { label: 'Stop build', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: () => build.stop(true) }
+      ]
+    : [
+        ...(build.status.sessionId
+          ? ([{ label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openBuildOutput }, 'separator'] as ContextMenuEntry[])
+          : []),
+        ...build.commands.map((cmd) => ({
+          label: cmd === build.defaultCmd ? `${cmd}  (default)` : cmd,
+          icon: <Hammer size={15} strokeWidth={1.75} />,
+          onSelect: () => build.start(cmd)
+        }))
+      ];
+
+  const onRunViewClose = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (running) setKillMenu(menuAtButton(e));
+    else onClose(tile.id);
+  };
+
+  const killRun = () => {
+    if (runTile) void stopRun(runTile, true, viewKind);
+    onClose(tile.id);
+  };
+
+  const runMenuItems: ContextMenuEntry[] =
+    run.status.state === 'none'
+      ? run.commands.map((cmd) => ({
+          label: cmd === run.defaultCmd ? `${cmd}  (default)` : cmd,
+          icon: <Play size={15} strokeWidth={1.75} />,
+          onSelect: () => run.start(cmd)
+        }))
+      : running
+        ? [
+            { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openRunOutput },
+            { label: 'Restart', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: run.restart },
+            'separator',
+            { label: 'Stop', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: () => run.stop() }
+          ]
+        : [
+            { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openRunOutput },
+            { label: 'Run again', icon: <Play size={15} strokeWidth={1.75} />, onSelect: () => run.start(run.status.cmd) },
+            'separator',
+            { label: 'Dismiss', icon: <Trash2 size={15} strokeWidth={1.75} />, onSelect: () => run.stop() }
+          ];
   const tint = note ? noteTheme(tile.color) : null;
   const noteTint = tint ? { background: tint.body, color: tint.text } : null;
-  const noteLabel = note ? tile.userTitle?.trim() || 'Note' : null;
+  const noteTitle = note ? parseFrontTitle(tile.content) : '';
+  const noteLabel = note ? noteTitle || 'Note' : null;
   const copyNote = () => onCopyNote(tile.id);
   const copyNoteSelection = () => onCopyNoteSelection(tile.id);
   const pasteNote = () => onPasteNote(tile.id);
   const toggleRaw = () => onToggleRaw(tile.id);
   const stopDrag = (e: React.PointerEvent) => e.stopPropagation();
+  const startLinkDrag = (e: React.PointerEvent) => onLinkDragStart(tile.id, e);
 
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [menuInContent, setMenuInContent] = React.useState(false);
@@ -162,7 +323,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   };
 
   const startRename = () => {
-    setDraft(tile.userTitle || tile.autoTitle || '');
+    setDraft(note ? noteTitle : tile.userTitle || tile.autoTitle || '');
     setRenaming(true);
   };
   const startTitleEdit = (e: React.MouseEvent) => {
@@ -173,9 +334,12 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     if (!renaming) return;
     setRenaming(false);
     const next = draft.trim();
+    if (note) {
+      if (next !== noteTitle) onNoteTitle(tile.id, next);
+      return;
+    }
     if (next === (tile.userTitle || '')) return;
-    if (note) onNoteTitle(tile.id, next);
-    else onRename(tile.id, next);
+    onRename(tile.id, next);
   };
   const onRenameKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') commitRename();
@@ -239,20 +403,65 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
       ]
     : [];
 
+  const linkItems: ContextMenuEntry[] = [
+    ...(linkTarget
+      ? [
+          {
+            label: `Link to ${linkTarget.name}`,
+            icon: <Link2 size={15} strokeWidth={1.75} />,
+            onSelect: () => onLink(tile.id, linkTarget.id)
+          }
+        ]
+      : []),
+    ...linkedTerms.map((lt) => ({
+      label: `Unlink from ${lt.name}`,
+      icon: <Link2Off size={15} strokeWidth={1.75} />,
+      onSelect: () => onUnlink(tile.id, lt.id)
+    }))
+  ];
+  if (linkItems.length) linkItems.push('separator');
+
   const noteMenuItems: ContextMenuEntry[] = [
     ...noteContentItems,
     { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: startRename },
     { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
     pinItem,
     'separator',
+    ...linkItems,
     { label: 'Focus', icon: <Focus size={15} strokeWidth={1.75} />, onSelect: focusTile },
     fullscreenItem,
     'separator',
     closeItem
   ];
 
+  const runViewMenuItems: ContextMenuEntry[] = [
+    { label: 'Hide output', icon: <Minus size={15} strokeWidth={1.75} />, onSelect: closeTile },
+    { label: 'Restart', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: run.restart },
+    { label: 'Focus', icon: <Focus size={15} strokeWidth={1.75} />, onSelect: focusTile },
+    'separator',
+    { label: 'Stop and close', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: killRun }
+  ];
+
+  const otherTabs = tabs.filter((t) => t.id !== activeTabId);
+  if (otherTabs.length > 0) {
+    const moveItem: ContextMenuEntry = {
+      label: 'Move to Tab',
+      icon: <ArrowLeftRight size={15} strokeWidth={1.75} />,
+      submenu: otherTabs.map((t) => ({
+        label: t.name,
+        onSelect: () => onMoveToTab(tile.id, t.id)
+      }))
+    };
+    const noteCloseIndex = noteMenuItems.findIndex((item) => typeof item !== 'string' && item.label === 'Close');
+    if (noteCloseIndex !== -1) {
+      noteMenuItems.splice(noteCloseIndex, 0, moveItem, 'separator');
+    }
+  }
+
   const menuItems: ContextMenuEntry[] = note
     ? noteMenuItems
+    : runView
+    ? runViewMenuItems
     : [
         { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: startRename },
         { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
@@ -262,11 +471,32 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyPath, disabled: !tile.cwd },
         'separator',
         { label: 'Restart terminal', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: restartTile },
+        {
+          label: elevated ? 'Restart as user' : 'Restart as administrator',
+          icon: <ShieldCheck size={15} strokeWidth={1.75} />,
+          onSelect: toggleElevated
+        },
+        ...linkItems,
         { label: 'Focus', icon: <Focus size={15} strokeWidth={1.75} />, onSelect: focusTile },
         fullscreenItem,
         'separator',
         closeItem
       ];
+
+  if (otherTabs.length > 0 && !note) {
+    const moveItem: ContextMenuEntry = {
+      label: 'Move to Tab',
+      icon: <ArrowLeftRight size={15} strokeWidth={1.75} />,
+      submenu: otherTabs.map((t) => ({
+        label: t.name,
+        onSelect: () => onMoveToTab(tile.id, t.id)
+      }))
+    };
+    const termCloseIndex = menuItems.findIndex((item) => typeof item !== 'string' && item.label === 'Close');
+    if (termCloseIndex !== -1) {
+      menuItems.splice(termCloseIndex, 0, moveItem, 'separator');
+    }
+  }
 
   const inset = TILE_GAP / 2;
   const ek = fullscreen ? 1 : k;
@@ -282,7 +512,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const termCols = Math.max(20, Math.floor((bodyW - 8) / 7.23));
   const termRows = Math.max(2, Math.floor((bodyH - TILE_HEADER - 11) / 15));
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
-  const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, selected && !fullscreen && styles.selected, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
+  const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, note && linkActive && styles.linkActive, selected && !fullscreen && styles.selected, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
   const gone = { display: hidden ? 'none' : undefined };
 
   return (
@@ -294,7 +524,6 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           onPointerDown={startDrag}
           onPointerMove={onDrag}
           onPointerCancel={endDrag}
-          onDoubleClick={focusTile}
           onContextMenu={openMenu}
         >
           {progress && !note && (
@@ -317,7 +546,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               autoFocus
             />
           ) : (
-            <span className={styles.title} data-empty={note && !tile.userTitle?.trim()} onDoubleClick={startTitleEdit}>
+            <span className={styles.title} data-empty={note && !noteTitle} onDoubleClick={startTitleEdit}>
               {agentType && !spinning && (
                 <span className={styles.claudeMark} style={{ display: 'inline-flex', alignItems: 'center', marginRight: '4px' }}>
                   {agentType === 'antigravity' && <AntigravityLogo size={11} />}
@@ -327,7 +556,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   {agentType === 'claude' && <ClaudeLogo size={11} />}
                 </span>
               )}
-              {noteLabel ?? label}
+              <span className={styles.label}>{noteLabel ?? label}</span>
               {folder && folder !== label && (
                 <span className={styles.folder} data-tooltip={tile.cwd}>
                   {folder}
@@ -354,6 +583,71 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             </span>
           )}
           <div className={styles.actions}>
+            {!note && !runView && diff && (
+              <span className={styles.diffStat}>
+                <span className={styles.diffAdd}>+{diff.a}</span>
+                <span className={styles.diffDel}>-{diff.r}</span>
+              </span>
+            )}
+            {showBuildBtn && !fullscreen && (
+              <>
+                <span className={styles.actionDivider} />
+                <button
+                  className={`${styles.action} ${styles.runBtn}`}
+                  onClick={onBuildClick}
+                  onPointerDown={stopDrag}
+                  aria-label="Build project"
+                  data-tooltip={building ? `building: ${build.status.cmd}` : buildFailed ? `build failed (${build.status.exitCode})` : buildOk ? 'build ok' : build.defaultCmd ?? 'Build'}
+                >
+                  {building ? (
+                    <Square size={13} strokeWidth={2} className={styles.stopIcon} />
+                  ) : buildFailed ? (
+                    <X size={14} strokeWidth={2.5} className={styles.buildFail} />
+                  ) : buildOk ? (
+                    <Check size={14} strokeWidth={2.5} className={styles.buildOk} />
+                  ) : (
+                    <Hammer size={13} strokeWidth={2} />
+                  )}
+                </button>
+                {(building || buildFailed || build.commands.length > 1) && (
+                  <button className={styles.action} onClick={onBuildCaret} onPointerDown={stopDrag} aria-label="Build menu">
+                    <ChevronDown size={11} strokeWidth={2} />
+                  </button>
+                )}
+                {!showRunBtn && <span className={styles.actionDivider} />}
+              </>
+            )}
+            {showRunBtn && !fullscreen && (
+              <>
+                {!showBuildBtn && <span className={styles.actionDivider} />}
+                <button
+                  className={`${styles.action} ${styles.runBtn}`}
+                  onClick={onRunClick}
+                  onPointerDown={stopDrag}
+                  aria-label="Run project"
+                  data-tooltip={running ? run.status.cmd : runFailed ? `exited (${run.status.exitCode})` : run.defaultCmd ?? 'Run'}
+                >
+                  {running ? (
+                    <Square size={13} strokeWidth={2} className={styles.stopIcon} />
+                  ) : runFailed ? (
+                    <span className={`${styles.runDot} ${styles.runDotErr}`} />
+                  ) : (
+                    <Play size={13} strokeWidth={2} />
+                  )}
+                </button>
+                {(run.status.state !== 'none' || run.commands.length > 1) && (
+                  <button className={styles.action} onClick={onRunCaret} onPointerDown={stopDrag} aria-label="Run menu">
+                    <ChevronDown size={11} strokeWidth={2} />
+                  </button>
+                )}
+                <span className={styles.actionDivider} />
+              </>
+            )}
+            {runView && (
+              <span className={running ? styles.runState : `${styles.runState} ${styles.runStateErr}`}>
+                {running ? 'running' : run.status.state === 'exited' ? `exit ${run.status.exitCode ?? '?'}` : ''}
+              </span>
+            )}
             {note && (
               <button
                 className={tile.renderOnly ? `${styles.action} ${styles.rawOn}` : styles.action}
@@ -366,30 +660,61 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               </button>
             )}
             {note && (
+              <button
+                className={linkedTerms.length ? `${styles.action} ${styles.linked}` : styles.action}
+                onPointerDown={startLinkDrag}
+                aria-label="Link note to terminal"
+                style={tint ? ({ ['--note-body' as string]: tint.body, ['--note-text' as string]: tint.text }) : undefined}
+              >
+                <span className={styles.rawGlyph}>
+                  <Link2 size={12} strokeWidth={2} />
+                </span>
+              </button>
+            )}
+            {note && (
               <button className={styles.action} onClick={copyNote} aria-label="Copy note">
                 <Copy size={13} strokeWidth={2} />
               </button>
             )}
-            {!note && !fullscreen && (
+            {!note && !runView && !fullscreen && (
               <button
-                className={tile.pinned ? `${styles.action} ${styles.pinned}` : styles.action}
-                onClick={togglePin}
-                aria-label={tile.pinned ? 'Unpin tile' : 'Pin tile'}
+                className={linkedTerms.length ? `${styles.action} ${styles.linked}` : styles.action}
+                onPointerDown={startLinkDrag}
+                aria-label="Link to another terminal"
+                data-tooltip="Link to agent"
               >
-                {tile.pinned ? <PinOff size={13} strokeWidth={2} /> : <Pin size={13} strokeWidth={2} />}
+                <span className={styles.rawGlyph}>
+                  <Link2 size={12} strokeWidth={2} />
+                </span>
               </button>
             )}
-            {!note && (
+            {!note && !runView && (
               <button className={styles.action} onClick={toggleFullscreen} aria-label="Toggle fullscreen">
                 {fullscreen ? <Minimize size={13} strokeWidth={2} /> : <Maximize size={13} strokeWidth={2} />}
               </button>
             )}
-            {!note && !code && (
+            {!note && !code && !runView && (
               <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
                 <RotateCw size={13} strokeWidth={2} />
               </button>
             )}
-            {!fullscreen && (
+            {runView && (
+              <button className={styles.action} onClick={closeTile} onPointerDown={stopDrag} aria-label="Hide output" data-tooltip="Hide (keeps running)">
+                <Minus size={14} strokeWidth={2} />
+              </button>
+            )}
+            {runView && (
+              <button
+                className={`${styles.action} ${styles.close}`}
+                onClick={onRunViewClose}
+                onPointerDown={stopDrag}
+                aria-label="Stop and close"
+                data-tooltip={running ? 'Stop process' : 'Close'}
+              >
+                <X size={14} strokeWidth={2} />
+              </button>
+            )}
+            {!runView && !fullscreen && (
               <button className={`${styles.action} ${styles.close}`} onClick={closeTile} aria-label="Close tile">
                 <X size={14} strokeWidth={2} />
               </button>
@@ -398,43 +723,33 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         </div>
         <div className={styles.body} onContextMenu={note ? (e) => openMenu(e, true) : undefined}>
           {note && (
-            <NoteTile tile={tile} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
+            <NoteTile tile={tile} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
           )}
           {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} embedded />}
+          {term && (
+            <GridTerminal
+              sessionId={tile.ptySessionId}
+              readOnly={runView}
+              cwd={runView ? tile.runCwd : tile.cwd}
+              onCwd={onCwd}
+              onOscTitle={onOscTitle}
+              onAgentActive={setAgentType}
+              onClaudeStatus={onClaudeStatus}
+              onClaudeDiff={onClaudeDiff}
+              onProgress={onProgress}
+              restartKey={restartKey}
+              elevated={elevated}
+              active={active}
+              visible={visible && !hidden}
+              tileId={tile.id}
+              cols={termCols}
+              rows={termRows}
+              onContextMenu={openMenu}
+            />
+          )}
           {!note && !code && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
         </div>
       </div>
-      {term && (
-        <div
-          data-tile={tile.id}
-          className={anim ? `${styles.termLayer} ${anim}` : styles.termLayer}
-          style={{
-            top: devicePx(sy + (TILE_HEADER + 4) * ek),
-            left: devicePx(sx + 4 * ek),
-            width: devicePx((bodyW - 8) * ek),
-            height: devicePx((bodyH - TILE_HEADER - 5) * ek),
-            zIndex: z,
-            ...gone
-          }}
-        >
-          <GridTerminal
-            k={ek}
-            cwd={tile.cwd}
-            onCwd={onCwd}
-            onOscTitle={onOscTitle}
-            onAgentActive={setAgentType}
-            onClaudeStatus={onClaudeStatus}
-            onProgress={onProgress}
-            restartKey={restartKey}
-            active={active}
-            visible={visible && !hidden}
-            tileId={tile.id}
-            cols={termCols}
-            rows={termRows}
-            onContextMenu={openMenu}
-          />
-        </div>
-      )}
       {!fullscreen && (
         <div data-tile={tile.id} className={styles.handles} style={{ top: sy, left: sx, zIndex: z, ...box, ...gone }}>
           {HANDLES.map((dir) => (
@@ -451,6 +766,19 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         </div>
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
+      {runMenu && <ContextMenu x={runMenu.x} y={runMenu.y} items={runMenuItems} onClose={closeRunMenu} />}
+      {buildMenu && <ContextMenu x={buildMenu.x} y={buildMenu.y} items={buildMenuItems} onClose={closeBuildMenu} />}
+      {killMenu && (
+        <ContextMenu
+          x={killMenu.x}
+          y={killMenu.y}
+          items={[
+            { label: `Kill ${run.status.cmd ?? 'process'}`, icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: killRun },
+            { label: 'Cancel', onSelect: closeKillMenu }
+          ]}
+          onClose={closeKillMenu}
+        />
+      )}
       {branchLocal && tile.cwd && (
         <BranchMenu
           k={ek}

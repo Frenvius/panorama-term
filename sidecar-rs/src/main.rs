@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{channel as mpsc_channel, Receiver as MpscReceiver, Sender as MpscSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
@@ -14,7 +15,441 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod host;
+
+enum ConsumerMsg {
+    Data(Vec<u8>),
+    Exit { code: Option<u32> },
+}
+
+struct HostHandle {
+    tx: MpscSender<Vec<u8>>,
+    next_id: AtomicU64,
+    pending: Mutex<HashMap<u64, MpscSender<serde_json::Value>>>,
+    consumers: Mutex<HashMap<String, MpscSender<ConsumerMsg>>>,
+    reader_stream: Mutex<Option<std::net::TcpStream>>,
+}
+
+impl HostHandle {
+    fn rpc_raw(&self, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut msg = payload;
+        msg["id"] = serde_json::json!(id);
+        let (reply_tx, reply_rx) = mpsc_channel();
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, reply_tx);
+        let frame = host::encode(host::KIND_RPC, msg.to_string().as_bytes());
+        self.tx.send(frame).map_err(|e| format!("host send: {e}"))?;
+        reply_rx.recv().map_err(|e| format!("host reply: {e}"))
+    }
+
+    fn spawn_pty(
+        &self,
+        key: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        exe: &str,
+        args: &[String],
+        env: &[(String, String)],
+        seed: &[u8],
+        meta: serde_json::Value,
+    ) -> Result<u32, String> {
+        let seed_b64 = base64::engine::general_purpose::STANDARD.encode(seed);
+        let reply = self.rpc_raw(serde_json::json!({
+            "op": "spawn",
+            "key": key,
+            "cwd": cwd,
+            "cols": cols,
+            "rows": rows,
+            "exe": exe,
+            "args": args,
+            "env": env.iter().map(|(k, v)| [k, v]).collect::<Vec<_>>(),
+            "seed": seed_b64,
+            "meta": meta,
+        }))?;
+        if !reply["ok"].as_bool().unwrap_or(false) {
+            return Err(reply["err"].as_str().unwrap_or("spawn failed").to_string());
+        }
+        Ok(reply["pid"].as_u64().unwrap_or(0) as u32)
+    }
+
+    fn register_consumer(&self, key: &str, tx: MpscSender<ConsumerMsg>) {
+        self.consumers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), tx);
+    }
+
+    fn subscribe(&self, key: &str, from_offset: u64) -> Result<(), String> {
+        let reply = self.rpc_raw(serde_json::json!({
+            "op": "subscribe",
+            "key": key,
+            "from_offset": from_offset,
+        }))?;
+        if !reply["ok"].as_bool().unwrap_or(false) {
+            return Err(reply["err"].as_str().unwrap_or("subscribe failed").to_string());
+        }
+        Ok(())
+    }
+
+    fn write(&self, key: &str, bytes: &[u8]) {
+        let payload = host::encode_input_payload(key, bytes);
+        let _ = self.tx.send(host::encode(host::KIND_INPUT, &payload));
+    }
+
+    fn resize(&self, key: &str, cols: u16, rows: u16) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = host::encode(
+            host::KIND_RPC,
+            serde_json::json!({ "id": id, "op": "resize", "key": key, "cols": cols, "rows": rows })
+                .to_string()
+                .as_bytes(),
+        );
+        let _ = self.tx.send(frame);
+    }
+
+    fn kill(&self, key: &str) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = host::encode(
+            host::KIND_RPC,
+            serde_json::json!({ "id": id, "op": "kill", "key": key })
+                .to_string()
+                .as_bytes(),
+        );
+        let _ = self.tx.send(frame);
+    }
+
+    fn session_info(&self, key: &str) -> Option<(bool, u16)> {
+        let reply = self.rpc_raw(serde_json::json!({ "op": "list" })).ok()?;
+        let found = reply["sessions"]
+            .as_array()?
+            .iter()
+            .find(|s| s["key"].as_str() == Some(key))?;
+        Some((
+            found["alive"].as_bool().unwrap_or(false),
+            found["cols"].as_u64().unwrap_or(80) as u16,
+        ))
+    }
+
+    fn snapshot(&self, key: &str) -> Vec<u8> {
+        let reply = match self.rpc_raw(serde_json::json!({"op": "snapshot", "key": key})) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        if !reply["ok"].as_bool().unwrap_or(false) {
+            return Vec::new();
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(reply["data"].as_str().unwrap_or(""))
+            .unwrap_or_default()
+    }
+}
+
+fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
+    use std::io::Read;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                pending.extend_from_slice(&buf[..n]);
+                while let Some((kind, payload, consumed)) = host::decode(&pending) {
+                    pending.drain(0..consumed);
+                    match kind {
+                        host::KIND_DATA => {
+                            if let Some((key, _offset, bytes)) =
+                                host::decode_data_payload(&payload)
+                            {
+                                let consumers =
+                                    h.consumers.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(tx) = consumers.get(&key) {
+                                    let _ = tx.send(ConsumerMsg::Data(bytes));
+                                }
+                            }
+                        }
+                        host::KIND_RPC_REPLY => {
+                            if let Ok(v) =
+                                serde_json::from_slice::<serde_json::Value>(&payload)
+                            {
+                                let id = v["id"].as_u64().unwrap_or(u64::MAX);
+                                let mut p =
+                                    h.pending.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(tx) = p.remove(&id) {
+                                    let _ = tx.send(v);
+                                }
+                            }
+                        }
+                        host::KIND_EVENT => {
+                            if let Ok(ev) =
+                                serde_json::from_slice::<serde_json::Value>(&payload)
+                            {
+                                if ev["kind"] == "exit" {
+                                    let key =
+                                        ev["key"].as_str().unwrap_or("").to_string();
+                                    let code = ev["code"].as_u64().map(|c| c as u32);
+                                    let consumers =
+                                        h.consumers.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(tx) = consumers.get(&key) {
+                                        let _ = tx.send(ConsumerMsg::Exit { code });
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn host_port() -> u16 {
+    std::env::var("PANORAMA_HOST_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9778)
+}
+
+fn connect_to_host() -> std::net::TcpStream {
+    let port = host_port();
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(s) => return s,
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+}
+
+fn host_handle() -> &'static HostHandle {
+    static H: OnceLock<HostHandle> = OnceLock::new();
+    H.get_or_init(|| {
+        let stream = connect_to_host();
+        let write_stream = stream.try_clone().expect("tcp clone");
+        let (writer_tx, writer_rx) = mpsc_channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut ws = write_stream;
+            while let Ok(frame) = writer_rx.recv() {
+                if ws.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+        });
+        HostHandle {
+            tx: writer_tx,
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+            consumers: Mutex::new(HashMap::new()),
+            reader_stream: Mutex::new(Some(stream)),
+        }
+    });
+    static DISP: OnceLock<()> = OnceLock::new();
+    DISP.get_or_init(|| {
+        let handle: &'static HostHandle = H.get().unwrap();
+        let stream = handle
+            .reader_stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap();
+        std::thread::spawn(move || brain_dispatcher(handle, stream));
+    });
+    H.get().unwrap()
+}
+
+fn reconnect_sessions() {
+    let reply = match host_handle().rpc_raw(serde_json::json!({"op": "list"})) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let empty = vec![];
+    let session_list = reply["sessions"].as_array().unwrap_or(&empty).clone();
+    for si in &session_list {
+        let key = si["key"].as_str().unwrap_or("").to_string();
+        if key.is_empty() {
+            continue;
+        }
+        let alive = si["alive"].as_bool().unwrap_or(false);
+        let pid = si["pid"].as_u64().unwrap_or(0) as u32;
+        let cols = (si["cols"].as_u64().unwrap_or(220) as u16).max(2);
+        let rows = (si["rows"].as_u64().unwrap_or(50) as u16).max(2);
+        let snap_total = si["total"].as_u64().unwrap_or(0);
+
+        let raw = host_handle().snapshot(&key);
+
+        let focused = Arc::new(AtomicBool::new(false));
+        let focus_reporting = Arc::new(AtomicBool::new(false));
+        let sink = CwdSink {
+            focused: focused.clone(),
+            focus_reporting: focus_reporting.clone(),
+            ..Default::default()
+        };
+        let mut parser =
+            vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
+        if !raw.is_empty() {
+            parser.process(&raw);
+            let _ = parser.callbacks_mut().take_clipboard();
+            let _ = parser.callbacks_mut().take_responses();
+            let _ = parser.callbacks_mut().take_agent_events();
+            let _ = parser.callbacks_mut().take_notifies();
+            let _ = parser.callbacks_mut().take_progress();
+        }
+
+        let run = if key.starts_with("run:") || key.starts_with("build:") {
+            let meta = &si["meta"];
+            let run_kind = meta["kind"]
+                .as_str()
+                .unwrap_or(if key.starts_with("build:") { "build" } else { "run" });
+            let mut log = RunLog::new();
+            if !raw.is_empty() {
+                if let Ok(text) = std::str::from_utf8(&raw) {
+                    log.feed(text);
+                }
+            }
+            Some(RunState {
+                cmd: meta["cmd"].as_str().unwrap_or(&key).to_string(),
+                cwd: meta["cwd"].as_str().unwrap_or("").to_string(),
+                kind: run_kind.to_string(),
+                started: Instant::now(),
+                log: Mutex::new(log),
+                exit: Mutex::new(None),
+            })
+        } else {
+            None
+        };
+
+        let session = Arc::new(Session {
+            tile_id: key.clone(),
+            shell: key.clone(),
+            pid,
+            parser: Mutex::new(parser),
+            dirty: AtomicBool::new(true),
+            exited: AtomicBool::new(!alive),
+            visible: AtomicBool::new(true),
+            cols: AtomicU16::new(cols),
+            rows: AtomicU16::new(rows),
+            scrollback: AtomicUsize::new(0),
+            cwd: Mutex::new(None),
+            cwd_dirty: AtomicBool::new(false),
+            branch: Mutex::new(None),
+            cmd: Mutex::new(None),
+            clipboard: Mutex::new(None),
+            clipboard_dirty: AtomicBool::new(false),
+            title: Mutex::new(None),
+            title_dirty: AtomicBool::new(false),
+            events: Mutex::new(Vec::new()),
+            focused,
+            focus_reporting,
+            run,
+        });
+
+        if alive {
+            let (consumer_tx, consumer_rx) = mpsc_channel::<ConsumerMsg>();
+            host_handle().register_consumer(&key, consumer_tx);
+            let _ = host_handle().subscribe(&key, snap_total);
+            let s = session.clone();
+            std::thread::spawn(move || run_consumer_loop(s, consumer_rx, None));
+        }
+
+        sessions().lock().unwrap().insert(key, session);
+    }
+}
+
 const PORT: u16 = 9777;
+const DAEMON_ARG: &str = "--daemon";
+
+fn port() -> u16 {
+    std::env::var("PANORAMA_SIDECAR_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PORT)
+}
+
+#[cfg(windows)]
+fn daemonize() {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    for flags in [base | CREATE_BREAKAWAY_FROM_JOB, base] {
+        let spawned = Command::new(&exe)
+            .arg(DAEMON_ARG)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+            .is_ok();
+        if spawned {
+            std::process::exit(0);
+        }
+    }
+}
+fn brain_bin() -> PathBuf {
+    std::env::var("PANORAMA_BRAIN_BIN")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("sidecar"))
+}
+
+fn brain_run_copy(bin: &Path) -> PathBuf {
+    if !cfg!(debug_assertions) {
+        return bin.to_path_buf();
+    }
+    let dst = std::env::temp_dir().join("panorama-brain.exe");
+    if std::fs::copy(bin, &dst).is_ok() {
+        dst
+    } else {
+        bin.to_path_buf()
+    }
+}
+
+fn brain_alive() -> bool {
+    let addr = format!("127.0.0.1:{}", port());
+    addr.parse()
+        .ok()
+        .map(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
+        .unwrap_or(false)
+}
+
+fn supervise_brain() {
+    use std::process::Stdio;
+    let bin = brain_bin();
+    let host_p = host_port().to_string();
+    let brain_p = port().to_string();
+    std::thread::spawn(move || loop {
+        if brain_alive() {
+            std::thread::sleep(Duration::from_millis(1000));
+            continue;
+        }
+        let exe = brain_run_copy(&bin);
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg(DAEMON_ARG)
+            .env("PANORAMA_HOST_PORT", &host_p)
+            .env("PANORAMA_SIDECAR_PORT", &brain_p)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(e) => eprintln!("[host] failed to spawn brain: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+    });
+}
+
 const DEFAULT_FG: u32 = 0xC7_D0_E0;
 const DEFAULT_BG: u32 = 0x0B_0E_14;
 
@@ -300,18 +735,284 @@ fn parse_osc7(url: &[u8]) -> Option<String> {
 
 const SCROLLBACK_LINES: usize = 5000;
 const RAW_CAP: usize = 256 * 1024;
+const RUN_LINE_CAP: usize = 10_000;
+const RUN_REQ_MAX: usize = 500;
+
+#[derive(Clone, Copy, PartialEq)]
+enum EscState {
+    Ground,
+    Esc,
+    EscInter,
+    Csi,
+    Osc,
+    OscEsc,
+}
+
+struct RunLog {
+    buf: std::collections::VecDeque<String>,
+    total: usize,
+    partial: String,
+    esc: EscState,
+    cr: bool,
+}
+
+impl RunLog {
+    fn new() -> Self {
+        RunLog {
+            buf: std::collections::VecDeque::new(),
+            total: 0,
+            partial: String::new(),
+            esc: EscState::Ground,
+            cr: false,
+        }
+    }
+
+    fn push_line(&mut self) {
+        self.total += 1;
+        self.buf.push_back(std::mem::take(&mut self.partial));
+        if self.buf.len() > RUN_LINE_CAP {
+            self.buf.pop_front();
+        }
+    }
+
+    fn feed(&mut self, text: &str) {
+        for c in text.chars() {
+            match self.esc {
+                EscState::Ground => {
+                    if self.cr && c != '\n' {
+                        self.cr = false;
+                        self.partial.clear();
+                    }
+                    match c {
+                        '\x1b' => self.esc = EscState::Esc,
+                        '\n' => {
+                            self.cr = false;
+                            self.push_line();
+                        }
+                        '\r' => self.cr = true,
+                        '\t' => self.partial.push('\t'),
+                        c if (c as u32) >= 0x20 => self.partial.push(c),
+                        _ => {}
+                    }
+                }
+                EscState::Esc => {
+                    self.esc = match c {
+                        '[' => EscState::Csi,
+                        ']' => EscState::Osc,
+                        '(' | ')' | '#' | '%' => EscState::EscInter,
+                        _ => EscState::Ground,
+                    }
+                }
+                EscState::EscInter => self.esc = EscState::Ground,
+                EscState::Csi => {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        self.esc = EscState::Ground;
+                    }
+                }
+                EscState::Osc => match c {
+                    '\x07' => self.esc = EscState::Ground,
+                    '\x1b' => self.esc = EscState::OscEsc,
+                    _ => {}
+                },
+                EscState::OscEsc => {
+                    self.esc = if c == '\\' { EscState::Ground } else { EscState::Osc };
+                }
+            }
+        }
+    }
+
+    fn range(&self) -> (usize, usize) {
+        let first = self.total.saturating_sub(self.buf.len()) + 1;
+        (first, self.total)
+    }
+}
+
+struct RunState {
+    cmd: String,
+    cwd: String,
+    kind: String,
+    started: Instant,
+    log: Mutex<RunLog>,
+    exit: Mutex<Option<u32>>,
+}
+
+fn expand_win_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('%') {
+            Some(j) => {
+                let name = &after[..j];
+                match std::env::var(name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(windows)]
+fn reg_path_value(key: &str) -> Option<String> {
+    let out = hidden_command("reg.exe")
+        .args(["query", key, "/v", "Path"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let idx = line
+            .find("REG_EXPAND_SZ")
+            .map(|i| i + "REG_EXPAND_SZ".len())
+            .or_else(|| line.find("REG_SZ").map(|i| i + "REG_SZ".len()));
+        if let Some(idx) = idx {
+            let v = line[idx..].trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn fresh_path() -> Option<String> {
+    let machine = reg_path_value(r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment");
+    let user = reg_path_value(r"HKCU\Environment");
+    let current = std::env::var("PATH").ok();
+    let mut parts: Vec<String> = Vec::new();
+    for chunk in [machine, user, current].into_iter().flatten() {
+        for seg in expand_win_env(&chunk).split(';') {
+            let seg = seg.trim();
+            if !seg.is_empty() && !parts.iter().any(|e| e.eq_ignore_ascii_case(seg)) {
+                parts.push(seg.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(";"))
+    }
+}
+
+#[cfg(not(windows))]
+fn fresh_path() -> Option<String> {
+    None
+}
+
+fn norm_cwd(cwd: &str) -> String {
+    let mut norm = cwd.replace('/', if cfg!(windows) { "\\" } else { "/" });
+    while norm.len() > 1 && (norm.ends_with('\\') || norm.ends_with('/')) {
+        norm.pop();
+    }
+    if cfg!(windows) {
+        norm = norm.to_lowercase();
+    }
+    norm
+}
+
+fn run_key(kind: &str, tile: &str) -> String {
+    format!("{}:{}", kind, sanitize_key(tile))
+}
+
+fn run_lookup_tile(kind: &str, tile: &str) -> Option<Arc<Session>> {
+    sessions().lock().unwrap().get(&run_key(kind, tile)).cloned()
+}
+
+fn run_lookup_cwd(cwd: &str) -> Option<Arc<Session>> {
+    let norm = norm_cwd(cwd);
+    let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
+    let mut best: Option<Arc<Session>> = None;
+    for s in list {
+        let Some(run) = &s.run else { continue };
+        if run.kind != "run" || run.cwd != norm {
+            continue;
+        }
+        let better = match &best {
+            None => true,
+            Some(b) => {
+                let b_run = b.run.as_ref().unwrap();
+                let s_live = !s.exited.load(Ordering::Relaxed);
+                let b_live = !b.exited.load(Ordering::Relaxed);
+                (s_live && !b_live) || (s_live == b_live && run.started > b_run.started)
+            }
+        };
+        if better {
+            best = Some(s);
+        }
+    }
+    best
+}
+
+fn run_lookup(kind: &str, tile: Option<&str>, cwd: Option<&str>) -> Option<Arc<Session>> {
+    match tile {
+        Some(t) if !t.is_empty() => run_lookup_tile(kind, t),
+        _ => cwd.filter(|c| !c.is_empty()).and_then(run_lookup_cwd),
+    }
+}
+
+pub(crate) struct RawRing {
+    pub(crate) buf: Vec<u8>,
+    pub(crate) base: u64,
+}
+
+impl RawRing {
+    pub(crate) fn new(seed: Vec<u8>) -> Self {
+        Self { base: 0, buf: seed }
+    }
+
+    pub(crate) fn push(&mut self, data: &[u8]) {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() > RAW_CAP {
+            let cut = self.buf.len() - RAW_CAP;
+            self.buf.drain(0..cut);
+            self.base += cut as u64;
+        }
+    }
+
+    pub(crate) fn len_total(&self) -> u64 {
+        self.base + self.buf.len() as u64
+    }
+
+    pub(crate) fn since(&self, offset: u64) -> (u64, Vec<u8>) {
+        let total = self.len_total();
+        if offset >= total {
+            return (total, Vec::new());
+        }
+        let start = offset.max(self.base);
+        let skip = (start - self.base) as usize;
+        (start, self.buf[skip..].to_vec())
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<u8> {
+        self.buf.clone()
+    }
+}
 
 struct Session {
     tile_id: String,
     shell: String,
+    pid: u32,
     parser: Mutex<vt100::Parser<CwdSink>>,
-    writer: Mutex<Box<dyn Write + Send>>,
-    master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
-    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    raw: Mutex<Vec<u8>>,
     dirty: AtomicBool,
-    raw_dirty: AtomicBool,
     exited: AtomicBool,
+    visible: AtomicBool,
     cols: AtomicU16,
     rows: AtomicU16,
     scrollback: AtomicUsize,
@@ -326,6 +1027,7 @@ struct Session {
     events: Mutex<Vec<String>>,
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
+    run: Option<RunState>,
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
@@ -352,10 +1054,10 @@ fn load_buffer(tile_id: &str) -> Vec<u8> {
 }
 
 fn flush_session(s: &Session) {
-    if !s.raw_dirty.swap(false, Ordering::Relaxed) {
+    if s.run.is_some() {
         return;
     }
-    let data = s.raw.lock().map(|r| r.clone()).unwrap_or_default();
+    let data = host_handle().snapshot(&s.tile_id);
     if let Some(p) = buffer_path(&s.tile_id) {
         let _ = std::fs::write(p, &data);
     }
@@ -415,6 +1117,19 @@ fn read_binding(tile_id: &str) -> Option<String> {
 fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
     let raw = std::fs::read_to_string(binding_path(tile_id)?).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+fn clear_binding_session(tile_id: &str) {
+    let Some(path) = binding_path(tile_id) else {
+        return;
+    };
+    let Some(mut rec) = read_binding_rec(tile_id).filter(|v| v.is_object()) else {
+        return;
+    };
+    let obj = rec.as_object_mut().unwrap();
+    if obj.remove("agentSessionId").is_some() {
+        let _ = std::fs::write(path, rec.to_string());
+    }
 }
 
 fn claude_home() -> Option<PathBuf> {
@@ -511,6 +1226,8 @@ struct ClaudeTracker {
     mode: Option<String>,
     perm: Option<String>,
     tokens: Option<u64>,
+    added: u64,
+    removed: u64,
     effort: Option<String>,
     default_model: Option<String>,
     status: Option<String>,
@@ -519,7 +1236,63 @@ struct ClaudeTracker {
     reset: bool,
 }
 
+fn line_count(s: &str) -> u64 {
+    if s.is_empty() { 0 } else { s.lines().count() as u64 }
+}
+
+fn diff_lines(old: &str, new: &str) -> (u64, u64) {
+    let o: Vec<&str> = old.lines().collect();
+    let n: Vec<&str> = new.lines().collect();
+    let mut lead = 0;
+    while lead < o.len() && lead < n.len() && o[lead] == n[lead] {
+        lead += 1;
+    }
+    let mut trail = 0;
+    while trail < o.len() - lead && trail < n.len() - lead
+        && o[o.len() - 1 - trail] == n[n.len() - 1 - trail]
+    {
+        trail += 1;
+    }
+    ((n.len() - lead - trail) as u64, (o.len() - lead - trail) as u64)
+}
+
 impl ClaudeTracker {
+    fn count_edits(&mut self, content: &serde_json::Value) {
+        let Some(blocks) = content.as_array() else { return };
+        let field = |v: &serde_json::Value, k: &str| {
+            v.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string()
+        };
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+            let Some(input) = block.get("input") else { continue };
+            match block.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+                "Edit" => {
+                    let (a, r) = diff_lines(&field(input, "old_string"), &field(input, "new_string"));
+                    self.added += a;
+                    self.removed += r;
+                }
+                "Write" => self.added += line_count(&field(input, "content")),
+                "NotebookEdit" => {
+                    let (a, r) = diff_lines(&field(input, "old_source"), &field(input, "new_source"));
+                    self.added += a;
+                    self.removed += r;
+                }
+                "MultiEdit" => {
+                    if let Some(edits) = input.get("edits").and_then(|e| e.as_array()) {
+                        for e in edits {
+                            let (a, r) = diff_lines(&field(e, "old_string"), &field(e, "new_string"));
+                            self.added += a;
+                            self.removed += r;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn ingest(&mut self, line: &str) {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             return;
@@ -537,6 +1310,16 @@ impl ClaudeTracker {
             }
             _ => {}
         }
+        if entry
+            .pointer("/attachment/hookName")
+            .and_then(|h| h.as_str())
+            .is_some_and(|n| n == "SessionStart:clear")
+        {
+            self.added = 0;
+            self.removed = 0;
+            self.tokens = None;
+            self.reset = true;
+        }
         let msg = entry.get("message");
         if msg.and_then(|m| m.get("role")).and_then(|r| r.as_str()) != Some("assistant") {
             return;
@@ -546,6 +1329,9 @@ impl ClaudeTracker {
         }
         if let Some(tok) = msg.and_then(|m| m.get("usage")).and_then(usage_tokens) {
             self.tokens = Some(tok);
+        }
+        if let Some(content) = msg.and_then(|m| m.get("content")) {
+            self.count_edits(content);
         }
     }
 
@@ -635,6 +1421,10 @@ impl ClaudeTracker {
         if let Some(s) = &self.status {
             obj.insert("status".into(), s.clone().into());
         }
+        if self.added > 0 || self.removed > 0 {
+            obj.insert("linesAdded".into(), self.added.into());
+            obj.insert("linesRemoved".into(), self.removed.into());
+        }
         if self.reset {
             obj.insert("reset".into(), true.into());
         }
@@ -720,7 +1510,7 @@ fn post_agent_status(input: &str) {
     if input.len() > STATUS_POST_MAX {
         return;
     }
-    let addr: std::net::SocketAddr = "127.0.0.1:9777".parse().unwrap();
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port()).parse().unwrap();
     let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) else {
         return;
     };
@@ -939,8 +1729,71 @@ fn emit_event(event: &str) {
 
     let body = payload.to_string();
     let seq = format!("\x1b]777;notify;{AGENT_EVENT_SENTINEL};{body}\x07");
-    let out = serde_json::json!({ "terminalSequence": seq });
+    let mut out = serde_json::json!({ "terminalSequence": seq });
+    if event == "prompt-submit" {
+        let parts: Vec<String> = [linked_notes_context(), linked_peers_context(), run_context(&cwd)]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !parts.is_empty() {
+            out.as_object_mut().unwrap().insert(
+                "hookSpecificOutput".into(),
+                serde_json::json!({
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": parts.join("\n\n"),
+                }),
+            );
+        }
+    }
     println!("{out}");
+}
+
+fn urlenc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn sidecar_get(path_query: &str) -> Option<String> {
+    use std::net::TcpStream as StdTcp;
+    let addr = format!("127.0.0.1:{}", port());
+    let stream = StdTcp::connect_timeout(&addr.parse().ok()?, Duration::from_millis(300)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
+    let mut stream = stream;
+    let req = format!("GET {path_query} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).ok()?;
+    raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string())
+}
+
+fn run_context(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    let body = sidecar_get(&format!("/run/status?cwd={}", urlenc(cwd)))?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let state = v.get("state").and_then(|s| s.as_str())?;
+    if state == "none" {
+        return None;
+    }
+    let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("?");
+    let base = format!("http://127.0.0.1:{}", port());
+    let enc = urlenc(cwd);
+    Some(format!(
+        "This project has a dev run session (`{cmd}`, currently {state}). When the user asks about the running app, its output, or errors in it, inspect the logs yourself:\n\
+         - status: curl \"{base}/run/status?cwd={enc}\"\n\
+         - logs: curl \"{base}/run/logs?cwd={enc}&tail=50\"\n\
+         Logs are numbered lines; the first response line reports the served range and total (max 500 per request). Start with a small tail (30-50 lines) and paginate with &from=<line>&count=<n> only when needed. Remember the last line you read and fetch only newer lines on later checks. Never fetch the whole log."
+    ))
 }
 
 fn record_agent() {
@@ -952,14 +1805,91 @@ fn record_agent() {
     if let (Some(session_id), Some(tile_id)) = (session_id, tile_id) {
         if let Some(path) = binding_path(&tile_id) {
             let cwd = evt.get("cwd").and_then(|s| s.as_str());
-            let rec = serde_json::json!({
-                "agentSessionId": session_id,
-                "cwd": cwd,
-                "tileId": tile_id,
-            });
+            let mut rec = read_binding_rec(&tile_id)
+                .filter(|v| v.is_object())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let obj = rec.as_object_mut().unwrap();
+            obj.insert("agentSessionId".into(), session_id.into());
+            obj.insert("cwd".into(), cwd.map(Into::into).unwrap_or(serde_json::Value::Null));
+            obj.insert("tileId".into(), tile_id.clone().into());
             let _ = std::fs::write(path, rec.to_string());
         }
     }
+}
+
+fn front_title(path: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let rest = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"))?;
+    let end = rest.find("\n---")?;
+    for line in rest[..end].lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("title:") {
+            let v = v.trim();
+            if v.len() >= 2 && v.starts_with('"') && v.ends_with('"') {
+                return Some(v[1..v.len() - 1].replace("\\\"", "\""));
+            }
+            if v.len() >= 2 && v.starts_with('\'') && v.ends_with('\'') {
+                return Some(v[1..v.len() - 1].replace("''", "'"));
+            }
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+fn linked_notes_context() -> Option<String> {
+    let tile_id = std::env::var("PANORAMA_TILE_ID").ok()?;
+    let rec = read_binding_rec(&tile_id)?;
+    let notes = rec.get("notes").and_then(|n| n.as_array())?;
+    let mut lines: Vec<String> = notes
+        .iter()
+        .filter_map(|n| {
+            let path = n.get("path").and_then(|p| p.as_str())?;
+            if path.is_empty() {
+                return None;
+            }
+            let title = front_title(path)
+                .or_else(|| n.get("title").and_then(|t| t.as_str()).map(String::from))
+                .unwrap_or_else(|| "note".to_string());
+            Some(format!("- \"{title}\": {path}"))
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    lines.insert(
+        0,
+        "Notes linked to this terminal are plain markdown files (checkbox = \"- [ ]\" unchecked / \"- [x]\" checked). The note title is the `title:` field in the leading YAML frontmatter; edit it there to rename. Read or edit these files only when the user asks:"
+            .to_string(),
+    );
+    Some(lines.join("\n"))
+}
+
+fn linked_peers_context() -> Option<String> {
+    let tile_id = std::env::var("PANORAMA_TILE_ID").ok()?;
+    let rec = read_binding_rec(&tile_id)?;
+    let peers = rec.get("peers").and_then(|p| p.as_array())?;
+    let entries: Vec<String> = peers
+        .iter()
+        .filter_map(|p| {
+            let id = p.get("tileId").and_then(|v| v.as_str())?;
+            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("agent");
+            Some(format!("- \"{name}\": tileId {id}"))
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let base = format!("http://127.0.0.1:{}", port());
+    Some(format!(
+        "Other terminals on this canvas are linked to yours; each may run its own agent or shell. Only interact with them when the user asks (e.g. \"ask X to...\", \"tell X...\", \"check on X\"):\n\
+         - send a message: curl -s -X POST \"{base}/agent/send?tileId=<tileId>\" --data-raw \"your message\"\n\
+         - read its screen: curl -s \"{base}/capture?tileId=<tileId>&lines=80\"\n\
+         A send types the message into that terminal and presses Enter. After sending, wait, then read the screen to see the reply; long tasks can take minutes, so poll with pauses instead of resending. Linked terminals:\n{}",
+        entries.join("\n")
+    ))
 }
 
 fn install_claude_hook() {
@@ -1151,6 +2081,10 @@ struct Params {
     cwd: Option<String>,
     shell: Option<String>,
     target: Option<String>,
+    elevated: bool,
+    spawn_cmd: Option<String>,
+    run_kind: String,
+    attach_only: bool,
 }
 
 fn default_shell() -> String {
@@ -1230,6 +2164,20 @@ fn powershell_osc7_snippet() -> String {
     .join("\r\n")
 }
 
+fn powershell_history_filter_snippet() -> String {
+    [
+        "",
+        "if ($env:PANORAMA_TERMINAL -and (Get-Module -ListAvailable PSReadLine)) {",
+        "    Set-PSReadLineOption -AddToHistoryHandler {",
+        "        param($__panoLine)",
+        r"        return ($__panoLine -notmatch '^\s*claude --resume ')",
+        "    }",
+        "}",
+        "",
+    ]
+    .join("\r\n")
+}
+
 fn ensure_powershell_profile_osc7(shell: &str) {
     if !cfg!(windows) {
         return;
@@ -1262,7 +2210,16 @@ fn ensure_powershell_profile_osc7(shell: &str) {
             return;
         }
         let existing = std::fs::read_to_string(&profile_path).unwrap_or_default();
-        if existing.contains("__panoOldPrompt") {
+        let blocks = [
+            ("__panoOldPrompt", powershell_osc7_snippet()),
+            ("__panoLine", powershell_history_filter_snippet()),
+        ];
+        let missing: Vec<&str> = blocks
+            .iter()
+            .filter(|(marker, _)| !existing.contains(marker))
+            .map(|(_, snippet)| snippet.as_str())
+            .collect();
+        if missing.is_empty() {
             return;
         }
         if let Some(parent) = Path::new(&profile_path).parent() {
@@ -1273,7 +2230,9 @@ fn ensure_powershell_profile_osc7(shell: &str) {
             .append(true)
             .open(&profile_path)
         {
-            let _ = f.write_all(powershell_osc7_snippet().as_bytes());
+            for snippet in missing {
+                let _ = f.write_all(snippet.as_bytes());
+            }
         }
     });
 }
@@ -1316,11 +2275,9 @@ fn inject_osc7(session: &Arc<Session>, shell: &str) {
             if s.exited.load(Ordering::Relaxed) {
                 return;
             }
-            if let Ok(mut w) = s.writer.lock() {
-                let _ = w.write_all(hook.as_bytes());
-                let _ = w.write_all(b"\n");
-                let _ = w.flush();
-            }
+            let mut bytes = hook.into_bytes();
+            bytes.push(b'\n');
+            host_handle().write(&s.tile_id, &bytes);
         });
     }
 }
@@ -1341,34 +2298,39 @@ fn spawn_session(
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| ".".into());
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("openpty: {e}"))?;
+    let (exe, args, mut env): (String, Vec<String>, Vec<(String, String)>) =
+        if let Some(run_cmd) = &p.spawn_cmd {
+            if cfg!(windows) {
+                (
+                    resolve_powershell(),
+                    vec!["-NoLogo".into(), "-Command".into(), run_cmd.clone()],
+                    Vec::new(),
+                )
+            } else {
+                ("/bin/sh".into(), vec!["-lc".into(), run_cmd.clone()], Vec::new())
+            }
+        } else if p.elevated {
+            if !command_exists("gsudo.exe") {
+                return Err(
+                    "gsudo not found - install it with: winget install gerardog.gsudo".into(),
+                );
+            }
+            ("gsudo.exe".into(), vec![shell.clone()], Vec::new())
+        } else {
+            (shell.clone(), Vec::new(), Vec::new())
+        };
 
-    let mut cmd = CommandBuilder::new(&shell);
-    cmd.cwd(&cwd);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("PANORAMA_TERMINAL", "1");
-    cmd.env("PANORAMA_TILE_ID", &p.tile_id);
+    env.push(("TERM".into(), "xterm-256color".into()));
+    env.push(("PANORAMA_TERMINAL".into(), "1".into()));
+    env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
+    if p.spawn_cmd.is_some() {
+        if let Some(path) = fresh_path() {
+            env.push(("PATH".into(), path));
+        }
+    }
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("spawn '{shell}': {e}"))?;
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("reader: {e}"))?;
-    let writer = pair.master.take_writer().map_err(|e| format!("writer: {e}"))?;
-    drop(pair.slave);
+    let seed = if p.spawn_cmd.is_some() { Vec::new() } else { load_buffer(&p.tile_id) };
 
-    let seed = load_buffer(&p.tile_id);
     let focused = Arc::new(AtomicBool::new(true));
     let focus_reporting = Arc::new(AtomicBool::new(false));
     let sink = CwdSink {
@@ -1386,17 +2348,37 @@ fn spawn_session(
         let _ = parser.callbacks_mut().take_progress();
     }
 
+    let meta = match &p.spawn_cmd {
+        Some(run_cmd) => serde_json::json!({
+            "cmd": run_cmd,
+            "cwd": norm_cwd(&cwd),
+            "kind": p.run_kind,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let pid =
+        host_handle().spawn_pty(&p.tile_id, &cwd, cols, rows, &exe, &args, &env, &seed, meta)?;
+
+    let (consumer_tx, consumer_rx) = mpsc_channel::<ConsumerMsg>();
+    host_handle().register_consumer(&p.tile_id, consumer_tx);
+    host_handle().subscribe(&p.tile_id, seed.len() as u64)?;
+
+    let run = p.spawn_cmd.as_ref().map(|run_cmd| RunState {
+        cmd: run_cmd.clone(),
+        cwd: norm_cwd(&cwd),
+        kind: p.run_kind.clone(),
+        started: Instant::now(),
+        log: Mutex::new(RunLog::new()),
+        exit: Mutex::new(None),
+    });
     let session = Arc::new(Session {
         tile_id: p.tile_id.clone(),
-        shell: shell.clone(),
+        shell: p.spawn_cmd.clone().unwrap_or_else(|| shell.clone()),
+        pid,
         parser: Mutex::new(parser),
-        writer: Mutex::new(writer),
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
-        raw: Mutex::new(seed),
         dirty: AtomicBool::new(true),
-        raw_dirty: AtomicBool::new(false),
         exited: AtomicBool::new(false),
+        visible: AtomicBool::new(true),
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
@@ -1411,122 +2393,148 @@ fn spawn_session(
         events: Mutex::new(Vec::new()),
         focused,
         focus_reporting,
+        run,
     });
 
     let s = session.clone();
-    std::thread::spawn(move || {
-        let mut permit = Some(permit);
-        let mut reader = reader;
-        let mut buf = [0u8; 8192];
-        let mut carry: Vec<u8> = Vec::new();
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    permit.take();
-                    let mut data = Vec::with_capacity(carry.len() + n);
-                    data.append(&mut carry);
-                    data.extend_from_slice(&buf[..n]);
-                    let valid = utf8_valid_len(&data);
-                    if valid < data.len() {
-                        carry.extend_from_slice(&data[valid..]);
-                    }
-                    let chunk = &data[..valid];
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    let responses = {
-                        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-                        p.process(chunk);
-                        if let Some(new_cwd) = p.callbacks_mut().take_changed() {
-                            *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
-                            s.cwd_dirty.store(true, Ordering::Relaxed);
-                        }
-                        if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
-                            let branch = git_branch(&prompt_cwd);
-                            {
-                                let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
-                                if *cur != branch {
-                                    *cur = branch;
-                                    s.cwd_dirty.store(true, Ordering::Relaxed);
-                                }
-                            }
-                            let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
-                            if let Some((start, cmd)) = done {
-                                let secs = start.elapsed().as_secs();
-                                if secs >= LONG_CMD_SECS {
-                                    let msg = serde_json::json!({
-                                        "t": "notify",
-                                        "title": cmd,
-                                        "body": format!("Finished in {}", fmt_duration(secs)),
-                                    });
-                                    s.events
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .push(msg.to_string());
-                                }
-                            }
-                        }
-                        if let Some(text) = p.callbacks_mut().take_clipboard() {
-                            *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
-                            s.clipboard_dirty.store(true, Ordering::Relaxed);
-                        }
-                        if let Some(title) = p.callbacks_mut().take_title() {
-                            if title != s.shell {
-                                *s.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
-                                s.title_dirty.store(true, Ordering::Relaxed);
-                            }
-                        }
-                        let mut outgoing: Vec<String> = Vec::new();
-                        for body in p.callbacks_mut().take_agent_events() {
-                            if let Some(msg) = agent_event_ws_msg(&body) {
-                                outgoing.push(msg);
-                            }
-                        }
-                        for (title, body) in p.callbacks_mut().take_notifies() {
-                            let msg = serde_json::json!({ "t": "notify", "title": title, "body": body });
-                            outgoing.push(msg.to_string());
-                        }
-                        if let Some((state, pct)) = p.callbacks_mut().take_progress() {
-                            let msg = serde_json::json!({ "t": "progress", "state": state, "pct": pct });
-                            outgoing.push(msg.to_string());
-                        }
-                        if !outgoing.is_empty() {
-                            s.events
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .extend(outgoing);
-                        }
-                        p.callbacks_mut().take_responses()
-                    };
-                    if !responses.is_empty() {
-                        if let Ok(mut w) = s.writer.lock() {
-                            for resp in &responses {
-                                let _ = w.write_all(resp);
-                            }
-                            let _ = w.flush();
-                        }
-                    }
-                    if let Ok(mut raw) = s.raw.lock() {
-                        raw.extend_from_slice(chunk);
-                        if raw.len() > RAW_CAP {
-                            let cut = raw.len() - RAW_CAP;
-                            raw.drain(0..cut);
-                        }
-                    }
-                    s.raw_dirty.store(true, Ordering::Relaxed);
-                    s.dirty.store(true, Ordering::Relaxed);
+    std::thread::spawn(move || run_consumer_loop(s, consumer_rx, Some(permit)));
+
+    if session.run.is_none() {
+        inject_osc7(&session, &shell);
+    }
+    Ok(session)
+}
+
+fn run_consumer_loop(
+    s: Arc<Session>,
+    consumer_rx: MpscReceiver<ConsumerMsg>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
+    let mut permit = permit;
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        match consumer_rx.recv() {
+            Ok(ConsumerMsg::Data(raw)) => {
+                permit.take();
+                let mut data = Vec::with_capacity(carry.len() + raw.len());
+                data.append(&mut carry);
+                data.extend_from_slice(&raw);
+                let valid = utf8_valid_len(&data);
+                if valid < data.len() {
+                    carry.extend_from_slice(&data[valid..]);
                 }
+                let chunk = &data[..valid];
+                if chunk.is_empty() {
+                    continue;
+                }
+                let responses = {
+                    let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    p.process(chunk);
+                    if let Some(new_cwd) = p.callbacks_mut().take_changed() {
+                        *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
+                        s.cwd_dirty.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
+                        let branch = git_branch(&prompt_cwd);
+                        {
+                            let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
+                            if *cur != branch {
+                                *cur = branch;
+                                s.cwd_dirty.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some((start, cmd)) = done {
+                            let secs = start.elapsed().as_secs();
+                            if secs >= LONG_CMD_SECS {
+                                let msg = serde_json::json!({
+                                    "t": "notify",
+                                    "title": cmd,
+                                    "body": format!("Finished in {}", fmt_duration(secs)),
+                                });
+                                s.events
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(msg.to_string());
+                            }
+                        }
+                    }
+                    if let Some(text) = p.callbacks_mut().take_clipboard() {
+                        *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                        s.clipboard_dirty.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(title) = p.callbacks_mut().take_title() {
+                        if title != s.shell {
+                            *s.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
+                            s.title_dirty.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    let mut outgoing: Vec<String> = Vec::new();
+                    for body in p.callbacks_mut().take_agent_events() {
+                        if let Some(msg) = agent_event_ws_msg(&body) {
+                            outgoing.push(msg);
+                        }
+                    }
+                    for (title, body) in p.callbacks_mut().take_notifies() {
+                        let msg = serde_json::json!({
+                            "t": "notify",
+                            "title": title,
+                            "body": body,
+                        });
+                        outgoing.push(msg.to_string());
+                    }
+                    if let Some((state, pct)) = p.callbacks_mut().take_progress() {
+                        let msg = serde_json::json!({
+                            "t": "progress",
+                            "state": state,
+                            "pct": pct,
+                        });
+                        outgoing.push(msg.to_string());
+                    }
+                    if !outgoing.is_empty() {
+                        s.events
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend(outgoing);
+                    }
+                    p.callbacks_mut().take_responses()
+                };
+                for resp in &responses {
+                    host_handle().write(&s.tile_id, resp);
+                }
+                if let Some(run) = &s.run {
+                    if let Ok(text) = std::str::from_utf8(chunk) {
+                        run.log.lock().unwrap_or_else(|e| e.into_inner()).feed(text);
+                    }
+                }
+                s.dirty.store(true, Ordering::Relaxed);
+            }
+            Ok(ConsumerMsg::Exit { code }) => {
+                s.exited.store(true, Ordering::Relaxed);
+                s.dirty.store(true, Ordering::Relaxed);
+                if let Some(run) = &s.run {
+                    let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
+                    if exit.is_none() {
+                        *exit = code;
+                    }
+                }
+                flush_session(&s);
+                if s.run.is_none() {
+                    sessions().lock().unwrap().remove(&s.tile_id);
+                }
+                return;
+            }
+            Err(_) => {
+                s.exited.store(true, Ordering::Relaxed);
+                s.dirty.store(true, Ordering::Relaxed);
+                flush_session(&s);
+                if s.run.is_none() {
+                    sessions().lock().unwrap().remove(&s.tile_id);
+                }
+                return;
             }
         }
-        s.exited.store(true, Ordering::Relaxed);
-        s.dirty.store(true, Ordering::Relaxed);
-        flush_session(&s);
-        sessions().lock().unwrap().remove(&s.tile_id);
-    });
-
-    inject_osc7(&session, &shell);
-    Ok(session)
+    }
 }
 
 const MAX_CONCURRENT_BOOT: usize = 3;
@@ -1547,6 +2555,12 @@ fn lookup_live(tile_id: &str) -> Option<Arc<Session>> {
 async fn get_or_create(p: &Params) -> Result<(Arc<Session>, bool), String> {
     if let Some(s) = lookup_live(&p.tile_id) {
         return Ok((s, true));
+    }
+    if p.attach_only {
+        if let Some(s) = sessions().lock().unwrap().get(&p.tile_id).cloned() {
+            return Ok((s, true));
+        }
+        return Err("session not running".into());
     }
     let permit = spawn_sem()
         .acquire_owned()
@@ -1571,14 +2585,7 @@ fn resize_session(s: &Session, cols: u16, rows: u16) {
     }
     s.cols.store(cols, Ordering::Relaxed);
     s.rows.store(rows, Ordering::Relaxed);
-    if let Ok(master) = s.master.lock() {
-        let _ = master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-    }
+    host_handle().resize(&s.tile_id, cols, rows);
     s.parser
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1612,11 +2619,8 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
                 seq.extend_from_slice(&[0x1b, b'[', b'M', (cb as u8) + 32, cx, cy]);
             }
         }
-        if let Ok(mut w) = s.writer.lock() {
-            for _ in 0..lines.max(1) {
-                let _ = w.write_all(&seq);
-            }
-            let _ = w.flush();
+        for _ in 0..lines.max(1) {
+            host_handle().write(&s.tile_id, &seq);
         }
         return;
     }
@@ -1628,11 +2632,8 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
             (false, true) => b"\x1bOB",
             (false, false) => b"\x1b[B",
         };
-        if let Ok(mut w) = s.writer.lock() {
-            for _ in 0..lines {
-                let _ = w.write_all(arrow);
-            }
-            let _ = w.flush();
+        for _ in 0..lines {
+            host_handle().write(&s.tile_id, arrow);
         }
         return;
     }
@@ -1689,10 +2690,7 @@ fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mod
             seq.extend_from_slice(&[0x1b, b'[', b'M', (base as u8).saturating_add(32), cx, cy]);
         }
     }
-    if let Ok(mut w) = s.writer.lock() {
-        let _ = w.write_all(&seq);
-        let _ = w.flush();
-    }
+    host_handle().write(&s.tile_id, &seq);
 }
 
 fn focus_session(s: &Session, focused: bool) {
@@ -1700,43 +2698,112 @@ fn focus_session(s: &Session, focused: bool) {
     if prev == focused || !s.focus_reporting.load(Ordering::Relaxed) {
         return;
     }
-    if let Ok(mut w) = s.writer.lock() {
-        let _ = w.write_all(if focused { b"\x1b[I" } else { b"\x1b[O" });
-        let _ = w.flush();
-    }
+    host_handle().write(&s.tile_id, if focused { b"\x1b[I" } else { b"\x1b[O" });
 }
 
 fn kill_session(s: &Arc<Session>) {
     let s = s.clone();
     std::thread::spawn(move || {
-        let pid = s.child.lock().ok().and_then(|c| c.process_id());
+        let pid = s.pid;
         #[cfg(windows)]
         {
-            if let Some(pid) = pid {
-                let _ = hidden_command("taskkill.exe")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .status();
-            }
+            let _ = hidden_command("taskkill.exe")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status();
         }
         #[cfg(unix)]
         {
-            if let Some(pid) = pid {
-                unsafe {
-                    libc::killpg(pid as i32, libc::SIGTERM);
-                }
-                std::thread::sleep(Duration::from_millis(150));
-                unsafe {
-                    libc::killpg(pid as i32, libc::SIGKILL);
-                }
+            unsafe {
+                libc::killpg(pid as i32, libc::SIGTERM);
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            unsafe {
+                libc::killpg(pid as i32, libc::SIGKILL);
             }
         }
-        if let Ok(mut c) = s.child.lock() {
-            let _ = c.kill();
-        }
+        host_handle().kill(&s.tile_id);
         s.exited.store(true, Ordering::Relaxed);
-        flush_session(&s);
-        sessions().lock().unwrap().remove(&s.tile_id);
+        s.dirty.store(true, Ordering::Relaxed);
     });
+}
+
+fn run_stop(s: &Arc<Session>) {
+    host_handle().write(&s.tile_id, b"\x03");
+    let s = s.clone();
+    std::thread::spawn(move || {
+        for _ in 0..30 {
+            if s.exited.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        kill_session(&s);
+    });
+}
+
+fn run_status_json(target: Option<Arc<Session>>) -> String {
+    let Some(s) = target else {
+        return serde_json::json!({ "state": "none" }).to_string();
+    };
+    let Some(run) = &s.run else {
+        return serde_json::json!({ "state": "none" }).to_string();
+    };
+    let total = run.log.lock().unwrap_or_else(|e| e.into_inner()).total;
+    if s.exited.load(Ordering::Relaxed) {
+        let code = *run.exit.lock().unwrap_or_else(|e| e.into_inner());
+        serde_json::json!({
+            "state": "exited",
+            "exitCode": code,
+            "cmd": run.cmd,
+            "totalLines": total,
+            "sessionId": s.tile_id,
+        })
+        .to_string()
+    } else {
+        serde_json::json!({
+            "state": "running",
+            "cmd": run.cmd,
+            "pid": s.pid,
+            "totalLines": total,
+            "sessionId": s.tile_id,
+        })
+        .to_string()
+    }
+}
+
+fn run_logs_text(target: Option<Arc<Session>>, q: &HashMap<String, String>) -> String {
+    let Some(s) = target else {
+        return "# no run session".into();
+    };
+    let Some(run) = &s.run else {
+        return "# no run session".into();
+    };
+    let state = if s.exited.load(Ordering::Relaxed) { "exited" } else { "running" };
+    let log = run.log.lock().unwrap_or_else(|e| e.into_inner());
+    let (first, total) = log.range();
+    if total == 0 {
+        return format!("# lines 0-0 of 0 ({state})");
+    }
+    let count = q
+        .get("count")
+        .or_else(|| q.get("tail"))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .clamp(1, RUN_REQ_MAX);
+    let from = match q.get("from").and_then(|v| v.parse::<usize>().ok()) {
+        Some(f) => f.max(first),
+        None => total.saturating_sub(count - 1).max(first),
+    };
+    let to = (from + count - 1).min(total);
+    if from > total {
+        return format!("# lines {total}-{total} of {total} ({state}) - from beyond end");
+    }
+    let mut out = format!("# lines {from}-{to} of {total} ({state})\n");
+    for n in from..=to {
+        out.push_str(&log.buf[n - first]);
+        out.push('\n');
+    }
+    out
 }
 
 fn build_frame(s: &Session) -> Vec<u8> {
@@ -1855,6 +2922,41 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
     }
 }
 
+fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
+    let msg = text.trim_end_matches(['\r', '\n']).to_string();
+    let session = sessions().lock().unwrap().get(tile_id).cloned();
+    let live = session.is_some()
+        || host_handle()
+            .session_info(tile_id)
+            .map(|(alive, _)| alive)
+            .unwrap_or(false);
+    if !live {
+        return Err("no session for tile".into());
+    }
+    let bracketed = session
+        .as_ref()
+        .and_then(|s| s.parser.lock().ok().map(|p| p.screen().bracketed_paste()))
+        .unwrap_or(false);
+    if bracketed {
+        host_handle().write(tile_id, format!("\x1b[200~{msg}\x1b[201~").as_bytes());
+    } else {
+        host_handle().write(tile_id, msg.as_bytes());
+    }
+    if let Some(s) = &session {
+        s.scrollback.store(0, Ordering::Relaxed);
+        s.dirty.store(true, Ordering::Relaxed);
+    }
+    let tile_id = tile_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        host_handle().write(&tile_id, b"\r");
+        if let Some(s) = sessions().lock().unwrap().get(&tile_id) {
+            s.dirty.store(true, Ordering::Relaxed);
+        }
+    });
+    Ok(())
+}
+
 fn handle_client_msg(s: &Arc<Session>, text: &str) {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -1870,10 +2972,7 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
                     let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
                     *cmd = line.map(|l| (Instant::now(), l));
                 }
-                if let Ok(mut w) = s.writer.lock() {
-                    let _ = w.write_all(d.as_bytes());
-                    let _ = w.flush();
-                }
+                host_handle().write(&s.tile_id, d.as_bytes());
             }
         }
         Some("scroll") => {
@@ -1904,6 +3003,14 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(true);
             focus_session(s, focused);
         }
+        Some("visible") => {
+            let visible = v.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
+            s.visible.store(visible, Ordering::Relaxed);
+            if visible {
+                s.dirty.store(true, Ordering::Relaxed);
+            }
+        }
+        Some("dismissAgent") => clear_binding_session(&s.tile_id),
         Some("kill") => kill_session(s),
         _ => {}
     }
@@ -1941,9 +3048,11 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     }
     session.dirty.store(false, Ordering::Relaxed);
 
-    let mut tick = tokio::time::interval(Duration::from_millis(33));
+    let mut tick = tokio::time::interval(Duration::from_millis(60));
     let mut claude = ClaudeTracker::default();
     let mut claude_tick = tokio::time::interval(Duration::from_millis(800));
+    let mut last_frame = tokio::time::Instant::now();
+    const UNFOCUSED_FRAME_MS: u64 = 250;
     loop {
         tokio::select! {
             _ = claude_tick.tick() => {
@@ -1958,7 +3067,13 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                     let _ = tx.send(Message::Text("{\"t\":\"exit\"}".into())).await;
                     break;
                 }
-                if session.dirty.swap(false, Ordering::Relaxed) {
+                if session.visible.load(Ordering::Relaxed)
+                    && session.dirty.load(Ordering::Relaxed)
+                    && (session.focused.load(Ordering::Relaxed)
+                        || last_frame.elapsed() >= Duration::from_millis(UNFOCUSED_FRAME_MS))
+                {
+                    session.dirty.store(false, Ordering::Relaxed);
+                    last_frame = tokio::time::Instant::now();
                     if tx.send(Message::Binary(build_frame(&session))).await.is_err() {
                         break;
                     }
@@ -2010,10 +3125,7 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                 match msg {
                     Some(Ok(Message::Text(t))) => handle_client_msg(&session, &t),
                     Some(Ok(Message::Binary(b))) => {
-                        if let Ok(mut w) = session.writer.lock() {
-                            let _ = w.write_all(&b);
-                            let _ = w.flush();
-                        }
+                        host_handle().write(&session.tile_id, &b);
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
@@ -2137,6 +3249,10 @@ async fn handle_conn(mut stream: TcpStream) {
             cwd: q.get("cwd").cloned(),
             shell: q.get("shell").cloned(),
             target: q.get("target").cloned(),
+            elevated: q.get("elevated").map(|v| v == "1").unwrap_or(false),
+            spawn_cmd: None,
+            run_kind: "run".into(),
+            attach_only: q.get("attach").map(|v| v == "1").unwrap_or(false),
         };
         let ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
         handle_ws(ws, params).await;
@@ -2165,11 +3281,11 @@ async fn handle_conn(mut stream: TcpStream) {
         let tid = q.get("tileId").cloned().unwrap_or_default();
         let lines = q.get("lines").and_then(|l| l.parse().ok()).unwrap_or(1000usize);
         let (raw, cols) = match sessions().lock().unwrap().get(&tid).cloned() {
-            Some(s) => (
-                s.raw.lock().map(|r| r.clone()).unwrap_or_default(),
-                s.cols.load(Ordering::Relaxed),
-            ),
-            None => (load_buffer(&tid), 80),
+            Some(s) => (host_handle().snapshot(&tid), s.cols.load(Ordering::Relaxed)),
+            None => match host_handle().session_info(&tid) {
+                Some((true, cols)) => (host_handle().snapshot(&tid), cols),
+                _ => (load_buffer(&tid), 80),
+            },
         };
         let text = capture_text(&raw, cols, lines);
         let resp = format!(
@@ -2181,16 +3297,47 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
+    if path_only == "/agent/send" {
+        let q = parse_query(query);
+        let tid = q.get("tileId").cloned().unwrap_or_default();
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut text = String::new();
+        if len > 0 && len <= STATUS_POST_MAX {
+            let mut body = vec![0u8; len];
+            if stream.read_exact(&mut body).await.is_ok() {
+                text = String::from_utf8_lossy(&body).into_owned();
+            }
+        }
+        let body = if text.trim().is_empty() {
+            serde_json::json!({ "error": "empty message body" }).to_string()
+        } else {
+            match send_to_tile(&tid, &text) {
+                Ok(()) => "{\"ok\":true}".to_string(),
+                Err(e) => serde_json::json!({ "error": e }).to_string(),
+            }
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
     if path_only == "/foreground" {
         let q = parse_query(query);
         let tid = q.get("tileId").cloned().unwrap_or_default();
         let s = sessions().lock().unwrap().get(&tid).cloned();
         let name = match s {
             Some(s) => {
-                let pid = s.child.lock().ok().and_then(|c| c.process_id());
+                let pid = s.pid;
                 let shell = s.shell.clone();
                 tokio::task::spawn_blocking(move || {
-                    pid.and_then(foreground_command)
+                    foreground_command(pid)
                         .unwrap_or_else(|| display_command_name(&shell))
                 })
                 .await
@@ -2202,6 +3349,114 @@ async fn handle_conn(mut stream: TcpStream) {
             "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
             name.len(),
             name
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/start" {
+        let q = parse_query(query);
+        let cwd = q.get("cwd").cloned().unwrap_or_default();
+        let cmd = q.get("cmd").cloned().unwrap_or_default();
+        let tile = q.get("tile").cloned().unwrap_or_default();
+        let kind = match q.get("kind").map(String::as_str) {
+            Some("build") => "build".to_string(),
+            _ => "run".to_string(),
+        };
+        let body = if cwd.is_empty() || cmd.is_empty() || tile.is_empty() {
+            serde_json::json!({ "error": "cwd, cmd and tile required" }).to_string()
+        } else {
+            let key = run_key(&kind, &tile);
+            let existing = run_lookup_tile(&kind, &tile);
+            match existing {
+                Some(s) if !s.exited.load(Ordering::Relaxed) => {
+                    serde_json::json!({ "error": "already running" }).to_string()
+                }
+                _ => {
+                    sessions().lock().unwrap().remove(&key);
+                    let params = Params {
+                        tile_id: key,
+                        cols: 120,
+                        rows: 30,
+                        cwd: Some(cwd.clone()),
+                        shell: None,
+                        target: None,
+                        elevated: false,
+                        spawn_cmd: Some(cmd),
+                        run_kind: kind.clone(),
+                        attach_only: false,
+                    };
+                    match get_or_create(&params).await {
+                        Ok(_) => run_status_json(run_lookup_tile(&kind, &tile)),
+                        Err(e) => serde_json::json!({ "error": e }).to_string(),
+                    }
+                }
+            }
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/status" {
+        let q = parse_query(query);
+        let kind = q.get("kind").map(String::as_str).unwrap_or("run");
+        let body = run_status_json(run_lookup(
+            kind,
+            q.get("tile").map(String::as_str),
+            q.get("cwd").map(String::as_str),
+        ));
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/logs" {
+        let q = parse_query(query);
+        let kind = q.get("kind").map(String::as_str).unwrap_or("run");
+        let body = run_logs_text(
+            run_lookup(kind, q.get("tile").map(String::as_str), q.get("cwd").map(String::as_str)),
+            &q,
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/stop" {
+        let q = parse_query(query);
+        let hard = q.get("hard").map(|v| v == "1").unwrap_or(false);
+        let kind = q.get("kind").map(String::as_str).unwrap_or("run");
+        if let Some(s) = run_lookup(
+            kind,
+            q.get("tile").map(String::as_str),
+            q.get("cwd").map(String::as_str),
+        ) {
+            if hard {
+                kill_session(&s);
+            } else if !s.exited.load(Ordering::Relaxed) {
+                run_stop(&s);
+            } else {
+                sessions().lock().unwrap().remove(&s.tile_id);
+            }
+        }
+        let body = "{\"ok\":true}";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
         );
         let _ = stream.write_all(resp.as_bytes()).await;
         return;
@@ -2231,6 +3486,11 @@ async fn handle_conn(mut stream: TcpStream) {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("host") {
+        supervise_brain();
+        host::run_host_server(host_port());
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("record-agent") {
         record_agent();
         return;
@@ -2244,10 +3504,18 @@ async fn main() {
         statusline_cmd();
         return;
     }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
+        daemonize();
+    }
+    if let Some(path) = fresh_path() {
+        std::env::set_var("PATH", path);
+    }
+    tokio::task::block_in_place(|| reconnect_sessions());
     install_claude_hook();
-    let listener = TcpListener::bind(("127.0.0.1", PORT))
+    let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
-        .expect("bind 9777");
+        .expect("bind sidecar port");
     tokio::spawn(async {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -2275,10 +3543,33 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_event_ws_msg, decode_osc52, default_status_line, sanitize_event_text,
-        status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering,
+        agent_event_ws_msg, decode_osc52, default_status_line, diff_lines, sanitize_event_text,
+        status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, RunLog,
         OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
+
+    #[test]
+    fn run_log_strips_ansi_and_paginates() {
+        let mut log = RunLog::new();
+        log.feed("\x1b[32mready\x1b[0m in 300ms\r\n");
+        log.feed("spinner frame\rLocal: http://localhost:5173/\r");
+        log.feed("\n\x1b]0;title\x07plain\npartial");
+        assert_eq!(log.total, 3);
+        assert_eq!(log.buf[0], "ready in 300ms");
+        assert_eq!(log.buf[1], "Local: http://localhost:5173/");
+        assert_eq!(log.buf[2], "plain");
+        assert_eq!(log.partial, "partial");
+        assert_eq!(log.range(), (1, 3));
+    }
+
+    #[test]
+    fn diff_lines_trims_common_context() {
+        assert_eq!(diff_lines("a\nb\nc", "a\nX\nc"), (1, 1));
+        assert_eq!(diff_lines("", "a\nb"), (2, 0));
+        assert_eq!(diff_lines("a\nb", ""), (0, 2));
+        assert_eq!(diff_lines("a\nb\nc", "a\nb\nc"), (0, 0));
+        assert_eq!(diff_lines("a\nb", "a\nb\nc\nd"), (2, 0));
+    }
 
     #[test]
     fn statusline_json_becomes_claude_msg() {
@@ -2455,6 +3746,21 @@ mod tests {
     }
 
     #[test]
+    fn session_clear_resets_counters() {
+        let mut t = super::ClaudeTracker::default();
+        t.ingest(
+            r#"{"message":{"role":"assistant","usage":{"input_tokens":10},"content":[{"type":"tool_use","name":"Write","input":{"content":"a\nb\nc"}}]}}"#,
+        );
+        assert_eq!(t.tokens, Some(10));
+        assert_eq!(t.added, 3);
+        t.ingest(r#"{"type":"attachment","attachment":{"hookName":"SessionStart:clear"}}"#);
+        assert_eq!(t.tokens, None);
+        assert_eq!(t.added, 0);
+        assert_eq!(t.removed, 0);
+        assert!(t.reset);
+    }
+
+    #[test]
     fn tracker_ignores_non_assistant_usage() {
         let mut t = super::ClaudeTracker::default();
         t.ingest(r#"{"message":{"role":"user","usage":{"input_tokens":99}}}"#);
@@ -2471,6 +3777,47 @@ mod tests {
     #[test]
     fn cwd_slug_replaces_separators() {
         assert_eq!(super::cwd_slug("D:/workspace/panorama-term"), "D--workspace-panorama-term");
+    }
+
+    #[test]
+    fn raw_ring_monotonic_offsets() {
+        let mut r = super::RawRing::new(vec![1, 2, 3]);
+        assert_eq!(r.len_total(), 3);
+        assert_eq!(r.base, 0);
+        assert_eq!(r.snapshot(), vec![1, 2, 3]);
+
+        let fill = vec![0u8; super::RAW_CAP - 3];
+        r.push(&fill);
+        assert_eq!(r.len_total(), super::RAW_CAP as u64);
+        assert_eq!(r.base, 0);
+
+        r.push(&[9, 8, 7]);
+        assert_eq!(r.base, 3);
+        assert_eq!(r.len_total(), super::RAW_CAP as u64 + 3);
+        assert_eq!(r.buf.len(), super::RAW_CAP);
+        assert_eq!(&r.buf[super::RAW_CAP - 3..], &[9, 8, 7]);
+
+        let (start, bytes) = r.since(0);
+        assert_eq!(start, 3);
+        assert_eq!(bytes.len(), super::RAW_CAP);
+
+        let (start2, bytes2) = r.since(3);
+        assert_eq!(start2, 3);
+        assert_eq!(bytes2.len(), super::RAW_CAP);
+
+        let mid = super::RAW_CAP as u64;
+        let (start3, bytes3) = r.since(mid);
+        assert_eq!(start3, mid);
+        assert_eq!(bytes3, vec![9, 8, 7]);
+
+        let total = r.len_total();
+        let (start4, bytes4) = r.since(total);
+        assert_eq!(start4, total);
+        assert!(bytes4.is_empty());
+
+        let (start5, bytes5) = r.since(total + 99);
+        assert_eq!(start5, total);
+        assert!(bytes5.is_empty());
     }
 
     #[test]

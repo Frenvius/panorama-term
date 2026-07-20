@@ -1,4 +1,5 @@
 import type { Tile } from '~/domain/interfaces/canvas.interface';
+import { parseFrontTitle } from '~/usecase/util/noteMeta';
 
 const ALNUM = /[\p{L}\p{N}]/u;
 const STAR_PREFIX = /^[\s✳✻✽✶✢❋✱✲✧✦∗*]+/u;
@@ -24,6 +25,10 @@ export const stripSpinner = (title: string): string => {
 const FALLBACK: Record<string, string> = { term: 'Terminal', note: 'Note' };
 
 export const tileLabel = (tile: Tile): string => {
+  if (tile.type === 'note') {
+    const t = tile.userTitle || parseFrontTitle(tile.content);
+    return t ? `Note - ${t}` : 'Note';
+  }
   const osc = tile.oscTitle ? stripSpinner(stripStarPrefix(tile.oscTitle).trim()) : '';
   return tile.userTitle || osc || tile.autoTitle || FALLBACK[tile.type] || tile.type;
 };

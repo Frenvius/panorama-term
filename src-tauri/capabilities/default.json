@@ -12,6 +12,7 @@
     "core:window:allow-set-fullscreen",
     "updater:default",
     "process:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "mcp-bridge:default"
   ]
 }

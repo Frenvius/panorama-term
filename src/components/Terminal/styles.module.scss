@@ -1,42 +1,68 @@
-.scaler {
+.term {
   position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: 0 0;
-}
-
-.wasm {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
+  inset: 4px 4px 6px;
   cursor: text;
   overflow: hidden;
   user-select: none;
   outline: none;
+  font-family: 'Hack', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 15px;
+  white-space: pre;
 }
 
-.agentScale {
+.rows {
   position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: 0 0;
+  inset: 0;
+}
+
+.row {
+  height: 15px;
+
+  span {
+    display: inline-block;
+    box-sizing: content-box;
+    height: 15.5px;
+    margin-right: -0.5px;
+    padding-right: 0.5px;
+    vertical-align: top;
+  }
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
 }
 
-.lite {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
-  color: var(--text-1);
-  font-size: 11.8px;
-  line-height: 1.2;
-  user-select: none;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-family: 'Hack', ui-monospace, monospace;
+.selRect {
+  position: absolute;
+  height: 15px;
+  background: rgba(74, 144, 217, 0.35);
+}
+
+.urlLine {
+  position: absolute;
+  height: 1px;
+  background: currentcolor;
+}
+
+.cursor {
+  position: absolute;
+  width: 1ch;
+  height: 15px;
+  pointer-events: none;
+  animation: cursor-blink 1.06s steps(2, jump-none) infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.agentOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }

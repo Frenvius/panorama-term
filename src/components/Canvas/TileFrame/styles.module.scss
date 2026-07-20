@@ -22,6 +22,14 @@
   outline-offset: 1.5px;
 }
 
+.sticky.linkActive {
+  border-color: var(--accent);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.22),
+    0 0 0 1px var(--accent),
+    0 0 18px -3px var(--accent);
+}
+
 .fsEnter {
   animation: fs-in 180ms ease-out both;
 }
@@ -79,8 +87,15 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .claudeMark {
@@ -90,6 +105,7 @@
 }
 
 .folder {
+  flex: none;
   max-width: 140px;
   overflow: hidden;
   font-size: 11px;
@@ -165,14 +181,33 @@
 .actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
+}
+
+.diffStat {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  align-items: center;
+  margin-right: 6px;
+  font-family: 'Hack', monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.diffAdd {
+  color: #5fb872;
+}
+
+.diffDel {
+  color: #e5534b;
 }
 
 .action {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: 4px 2px;
   border: none;
   color: var(--text-muted);
   cursor: pointer;
@@ -185,6 +220,71 @@
 
 .pinned {
   color: var(--accent, var(--text-1));
+}
+
+.actionDivider {
+  flex: none;
+  width: 1px;
+  height: 12px;
+  margin: 0 3px;
+  background: var(--border-2);
+}
+
+.runDot {
+  width: 8px;
+  height: 8px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #4cc38a;
+}
+
+.runDotErr {
+  background: #e5534b;
+}
+
+.stopIcon {
+  color: #e5534b;
+}
+
+.buildOk {
+  color: #4cc38a;
+}
+
+.buildFail {
+  color: #e5534b;
+}
+
+.runBtn svg,
+.runBtn .runDot {
+  transition: transform 80ms ease;
+}
+
+.runBtn:active svg,
+.runBtn:active .runDot {
+  transform: scale(0.75);
+}
+
+.runState {
+  flex: none;
+  margin-right: 6px;
+  font-family: 'Hack', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: #4cc38a;
+}
+
+.runStateErr {
+  color: #e5534b;
+}
+
+.linked {
+  cursor: grab;
+}
+
+.linked .rawGlyph {
+  color: var(--note-body, var(--surface-1));
+  border-color: var(--note-text, var(--accent));
+  background: var(--note-text, var(--accent));
 }
 
 .rawGlyph {
@@ -291,11 +391,6 @@
   &::placeholder {
     color: var(--text-dim);
   }
-}
-
-.termLayer {
-  position: absolute;
-  overflow: hidden;
 }
 
 .handles {

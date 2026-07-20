@@ -10,6 +10,11 @@ export interface PtyExitMessage {
   t: 'exit';
 }
 
+export interface PtyErrorMessage {
+  t: 'error';
+  msg: string;
+}
+
 export interface PtyCwdMessage {
   t: 'cwd';
   cwd: string;
@@ -32,6 +37,8 @@ export interface ClaudeState {
   thinking?: boolean;
   rateFiveHour?: number;
   rateSevenDay?: number;
+  linesAdded?: number;
+  linesRemoved?: number;
   reset?: boolean;
 }
 
@@ -78,6 +85,7 @@ export interface PtyProgressMessage {
 export type PtyServerMessage =
   | PtyReadyMessage
   | PtyExitMessage
+  | PtyErrorMessage
   | PtyCwdMessage
   | PtyClaudeMessage
   | PtyClipboardMessage

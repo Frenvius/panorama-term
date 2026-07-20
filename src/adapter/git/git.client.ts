@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type {
+  LogRow,
   FileDiff,
   CommitInfo,
   TrackCounts,
@@ -67,6 +68,11 @@ export const gitCommit = (path: string, files: string[], message: string, amend:
 
 export const gitLogMessages = (path: string, limit = 20): Promise<CommitMessageEntry[]> =>
   invoke<CommitMessageEntry[]>('git_log_messages', { path, limit });
+
+export const gitLogGraph = (path: string, limit = 200): Promise<LogRow[]> =>
+  invoke<LogRow[]>('git_log_graph', { path, limit });
+
+export const gitRemoteUrl = (path: string): Promise<string> => invoke<string>('git_remote_url', { path });
 
 export const gitUnpushedCommits = (path: string): Promise<CommitMessageEntry[]> =>
   invoke<CommitMessageEntry[]>('git_unpushed_commits', { path });

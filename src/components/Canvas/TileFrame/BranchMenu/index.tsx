@@ -2,7 +2,7 @@ import React from 'react';
 import { Star, Plus, Search, GitBranch, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot } from '~/domain/interfaces/git.interface';
+import type { BranchLeaf, BranchNode, LocalBranch, BranchAction, BranchSnapshot } from '~/domain/interfaces/git.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchDialog, { type DialogState } from '~/components/Canvas/TileFrame/BranchMenu/BranchDialog';
 import { buildTrees, filterTree } from '~/usecase/util/branchTree';
@@ -43,12 +43,24 @@ interface MenuState {
 
 const message = (err: unknown): string => (typeof err === 'string' ? err : String(err));
 
+const head = (snap: BranchSnapshot | null): LocalBranch | undefined => snap?.local.find((b) => b.is_current);
+
+const commits = (n: number): string => `${n} commit${n === 1 ? '' : 's'}`;
+
+const summarize = (kind: 'update' | 'push', before?: LocalBranch, after?: LocalBranch): string => {
+  const moved = kind === 'update' ? (before?.behind ?? 0) - (after?.behind ?? 0) : (before?.ahead ?? 0) - (after?.ahead ?? 0);
+  const target = after?.upstream ?? before?.upstream ?? 'remote';
+  if (moved <= 0) return 'Already up to date.';
+  return kind === 'update' ? `Pulled ${commits(moved)} from ${target}.` : `Pushed ${commits(moved)} to ${target}.`;
+};
+
 const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose, onSnapshot, onError }: BranchMenuProps) => {
   const [query, setQuery] = React.useState('');
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
   const [fetching, setFetching] = React.useState(false);
+  const [notice, setNotice] = React.useState<string | null>(null);
   const [pending, setPending] = React.useState<'update' | 'push' | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
 
@@ -98,8 +110,11 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   };
 
   const runPending = (kind: 'update' | 'push', task: Promise<BranchSnapshot>) => {
+    const before = head(snapshot);
     setPending(kind);
+    setNotice(null);
     void run(task)
+      .then((snap) => setNotice(summarize(kind, before, head(snap))))
       .catch(() => {})
       .finally(() => setPending(null));
   };
@@ -325,7 +340,25 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
         <div className={styles.search}>
           <Search size={12} strokeWidth={2} />
           <input value={query} onChange={onQuery} placeholder="Search branches" autoFocus />
-          <button className={styles.action} onClick={fetchAll} disabled={fetching} title="Fetch" aria-label="Fetch">
+          <button
+            className={styles.action}
+            onClick={updateProject}
+            disabled={pending !== null}
+            data-tooltip={pending === 'update' ? 'Pulling...' : 'Pull'}
+            aria-label="Pull"
+          >
+            <ArrowDownLeft size={12} strokeWidth={2} />
+          </button>
+          <button
+            className={styles.action}
+            onClick={pushCurrent}
+            disabled={pending !== null}
+            data-tooltip={pending === 'push' ? 'Pushing...' : 'Push'}
+            aria-label="Push"
+          >
+            <ArrowUpRight size={12} strokeWidth={2} />
+          </button>
+          <button className={styles.action} onClick={fetchAll} disabled={fetching} data-tooltip="Fetch" aria-label="Fetch">
             <RefreshCw size={12} strokeWidth={2} className={fetching ? styles.spinning : undefined} />
           </button>
         </div>
@@ -335,17 +368,8 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
           New branch...
         </button>
 
-        <button className={styles.new} onClick={updateProject} disabled={pending !== null}>
-          <ArrowDownLeft size={13} strokeWidth={2} />
-          {pending === 'update' ? 'Pulling...' : 'Pull...'}
-        </button>
-
-        <button className={styles.new} onClick={pushCurrent} disabled={pending !== null}>
-          <ArrowUpRight size={13} strokeWidth={2} />
-          {pending === 'push' ? 'Pushing...' : 'Push...'}
-        </button>
-
         {error && <div className={styles.error}>{error}</div>}
+        {!error && notice && <div className={styles.notice}>{notice}</div>}
 
         <div className={styles.body}>
           {loading && !snapshot ? (

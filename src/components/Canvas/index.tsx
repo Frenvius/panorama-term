@@ -8,12 +8,16 @@ import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.cli
 import Frame from '~/components/Canvas/Frame';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
+import Palette from '~/components/Canvas/Palette';
 import TileFrame from '~/components/Canvas/TileFrame';
 import Navigator from '~/components/Canvas/Navigator';
 import DiffViewer from '~/components/DiffViewer';
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
+import { writeNote } from '~/adapter/notes/notes.client';
+import { applyFrontTitle } from '~/usecase/util/noteMeta';
+import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { useNotifyBridge, type NotifyKind } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
@@ -24,6 +28,20 @@ import styles from './styles.module.scss';
 const FS_ANIM = 170;
 const DIFF_ANIM = 130;
 
+let pendingFocusTileId: string | null = null;
+
+const DBLCLICK_MS = 400;
+const ALERTS_KEY = 'panorama:alerts';
+
+const loadAlerts = (): Map<string, NotifyKind> => {
+  try {
+    const raw = localStorage.getItem(ALERTS_KEY);
+    return raw ? new Map(Object.entries(JSON.parse(raw) as Record<string, NotifyKind>)) : new Map();
+  } catch {
+    return new Map();
+  }
+};
+
 interface Menu {
   sx: number;
   sy: number;
@@ -32,7 +50,7 @@ interface Menu {
 }
 
 const Canvas = () => {
-  const { activeState, saveActiveState } = useWorkspace();
+  const { activeId, activeState, saveActiveState, tabs, activeTabId, moveTileToTab } = useWorkspace();
   const {
     view,
     tiles,
@@ -48,6 +66,7 @@ const Canvas = () => {
     noteRenderDefault,
     addTile,
     addCode,
+    addRunView,
     patchTile,
     addFrame,
     gridRef,
@@ -57,8 +76,13 @@ const Canvas = () => {
     onWheel,
     moveTile,
     snapTile,
+    linkNoteTo,
+    unlinkNoteFrom,
+    linkTermTo,
+    unlinkTermFrom,
     dragFrame,
     closeTile,
+    reopenTile,
     snapFrame,
     activeTile,
     resetZoom,
@@ -76,15 +100,37 @@ const Canvas = () => {
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown
-  } = useCanvas({ seed: activeState, onPersist: saveActiveState });
+  } = useCanvas({ seed: activeState, wsId: activeId, onPersist: saveActiveState });
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
-  const [alerts, setAlerts] = React.useState<Map<string, NotifyKind>>(() => new Map());
+  const [alerts, setAlerts] = React.useState<Map<string, NotifyKind>>(loadAlerts);
+  const [agents, setAgents] = React.useState<Map<string, 'idle' | 'busy'>>(new Map());
   const [noteEditors, setNoteEditors] = React.useState<Record<string, EditorView>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
-  const [navOpen, setNavOpen] = React.useState(false);
+  const [navOpen, setNavOpen] = React.useState(() => localStorage.getItem('panorama:navOpen') === '1');
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const paletteRef = React.useRef(paletteOpen);
+  paletteRef.current = paletteOpen;
+  React.useEffect(() => {
+    localStorage.setItem('panorama:navOpen', navOpen ? '1' : '0');
+  }, [navOpen]);
+
+  React.useEffect(() => {
+    if (pendingFocusTileId) {
+      const id = pendingFocusTileId;
+      const tile = tiles.find((t) => t.id === id);
+      if (tile) {
+        pendingFocusTileId = null;
+        setTimeout(() => {
+          activateTile(id);
+          focusTile(id, false);
+        }, 150);
+      }
+    }
+  }, [tiles, activeTabId, focusTile, activateTile]);
+
   const [diff, setDiff] = React.useState<{ root: string; file: string } | null>(null);
   const [diffFiles, setDiffFiles] = React.useState<string[]>([]);
   const [diffExit, setDiffExit] = React.useState(false);
@@ -95,6 +141,47 @@ const Canvas = () => {
   activeTileRef.current = activeTile;
   const fsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activated = React.useRef<Set<string>>(new Set());
+
+  const [linkDrag, setLinkDrag] = React.useState<{ srcId: string; x: number; y: number; over: string | null } | null>(null);
+  const viewR = React.useRef(view);
+  viewR.current = view;
+  const tilesR = React.useRef(tiles);
+  tilesR.current = tiles;
+  const dragId = linkDrag?.srcId ?? null;
+
+  const startLinkDrag = React.useCallback((srcId: string, e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setLinkDrag({ srcId, x: e.clientX, y: e.clientY, over: null });
+  }, []);
+
+  React.useEffect(() => {
+    if (!dragId) return;
+    const move = (e: PointerEvent) => {
+      const v = viewR.current;
+      const wx = (e.clientX - v.x) / v.k;
+      const wy = (e.clientY - v.y) / v.k;
+      const term = tilesR.current.find(
+        (t) => t.type === 'term' && t.id !== dragId && !t.runCwd && wx >= t.x && wx <= t.x + t.width && wy >= t.y && wy <= t.y + t.height
+      );
+      setLinkDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, over: term?.id ?? null } : d));
+    };
+    const up = () =>
+      setLinkDrag((d) => {
+        if (d?.over) {
+          const src = tilesR.current.find((t) => t.id === d.srcId);
+          if (src?.type === 'term') linkTermTo(d.srcId, d.over);
+          else linkNoteTo(d.srcId, d.over);
+        }
+        return null;
+      });
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [dragId, linkNoteTo, linkTermTo]);
 
   React.useEffect(() => {
     const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
@@ -150,6 +237,16 @@ const Canvas = () => {
         closeTile(id);
         return true;
       }
+      if (cmd === 'tile.reopen') {
+        reopenTile();
+        return true;
+      }
+      if (cmd === 'tile.focus') {
+        const id = activeTileRef.current;
+        if (!id) return false;
+        focusTile(id, true);
+        return true;
+      }
       if (cmd === 'view.resetZoom') {
         resetZoom();
         return true;
@@ -158,19 +255,51 @@ const Canvas = () => {
         setNavOpen((v) => !v);
         return true;
       }
+      if (cmd === 'view.palette') {
+        setPaletteOpen((v) => !v);
+        return true;
+      }
       return false;
     };
+    let armedAt = 0;
+    let cleanHold = false;
     const onKey = (e: KeyboardEvent) => {
       if (isCapturing()) return;
+      if (e.key === 'Shift') {
+        if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (getBinding('view.palette') !== 'shift shift') return;
+        if (performance.now() - armedAt < 350) {
+          armedAt = 0;
+          cleanHold = false;
+          setPaletteOpen((v) => !v);
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        cleanHold = true;
+        return;
+      }
+      armedAt = 0;
+      cleanHold = false;
       const cmd = matchCommand(e);
       if (!cmd) return;
+      if (paletteRef.current && cmd !== 'view.palette') return;
       if (!run(cmd)) return;
       e.preventDefault();
       e.stopPropagation();
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== 'Shift' || !cleanHold) return;
+      cleanHold = false;
+      armedAt = performance.now();
+    };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleFs, addTile, addNote, closeTile, resetZoom]);
+    window.addEventListener('keyup', onKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+    };
+  }, [toggleFs, addTile, addNote, closeTile, reopenTile, resetZoom, focusTile]);
 
   React.useEffect(() => {
     if (!fsId) return;
@@ -246,6 +375,22 @@ const Canvas = () => {
 
   const closeMenu = () => setMenu(null);
 
+  const preActive = React.useRef<string | null>(null);
+  const lastDownAt = React.useRef(0);
+
+  const onBgPointerDownCapture = (e: React.PointerEvent) => {
+    const now = e.timeStamp;
+    if (now - lastDownAt.current > DBLCLICK_MS) preActive.current = activeTile;
+    lastDownAt.current = now;
+  };
+
+  const onBgDoubleClick = (e: React.MouseEvent) => {
+    const el = (e.target as Element).closest('[data-tile]');
+    const id = el?.getAttribute('data-tile');
+    if (!id || id === preActive.current) return;
+    focusTile(id, true);
+  };
+
   const openMenu = (e: React.MouseEvent) => {
     if ((e.target as Element).closest('[data-tile]')) return;
     e.preventDefault();
@@ -265,7 +410,13 @@ const Canvas = () => {
 
   const setNoteContent = (id: string, content: string) => patchTile(id, { content });
   const setNoteColor = (id: string, color: string) => patchTile(id, { color });
-  const setNoteTitle = (id: string, title: string) => patchTile(id, { userTitle: title });
+  const setNoteTitle = (id: string, title: string) => {
+    const t = tiles.find((x) => x.id === id);
+    if (!t) return;
+    const next = applyFrontTitle(t.content || '', title);
+    patchTile(id, { content: next });
+    if (activeId) void writeNote(activeId, id, next).catch(() => {});
+  };
   const setTileTitle = (id: string, title: string) => patchTile(id, { userTitle: title || undefined });
   const togglePin = (id: string) => patchTile(id, { pinned: !tiles.find((t) => t.id === id)?.pinned });
   const toggleNoteRaw = (id: string) => {
@@ -329,6 +480,17 @@ const Canvas = () => {
     });
   }, []);
 
+  const setAgentState = React.useCallback((id: string, live: boolean, busy: boolean) => {
+    setAgents((prev) => {
+      const next = live ? (busy ? 'busy' : 'idle') : undefined;
+      if (prev.get(id) === next) return prev;
+      const m = new Map(prev);
+      if (next) m.set(id, next);
+      else m.delete(id);
+      return m;
+    });
+  }, []);
+
   const clearAlert = React.useCallback((id: string) => {
     setAlerts((prev) => {
       if (!prev.has(id)) return prev;
@@ -369,6 +531,16 @@ const Canvas = () => {
   const hideNav = () => setNavOpen(false);
   const showNav = () => setNavOpen(true);
 
+  const closePalette = React.useCallback(() => setPaletteOpen(false), []);
+
+  const paletteSelect = React.useCallback(
+    (id: string) => {
+      if (fsIdRef.current && fsIdRef.current !== id) exitFs();
+      navFocus(id, true);
+    },
+    [exitFs, navFocus]
+  );
+
   const openDiff = (root: string, file: string) => {
     clearTimeout(diffTimer.current);
     setDiffExit(false);
@@ -395,10 +567,19 @@ const Canvas = () => {
     setDiff({ root: diff.root, file: diffFiles[diffAt + step] });
   };
 
+  const moveTileToTabWrapper = React.useCallback(
+    (tileId: string, targetTabId: string) => {
+      pendingFocusTileId = tileId;
+      void moveTileToTab(tileId, { tiles, frames, view }, targetTabId);
+    },
+    [moveTileToTab, tiles, frames, view]
+  );
+
   useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert, onClear: clearAlert });
 
   React.useEffect(() => {
     void invoke('set_pending_count', { count: alerts.size }).catch(() => {});
+    localStorage.setItem(ALERTS_KEY, JSON.stringify(Object.fromEntries(alerts)));
   }, [alerts]);
 
   return (
@@ -409,11 +590,61 @@ const Canvas = () => {
         onWheel={onWheel}
         onPointerUp={endPan}
         onContextMenu={openMenu}
+        onDoubleClick={onBgDoubleClick}
         onPointerDown={onBgPointerDown}
         onPointerMove={onBgPointerMove}
         onPointerCancel={endPan}
+        onPointerDownCapture={onBgPointerDownCapture}
       >
         <canvas ref={gridRef} className={styles.grid} />
+        {!fsId && (
+          <svg className={styles.links} width={size.w} height={size.h}>
+            {tiles.map((t) => {
+              if ((t.type !== 'note' && t.type !== 'term') || !t.linkedTo?.length) return null;
+              const srcRect = { x: t.x * view.k + view.x, y: t.y * view.k + view.y, width: t.width * view.k, height: t.height * view.k };
+              return t.linkedTo.map((termId) => {
+                const term = tiles.find((x) => x.id === termId);
+                if (!term) return null;
+                const termRect = { x: term.x * view.k + view.x, y: term.y * view.k + view.y, width: term.width * view.k, height: term.height * view.k };
+                const d = flowPath(srcRect, termRect);
+                const removeLink = (e: React.PointerEvent) => {
+                  e.stopPropagation();
+                  if (t.type === 'term') unlinkTermFrom(t.id, termId);
+                  else unlinkNoteFrom(t.id, termId);
+                };
+                return (
+                  <g key={`${t.id}-${termId}`} className={styles.linkGroup} onPointerDown={removeLink}>
+                    <path d={d} className={styles.linkHit} />
+                    <path d={d} className={styles.linkLine} />
+                  </g>
+                );
+              });
+            })}
+            {linkDrag &&
+              (() => {
+                const src = tiles.find((x) => x.id === linkDrag.srcId);
+                if (!src) return null;
+                const srcRect = { x: src.x * view.k + view.x, y: src.y * view.k + view.y, width: src.width * view.k, height: src.height * view.k };
+                const d = flowPath(srcRect, { x: linkDrag.x, y: linkDrag.y, width: 0, height: 0 });
+                return <path d={d} className={styles.linkLine} />;
+              })()}
+            {linkDrag?.over &&
+              (() => {
+                const term = tiles.find((x) => x.id === linkDrag.over);
+                if (!term) return null;
+                return (
+                  <rect
+                    x={term.x * view.k + view.x}
+                    y={term.y * view.k + view.y}
+                    width={term.width * view.k}
+                    height={term.height * view.k}
+                    rx={10}
+                    className={styles.linkHover}
+                  />
+                );
+              })()}
+          </svg>
+        )}
         {!fsId &&
           frames.map((f) => (
             <Frame key={f.id} frame={f} view={view} onSnap={snapFrame} onResize={resizeFrame} />
@@ -422,11 +653,31 @@ const Canvas = () => {
           const vis = isVisible(t);
           if (vis && (t.width - TILE_GAP) * view.k >= MIN_LIVE_WIDTH) activated.current.add(t.id);
           const live = activated.current.has(t.id);
+          const linkedIds =
+            t.type === 'note'
+              ? t.linkedTo ?? []
+              : t.type === 'term' && !t.runCwd
+                ? [...new Set([...(t.linkedTo ?? []), ...tiles.filter((x) => x.type === 'term' && (x.linkedTo ?? []).includes(t.id)).map((x) => x.id)])]
+                : [];
+          const linkActive = t.type === 'note' && linkedIds.some((id) => id === activeTile || selected.has(id));
+          const cand = t.type === 'note' ? adjacentTerm(t, tiles) : null;
+          const linkCand = cand && !linkedIds.includes(cand.id) ? cand : null;
+          const linkedTerms = linkedIds
+            .map((id) => tiles.find((x) => x.id === id))
+            .filter((x): x is typeof tiles[number] => Boolean(x))
+            .map((term) => ({ id: term.id, name: termName(term) }));
           return (
             <TileFrame
               key={t.id}
               tile={t}
               view={view}
+              wsId={activeId}
+              linkActive={linkActive}
+              linkTarget={linkCand ? { id: linkCand.id, name: termName(linkCand) } : null}
+              linkedTerms={linkedTerms}
+              onLink={linkNoteTo}
+              onUnlink={t.type === 'term' ? unlinkTermFrom : unlinkNoteFrom}
+              onLinkDragStart={startLinkDrag}
               onMove={moveTile}
               onSnap={snapTile}
               onClose={closeTile}
@@ -435,6 +686,7 @@ const Canvas = () => {
               onFocusTile={focusTile}
               onToggleFullscreen={toggleFs}
               onCwd={setTileCwd}
+              onAgentState={setAgentState}
               onOscTitle={setTileOscTitle}
               onNoteChange={setNoteContent}
               onNoteEditor={registerEditor}
@@ -449,6 +701,10 @@ const Canvas = () => {
               onDuplicate={duplicateTile}
               onTogglePin={togglePin}
               onToggleSelect={toggleSelect}
+              onOpenRunOutput={addRunView}
+              onMoveToTab={moveTileToTabWrapper}
+              tabs={tabs}
+              activeTabId={activeTabId}
               active={t.id === activeTile}
               selected={selected.has(t.id)}
               alert={alerts.get(t.id) ?? null}
@@ -490,11 +746,13 @@ const Canvas = () => {
         </div>
         {!fsId && <Minimap view={view} tiles={tiles} viewportRef={bgRef} onPan={panTo} />}
       </div>
+      {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
       {!fsId && navOpen && (
         <Navigator
           tiles={tiles}
           frames={frames}
           alerts={alerts}
+          agents={agents}
           activeTile={activeTile}
           onNewTile={addTile}
           onFocusTile={navFocus}

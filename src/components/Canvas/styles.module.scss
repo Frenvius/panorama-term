@@ -29,6 +29,47 @@
   height: 100%;
 }
 
+.links {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.linkGroup {
+  cursor: pointer;
+
+  &:hover .linkLine {
+    stroke-width: 2.5;
+    stroke-dasharray: none;
+    opacity: 1;
+    stroke: var(--danger, #e5484d);
+  }
+}
+
+.linkHit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+}
+
+.linkLine {
+  fill: none;
+  stroke: var(--accent, #6b8afd);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.linkHover {
+  fill: none;
+  stroke: var(--accent, #6b8afd);
+  stroke-width: 2;
+  opacity: 0.8;
+}
+
 .backdrop {
   position: absolute;
   inset: 0;

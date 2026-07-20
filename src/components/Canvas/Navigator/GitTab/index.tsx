@@ -23,6 +23,7 @@ import type { FileChange, StatusSnapshot, CommitMessageEntry } from '~/domain/in
 import Dialog from '~/components/commons/Dialog';
 import FileIcon from '~/components/commons/FileIcon';
 import ContextMenu from '~/components/commons/ContextMenu';
+import Log from '~/components/Canvas/Navigator/GitTab/History';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import {
@@ -46,6 +47,15 @@ interface GitTabProps {
 }
 
 const stopClick = (e: React.MouseEvent) => e.stopPropagation();
+
+const VIEW_KEY = 'panorama:gitView';
+const VIEWS = ['changes', 'history'] as const;
+type View = (typeof VIEWS)[number];
+
+const savedView = (): View => {
+  const raw = localStorage.getItem(VIEW_KEY);
+  return VIEWS.includes(raw as View) ? (raw as View) : 'changes';
+};
 
 const STATUS_COLOR: Record<string, string> = {
   modified: '#6897bb',
@@ -133,6 +143,7 @@ const TriCheckbox = ({ state, onChange }: TriCheckboxProps) => {
 
 const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const listRef = React.useRef<HTMLDivElement>(null);
+  const [view, setView] = React.useState<View>(savedView);
   const [status, setStatus] = React.useState<StatusSnapshot | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(() => new Set());
   const [msg, setMsg] = React.useState('');
@@ -155,6 +166,10 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
   const commitRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    localStorage.setItem(VIEW_KEY, view);
+  }, [view]);
 
   React.useEffect(() => {
     if (!history && !amendMenu) return;
@@ -213,10 +228,10 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
 
   React.useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!busy && !pushing) fetchStatus(true);
+      if (!busy && !pushing && view === 'changes') fetchStatus(true);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [fetchStatus, busy, pushing]);
+  }, [fetchStatus, busy, pushing, view]);
 
   const needle = query.trim().toLowerCase();
   const matches = (file: FileChange): boolean => !needle || file.path.toLowerCase().includes(needle);
@@ -602,127 +617,143 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const blocked = Boolean(error && !status);
   const friendly = error && error.includes('not a git repository') ? 'Not a git repository' : error;
 
+  const showChanges = () => setView('changes');
+  const showHistory = () => setView('history');
+
   return (
     <div className={styles.root}>
-      <div className={styles.toolbar}>
-        <button className={styles.tool} onClick={load} disabled={refreshing} title="Refresh" aria-label="Refresh">
-          <RefreshCw size={12} strokeWidth={2} className={refreshing ? styles.spinning : undefined} />
+      <div className={styles.views}>
+        <button className={styles.view} onClick={showChanges} data-active={view === 'changes' || undefined}>
+          Changes
         </button>
-        <button className={styles.tool} onClick={openViewMenu} disabled={blocked} title="Group by" aria-label="Group by">
-          <Eye size={12} strokeWidth={2} />
-        </button>
-        <button className={styles.tool} onClick={expandAll} disabled={blocked} title="Expand all" aria-label="Expand all">
-          <ListTree size={12} strokeWidth={2} />
-        </button>
-        <button
-          className={styles.tool}
-          onClick={collapseAll}
-          disabled={blocked}
-          title="Collapse all"
-          aria-label="Collapse all"
-        >
-          <ListCollapse size={12} strokeWidth={2} />
+        <button className={styles.view} onClick={showHistory} data-active={view === 'history' || undefined}>
+          History
         </button>
       </div>
 
-      <div ref={listRef} className={styles.list} tabIndex={-1} onKeyDown={onArrows}>
-        {!status && !error && (
-          <div className={styles.notice}>
-            <LoaderCircle size={16} strokeWidth={2} className={styles.spinning} />
-          </div>
-        )}
-        {blocked && <div className={styles.notice}>{friendly}</div>}
-        {clean && (
-          <div className={styles.notice}>
-            <CircleCheck size={16} strokeWidth={1.75} />
-            Working tree clean
-          </div>
-        )}
-        {status && section('changes', 'Changes', status.changes)}
-        {status && section('unversioned', 'Unversioned', status.unversioned)}
-      </div>
+      {view === 'history' && <Log root={root} />}
 
-      <div className={styles.commit} ref={commitRef}>
-        <div className={styles.commitBar}>
-          <label className={styles.amend}>
-            <input type="checkbox" checked={amend} onChange={toggleAmend} disabled={blocked} />
-            Amend
-          </label>
-          <button className={styles.amendPick} onClick={openAmendMenu} disabled={blocked}>
-            last commit
-            <ChevronDown size={11} strokeWidth={2} />
+      <div className={styles.pane} style={{ display: view === 'changes' ? undefined : 'none' }}>
+        <div className={styles.toolbar}>
+          <button className={styles.tool} onClick={load} disabled={refreshing} title="Refresh" aria-label="Refresh">
+            <RefreshCw size={12} strokeWidth={2} className={refreshing ? styles.spinning : undefined} />
           </button>
-          <span className={styles.spacer} />
+          <button className={styles.tool} onClick={openViewMenu} disabled={blocked} title="Group by" aria-label="Group by">
+            <Eye size={12} strokeWidth={2} />
+          </button>
+          <button className={styles.tool} onClick={expandAll} disabled={blocked} title="Expand all" aria-label="Expand all">
+            <ListTree size={12} strokeWidth={2} />
+          </button>
           <button
             className={styles.tool}
-            onClick={openHistory}
+            onClick={collapseAll}
             disabled={blocked}
-            title="Recent messages"
-            aria-label="Recent messages"
+            title="Collapse all"
+            aria-label="Collapse all"
           >
-            <History size={12} strokeWidth={2} />
+            <ListCollapse size={12} strokeWidth={2} />
           </button>
         </div>
 
-        {amendMenu && (
-          <div className={styles.history}>
-            {amendMenu.length === 0 && <div className={styles.hint}>No commits</div>}
-            {amendMenu.map((entry) => {
-              const pick = () => pickAmend(entry);
-              return (
-                <button key={entry.short} className={styles.historyRow} onClick={pick}>
-                  <span className={styles.historySubject}>{entry.subject}</span>
-                  <span className={styles.historyMeta}>
-                    {entry.short} - {entry.date}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {history && (
-          <div className={styles.history}>
-            {history.length === 0 && <div className={styles.hint}>No commits yet</div>}
-            {history.map((entry) => {
-              const pick = () => pickHistory(entry);
-              return (
-                <button key={entry.short} className={styles.historyRow} onClick={pick}>
-                  <span className={styles.historySubject}>{entry.subject}</span>
-                  <span className={styles.historyMeta}>
-                    {entry.short} - {entry.date}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        <textarea
-          className={styles.message}
-          value={msg}
-          onChange={onMsg}
-          disabled={blocked}
-          placeholder="Commit message"
-          spellCheck={false}
-        />
-
-        {error && !blocked && <div className={styles.error}>{error}</div>}
-
-        <div className={styles.buttons}>
-          <button className={styles.primary} onClick={doCommit} disabled={!canCommit} data-amend={amend || undefined}>
-            {busy ? 'Working...' : amend ? 'Amend Commit' : 'Commit'}
-          </button>
-          {clean && unpushed > 0 ? (
-            <button className={styles.secondary} onClick={push} disabled={pushing}>
-              <ArrowUp size={12} strokeWidth={2} />
-              {pushing ? 'Pushing...' : `Push ${unpushed} ${unpushed === 1 ? 'commit' : 'commits'}`}
-            </button>
-          ) : (
-            <button className={styles.secondary} onClick={doCommitPush} disabled={!canCommit}>
-              {amend ? 'Amend Commit and Push...' : 'Commit and Push...'}
-            </button>
+        <div ref={listRef} className={styles.list} tabIndex={-1} onKeyDown={onArrows}>
+          {!status && !error && (
+            <div className={styles.notice}>
+              <LoaderCircle size={16} strokeWidth={2} className={styles.spinning} />
+            </div>
           )}
+          {blocked && <div className={styles.notice}>{friendly}</div>}
+          {clean && (
+            <div className={styles.notice}>
+              <CircleCheck size={16} strokeWidth={1.75} />
+              Working tree clean
+            </div>
+          )}
+          {status && section('changes', 'Changes', status.changes)}
+          {status && section('unversioned', 'Unversioned', status.unversioned)}
+        </div>
+
+        <div className={styles.commit} ref={commitRef}>
+          <div className={styles.commitBar}>
+            <label className={styles.amend}>
+              <input type="checkbox" checked={amend} onChange={toggleAmend} disabled={blocked} />
+              Amend
+            </label>
+            <button className={styles.amendPick} onClick={openAmendMenu} disabled={blocked}>
+              last commit
+              <ChevronDown size={11} strokeWidth={2} />
+            </button>
+            <span className={styles.spacer} />
+            <button
+              className={styles.tool}
+              onClick={openHistory}
+              disabled={blocked}
+              title="Recent messages"
+              aria-label="Recent messages"
+            >
+              <History size={12} strokeWidth={2} />
+            </button>
+          </div>
+
+          {amendMenu && (
+            <div className={styles.history}>
+              {amendMenu.length === 0 && <div className={styles.hint}>No commits</div>}
+              {amendMenu.map((entry) => {
+                const pick = () => pickAmend(entry);
+                return (
+                  <button key={entry.short} className={styles.historyRow} onClick={pick}>
+                    <span className={styles.historySubject}>{entry.subject}</span>
+                    <span className={styles.historyMeta}>
+                      {entry.short} - {entry.date}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {history && (
+            <div className={styles.history}>
+              {history.length === 0 && <div className={styles.hint}>No commits yet</div>}
+              {history.map((entry) => {
+                const pick = () => pickHistory(entry);
+                return (
+                  <button key={entry.short} className={styles.historyRow} onClick={pick}>
+                    <span className={styles.historySubject}>{entry.subject}</span>
+                    <span className={styles.historyMeta}>
+                      {entry.short} - {entry.date}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <textarea
+            className={styles.message}
+            value={msg}
+            onChange={onMsg}
+            disabled={blocked}
+            placeholder="Commit message"
+            spellCheck={false}
+          />
+
+          {error && !blocked && <div className={styles.error}>{error}</div>}
+
+          <div className={styles.buttons}>
+            <button className={styles.primary} onClick={doCommit} disabled={!canCommit} data-amend={amend || undefined}>
+              {busy ? 'Working...' : amend ? 'Amend Commit' : 'Commit'}
+            </button>
+            {clean && unpushed > 0 ? (
+              <button className={styles.secondary} onClick={push} disabled={pushing}>
+                <ArrowUp size={12} strokeWidth={2} />
+                {pushing ? 'Pushing...' : `Push ${unpushed} ${unpushed === 1 ? 'commit' : 'commits'}`}
+              </button>
+            ) : (
+              <button className={styles.secondary} onClick={doCommitPush} disabled={!canCommit}>
+                {amend ? 'Amend Commit and Push...' : 'Commit and Push...'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

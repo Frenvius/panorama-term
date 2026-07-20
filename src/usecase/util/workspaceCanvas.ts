@@ -20,7 +20,12 @@ const viewportFromView = (view: View): Viewport => {
   return { zoom: view.k, centerX: (w / 2 - view.x) / view.k, centerY: (h / 2 - view.y) / view.k };
 };
 
-const migrateTile = (tile: Tile): Tile => (tile.type === 'note' && isLegacyHtml(tile.content) ? { ...tile, content: htmlToMarkdown(tile.content!) } : tile);
+const migrateTile = (tile: Tile): Tile => {
+  let t = tile;
+  if (t.type === 'note' && isLegacyHtml(t.content)) t = { ...t, content: htmlToMarkdown(t.content!) };
+  if (typeof (t.linkedTo as unknown) === 'string') t = { ...t, linkedTo: [t.linkedTo as unknown as string] };
+  return t;
+};
 
 export const toRuntime = (state: CanvasState): RuntimeCanvas => ({
   tiles: (state.tiles ?? []).map(migrateTile),
@@ -30,7 +35,7 @@ export const toRuntime = (state: CanvasState): RuntimeCanvas => ({
 
 export const toStored = (canvas: RuntimeCanvas): CanvasState => ({
   version: 1,
-  tiles: canvas.tiles,
+  tiles: canvas.tiles.filter((t) => !t.runCwd),
   frames: canvas.frames,
   viewport: viewportFromView(canvas.view)
 });

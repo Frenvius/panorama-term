@@ -32,12 +32,13 @@ $accent: #d97757;
 
 .bar {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 4px;
+  right: 4px;
   bottom: 4px;
   z-index: 5;
   pointer-events: auto;
   display: flex;
+  cursor: default;
   flex-direction: column;
   gap: 2px;
   padding: 6px 8px 5px;
@@ -75,7 +76,9 @@ $accent: #d97757;
   max-height: 40vh;
   padding: 0;
   color: var(--text-1);
-  font-family: inherit;
+  cursor: text;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'calt' 1;
   font-size: 13px;
   line-height: 1.4;
   word-break: break-word;
