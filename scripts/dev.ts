@@ -11,17 +11,12 @@ if (build.status !== 0 || !existsSync(bin)) {
   process.exit(1);
 }
 
-const sidecar = spawn(bin, [], { stdio: 'ignore' });
 const vite = spawn('bunx', ['vite'], { stdio: 'inherit', shell: isWin });
 
 const shutdown = () => {
-  sidecar.kill();
   vite.kill();
   process.exit();
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-vite.on('exit', (code) => {
-  sidecar.kill();
-  process.exit(code ?? 0);
-});
+vite.on('exit', (code) => process.exit(code ?? 0));

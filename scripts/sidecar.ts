@@ -7,9 +7,17 @@ const profile = release ? 'release' : 'debug';
 const ext = process.platform === 'win32' ? '.exe' : '';
 
 const win = process.platform === 'win32';
-for (const name of ['panorama-host', 'panorama-brain', 'sidecar']) {
+const kill = (name: string) => {
   if (win) spawnSync('taskkill', ['/IM', `${name}.exe`, '/F'], { stdio: 'ignore' });
   else spawnSync('pkill', ['-x', name], { stdio: 'ignore' });
+};
+
+if (release) {
+  kill('panorama-host');
+  kill('panorama-brain');
+  kill('sidecar');
+} else {
+  kill('sidecar');
 }
 
 const args = ['build', '--manifest-path', 'sidecar-rs/Cargo.toml'];
@@ -17,6 +25,8 @@ if (release) args.push('--release');
 
 const build = spawnSync('cargo', args, { stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
+
+if (!release) kill('panorama-brain');
 
 const info = spawnSync('rustc', ['-vV'], { encoding: 'utf8' }).stdout ?? '';
 const triple = info.match(/host:\s*(\S+)/)?.[1];
