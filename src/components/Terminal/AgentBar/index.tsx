@@ -41,7 +41,7 @@ const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const progressColor = (p: number): string =>
-  p >= 75 ? '#ef4444' : p >= 60 ? '#f97316' : p >= 30 ? '#eab308' : '#22c55e';
+  p > 30 ? '#ef4444' : p >= 20 ? '#f97316' : p >= 15 ? '#eab308' : '#22c55e';
 
 const formatCost = (v: number): string => {
   if (v > 0 && v < 0.01) return '<$0.01';
