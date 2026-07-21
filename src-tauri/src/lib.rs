@@ -404,7 +404,12 @@ fn run_watch_manifests(app: tauri::AppHandle, path: String) -> Result<u32, Strin
         }
         let relevant = event.paths.iter().any(|p| {
             p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                n == "package.json" || n == "Cargo.toml" || n.ends_with(".sln") || n.ends_with(".csproj")
+                n == "package.json"
+                    || n == "Cargo.toml"
+                    || n.eq_ignore_ascii_case("Taskfile.yml")
+                    || n.eq_ignore_ascii_case("Taskfile.yaml")
+                    || n.ends_with(".sln")
+                    || n.ends_with(".csproj")
             })
         });
         if relevant {
@@ -442,8 +447,45 @@ fn run_commands(path: String) -> Vec<String> {
         out.push("cargo run".into());
         out.push("cargo build".into());
     }
+    task_commands(dir, &mut out);
     dotnet_commands(dir, &mut out);
     out
+}
+
+fn task_commands(dir: &std::path::Path, out: &mut Vec<String>) {
+    let file = ["Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.exists());
+    let Some(path) = file else { return };
+    let Ok(raw) = std::fs::read_to_string(path) else { return };
+    let mut lines = raw.lines();
+    for line in lines.by_ref() {
+        if line.starts_with("tasks:") {
+            break;
+        }
+    }
+    let mut indent: Option<usize> = None;
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let lead = line.len() - trimmed.len();
+        if lead == 0 {
+            break;
+        }
+        let depth = *indent.get_or_insert(lead);
+        if lead != depth {
+            continue;
+        }
+        if let Some(name) = trimmed.strip_suffix(':').or_else(|| trimmed.split_once(':').map(|(k, _)| k)) {
+            let name = name.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !name.is_empty() {
+                out.push(format!("task {name}"));
+            }
+        }
+    }
 }
 
 fn xml_tag(src: &str, tag: &str) -> Option<String> {
