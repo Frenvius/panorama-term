@@ -364,7 +364,7 @@ fn port() -> u16 {
 }
 
 #[cfg(windows)]
-fn daemonize() {
+fn respawn_detached(extra: &[&str]) {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -376,7 +376,7 @@ fn daemonize() {
     let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
     for flags in [base | CREATE_BREAKAWAY_FROM_JOB, base] {
         let spawned = Command::new(&exe)
-            .arg(DAEMON_ARG)
+            .args(extra)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -3487,6 +3487,10 @@ async fn handle_conn(mut stream: TcpStream) {
 #[tokio::main]
 async fn main() {
     if std::env::args().nth(1).as_deref() == Some("host") {
+        #[cfg(windows)]
+        if std::env::args().nth(2).as_deref() != Some(DAEMON_ARG) {
+            respawn_detached(&["host", DAEMON_ARG]);
+        }
         supervise_brain();
         host::run_host_server(host_port());
         return;
@@ -3506,7 +3510,7 @@ async fn main() {
     }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
-        daemonize();
+        respawn_detached(&[DAEMON_ARG]);
     }
     if let Some(path) = fresh_path() {
         std::env::set_var("PATH", path);
