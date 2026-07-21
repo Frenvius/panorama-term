@@ -220,9 +220,17 @@ fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
 #[tauri::command]
 fn focus_main(app: tauri::AppHandle) -> Result<(), String> {
     let win = app.get_webview_window("main").ok_or("no main window")?;
-    let _ = win.unminimize();
+    if win.is_minimized().unwrap_or(false) {
+        let _ = win.unminimize();
+    }
     win.show().map_err(|e| e.to_string())?;
-    win.set_focus().map_err(|e| e.to_string())
+    let _ = win.set_always_on_top(true);
+    let _ = win.set_focus();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        let _ = win.set_always_on_top(false);
+    });
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
