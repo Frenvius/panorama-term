@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy, RefreshCw, TextCursor, ExternalLink, LoaderCircle } from 'lucide-react';
+import { Copy, Search, RefreshCw, TextCursor, ExternalLink, LoaderCircle } from 'lucide-react';
 
 import type { LogRow } from '~/domain/interfaces/git.interface';
 import type { GraphRow, GraphEdge } from '~/usecase/util/commitGraph';
@@ -29,6 +29,9 @@ const author = (row: LogRow): string => (row.committer === row.author ? row.auth
 const subject = (row: LogRow): string => row.message.split('\n', 1)[0];
 
 const refsLabel = (refs: string): string => refs.replace(/^HEAD -> /, '');
+
+const matchRow = (row: LogRow, needle: string): boolean =>
+  `${row.message} ${row.author} ${row.committer} ${row.short} ${row.refs} ${row.date}`.toLowerCase().includes(needle);
 
 const sameLog = (prev: LogRow[], next: LogRow[]): boolean =>
   prev.length === next.length && prev.every((row, at) => row.short === next[at].short && row.refs === next[at].refs);
@@ -103,6 +106,7 @@ const History = ({ root }: HistoryProps) => {
   const [remote, setRemote] = React.useState<string | null>(null);
   const [local, setLocal] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<{ x: number; y: number; row: LogRow } | null>(null);
+  const [filter, setFilter] = React.useState('');
 
   const fetchLog = React.useCallback(
     (quiet: boolean) => {
@@ -151,6 +155,17 @@ const History = ({ root }: HistoryProps) => {
   const graph = React.useMemo(() => (rows ? buildCommitGraph(rows) : []), [rows]);
 
   const headAt = React.useMemo(() => (rows ? rows.findIndex((row) => /(^|, )HEAD( ->|,|$)/.test(row.refs)) : -1), [rows]);
+
+  const needle = filter.trim().toLowerCase();
+
+  const shown = React.useMemo(() => {
+    if (!rows) return [];
+    const all = rows.map((row, at) => ({ row, at }));
+    if (!needle) return all;
+    return all.filter(({ row }) => matchRow(row, needle));
+  }, [rows, needle]);
+
+  const onFilter = (e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value);
 
   const more = () => setLimit((prev) => prev + PAGE);
 
@@ -202,29 +217,35 @@ const History = ({ root }: HistoryProps) => {
         <button className={styles.tool} onClick={load} disabled={busy} title="Refresh" aria-label="Refresh">
           <RefreshCw size={12} strokeWidth={2} className={busy ? styles.spinning : undefined} />
         </button>
-        <span className={styles.count}>{rows.length === 1 ? '1 commit' : `${rows.length} commits`}</span>
+        <div className={styles.filter}>
+          <Search size={12} strokeWidth={2} />
+          <input value={filter} onChange={onFilter} placeholder="Filter" spellCheck={false} />
+        </div>
+        <span className={styles.count}>{shown.length === 1 ? '1 commit' : `${shown.length} commits`}</span>
       </div>
 
       <div ref={listRef} className={styles.list}>
-        {rows.map((row, at) => {
+        {shown.map(({ row, at }) => {
           const menuAt = (e: React.MouseEvent) => openMenu(e, row);
           return (
             <div
               key={row.short}
               className={styles.row}
-              style={{ height }}
+              style={{ height, paddingLeft: needle ? 8 : undefined }}
               onContextMenu={menuAt}
               data-wide={wide || undefined}
               data-merge={row.parents.length > 1 || undefined}
               data-head={at === headAt || undefined}
             >
-              <LaneCell
-                row={graph[at]}
-                height={height}
-                head={at === headAt}
-                local={local.has(row.short)}
-                childLocal={at > 0 && local.has(rows[at - 1].short)}
-              />
+              {!needle && (
+                <LaneCell
+                  row={graph[at]}
+                  height={height}
+                  head={at === headAt}
+                  local={local.has(row.short)}
+                  childLocal={at > 0 && local.has(rows[at - 1].short)}
+                />
+              )}
               <div className={styles.body}>
                 <span className={styles.subject} title={row.message}>
                   {subject(row)}
@@ -244,6 +265,7 @@ const History = ({ root }: HistoryProps) => {
             </div>
           );
         })}
+        {shown.length === 0 && <div className={styles.notice}>No matching commits</div>}
         {rows.length >= limit && (
           <button className={styles.more} onClick={more} disabled={busy}>
             Load more
