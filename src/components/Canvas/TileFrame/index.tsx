@@ -1,9 +1,10 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, Play, Minus, Check, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
+import { X, Pin, Play, Code2, Minus, Check, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { TabMeta } from '~/domain/interfaces/workspace.interface';
+import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import NoteTile from '~/components/Canvas/NoteTile';
@@ -18,6 +19,7 @@ import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { useRun } from '~/usecase/hooks/useRun';
 import { stopRun } from '~/adapter/run/run.client';
+import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client';
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { useAheadBehind } from '~/usecase/hooks/useAheadBehind';
@@ -309,6 +311,8 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
 
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [menuInContent, setMenuInContent] = React.useState(false);
+  const [ides, setIdes] = React.useState<IdeInfo[]>(cachedIdes);
+  const [idesLoading, setIdesLoading] = React.useState(false);
   const [renaming, setRenaming] = React.useState(false);
   const [draft, setDraft] = React.useState('');
   const renameRef = React.useRef<HTMLInputElement>(null);
@@ -321,6 +325,14 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     onActivate(tile.id);
     setMenuInContent(inContent);
     setMenu({ x: e.clientX, y: e.clientY });
+    const cwd = tile.cwd;
+    if (tile.type === 'term' && cwd) {
+      if (!ides.length) setIdesLoading(true);
+      void detectIdes(cwd).then((list) => {
+        setIdes(list);
+        setIdesLoading(false);
+      });
+    }
   };
 
   const startRename = () => {
@@ -396,6 +408,22 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     onSelect: closeTile
   };
 
+  const ideCwd = tile.cwd;
+  const ideItem: ContextMenuEntry = !ideCwd
+    ? { label: 'Open in IDE', icon: <Code2 size={15} strokeWidth={1.75} />, disabled: true }
+    : idesLoading && !ides.length
+    ? { label: 'Detecting IDEs...', icon: <Loader2 size={15} strokeWidth={1.75} className={styles.spin} />, disabled: true }
+    : !ides.length
+    ? { label: 'No IDEs found', icon: <Code2 size={15} strokeWidth={1.75} />, disabled: true }
+    : {
+        label: 'Open in IDE',
+        icon: <Code2 size={15} strokeWidth={1.75} />,
+        submenu: ides.map((ide) => ({
+          label: ide.recommended ? `${ide.label}  (recommended)` : ide.label,
+          onSelect: () => openInIde(ideCwd, ide.command, ide.family)
+        }))
+      };
+
   const noteContentItems: ContextMenuEntry[] = menuInContent
     ? [
         { label: 'Copy', icon: <Copy size={15} strokeWidth={1.75} />, onSelect: copyNoteSelection },
@@ -470,6 +498,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         'separator',
         { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: reveal, disabled: !tile.cwd },
         { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyPath, disabled: !tile.cwd },
+        ideItem,
         'separator',
         { label: 'Restart terminal', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: restartTile },
         {

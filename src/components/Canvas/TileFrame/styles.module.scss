@@ -184,6 +184,16 @@
   gap: 0;
 }
 
+.spin {
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .diffStat {
   display: flex;
   flex: none;

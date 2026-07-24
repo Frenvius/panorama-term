@@ -10,6 +10,7 @@ mod store;
 mod docker;
 mod notes;
 mod claude;
+mod ide;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
@@ -660,7 +661,9 @@ pub fn run() {
             notes::read_note,
             notes::write_note,
             notes::delete_note,
-            claude::claude_session_summary
+            claude::claude_session_summary,
+            ide::detect_ides,
+            ide::open_in_ide
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
