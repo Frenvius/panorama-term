@@ -1687,6 +1687,9 @@ fn emit_event(event: &str) {
     }
 
     let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    if event == "compact" && field("source") != "compact" {
+        return;
+    }
     let cwd = field("cwd");
     let project = Path::new(&cwd)
         .file_name()
@@ -1929,6 +1932,7 @@ fn install_claude_hook() {
     let exe = exe.display();
     let entries: &[(&str, Option<&str>, String, &str)] = &[
         ("SessionStart", None, format!("\"{exe}\" record-agent"), "record-agent"),
+        ("SessionStart", Some("compact"), format!("\"{exe}\" emit-event compact"), "emit-event"),
         ("Stop", None, format!("\"{exe}\" emit-event stop"), "emit-event"),
         ("PermissionRequest", None, format!("\"{exe}\" emit-event permission"), "emit-event"),
         ("Notification", Some("idle_prompt"), format!("\"{exe}\" emit-event notification"), "emit-event"),

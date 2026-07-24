@@ -428,6 +428,9 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             } else if (evt.event === 'notification') {
               if (Date.now() - lastNotifyRef.current < NOTIFY_IDLE_GRACE_MS) return;
               if (!document.hasFocus()) notifyClaude(tileId, 'idle', evt.message || undefined);
+            } else if (evt.event === 'compact') {
+              lastNotifyRef.current = Date.now();
+              notifyClaude(tileId, 'generic', undefined, 'Context compacted');
             }
           },
           onReady: (info) => {
