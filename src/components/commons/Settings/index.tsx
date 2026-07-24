@@ -1,10 +1,11 @@
 import React from 'react';
-import { X, Palette, Keyboard, RotateCcw, SquareTerminal } from 'lucide-react';
+import { X, Check, Palette, Keyboard, RotateCcw, SquareTerminal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
+import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
 import {
   KEYBINDINGS,
   getBinding,
@@ -28,6 +29,13 @@ interface ShortcutRowProps {
   defaultCombo: string;
 }
 
+interface ToggleOptionProps {
+  label: string;
+  checked: boolean;
+  description: string;
+  onToggle: () => void;
+}
+
 interface RadioOptionProps {
   label: string;
   selected: boolean;
@@ -42,6 +50,20 @@ const RadioOption = ({ label, description, selected, onSelect }: RadioOptionProp
     className={`${styles.option} ${selected ? styles.selected : ''}`}
   >
     <span className={styles.radio}>{selected && <span className={styles.dot} />}</span>
+    <span className={styles.optionText}>
+      <span className={styles.optionLabel}>{label}</span>
+      <span className={styles.optionDesc}>{description}</span>
+    </span>
+  </button>
+);
+
+const ToggleOption = ({ label, description, checked, onToggle }: ToggleOptionProps) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    className={`${styles.option} ${checked ? styles.selected : ''}`}
+  >
+    <span className={styles.check}>{checked && <Check size={11} strokeWidth={3} />}</span>
     <span className={styles.optionText}>
       <span className={styles.optionLabel}>{label}</span>
       <span className={styles.optionDesc}>{description}</span>
@@ -118,6 +140,7 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
+  const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -135,6 +158,11 @@ const Settings = ({ onClose }: SettingsProps) => {
   const selectTheme = (pref: ThemePref) => {
     setTheme(pref);
     setThemePref(pref);
+  };
+
+  const toggleHeaderPart = (id: HeaderPart) => {
+    setHeaderPart(id, !headerParts[id]);
+    setHeaderParts(getHeaderParts());
   };
 
   const changeMaxZoom = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -257,6 +285,20 @@ const Settings = ({ onClose }: SettingsProps) => {
                   />
                 </div>
                 <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Tile header</p>
+                <div className={styles.options}>
+                  {HEADER_PART_OPTIONS.map(({ id, label, description }) => (
+                    <ToggleOption
+                      key={id}
+                      label={label}
+                      description={description}
+                      checked={headerParts[id]}
+                      onToggle={() => toggleHeaderPart(id)}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           )}

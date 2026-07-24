@@ -23,6 +23,7 @@ import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client'
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { useAheadBehind } from '~/usecase/hooks/useAheadBehind';
+import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
 import { getBinding, formatCombo } from '~/usecase/util/keybindings';
@@ -86,6 +87,7 @@ const DRAG_THRESHOLD = 4;
 
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
+  const parts = useHeaderParts();
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
@@ -184,8 +186,8 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const building = build.status.state === 'running';
   const buildOk = build.status.state === 'exited' && (build.status.exitCode ?? 0) === 0;
   const buildFailed = build.status.state === 'exited' && (build.status.exitCode ?? 0) !== 0;
-  const showRunBtn = tile.type === 'term' && !runView && Boolean(tile.cwd) && (run.commands.length > 0 || run.status.state !== 'none');
-  const showBuildBtn = tile.type === 'term' && !runView && Boolean(tile.cwd) && (build.commands.length > 0 || build.status.state !== 'none');
+  const showRunBtn = parts.run && tile.type === 'term' && !runView && Boolean(tile.cwd) && (run.commands.length > 0 || run.status.state !== 'none');
+  const showBuildBtn = parts.build && tile.type === 'term' && !runView && Boolean(tile.cwd) && (build.commands.length > 0 || build.status.state !== 'none');
   const [runMenu, setRunMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [buildMenu, setBuildMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [killMenu, setKillMenu] = React.useState<{ x: number; y: number } | null>(null);
@@ -577,7 +579,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             />
           ) : (
             <span className={styles.title} data-empty={note && !noteTitle} onDoubleClick={startTitleEdit}>
-              {agentType && !spinning && (
+              {agentType && !spinning && parts.icon && (
                 <span className={styles.claudeMark} style={{ display: 'inline-flex', alignItems: 'center', marginRight: '4px' }}>
                   {agentType === 'antigravity' && <AntigravityLogo size={11} />}
                   {agentType === 'codex' && <CodexLogo size={11} />}
@@ -587,12 +589,12 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 </span>
               )}
               <span className={styles.label}>{noteLabel ?? label}</span>
-              {folder && folder !== label && (
+              {parts.folder && folder && folder !== label && (
                 <span className={styles.folder} data-tooltip={tile.cwd}>
                   {folder}
                 </span>
               )}
-              {!note && tile.branch && (
+              {!note && parts.branch && tile.branch && (
                 <button className={styles.branch} onClick={openBranches} onPointerDown={stopDrag}>
                   <GitBranch size={10} strokeWidth={2} />
                   {tile.branch}
@@ -613,7 +615,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             </span>
           )}
           <div className={styles.actions}>
-            {!note && !runView && diff && (
+            {!note && !runView && parts.diff && diff && (
               <span className={styles.diffStat}>
                 <span className={styles.diffAdd}>+{diff.a}</span>
                 <span className={styles.diffDel}>-{diff.r}</span>
@@ -706,7 +708,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 <Copy size={13} strokeWidth={2} />
               </button>
             )}
-            {!note && !runView && !fullscreen && (
+            {!note && !runView && !fullscreen && parts.link && (
               <button
                 className={linkedTerms.length ? `${styles.action} ${styles.linked}` : styles.action}
                 onPointerDown={startLinkDrag}
@@ -718,12 +720,12 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 </span>
               </button>
             )}
-            {!note && !runView && (
+            {!note && !runView && parts.fullscreen && (
               <button className={styles.action} onClick={toggleFullscreen} aria-label="Toggle fullscreen">
                 {fullscreen ? <Minimize size={13} strokeWidth={2} /> : <Maximize size={13} strokeWidth={2} />}
               </button>
             )}
-            {!note && !code && !runView && (
+            {!note && !code && !runView && parts.restart && (
               <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
                 <RotateCw size={13} strokeWidth={2} />
               </button>

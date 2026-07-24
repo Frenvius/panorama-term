@@ -251,6 +251,23 @@
   }
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--text-strong);
+  border: 1px solid var(--text-dim);
+  border-radius: 5px;
+  flex-shrink: 0;
+
+  .selected & {
+    border-color: var(--text-strong);
+  }
+}
+
 .dot {
   width: 8px;
   height: 8px;
