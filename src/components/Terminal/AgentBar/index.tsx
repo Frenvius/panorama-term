@@ -1,5 +1,5 @@
 import React from 'react';
-import { Brain, Sparkles, ChevronDown } from 'lucide-react';
+import { Brain, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 
 import Suggest from './Suggest';
 import Magnifier from './Magnifier';
@@ -7,7 +7,7 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, detectExitBanner, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
-import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, ANTIGRAVITY_SLASH_COMMANDS, MODEL_QUICK_SWITCHES } from './constants';
+import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { ClaudeState } from '~/domain/interfaces/pty.interface';
@@ -49,10 +49,19 @@ const formatCost = (v: number): string => {
   return `$${v.toFixed(2)}`;
 };
 
+const baseModelId = (id: string): string => id.replace(/\[[^\]]*\]/, '');
+
 const matchQuickSwitchId = (raw: string | undefined): string => {
   if (!raw) return '';
-  const m = raw.toLowerCase();
+  const m = baseModelId(raw.toLowerCase());
   return MODEL_QUICK_SWITCHES.find((s) => s.id === m)?.id ?? '';
+};
+
+const modelLabel = (id: string): string => {
+  const base = baseModelId(id);
+  const entry = MODEL_QUICK_SWITCHES.find((m) => m.id === base);
+  if (!entry) return 'Model';
+  return base === id ? entry.title : `${entry.title} · 1M`;
 };
 
 type UndoSnap = { text: string; images: string[]; caret: number };
@@ -736,18 +745,18 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     if (scraped) {
       const t = scraped.model.toLowerCase();
       const oneM = /1m/i.test(scraped.contextInfo ?? '');
-      const sm = t.match(/(sonnet|fable)\s*(\d+)(?:[.\s-](\d+))?/);
+      const sm = t.match(/(sonnet|fable|opus|haiku)\s*(\d+)(?:[.\s-](\d+))?/);
       if (sm) {
         const id = sm[3] ? `claude-${sm[1]}-${sm[2]}-${sm[3]}` : `claude-${sm[1]}-${sm[2]}`;
         return `${id}${oneM ? '[1m]' : ''}`;
       }
-      const m = t.match(/opus\s*(\d)[.\s-]?(\d)/);
-      if (m) return `claude-opus-${m[1]}-${m[2]}${oneM ? '[1m]' : ''}`;
       return '';
     }
     const base = matchQuickSwitchId(structured?.model);
-    return base && is1M && !base.includes('[1m]') ? `${base}[1m]` : base;
+    return base && is1M ? `${base}[1m]` : base;
   }, [scraped, structured, is1M]);
+
+  const currentModelBase = baseModelId(currentModelId);
 
   const parsed = React.useMemo<ParsedStatus>(() => {
     const base: ParsedStatus = { ...status };
@@ -901,20 +910,38 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
               </div>
               <div className={styles.action} ref={modelRef}>
                 <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
-                  {MODEL_QUICK_SWITCHES.find((m) => m.id === currentModelId)?.title ?? 'Model'}
+                  {modelLabel(currentModelId)}
                   <ChevronDown size={11} />
                 </button>
                 {modelMenu && (
                   <div className={styles.menu}>
                     {MODEL_QUICK_SWITCHES.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={pickModel(m.id)}
-                        className={m.id === currentModelId ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                      >
-                        {m.title}
-                      </button>
+                      <div key={m.id} className={styles.menuRow}>
+                        <button
+                          type="button"
+                          onClick={pickModel(m.id)}
+                          className={m.id === currentModelBase ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                        >
+                          {m.title}
+                          <ChevronRight size={11} className={styles.menuArrow} />
+                        </button>
+                        <div className={styles.submenu}>
+                          {MODEL_CONTEXT_VARIANTS.map((v) => (
+                            <button
+                              key={v.suffix}
+                              type="button"
+                              onClick={pickModel(`${m.id}${v.suffix}`)}
+                              className={
+                                `${m.id}${v.suffix}` === currentModelId
+                                  ? `${styles.menuItem} ${styles.menuActive}`
+                                  : styles.menuItem
+                              }
+                            >
+                              {v.title}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}

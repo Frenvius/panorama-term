@@ -19,15 +19,17 @@ export const draftKey = (tileId: string): string => `agent:draft:${tileId}`;
 
 export const MODEL_QUICK_SWITCHES = [
   { id: 'claude-fable-5', title: 'Fable 5' },
-  { id: 'claude-sonnet-5', title: 'Sonnet 5' },
-  { id: 'claude-opus-4-6', title: 'Opus 4.6' },
-  { id: 'claude-opus-4-7', title: 'Opus 4.7' },
+  { id: 'claude-opus-5', title: 'Opus 5' },
   { id: 'claude-opus-4-8', title: 'Opus 4.8' },
-  { id: 'claude-fable-5[1m]', title: 'Fable 5 · 1M' },
-  { id: 'claude-sonnet-5[1m]', title: 'Sonnet 5 · 1M' },
-  { id: 'claude-opus-4-6[1m]', title: 'Opus 4.6 · 1M' },
-  { id: 'claude-opus-4-7[1m]', title: 'Opus 4.7 · 1M' },
-  { id: 'claude-opus-4-8[1m]', title: 'Opus 4.8 · 1M' }
+  { id: 'claude-opus-4-7', title: 'Opus 4.7' },
+  { id: 'claude-opus-4-6', title: 'Opus 4.6' },
+  { id: 'claude-sonnet-5', title: 'Sonnet 5' },
+  { id: 'claude-sonnet-4-6', title: 'Sonnet 4.6' }
+] as const;
+
+export const MODEL_CONTEXT_VARIANTS = [
+  { suffix: '', title: 'default' },
+  { suffix: '[1m]', title: '1M context' }
 ] as const;
 
 export const EFFORT_LEVELS = [
@@ -45,7 +47,8 @@ export const CLAUDE_MODELS: AgentModel[] = [
   { name: 'sonnet', desc: 'Latest Claude Sonnet' },
   { name: 'haiku', desc: 'Latest Claude Haiku' },
   { name: 'opusplan', desc: 'Opus for planning, Sonnet for execution' },
-  { name: 'claude-opus-4-8', desc: 'Opus 4.8 - latest' },
+  { name: 'claude-opus-5', desc: 'Opus 5 - latest' },
+  { name: 'claude-opus-4-8', desc: 'Opus 4.8' },
   { name: 'claude-opus-4-7', desc: 'Opus 4.7' },
   { name: 'claude-opus-4-6', desc: 'Opus 4.6' },
   { name: 'claude-sonnet-5', desc: 'Sonnet 5' },
