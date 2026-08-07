@@ -1,12 +1,14 @@
 import type React from 'react';
-import type { ClaudeState } from '~/domain/interfaces/pty.interface';
+import type { ClaudeState, GridFrame } from '~/domain/interfaces/pty.interface';
 import type { AgentType } from './parse';
 
 export interface AgentBarProps {
   tileId: string;
+  sessionId: string;
   active: boolean;
-  send: (data: string) => void;
+  send: (data: string) => boolean;
   getLines: () => string[];
+  getFrame: () => GridFrame | null;
   getStructured: () => ClaudeState | null;
   focusTerminal: () => void;
   onAgentActive?: (type: AgentType | null) => void;

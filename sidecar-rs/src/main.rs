@@ -2847,6 +2847,7 @@ fn build_frame(s: &Session) -> Vec<u8> {
                     fg = real_bg;
                 }
                 if cell.dim() {
+                    flags |= 8;
                     fg = blend(fg, bg.unwrap_or(DEFAULT_BG), DIM_MIX);
                 }
             }

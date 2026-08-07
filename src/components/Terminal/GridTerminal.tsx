@@ -773,10 +773,12 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
 
   const sendData = React.useCallback((data: string) => {
     const ws = wsRef.current;
-    if (ws) sendPtyInput(ws, data);
+    return ws ? sendPtyInput(ws, data) : false;
   }, []);
 
   const getLines = React.useCallback(() => frameRef.current?.lines ?? NO_LINES, []);
+
+  const getFrame = React.useCallback(() => frameRef.current, []);
 
   const getStructured = React.useCallback(() => claudeRef.current, []);
 
@@ -853,9 +855,11 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           )}
           <AgentBar
             tileId={tileId}
+            sessionId={sessionId ?? tileId}
             active={active}
             send={sendData}
             getLines={getLines}
+            getFrame={getFrame}
             getStructured={getStructured}
             focusTerminal={focusTerminal}
             onAgentActive={onAgentActive}

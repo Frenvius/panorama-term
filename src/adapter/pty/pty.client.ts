@@ -91,8 +91,10 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
   return ws;
 };
 
-export const sendPtyInput = (ws: WebSocket, data: string): void => {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'in', d: data }));
+export const sendPtyInput = (ws: WebSocket, data: string): boolean => {
+  if (ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify({ t: 'in', d: data }));
+  return true;
 };
 
 export const sendPtyResize = (ws: WebSocket, cols: number, rows: number): void => {

@@ -6,7 +6,8 @@ import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
-import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, detectExitBanner, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
+import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -82,7 +83,7 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   return out;
 };
 
-const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal, onAgentActive }: AgentBarProps) => {
+const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive }: AgentBarProps) => {
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
   const [history, setHistory] = React.useState<ContentPart[][]>(() => loadHistory());
@@ -92,7 +93,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const [structured, setStructured] = React.useState<ClaudeState | null>(null);
   const [questionMode, setQuestionMode] = React.useState(false);
   const [manualHide, setManualHide] = React.useState(false);
-  const [submitting, setSubmitting] = React.useState(false);
+  const [pending, setPending] = React.useState(0);
   const [modelMenu, setModelMenu] = React.useState(false);
   const [effortMenu, setEffortMenu] = React.useState(false);
   const [preview, setPreview] = React.useState<string | null>(null);
@@ -112,7 +113,8 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
   const prevSnapRef = React.useRef<UndoSnap>({ text: '', images: [], caret: 0 });
   const lastInputTypeRef = React.useRef('');
   const imgSeqRef = React.useRef(0);
-  const submitSeqRef = React.useRef(0);
+  const sendChainRef = React.useRef<Promise<void>>(Promise.resolve());
+  const hydratedDraftTileRef = React.useRef<string | null>(null);
   const seenRef = React.useRef(false);
   const lastSeenRef = React.useRef(0);
   const lastLinesRef = React.useRef<string[] | null>(null);
@@ -302,6 +304,8 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
 
   React.useEffect(() => {
     if (agentPresent) {
+      if (hydratedDraftTileRef.current === tileId) return;
+      hydratedDraftTileRef.current = tileId;
       let restored = cloneDraft(EMPTY_DRAFT);
       try {
         const raw = localStorage.getItem(draftKey(tileId));
@@ -326,17 +330,23 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
       setScraped(null);
       setStructured(null);
       setQuestionMode(false);
-      setSubmitting(false);
       setManualHide(false);
     }
   }, [agentPresent, tileId]);
 
   React.useEffect(() => {
     if (!agentType) return;
+    if (isDraftEmpty(draft)) {
+      try {
+        localStorage.removeItem(draftKey(tileId));
+      } catch {
+        void 0;
+      }
+      return;
+    }
     const t = setTimeout(() => {
       try {
-        if (isDraftEmpty(draft)) localStorage.removeItem(draftKey(tileId));
-        else localStorage.setItem(draftKey(tileId), JSON.stringify({ text: draft.text, images: draft.images }));
+        localStorage.setItem(draftKey(tileId), JSON.stringify({ text: draft.text, images: draft.images }));
       } catch {
         void 0;
       }
@@ -433,50 +443,95 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     setHistory(updated);
   };
 
-  const sendDraft = async (submission: { text: string; images: string[] }) => {
-    const seq = ++submitSeqRef.current;
-    const parts = consolidateParts(draftToSendParts(submission));
-    if (parts.length === 0) return;
-    if (detectExitBanner(getLines())) {
-      send('\x15');
-      await pause(80);
-    } else {
-      send('\x03');
-      await pause(80);
+  const waitUntil = async (ready: () => boolean, timeout: number) => {
+    for (let waited = 0; waited < timeout; waited += 20) {
+      if (ready()) return true;
+      await pause(20);
     }
-    if (submitSeqRef.current !== seq) return;
-    for (const part of parts) {
-      if (part.type === 'text') {
-        if (part.content.length > 0) send(BPM_START + part.content + BPM_END);
-      } else {
-        send(`${BPM_START}${part.path} ${BPM_END}`);
-      }
-      await pause(part.type === 'text' ? 10 : 50);
-      if (submitSeqRef.current !== seq) return;
-    }
-    const lineCount = Math.max(1, submission.text.split('\n').length);
-    await pause(Math.min(400, 50 + lineCount * 2));
-    if (submitSeqRef.current !== seq) return;
-    send('\r');
+    return ready();
   };
 
-  const handleSend = async () => {
+  const sendWhenReady = (data: string) => waitUntil(() => send(data), 5000);
+
+  const inputChars = () => countFrameInputChars(getFrame());
+
+  const inputEmpty = () => inputChars() <= 0;
+
+  const clearInput = async () => {
+    let emptyFrames = 0;
+    for (let round = 0; round < 32; round++) {
+      const chars = inputChars();
+      if (chars <= 0) {
+        emptyFrames++;
+        if (emptyFrames >= 2) return true;
+        await pause(20);
+        continue;
+      }
+      emptyFrames = 0;
+      const amount = Math.min(512, Math.max(64, chars + 32));
+      if (!(await sendWhenReady('\x1b[3~'.repeat(amount) + '\x7f'.repeat(amount)))) return false;
+      await pause(20);
+    }
+    return false;
+  };
+
+  const sendDraft = async (submission: { text: string; images: string[] }) => {
+    const parts = consolidateParts(draftToSendParts(submission));
+    if (parts.length === 0) return;
+    if (!(await clearInput())) throw new Error('Could not clear Claude input');
+    const onlyPart = parts.length === 1 ? parts[0] : undefined;
+    if (onlyPart?.type === 'text') {
+      if (!(await submitPtyMessage(sessionId, onlyPart.content))) throw new Error('Could not submit Claude input');
+      await pause(250);
+    } else {
+      let images = countInputImages(getLines());
+      for (const part of parts) {
+        if (part.type === 'text') {
+          if (part.content.length > 0 && !(await sendWhenReady(BPM_START + part.content + BPM_END))) {
+            throw new Error('Claude terminal is disconnected');
+          }
+        } else {
+          if (!(await sendWhenReady(`${BPM_START}${part.path}${BPM_END}`))) {
+            throw new Error('Claude terminal is disconnected');
+          }
+          images++;
+          await waitUntil(() => countInputImages(getLines()) >= images, 2500);
+        }
+      }
+      if (!(await sendWhenReady('\r'))) throw new Error('Claude terminal is disconnected');
+    }
+    if (!(await waitUntil(inputEmpty, 400))) {
+      send('\r');
+    }
+    await waitUntil(inputEmpty, 1200);
+  };
+
+  const handleSend = () => {
     const live = draftRef.current;
-    if (isDraftEmpty(live) || submitting) return;
+    if (isDraftEmpty(live)) return;
     const submission = cloneDraft(live);
     persistHistory(submission);
     lastSentRef.current = cloneDraft(submission);
     histIdxRef.current = null;
     histDraftRef.current = cloneDraft(EMPTY_DRAFT);
     setSuggest(null);
+    try {
+      localStorage.removeItem(draftKey(tileId));
+    } catch {
+      void 0;
+    }
     setDraft(cloneDraft(EMPTY_DRAFT));
     commitDraft(cloneDraft(EMPTY_DRAFT));
-    setSubmitting(true);
-    try {
-      await sendDraft(submission);
-    } finally {
-      setSubmitting(false);
-    }
+    setPending((n) => n + 1);
+    sendChainRef.current = sendChainRef.current
+      .then(() => sendDraft(submission))
+      .catch(() => {
+        if (!isDraftEmpty(draftRef.current)) return;
+        const restored = cloneDraft(submission);
+        setDraft(restored);
+        commitDraft(restored);
+      })
+      .finally(() => setPending((n) => n - 1));
   };
 
   const handleInput = (e: React.FormEvent<HTMLDivElement>) => {
@@ -711,7 +766,7 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      send('\x03');
+      send('\x1b');
       if (isDraftEmpty(draftRef.current) && !isDraftEmpty(lastSentRef.current)) {
         const restored = cloneDraft(lastSentRef.current);
         setDraft(restored);
@@ -950,8 +1005,10 @@ const AgentBar = ({ tileId, active, send, getLines, getStructured, focusTerminal
           )}
         </div>
         <div className={styles.hints}>
-          {submitting
-            ? 'Submitting prompt...'
+          {pending > 0
+            ? pending > 1
+              ? `Sending prompt... ${pending - 1} queued`
+              : 'Sending prompt...'
             : suggest
               ? 'Enter select & send - Tab complete - Esc close'
               : 'Enter send - Shift+Enter newline - Tab terminal'}

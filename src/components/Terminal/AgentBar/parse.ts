@@ -63,9 +63,6 @@ const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
 export const detectAgentIdentity = (text: string): AgentType | null =>
   (AGENT_SIGNATURES.find(([, re]) => re.test(text)) ?? AGENT_MODEL_HINTS.find(([, re]) => re.test(text)))?.[0] ?? null;
 
-export const detectExitBanner = (lines: string[]): boolean =>
-  lines.some((line) => /press ctrl-?c again/i.test(line));
-
 export const parseStatusLines = (lines: string[]): ParsedStatus => {
   if (lines.length === 0) return {};
   const combined = lines.join(' ').replace(/\s+/g, ' ');
@@ -117,6 +114,87 @@ const scrapeModel = (rows: string[]): { model: string; contextInfo?: string } | 
 const isBoxBottom = (s: string): boolean => s.includes('╰') && s.includes('╯');
 const isBoxTop = (s: string): boolean => s.includes('╭') && s.includes('╮');
 
+const PLACEHOLDER = /^(try\b|write a prompt|ask\b|\/ for commands|\? for shortcuts)/i;
+
+const isInputBorder = (s: string): boolean => {
+  const trimmed = s.trim();
+  return /^[─━-]{10,}$/.test(trimmed) || isBoxTop(trimmed) || isBoxBottom(trimmed);
+};
+
+const inputBounds = (rows: string[]): { top: number; bottom: number } | null => {
+  let bottom = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (isInputBorder(rows[i] ?? '')) {
+      bottom = i;
+      break;
+    }
+  }
+  if (bottom < 1) return null;
+  for (let i = bottom - 1; i >= 0; i--) {
+    if (isInputBorder(rows[i] ?? '')) return { top: i, bottom };
+  }
+  return null;
+};
+
+export const readInputText = (rows: string[]): string => {
+  const bounds = inputBounds(rows);
+  if (!bounds) return '';
+  const { top, bottom } = bounds;
+  const lines: string[] = [];
+  for (let i = top + 1; i < bottom; i++) {
+    const inner = (rows[i] ?? '')
+      .replace(/^\s*[│┃]/, '')
+      .replace(/[│┃]\s*$/, '')
+      .replace(/^\s*[❯>]\s?/, '')
+      .trimEnd();
+    lines.push(inner);
+  }
+  while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop();
+  if (lines.length === 0) return '';
+  if (lines.length === 1 && PLACEHOLDER.test(lines[0]?.trim() ?? '')) return '';
+  return lines.join('\n');
+};
+
+export const countInputChars = (rows: string[]): number => readInputText(rows).length;
+
+const DIM_FLAG = 1 << 27;
+const LEGACY_DIM_FG = 0x606570;
+
+export const isInputSuggestion = (frame: GridFrame): boolean => {
+  const bounds = inputBounds(frame.lines);
+  if (!bounds) return false;
+  const promptRow = frame.lines.findIndex((row, i) => i > bounds.top && i < bounds.bottom && /^\s*[│┃]?\s*[❯>]/.test(row));
+  if (promptRow < 0 || frame.cursorRow !== promptRow) return false;
+  const cells = Array.from(frame.lines[promptRow] ?? '');
+  const promptCol = cells.findIndex((cell) => cell === '❯' || cell === '>');
+  if (promptCol < 0) return false;
+  let contentCol = promptCol + 1;
+  while (/\s/.test(cells[contentCol] ?? '')) contentCol++;
+  if (frame.cursorCol > contentCol) return false;
+  let visible = 0;
+  for (let row = promptRow; row < bounds.bottom; row++) {
+    const rowCells = Array.from(frame.lines[row] ?? '');
+    const start = row === promptRow ? contentCol : 0;
+    for (let col = start; col < frame.cols; col++) {
+      const cell = rowCells[col] ?? ' ';
+      if (!cell.trim() || cell === '│' || cell === '┃') continue;
+      visible++;
+      const attr = frame.attrs[(row * frame.cols + col) * 2] ?? 0;
+      if ((attr & DIM_FLAG) === 0 && (attr & 0x00ff_ffff) !== LEGACY_DIM_FG) return false;
+    }
+  }
+  return visible > 0;
+};
+
+export const countFrameInputChars = (frame: GridFrame | null): number =>
+  !frame || isInputSuggestion(frame) ? 0 : countInputChars(frame.lines);
+
+export const isAgentBusy = (rows: string[]): boolean =>
+  rows.some((row) => /esc to interrupt|ctrl\+b to run in background|…\s*\(/i.test(row));
+
+export const countInputImages = (rows: string[]): number =>
+  readInputText(rows).match(/\[Image #\d+\]/g)?.length ?? 0;
+
 export const readFooter = (rows: string[]): FooterRead => {
   const model = scrapeModel(rows);
 
@@ -166,3 +244,4 @@ export const detectSuggestTrigger = (text: string, caret: number): SuggestTrigge
   if (/^\/\S*$/.test(before)) return { kind: 'slash', query: before.slice(1) };
   return null;
 };
+import type { GridFrame } from '~/domain/interfaces/pty.interface';
