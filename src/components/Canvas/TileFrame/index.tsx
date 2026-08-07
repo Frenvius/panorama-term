@@ -19,6 +19,7 @@ import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { useRun } from '~/usecase/hooks/useRun';
 import { stopRun } from '~/adapter/run/run.client';
+import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client';
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
@@ -368,6 +369,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const togglePin = () => onTogglePin(tile.id);
   const duplicate = () => onDuplicate(tile.id);
   const copyPath = () => onCopyPath(tile.id);
+  const copyTitle = () => writeClipboard(noteLabel ?? stripSpinner(label));
   const reveal = () => onReveal(tile.id);
 
   const [branchLocal, setBranchLocal] = React.useState<{ x: number; y: number } | null>(null);
@@ -456,6 +458,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ...noteContentItems,
     { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: startRename },
     { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
+    { label: 'Copy title', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyTitle },
     pinItem,
     'separator',
     ...linkItems,
@@ -498,6 +501,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
         pinItem,
         'separator',
+        { label: 'Copy title', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyTitle },
         { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: reveal, disabled: !tile.cwd },
         { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyPath, disabled: !tile.cwd },
         ideItem,
