@@ -3,6 +3,7 @@ import React from 'react';
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import { themeInk, THEME_EVENT } from '~/usecase/util/theme';
+import { getMinimapPinned, MINIMAP_PINNED_EVENT } from '~/usecase/util/minimap';
 
 import styles from './styles.module.scss';
 
@@ -41,6 +42,7 @@ const ALERT_COLOR = '#f5a623';
 const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapProps) => {
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const [pinned, setPinned] = React.useState(getMinimapPinned);
 
   const viewRef = React.useRef(view);
   viewRef.current = view;
@@ -220,6 +222,12 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
   }, [scheduleRedraw]);
 
   React.useEffect(() => {
+    const onPinned = () => setPinned(getMinimapPinned());
+    window.addEventListener(MINIMAP_PINNED_EVENT, onPinned);
+    return () => window.removeEventListener(MINIMAP_PINNED_EVENT, onPinned);
+  }, []);
+
+  React.useEffect(() => {
     const wrap = wrapperRef.current;
     if (!wrap) return;
     const show = tiles.length > 0;
@@ -227,10 +235,10 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
     if (show) {
       wrap.setAttribute('data-idle', 'false');
       clearTimeout(idleTimer.current);
-      idleTimer.current = setTimeout(() => wrap.setAttribute('data-idle', 'true'), IDLE_MS);
+      if (!pinned) idleTimer.current = setTimeout(() => wrap.setAttribute('data-idle', 'true'), IDLE_MS);
     }
     scheduleRedraw();
-  }, [view, tiles, scheduleRedraw]);
+  }, [view, tiles, pinned, scheduleRedraw]);
 
   React.useEffect(
     () => () => {

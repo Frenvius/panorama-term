@@ -1,7 +1,9 @@
 import React from 'react';
-import { X, Check, Palette, Keyboard, RotateCcw, SquareTerminal } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { X, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { getMinimapPinned, setMinimapPinned } from '~/usecase/util/minimap';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
@@ -125,6 +127,15 @@ const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
   );
 };
 
+type Section = 'general' | 'appearance' | 'terminal' | 'shortcuts';
+
+const SECTIONS: { id: Section; label: string; Icon: LucideIcon }[] = [
+  { id: 'general', label: 'General', Icon: SlidersHorizontal },
+  { id: 'appearance', label: 'Appearance', Icon: Palette },
+  { id: 'terminal', label: 'Terminal', Icon: SquareTerminal },
+  { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard }
+];
+
 const GROUPS = [...new Set(KEYBINDINGS.map((k) => k.group))];
 
 const THEMES: { id: ThemePref; label: string; description: string }[] = [
@@ -135,12 +146,13 @@ const THEMES: { id: ThemePref; label: string; description: string }[] = [
 
 const Settings = ({ onClose }: SettingsProps) => {
   const options = React.useMemo(listTerminalTargets, []);
-  const [section, setSection] = React.useState<'terminal' | 'appearance' | 'shortcuts'>('appearance');
+  const [section, setSection] = React.useState<Section>('general');
   const [target, setTarget] = React.useState(() => getSetting(TERMINAL_TARGET_KEY, 'auto'));
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
+  const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -158,6 +170,11 @@ const Settings = ({ onClose }: SettingsProps) => {
   const selectTheme = (pref: ThemePref) => {
     setTheme(pref);
     setThemePref(pref);
+  };
+
+  const toggleMinimapPinned = () => {
+    setMinimapPinned(!minimapPinned);
+    setPinned(!minimapPinned);
   };
 
   const toggleHeaderPart = (id: HeaderPart) => {
@@ -183,36 +200,71 @@ const Settings = ({ onClose }: SettingsProps) => {
         <aside className={styles.sidebar}>
           <h1 className={styles.heading}>Settings</h1>
           <nav className={styles.nav}>
-            <button
-              type="button"
-              onClick={() => setSection('appearance')}
-              className={`${styles.navItem} ${section === 'appearance' ? styles.navActive : ''}`}
-            >
-              <Palette size={15} strokeWidth={1.75} />
-              <span>Appearance</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSection('terminal')}
-              className={`${styles.navItem} ${section === 'terminal' ? styles.navActive : ''}`}
-            >
-              <SquareTerminal size={15} strokeWidth={1.75} />
-              <span>Terminal</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSection('shortcuts')}
-              className={`${styles.navItem} ${section === 'shortcuts' ? styles.navActive : ''}`}
-            >
-              <Keyboard size={15} strokeWidth={1.75} />
-              <span>Shortcuts</span>
-            </button>
+            {SECTIONS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSection(id)}
+                className={`${styles.navItem} ${section === id ? styles.navActive : ''}`}
+              >
+                <Icon size={15} strokeWidth={1.75} />
+                <span>{label}</span>
+              </button>
+            ))}
           </nav>
         </aside>
         <section className={styles.content}>
           <button className={styles.close} onClick={onClose} aria-label="Close settings">
             <X size={15} strokeWidth={1.75} />
           </button>
+          {section === 'general' && (
+            <div className={styles.pane}>
+              <div className={styles.paneHead}>
+                <h2 className={styles.title}>General</h2>
+                <p className={styles.subtitle}>Canvas behavior and navigation aids.</p>
+              </div>
+              <div className={styles.group}>
+                <div className={styles.sliderHead}>
+                  <p className={styles.groupLabel}>Maximum zoom</p>
+                  <span className={styles.sliderValue}>{Math.round(maxZoom * 100)}%</span>
+                </div>
+                <input
+                  min={1}
+                  step={0.05}
+                  type="range"
+                  max={ZOOM_MAX}
+                  value={maxZoom}
+                  onChange={changeMaxZoom}
+                  className={styles.slider}
+                />
+                <p className={styles.hint}>Above 100% terminal text may look blurry.</p>
+              </div>
+              <div className={styles.group}>
+                <div className={styles.sliderHead}>
+                  <p className={styles.groupLabel}>Frame fit padding</p>
+                  <input
+                    min={0}
+                    type="number"
+                    value={framePad}
+                    onChange={changeFramePad}
+                    className={styles.numberInput}
+                  />
+                </div>
+                <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Minimap</p>
+                <div className={styles.options}>
+                  <ToggleOption
+                    checked={minimapPinned}
+                    label="Always visible"
+                    onToggle={toggleMinimapPinned}
+                    description="Keep the minimap on screen instead of fading out when idle."
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           {section === 'terminal' && (
             <div className={styles.pane}>
               <div className={styles.paneHead}>
@@ -235,22 +287,6 @@ const Settings = ({ onClose }: SettingsProps) => {
                   ))}
                 </div>
               </div>
-              <div className={styles.group}>
-                <div className={styles.sliderHead}>
-                  <p className={styles.groupLabel}>Maximum zoom</p>
-                  <span className={styles.sliderValue}>{Math.round(maxZoom * 100)}%</span>
-                </div>
-                <input
-                  min={1}
-                  step={0.05}
-                  type="range"
-                  max={ZOOM_MAX}
-                  value={maxZoom}
-                  onChange={changeMaxZoom}
-                  className={styles.slider}
-                />
-                <p className={styles.hint}>Above 100% terminal text may look blurry.</p>
-              </div>
             </div>
           )}
           {section === 'appearance' && (
@@ -272,19 +308,6 @@ const Settings = ({ onClose }: SettingsProps) => {
                     />
                   ))}
                 </div>
-              </div>
-              <div className={styles.group}>
-                <div className={styles.sliderHead}>
-                  <p className={styles.groupLabel}>Frame fit padding</p>
-                  <input
-                    min={0}
-                    type="number"
-                    value={framePad}
-                    onChange={changeFramePad}
-                    className={styles.numberInput}
-                  />
-                </div>
-                <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
               </div>
               <div className={styles.group}>
                 <p className={styles.groupLabel}>Tile header</p>
