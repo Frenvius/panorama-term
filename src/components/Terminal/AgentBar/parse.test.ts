@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { countFrameInputChars, countInputChars, countInputImages, isAgentBusy } from '~/components/Terminal/AgentBar/parse';
+import { readFooter, countFrameInputChars, countInputChars, countInputImages, isAgentBusy } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -95,5 +95,17 @@ describe('isAgentBusy', () => {
 
   it('does not fire on a finished turn', () => {
     expect(isAgentBusy(['✻ Cogitated for 5s', ...box('❯ hi')])).toBe(false);
+  });
+});
+
+describe('readFooter questionMode', () => {
+  it('ignores menu words left in restored transcript', () => {
+    const rows = box('❯                                    ');
+    rows.splice(0, 0, '  you can choose any of them, switch to plan (1 of 3)');
+    expect(readFooter(rows).questionMode).toBe(false);
+  });
+
+  it('still fires on a real picker screen', () => {
+    expect(readFooter(['  Select a session to resume', '  1. foo', '  2. bar']).questionMode).toBe(true);
   });
 });

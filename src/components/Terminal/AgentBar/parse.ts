@@ -226,8 +226,7 @@ export const readFooter = (rows: string[]): FooterRead => {
   const exitBanner = rows.some((line) => /press ctrl-?c again/i.test(line));
 
   const questionMode =
-    menuMode ||
-    (!exitBanner && !hasInputBox && !hasStatusMarker && !hasFocusMarker && !hasModeBanner);
+    !hasStatusMarker && !hasFocusMarker && !hasModeBanner && (menuMode || (!exitBanner && !hasInputBox));
 
   const uiPresent =
     hasInputBox || hasStatusMarker || hasFocusMarker || hasModeBanner || menuMode || exitBanner;
