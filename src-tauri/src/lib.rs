@@ -166,18 +166,15 @@ fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn spawn_notif_topmost_guard(app: tauri::AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(700));
-        match app.get_webview_window("notif") {
-            Some(notif) => {
-                if notif.is_visible().unwrap_or(false) {
-                    let _ = notif.set_always_on_top(true);
-                }
-            }
-            None => break,
-        }
-    });
+fn raise_notif_window(app: &tauri::AppHandle) {
+    let Some(notif) = app.get_webview_window("notif") else {
+        return;
+    };
+    if notif.is_visible().unwrap_or(false) {
+        // Tao skips same-state updates on Windows, so flip the flag to renew the z-order.
+        let _ = notif.set_always_on_top(false);
+        let _ = notif.set_always_on_top(true);
+    }
 }
 
 #[tauri::command]
@@ -214,6 +211,7 @@ fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     if !win.is_visible().map_err(|e| e.to_string())? {
         win.show().map_err(|e| e.to_string())?;
     }
+    win.set_always_on_top(false).map_err(|e| e.to_string())?;
     win.set_always_on_top(true).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -227,9 +225,11 @@ fn focus_main(app: tauri::AppHandle) -> Result<(), String> {
     win.show().map_err(|e| e.to_string())?;
     let _ = win.set_always_on_top(true);
     let _ = win.set_focus();
+    raise_notif_window(&app);
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(250));
         let _ = win.set_always_on_top(false);
+        raise_notif_window(&app);
     });
     Ok(())
 }
@@ -588,7 +588,6 @@ pub fn run() {
         .setup(|app| {
             spawn_sidecar();
             create_notif_window(app.handle())?;
-            spawn_notif_topmost_guard(app.handle().clone());
             notes::start_notes_watch(app.handle().clone());
             Ok(())
         })
@@ -599,11 +598,7 @@ pub fn run() {
             match event {
                 tauri::WindowEvent::Destroyed => window.app_handle().exit(0),
                 tauri::WindowEvent::Focused(true) => {
-                    if let Some(notif) = window.app_handle().get_webview_window("notif") {
-                        if notif.is_visible().unwrap_or(false) {
-                            let _ = notif.set_always_on_top(true);
-                        }
-                    }
+                    raise_notif_window(window.app_handle());
                 }
                 _ => {}
             }
