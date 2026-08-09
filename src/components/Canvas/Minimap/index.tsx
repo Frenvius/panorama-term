@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import { themeInk, THEME_EVENT } from '~/usecase/util/theme';
 
 import styles from './styles.module.scss';
@@ -8,6 +9,8 @@ import styles from './styles.module.scss';
 interface MinimapProps {
   view: View;
   tiles: Tile[];
+  agents: Map<string, 'idle' | 'busy'>;
+  alerts: Map<string, NotifyKind>;
   viewportRef: React.RefObject<HTMLDivElement | null>;
   onPan: (x: number, y: number) => void;
 }
@@ -26,23 +29,16 @@ const MIN_TILE_W = 4;
 const MIN_TILE_H = 3;
 const MIN_EXTENT_FACTOR = 3;
 const TILE_OPACITY = 0.6;
+const FLAG_OPACITY = 1;
 const VP_BORDER_OPACITY = 0.55;
 const SCRIM_OPACITY = 0.35;
 const IDLE_MS = 1500;
-const PAN_DURATION = 150;
 
-const TILE_COLORS: Record<Tile['type'], string> = {
-  term: '#4144e3',
-  note: '#0bbac6',
-  code: '#c9f82c',
-  image: '#e12b3f',
-  browser: '#9750e3',
-  graph: '#e28143'
-};
+const TILE_COLOR = '#4144e3';
+const BUSY_COLOR = '#23d18b';
+const ALERT_COLOR = '#f5a623';
 
-const easeOut = (t: number): number => 1 - Math.pow(1 - t, 3);
-
-const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
+const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapProps) => {
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
 
@@ -50,14 +46,17 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
   viewRef.current = view;
   const tilesRef = React.useRef(tiles);
   tilesRef.current = tiles;
+  const agentsRef = React.useRef(agents);
+  agentsRef.current = agents;
+  const alertsRef = React.useRef(alerts);
+  alertsRef.current = alerts;
   const onPanRef = React.useRef(onPan);
   onPanRef.current = onPan;
 
   const render = React.useRef({ scale: 1, offX: 0, offY: 0, bounds: null as Bounds | null });
   const idleTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const rafId = React.useRef(0);
-  const animRaf = React.useRef(0);
-  const drag = React.useRef({ active: false, dx: 0, dy: 0 });
+  const drag = React.useRef({ active: false });
 
   const vpSize = React.useCallback(() => {
     const el = viewportRef.current;
@@ -153,8 +152,10 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
       const pos = worldToMinimap(tile.x, tile.y);
       const w = Math.max(tile.width * scale, MIN_TILE_W);
       const h = Math.max(tile.height * scale, MIN_TILE_H);
-      ctx.globalAlpha = TILE_OPACITY;
-      ctx.fillStyle = TILE_COLORS[tile.type] ?? '#888888';
+      const alerted = alertsRef.current.has(tile.id);
+      const busy = agentsRef.current.get(tile.id) === 'busy';
+      ctx.globalAlpha = alerted || busy ? FLAG_OPACITY : TILE_OPACITY;
+      ctx.fillStyle = alerted ? ALERT_COLOR : busy ? BUSY_COLOR : TILE_COLOR;
       ctx.fillRect(pos.x + 0.5, pos.y + 0.5, w - 1, h - 1);
     }
 
@@ -209,6 +210,10 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
   }, [scheduleRedraw]);
 
   React.useEffect(() => {
+    scheduleRedraw();
+  }, [agents, alerts, scheduleRedraw]);
+
+  React.useEffect(() => {
     const onTheme = () => scheduleRedraw();
     window.addEventListener(THEME_EVENT, onTheme);
     return () => window.removeEventListener(THEME_EVENT, onTheme);
@@ -231,7 +236,6 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
     () => () => {
       clearTimeout(idleTimer.current);
       cancelAnimationFrame(rafId.current);
-      cancelAnimationFrame(animRaf.current);
     },
     []
   );
@@ -244,13 +248,6 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
     };
   };
 
-  const insideViewport = (mx: number, my: number) => {
-    const r = viewportRect();
-    if (!r) return false;
-    const tol = 4;
-    return mx >= r.x - tol && mx <= r.x + r.w + tol && my >= r.y - tol && my <= r.y + r.h + tol;
-  };
-
   const panToWorldCenter = (mx: number, my: number) => {
     const world = minimapToWorld(mx, my);
     const { w: vw, h: vh } = vpSize();
@@ -258,46 +255,22 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
     onPanRef.current(vw / 2 - world.x * k, vh / 2 - world.y * k);
   };
 
-  const animatePanTo = (targetX: number, targetY: number) => {
-    cancelAnimationFrame(animRaf.current);
-    const startX = viewRef.current.x;
-    const startY = viewRef.current.y;
-    const startTime = performance.now();
-    const step = (now: number) => {
-      const t = Math.min((now - startTime) / PAN_DURATION, 1);
-      const e = easeOut(t);
-      onPanRef.current(startX + (targetX - startX) * e, startY + (targetY - startY) * e);
-      if (t < 1) animRaf.current = requestAnimationFrame(step);
-    };
-    animRaf.current = requestAnimationFrame(step);
-  };
-
   const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
     e.stopPropagation();
+    e.preventDefault();
+    drag.current.active = true;
+    canvasRef.current!.setPointerCapture(e.pointerId);
+    canvasRef.current!.style.cursor = 'grabbing';
     const pt = localPoint(e);
-    if (insideViewport(pt.x, pt.y)) {
-      const r = viewportRect()!;
-      drag.current = { active: true, dx: pt.x - r.x, dy: pt.y - r.y };
-      canvasRef.current!.setPointerCapture(e.pointerId);
-      canvasRef.current!.style.cursor = 'grabbing';
-    } else {
-      const world = minimapToWorld(pt.x, pt.y);
-      const { w: vw, h: vh } = vpSize();
-      const k = viewRef.current.k;
-      animatePanTo(vw / 2 - world.x * k, vh / 2 - world.y * k);
-    }
+    panToWorldCenter(pt.x, pt.y);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     e.stopPropagation();
+    if (!drag.current.active) return;
     const pt = localPoint(e);
-    if (drag.current.active) {
-      const r = viewportRect();
-      if (!r) return;
-      panToWorldCenter(pt.x - drag.current.dx + r.w / 2, pt.y - drag.current.dy + r.h / 2);
-    } else {
-      canvasRef.current!.style.cursor = insideViewport(pt.x, pt.y) ? 'grab' : 'crosshair';
-    }
+    panToWorldCenter(pt.x, pt.y);
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
@@ -305,8 +278,7 @@ const Minimap = ({ view, tiles, viewportRef, onPan }: MinimapProps) => {
     if (!drag.current.active) return;
     drag.current.active = false;
     canvasRef.current!.releasePointerCapture(e.pointerId);
-    const pt = localPoint(e);
-    canvasRef.current!.style.cursor = insideViewport(pt.x, pt.y) ? 'grab' : 'crosshair';
+    canvasRef.current!.style.cursor = 'grab';
   };
 
   return (

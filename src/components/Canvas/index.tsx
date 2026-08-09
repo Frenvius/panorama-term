@@ -744,7 +744,9 @@ const Canvas = () => {
         <div ref={indicatorRef} className={styles.indicator}>
           100%
         </div>
-        {!fsId && <Minimap view={view} tiles={tiles} viewportRef={bgRef} onPan={panTo} />}
+        {!fsId && (
+          <Minimap view={view} tiles={tiles} agents={agents} alerts={alerts} viewportRef={bgRef} onPan={panTo} />
+        )}
       </div>
       {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
       {!fsId && navOpen && (
