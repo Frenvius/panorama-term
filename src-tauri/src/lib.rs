@@ -177,15 +177,61 @@ fn raise_notif_window(app: &tauri::AppHandle) {
     }
 }
 
+#[derive(serde::Serialize)]
+struct MonitorInfo {
+    name: String,
+    width: u32,
+    height: u32,
+    primary: bool,
+}
+
 #[tauri::command]
-fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+fn list_monitors(app: tauri::AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    let win = app.get_webview_window("main").ok_or("no main window")?;
+    let primary = win
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().cloned());
+    let monitors = win.available_monitors().map_err(|e| e.to_string())?;
+    Ok(monitors
+        .into_iter()
+        .map(|m| {
+            let name = m.name().cloned().unwrap_or_default();
+            let size = m.size();
+            MonitorInfo {
+                primary: primary.as_deref() == Some(name.as_str()),
+                name,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn notif_layout(
+    app: tauri::AppHandle,
+    height: f64,
+    corner: Option<String>,
+    monitor: Option<String>,
+) -> Result<(), String> {
     let win = app.get_webview_window("notif").ok_or("no overlay window")?;
     if height <= 0.0 {
         return win.hide().map_err(|e| e.to_string());
     }
-    let monitor = app
-        .get_webview_window("main")
-        .and_then(|main| main.current_monitor().ok().flatten())
+    let corner = corner.unwrap_or_else(|| "bottom-right".into());
+    let monitor = monitor
+        .and_then(|name| {
+            win.available_monitors()
+                .ok()?
+                .into_iter()
+                .find(|m| m.name().map(|n| n.as_str()) == Some(name.as_str()))
+        })
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|main| main.current_monitor().ok().flatten())
+        })
         .or_else(|| win.primary_monitor().ok().flatten())
         .ok_or("no monitor")?;
     let scale = monitor.scale_factor();
@@ -197,8 +243,18 @@ fn notif_layout(app: tauri::AppHandle, height: f64) -> Result<(), String> {
         .inner_size()
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale);
+    let x = if corner.ends_with("left") {
+        pos.x
+    } else {
+        pos.x + size.width - NOTIF_WIDTH
+    };
+    let y = if corner.starts_with("top") {
+        pos.y
+    } else {
+        pos.y + size.height - h
+    };
     let target_size = LogicalSize::new(NOTIF_WIDTH, h);
-    let target_pos = LogicalPosition::new(pos.x + size.width - NOTIF_WIDTH, pos.y + size.height - h);
+    let target_pos = LogicalPosition::new(x, y);
 
     if h > current.height {
         win.set_position(target_pos).map_err(|e| e.to_string())?;
@@ -607,6 +663,7 @@ pub fn run() {
             write_temp_image,
             read_temp_image,
             notif_layout,
+            list_monitors,
             focus_main,
             set_pending_count,
             reveal_path,

@@ -158,6 +158,50 @@
   gap: 8px;
 }
 
+.corners {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.corner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-1);
+  cursor: pointer;
+  border-radius: 8px;
+  text-align: left;
+  background: transparent;
+  transition: border-color 0.12s ease, background 0.12s ease;
+
+  &:hover {
+    border-color: var(--border-3);
+  }
+}
+
+.cornerBox {
+  position: relative;
+  width: 32px;
+  height: 22px;
+  border: 1px solid var(--border-3);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.cornerDot {
+  position: absolute;
+  width: 12px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--text-dim);
+
+  .selected & {
+    background: var(--accent);
+  }
+}
+
 .sliderHead {
   display: flex;
   align-items: center;

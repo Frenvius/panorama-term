@@ -9,6 +9,15 @@ import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
 import {
+  listMonitors,
+  monitorLabel,
+  NOTIF_CORNERS,
+  getNotifPlacement,
+  setNotifPlacement,
+  type NotifCorner,
+  type MonitorInfo
+} from '~/usecase/util/notifPlacement';
+import {
   KEYBINDINGS,
   getBinding,
   setBinding,
@@ -138,6 +147,11 @@ const SECTIONS: { id: Section; label: string; Icon: LucideIcon }[] = [
 
 const GROUPS = [...new Set(KEYBINDINGS.map((k) => k.group))];
 
+const dotStyle = (corner: NotifCorner): React.CSSProperties => {
+  const [y, x] = corner.split('-');
+  return { [y]: 3, [x]: 3 };
+};
+
 const THEMES: { id: ThemePref; label: string; description: string }[] = [
   { id: 'system', label: 'System', description: 'Follow the operating system setting.' },
   { id: 'dark', label: 'Dark', description: 'Dark surfaces across the app.' },
@@ -153,6 +167,12 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
   const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
+  const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
+  const [placement, setPlacement] = React.useState(getNotifPlacement);
+
+  React.useEffect(() => {
+    void listMonitors().then(setMonitors).catch(() => {});
+  }, []);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -175,6 +195,18 @@ const Settings = ({ onClose }: SettingsProps) => {
   const toggleMinimapPinned = () => {
     setMinimapPinned(!minimapPinned);
     setPinned(!minimapPinned);
+  };
+
+  const selectCorner = (corner: NotifCorner) => {
+    const next = { ...placement, corner };
+    setPlacement(next);
+    setNotifPlacement(next);
+  };
+
+  const selectMonitor = (monitor: string | null) => {
+    const next = { ...placement, monitor };
+    setPlacement(next);
+    setNotifPlacement(next);
   };
 
   const toggleHeaderPart = (id: HeaderPart) => {
@@ -261,6 +293,44 @@ const Settings = ({ onClose }: SettingsProps) => {
                     onToggle={toggleMinimapPinned}
                     description="Keep the minimap on screen instead of fading out when idle."
                   />
+                </div>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Notification corner</p>
+                <div className={styles.corners}>
+                  {NOTIF_CORNERS.map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => selectCorner(id)}
+                      className={`${styles.corner} ${placement.corner === id ? styles.selected : ''}`}
+                    >
+                      <span className={styles.cornerBox}>
+                        <span className={styles.cornerDot} style={dotStyle(id)} />
+                      </span>
+                      <span className={styles.optionLabel}>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Notification display</p>
+                <div className={styles.options}>
+                  <RadioOption
+                    label="Follow main window"
+                    selected={placement.monitor === null}
+                    onSelect={() => selectMonitor(null)}
+                    description="Show toasts on whichever display Panorama is on."
+                  />
+                  {monitors.map((monitor) => (
+                    <RadioOption
+                      key={monitor.name}
+                      label={monitorLabel(monitor.name)}
+                      selected={placement.monitor === monitor.name}
+                      onSelect={() => selectMonitor(monitor.name)}
+                      description={`${monitor.width}x${monitor.height}${monitor.primary ? ' - primary' : ''}`}
+                    />
+                  ))}
                 </div>
               </div>
             </div>

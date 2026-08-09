@@ -4,7 +4,9 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { X, Bell } from 'lucide-react';
 
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { getNotifPlacement, NOTIF_PLACEMENT_EVENT } from '~/usecase/util/notifPlacement';
 
+import type { NotifPlacement } from '~/usecase/util/notifPlacement';
 import type { NotifyKind, NotifyPayload } from '~/components/commons/Notifications/bridge';
 
 import styles from './styles.module.scss';
@@ -45,6 +47,7 @@ const NotificationOverlay = () => {
   const [toasts, setToasts] = React.useState<NotifyPayload[]>([]);
   const [expanded, setExpanded] = React.useState(false);
   const [heights, setHeights] = React.useState<Record<number, number>>({});
+  const [placement, setPlacement] = React.useState<NotifPlacement>(getNotifPlacement);
   const nodes = React.useRef(new Map<number, HTMLDivElement>());
   const observer = React.useRef<ResizeObserver | null>(null);
   const hoverTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -83,6 +86,13 @@ const NotificationOverlay = () => {
     };
   }, []);
 
+  React.useEffect(() => {
+    const moved = listen<NotifPlacement>(NOTIF_PLACEMENT_EVENT, (e) => setPlacement(e.payload));
+    return () => {
+      void moved.then((off) => off());
+    };
+  }, []);
+
   const bottoms = React.useMemo(() => {
     const out: number[] = [];
     let acc = PAD_BOTTOM;
@@ -94,13 +104,16 @@ const NotificationOverlay = () => {
   }, [toasts, heights]);
 
   React.useEffect(() => {
+    const layout = (height: number) =>
+      void invoke('notif_layout', { height, corner: placement.corner, monitor: placement.monitor });
+
     const n = toasts.length;
     if (n === 0) {
-      void invoke('notif_layout', { height: 0 });
+      layout(0);
       return;
     }
     if (toasts.some((t) => !heights[t.id])) {
-      void invoke('notif_layout', { height: PAD_TOP + PAD_BOTTOM + 72 });
+      layout(PAD_TOP + PAD_BOTTOM + 72);
       return;
     }
 
@@ -115,8 +128,8 @@ const NotificationOverlay = () => {
         top = Math.max(top, PAD_BOTTOM + depth * PEEK_OFFSET + visible);
       });
     }
-    void invoke('notif_layout', { height: PAD_TOP + top });
-  }, [toasts, expanded, heights, bottoms]);
+    layout(PAD_TOP + top);
+  }, [toasts, expanded, heights, bottoms, placement]);
 
   const open = (toast: NotifyPayload) => {
     void emit('notif:open', { tileId: toast.tileId });
