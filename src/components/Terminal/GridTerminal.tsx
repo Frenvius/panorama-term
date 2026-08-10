@@ -523,10 +523,11 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       if (!sel || !frame) return;
       const domSel = window.getSelection();
       if (domSel && !domSel.isCollapsed) return;
+      const text = selectText(frame.lines, frame.cols, sel);
+      if (!text.trim()) return;
       e.preventDefault();
       e.stopPropagation();
-      const text = selectText(frame.lines, frame.cols, sel);
-      if (text) writeClipboard(text);
+      writeClipboard(text);
       if (!e.shiftKey) {
         selRef.current = null;
         dirtyRef.current = true;
@@ -712,7 +713,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       paste();
       return;
     }
-    if (mod && !e.shiftKey && key === 'c' && selRef.current) {
+    if (mod && !e.shiftKey && key === 'c' && selectedText().trim()) {
       e.preventDefault();
       copySelection();
       clearSelection();

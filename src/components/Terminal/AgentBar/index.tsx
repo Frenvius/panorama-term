@@ -750,6 +750,12 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       else doUndo();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && key === 'c' && !window.getSelection()?.toString().trim()) {
+      e.preventDefault();
+      e.stopPropagation();
+      send('\x03');
+      return;
+    }
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();

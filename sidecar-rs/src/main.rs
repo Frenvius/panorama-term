@@ -3489,8 +3489,24 @@ async fn handle_conn(mut stream: TcpStream) {
     let _ = stream.write_all(resp.as_bytes()).await;
 }
 
+#[cfg(windows)]
+fn restore_ctrl_c() {
+    extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+    // CREATE_NEW_PROCESS_GROUP disables Ctrl+C, and every PTY child inherits that.
+    unsafe {
+        SetConsoleCtrlHandler(None, 0);
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    restore_ctrl_c();
     if std::env::args().nth(1).as_deref() == Some("host") {
         #[cfg(windows)]
         if std::env::args().nth(2).as_deref() != Some(DAEMON_ARG) {
