@@ -3,11 +3,17 @@ import type { LucideIcon } from 'lucide-react';
 import { X, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
-import { getMinimapPinned, setMinimapPinned } from '~/usecase/util/minimap';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
+import {
+  getMinimapCorner,
+  getMinimapPinned,
+  setMinimapCorner,
+  setMinimapPinned,
+  type MinimapCorner
+} from '~/usecase/util/minimap';
 import {
   listMonitors,
   monitorLabel,
@@ -167,6 +173,7 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
   const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
+  const [minimapCorner, setCorner] = React.useState(getMinimapCorner);
   const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
   const [placement, setPlacement] = React.useState(getNotifPlacement);
 
@@ -195,6 +202,11 @@ const Settings = ({ onClose }: SettingsProps) => {
   const toggleMinimapPinned = () => {
     setMinimapPinned(!minimapPinned);
     setPinned(!minimapPinned);
+  };
+
+  const selectMinimapCorner = (corner: MinimapCorner) => {
+    setCorner(corner);
+    setMinimapCorner(corner);
   };
 
   const selectCorner = (corner: NotifCorner) => {
@@ -293,6 +305,21 @@ const Settings = ({ onClose }: SettingsProps) => {
                     onToggle={toggleMinimapPinned}
                     description="Keep the minimap on screen instead of fading out when idle."
                   />
+                </div>
+                <div className={styles.corners}>
+                  {NOTIF_CORNERS.map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => selectMinimapCorner(id)}
+                      className={`${styles.corner} ${minimapCorner === id ? styles.selected : ''}`}
+                    >
+                      <span className={styles.cornerBox}>
+                        <span className={styles.cornerDot} style={dotStyle(id)} />
+                      </span>
+                      <span className={styles.optionLabel}>{label}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
               <div className={styles.group}>

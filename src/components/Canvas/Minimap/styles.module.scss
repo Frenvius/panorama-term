@@ -1,7 +1,5 @@
 .wrapper {
   position: absolute;
-  right: 14px;
-  bottom: 12px;
   z-index: 105;
   width: 160px;
   height: 112px;
@@ -11,6 +9,26 @@
   background: var(--minimap-bg);
   backdrop-filter: blur(8px);
   transition: opacity 150ms ease;
+
+  &[data-corner='bottom-right'] {
+    right: 14px;
+    bottom: 12px;
+  }
+
+  &[data-corner='bottom-left'] {
+    left: 14px;
+    bottom: 12px;
+  }
+
+  &[data-corner='top-right'] {
+    top: 12px;
+    right: 14px;
+  }
+
+  &[data-corner='top-left'] {
+    top: 12px;
+    left: 14px;
+  }
 
   &[data-visible='true'] {
     opacity: 1;

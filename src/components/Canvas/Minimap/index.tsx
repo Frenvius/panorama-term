@@ -3,7 +3,7 @@ import React from 'react';
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import { themeInk, THEME_EVENT } from '~/usecase/util/theme';
-import { getMinimapPinned, MINIMAP_PINNED_EVENT } from '~/usecase/util/minimap';
+import { getMinimapCorner, getMinimapPinned, MINIMAP_SETTINGS_EVENT } from '~/usecase/util/minimap';
 
 import styles from './styles.module.scss';
 
@@ -43,6 +43,7 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const [pinned, setPinned] = React.useState(getMinimapPinned);
+  const [corner, setCorner] = React.useState(getMinimapCorner);
 
   const viewRef = React.useRef(view);
   viewRef.current = view;
@@ -222,9 +223,12 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
   }, [scheduleRedraw]);
 
   React.useEffect(() => {
-    const onPinned = () => setPinned(getMinimapPinned());
-    window.addEventListener(MINIMAP_PINNED_EVENT, onPinned);
-    return () => window.removeEventListener(MINIMAP_PINNED_EVENT, onPinned);
+    const onSettings = () => {
+      setPinned(getMinimapPinned());
+      setCorner(getMinimapCorner());
+    };
+    window.addEventListener(MINIMAP_SETTINGS_EVENT, onSettings);
+    return () => window.removeEventListener(MINIMAP_SETTINGS_EVENT, onSettings);
   }, []);
 
   React.useEffect(() => {
@@ -290,7 +294,7 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
   };
 
   return (
-    <div ref={wrapperRef} className={styles.wrapper} data-visible="false">
+    <div ref={wrapperRef} className={styles.wrapper} data-corner={corner} data-visible="false">
       <canvas
         ref={canvasRef}
         className={styles.canvas}
