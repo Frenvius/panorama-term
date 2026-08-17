@@ -224,6 +224,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const lastFwdRef = React.useRef({ row: -1, col: -1 });
   const wheelAccRef = React.useRef(0);
   const pendingResumeRef = React.useRef(true);
+  const restartingRef = React.useRef(false);
   const resumeCandidateRef = React.useRef<string | null>(null);
   const activeRef = React.useRef(active);
   const visibleRef = React.useRef(visible);
@@ -449,7 +450,9 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       wsRef.current = ws;
       ws.onclose = () => {
         if (disposed || (readOnly && exited)) return;
-        retry = setTimeout(() => scheduleConnect(connect, visibleRef.current ? 2 : 1), 2000);
+        const wanted = restartingRef.current;
+        restartingRef.current = false;
+        retry = setTimeout(() => scheduleConnect(connect, visibleRef.current ? 2 : 1), wanted ? 0 : 2000);
       };
     };
     scheduleConnect(connect, visibleRef.current ? 2 : 0);
@@ -484,9 +487,16 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     lastRestartRef.current = restartKey;
     const ws = wsRef.current;
     if (!ws) return;
+    setResumeId(null);
+    frameRef.current = null;
+    rowCacheRef.current = [];
+    if (rowsRefEl.current) rowsRefEl.current.innerHTML = '';
+    if (overlayRef.current) overlayRef.current.innerHTML = '';
+    restartingRef.current = true;
     pendingResumeRef.current = true;
     sendPtyKill(ws);
-    ws.close();
+    const bail = setTimeout(() => ws.close(), 1500);
+    return () => clearTimeout(bail);
   }, [restartKey]);
 
   React.useEffect(() => {

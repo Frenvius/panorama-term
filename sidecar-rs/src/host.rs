@@ -298,6 +298,24 @@ fn handle_frame(inner: &Arc<HostInner>, kind: u8, payload: &[u8], outbound: &Sen
     }
 }
 
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    let _ = crate::hidden_command("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    unsafe {
+        libc::killpg(pid as i32, libc::SIGTERM);
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    unsafe {
+        libc::killpg(pid as i32, libc::SIGKILL);
+    }
+}
+
 fn emit_session_exit(
     exit_once: &Arc<AtomicBool>,
     alive: &Arc<AtomicBool>,
@@ -420,10 +438,16 @@ fn dispatch_rpc(
         }
         "kill" => {
             let key = v["key"].as_str().ok_or("missing key")?;
-            let sess = inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let s = sess.get(key).ok_or("session not found")?.clone();
+            let mut sess = inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sess.remove(key).ok_or("session not found")?;
             drop(sess);
-            let _ = s.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+            s.alive.store(false, Ordering::Relaxed);
+            s.exit_once.store(true, Ordering::SeqCst);
+            s.state.lock().unwrap_or_else(|e| e.into_inner()).subs.clear();
+            std::thread::spawn(move || {
+                kill_tree(s.pid);
+                let _ = s.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+            });
             Ok(serde_json::json!({}))
         }
         "snapshot" => {

@@ -153,8 +153,18 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   };
 
   const [restartKey, setRestartKey] = React.useState(0);
+  const [restarting, setRestarting] = React.useState(false);
   const [elevated, setElevated] = React.useState(false);
-  const restartTile = () => setRestartKey((n) => n + 1);
+  const restartTile = () => {
+    setRestartKey((n) => n + 1);
+    setRestarting(true);
+  };
+
+  React.useEffect(() => {
+    if (!restarting) return;
+    const t = setTimeout(() => setRestarting(false), 700);
+    return () => clearTimeout(t);
+  }, [restarting, restartKey]);
 
   const toggleElevated = () => {
     setElevated((v) => !v);
@@ -730,8 +740,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               </button>
             )}
             {!note && !code && !runView && parts.restart && (
-              <button className={styles.action} onClick={restartTile} aria-label="Restart terminal">
-                <RotateCw size={13} strokeWidth={2} />
+              <button
+                className={styles.action}
+                onClick={restartTile}
+                aria-label="Restart terminal"
+                data-tooltip={restarting ? 'Restarting' : 'Restart shell'}
+              >
+                <RotateCw size={13} strokeWidth={2} className={restarting ? styles.spin : undefined} />
               </button>
             )}
             {runView && (

@@ -2524,7 +2524,7 @@ fn run_consumer_loop(
                 }
                 flush_session(&s);
                 if s.run.is_none() {
-                    sessions().lock().unwrap().remove(&s.tile_id);
+                    forget_session(&s);
                 }
                 return;
             }
@@ -2533,7 +2533,7 @@ fn run_consumer_loop(
                 s.dirty.store(true, Ordering::Relaxed);
                 flush_session(&s);
                 if s.run.is_none() {
-                    sessions().lock().unwrap().remove(&s.tile_id);
+                    forget_session(&s);
                 }
                 return;
             }
@@ -2705,30 +2705,27 @@ fn focus_session(s: &Session, focused: bool) {
     host_handle().write(&s.tile_id, if focused { b"\x1b[I" } else { b"\x1b[O" });
 }
 
+fn forget_session(s: &Arc<Session>) {
+    let mut map = sessions().lock().unwrap();
+    if map
+        .get(&s.tile_id)
+        .map(|cur| Arc::ptr_eq(cur, s))
+        .unwrap_or(false)
+    {
+        map.remove(&s.tile_id);
+    }
+}
+
 fn kill_session(s: &Arc<Session>) {
-    let s = s.clone();
-    std::thread::spawn(move || {
-        let pid = s.pid;
-        #[cfg(windows)]
-        {
-            let _ = hidden_command("taskkill.exe")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+    s.exited.store(true, Ordering::Relaxed);
+    s.dirty.store(true, Ordering::Relaxed);
+    if let Some(run) = &s.run {
+        let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
+        if exit.is_none() {
+            *exit = Some(1);
         }
-        #[cfg(unix)]
-        {
-            unsafe {
-                libc::killpg(pid as i32, libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(150));
-            unsafe {
-                libc::killpg(pid as i32, libc::SIGKILL);
-            }
-        }
-        host_handle().kill(&s.tile_id);
-        s.exited.store(true, Ordering::Relaxed);
-        s.dirty.store(true, Ordering::Relaxed);
-    });
+    }
+    host_handle().kill(&s.tile_id);
 }
 
 fn run_stop(s: &Arc<Session>) {
@@ -3454,7 +3451,7 @@ async fn handle_conn(mut stream: TcpStream) {
             } else if !s.exited.load(Ordering::Relaxed) {
                 run_stop(&s);
             } else {
-                sessions().lock().unwrap().remove(&s.tile_id);
+                forget_session(&s);
             }
         }
         let body = "{\"ok\":true}";

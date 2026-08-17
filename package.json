@@ -11,6 +11,7 @@
     "ui:build": "vite build",
     "sidecar": "bun scripts/sidecar.ts",
     "sidecar:release": "bun scripts/sidecar.ts --release",
+    "test:restart": "bun scripts/restart-e2e.ts",
     "tauri": "tauri"
   },
   "dependencies": {
