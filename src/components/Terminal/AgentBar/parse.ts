@@ -41,17 +41,20 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
   return out;
 };
 
-export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'generic';
+export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'pi' | 'generic';
 
-const AGENT_UI = /[╭╮╰╯]|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
+const AGENT_UI = /[╭╮╰╯]|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\d+(?:\.\d+)?%\/\d+(?:\.\d+)?[kM]|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
 
 export const hasAgentUi = (text: string): boolean => AGENT_UI.test(text);
+
+const PI_STATS = /(?:\d+\.\d|\?)%\/(\d+(?:\.\d)?[kMB])(?: \(auto\))?(?:\s{2,}|\s*$)/;
 
 const AGENT_SIGNATURES: [AgentType, RegExp][] = [
   ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code|\/help for help/i],
   ['codex', /openai codex|codex cli|\bcodex\b\s+v\d|>_\s*codex/i],
   ['antigravity', /welcome to antigravity|antigravity cli|\bantigravity\b\s+v\d|>_\s*antigravity/i],
-  ['opencode', /welcome to opencode|opencode cli|\bopencode\b\s+v\d/i]
+  ['opencode', /welcome to opencode|opencode cli|\bopencode\b\s+v\d/i],
+  ['pi', PI_STATS]
 ];
 
 const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
@@ -63,8 +66,27 @@ const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
 export const detectAgentIdentity = (text: string): AgentType | null =>
   (AGENT_SIGNATURES.find(([, re]) => re.test(text)) ?? AGENT_MODEL_HINTS.find(([, re]) => re.test(text)))?.[0] ?? null;
 
+const parsePiStatus = (lines: string[]): ParsedStatus | null => {
+  const stats = lines.find((line) => PI_STATS.test(line));
+  const context = stats?.match(PI_STATS);
+  if (!stats || !context) return null;
+  const result: ParsedStatus = {};
+  if (context[1]) result.contextInfo = context[1];
+  const percent = stats.match(/(\d+\.\d)%\//);
+  if (percent?.[1]) result.progress = Math.round(parseFloat(percent[1]));
+  const right = stats.slice(stats.indexOf(context[0]) + context[0].length).trim();
+  const [name, thinking] = right.replace(/^\([^)]*\)\s*/, '').split('•');
+  const model = name?.trim();
+  if (model) result.model = model;
+  const level = thinking?.trim();
+  if (level && level !== 'thinking off') result.mode = level;
+  return result;
+};
+
 export const parseStatusLines = (lines: string[]): ParsedStatus => {
   if (lines.length === 0) return {};
+  const pi = parsePiStatus(lines);
+  if (pi) return pi;
   const combined = lines.join(' ').replace(/\s+/g, ' ');
   const firstLine = lines[0] ?? '';
   const result: ParsedStatus = {};
@@ -202,13 +224,13 @@ export const readFooter = (rows: string[]): FooterRead => {
   let cursor = rows.length - 1;
   while (cursor >= 0 && status.length < 2) {
     const row = rows[cursor] ?? '';
-    if (isBoxBottom(row) || isBoxTop(row)) break;
+    if (isInputBorder(row)) break;
     if (row.trim()) status.unshift(row);
     cursor--;
   }
 
   const above = rows.slice(0, cursor + 1);
-  const hasInputBox = above.some((r) => isBoxTop(r)) || above.some((r) => isBoxBottom(r));
+  const hasInputBox = above.some(isInputBorder);
 
   const statusText = status.join(' ');
   const hasStatusMarker = /\[[^\]]+\]/.test(statusText);

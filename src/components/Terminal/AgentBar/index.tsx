@@ -4,7 +4,7 @@ import { Brain, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import Suggest from './Suggest';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { AntigravityLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
+import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
@@ -893,6 +893,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         return {
           placeholder: 'Tell OpenCode what to do... (up-arrow history)',
           logo: <OpenCodeLogo size={18} className={styles.agentIcon} />
+        };
+      case 'pi':
+        return {
+          placeholder: 'Tell pi what to do... (up-arrow history)',
+          logo: <PiLogo size={18} className={styles.agentIcon} />
         };
       case 'generic':
         return {

@@ -294,6 +294,27 @@ export const OpenCodeLogo = ({ size = 18, className, style }: LogoProps) => (
   </svg>
 );
 
+export const PiLogo = ({ size = 18, className, style }: LogoProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    width={size}
+    height={size}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    style={{ flex: 'none', lineHeight: 1, ...style }}
+  >
+    <title>pi</title>
+    <path d="M4 7h16" />
+    <path d="M9.5 7v11" />
+    <path d="M16 7v8c0 1.7.9 2.6 2.5 2.6" />
+  </svg>
+);
+
 export const GenericAgentLogo = ({ size = 18, className, style }: LogoProps) => (
   <svg
     viewBox="0 0 24 24"

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { readFooter, countFrameInputChars, countInputChars, countInputImages, isAgentBusy } from '~/components/Terminal/AgentBar/parse';
+import { readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -107,5 +107,33 @@ describe('readFooter questionMode', () => {
 
   it('still fires on a real picker screen', () => {
     expect(readFooter(['  Select a session to resume', '  1. foo', '  2. bar']).questionMode).toBe(true);
+  });
+});
+
+
+describe('pi footer', () => {
+  const piScreen = [
+    '  some output above',
+    RULE,
+    '   ',
+    RULE,
+    '~/workspace/projects/panorama-term (main)',
+    '$0.000 (sub) 12.4%/272k (auto)                          (openai-codex) gpt-5.6-sol • medium'
+  ];
+
+  it('identifies pi from the stats line', () => {
+    expect(detectAgentIdentity(piScreen.join('\n'))).toBe('pi');
+  });
+
+  it('reads model, context and thinking level', () => {
+    const status = parseStatusLines(readFooter(piScreen).status);
+    expect(status.model).toBe('gpt-5.6-sol');
+    expect(status.contextInfo).toBe('272k');
+    expect(status.progress).toBe(12);
+    expect(status.mode).toBe('medium');
+  });
+
+  it('keeps the bar visible instead of treating the screen as a menu', () => {
+    expect(readFooter(piScreen).questionMode).toBe(false);
   });
 });
