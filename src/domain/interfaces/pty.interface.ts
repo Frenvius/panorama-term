@@ -21,8 +21,17 @@ export interface PtyCwdMessage {
   branch?: string | null;
 }
 
+export interface AgentModel {
+  id: string;
+  provider: string;
+  efforts: string[];
+  contextWindow?: number;
+}
+
 export interface ClaudeState {
   agent?: string;
+  models?: AgentModel[];
+  efforts?: string[];
   model?: string;
   mode?: string;
   permissionMode?: string;

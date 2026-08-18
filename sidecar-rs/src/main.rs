@@ -1471,6 +1471,8 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "agent",
     "model",
     "mode",
+    "models",
+    "efforts",
     "status",
     "effort",
     "costUsd",
