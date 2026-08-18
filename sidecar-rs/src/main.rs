@@ -1895,6 +1895,30 @@ fn linked_peers_context() -> Option<String> {
     ))
 }
 
+fn install_pi_extension() {
+    const SOURCE: &str = include_str!("../assets/pi-extension.ts");
+
+    let Some(home) = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+    else {
+        return;
+    };
+    let agent_dir = Path::new(&home).join(".pi").join("agent");
+    if !agent_dir.exists() {
+        return;
+    }
+    let extensions = agent_dir.join("extensions");
+    if std::fs::create_dir_all(&extensions).is_err() {
+        return;
+    }
+    let file = extensions.join("panorama.ts");
+    if std::fs::read_to_string(&file).ok().as_deref() == Some(SOURCE) {
+        return;
+    }
+    let _ = std::fs::write(&file, SOURCE);
+}
+
 fn install_claude_hook() {
     let Some(home) = std::env::var("USERPROFILE")
         .ok()
@@ -3535,6 +3559,7 @@ async fn main() {
     }
     tokio::task::block_in_place(|| reconnect_sessions());
     install_claude_hook();
+    install_pi_extension();
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
