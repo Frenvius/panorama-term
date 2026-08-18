@@ -63,6 +63,14 @@ const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
   ['antigravity', /\bgemini[\s-][\d.]/i]
 ];
 
+const DECLARED_AGENTS: AgentType[] = ['claude', 'antigravity', 'codex', 'opencode', 'pi', 'generic'];
+
+export const declaredAgent = (state: ClaudeState | null): AgentType | null => {
+  if (!state) return null;
+  const declared = DECLARED_AGENTS.find((type) => type === state.agent);
+  return declared ?? 'claude';
+};
+
 export const detectAgentIdentity = (text: string): AgentType | null =>
   (AGENT_SIGNATURES.find(([, re]) => re.test(text)) ?? AGENT_MODEL_HINTS.find(([, re]) => re.test(text)))?.[0] ?? null;
 
@@ -265,4 +273,4 @@ export const detectSuggestTrigger = (text: string, caret: number): SuggestTrigge
   if (/^\/\S*$/.test(before)) return { kind: 'slash', query: before.slice(1) };
   return null;
 };
-import type { GridFrame } from '~/domain/interfaces/pty.interface';
+import type { ClaudeState, GridFrame } from '~/domain/interfaces/pty.interface';

@@ -22,6 +22,7 @@ export interface PtyCwdMessage {
 }
 
 export interface ClaudeState {
+  agent?: string;
   model?: string;
   mode?: string;
   permissionMode?: string;

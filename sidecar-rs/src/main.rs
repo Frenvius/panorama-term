@@ -289,6 +289,7 @@ fn reconnect_sessions() {
             let _ = parser.callbacks_mut().take_clipboard();
             let _ = parser.callbacks_mut().take_responses();
             let _ = parser.callbacks_mut().take_agent_events();
+            let _ = parser.callbacks_mut().take_agent_states();
             let _ = parser.callbacks_mut().take_notifies();
             let _ = parser.callbacks_mut().take_progress();
         }
@@ -504,6 +505,7 @@ struct CwdSink {
     title_changed: bool,
     responses: Vec<Vec<u8>>,
     agent_events: Vec<String>,
+    agent_states: Vec<String>,
     notifies: Vec<(String, String)>,
     progress: Option<(u8, u8)>,
     progress_changed: bool,
@@ -551,6 +553,10 @@ impl CwdSink {
         std::mem::take(&mut self.agent_events)
     }
 
+    fn take_agent_states(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.agent_states)
+    }
+
     fn take_notifies(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.notifies)
     }
@@ -566,6 +572,7 @@ impl CwdSink {
 }
 
 const AGENT_EVENT_SENTINEL: &str = "panorama://cli-agent";
+const AGENT_STATE_SENTINEL: &str = "panorama://agent-state";
 const OSC777_MAX: usize = 16 * 1024;
 
 const OSC_FG_RESPONSE: &[u8] = b"\x1b]10;rgb:c7c7/d0d0/e0e0\x07";
@@ -631,6 +638,8 @@ impl vt100::Callbacks for CwdSink {
             }
             if title == AGENT_EVENT_SENTINEL {
                 self.agent_events.push(body);
+            } else if title == AGENT_STATE_SENTINEL {
+                self.agent_states.push(body);
             } else {
                 self.notifies.push((title, body));
             }
@@ -1456,6 +1465,36 @@ fn agent_event_ws_msg(body: &str) -> Option<String> {
         "message": field("message"),
     });
     Some(msg.to_string())
+}
+
+const AGENT_STATE_KEYS: &[&str] = &[
+    "agent",
+    "model",
+    "mode",
+    "status",
+    "effort",
+    "costUsd",
+    "sessionName",
+    "contextTokens",
+    "contextPercent",
+    "contextWindow",
+];
+
+fn agent_state_ws_msg(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let mut obj = serde_json::Map::new();
+    obj.insert("t".into(), "claude".into());
+    for key in AGENT_STATE_KEYS {
+        if let Some(val) = v.get(key) {
+            if !val.is_null() {
+                obj.insert((*key).into(), val.clone());
+            }
+        }
+    }
+    if obj.len() == 1 {
+        return None;
+    }
+    Some(serde_json::Value::Object(obj).to_string())
 }
 
 fn status_ws_msg(v: &serde_json::Value) -> Option<String> {
@@ -2383,6 +2422,7 @@ fn spawn_session(
         let _ = parser.callbacks_mut().take_clipboard();
         let _ = parser.callbacks_mut().take_responses();
         let _ = parser.callbacks_mut().take_agent_events();
+        let _ = parser.callbacks_mut().take_agent_states();
         let _ = parser.callbacks_mut().take_notifies();
         let _ = parser.callbacks_mut().take_progress();
     }
@@ -2511,6 +2551,11 @@ fn run_consumer_loop(
                     let mut outgoing: Vec<String> = Vec::new();
                     for body in p.callbacks_mut().take_agent_events() {
                         if let Some(msg) = agent_event_ws_msg(&body) {
+                            outgoing.push(msg);
+                        }
+                    }
+                    for body in p.callbacks_mut().take_agent_states() {
+                        if let Some(msg) = agent_state_ws_msg(&body) {
                             outgoing.push(msg);
                         }
                     }
@@ -3601,7 +3646,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_event_ws_msg, decode_osc52, default_status_line, diff_lines, sanitize_event_text,
+        agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, sanitize_event_text,
         status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, RunLog,
         OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
@@ -3688,6 +3733,24 @@ mod tests {
         );
         parser.process(b"\x1b]9;4;0;0\x07");
         assert_eq!(parser.callbacks_mut().take_progress(), Some((0, 0)));
+    }
+
+    #[test]
+    fn osc777_routes_agent_state_to_a_claude_message() {
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let body = r#"{"agent":"pi","model":"gpt-5.6-sol","secret":"drop me"}"#;
+        parser.process(format!("]777;notify;panorama://agent-state;{body}").as_bytes());
+        let states = parser.callbacks_mut().take_agent_states();
+        assert_eq!(states, vec![body.to_string()]);
+        assert!(parser.callbacks_mut().take_notifies().is_empty());
+        let msg = agent_state_ws_msg(&states[0]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["t"], "claude");
+        assert_eq!(v["agent"], "pi");
+        assert_eq!(v["model"], "gpt-5.6-sol");
+        assert!(v.get("secret").is_none());
+        assert_eq!(agent_state_ws_msg("{}"), None);
+        assert_eq!(agent_state_ws_msg("not json"), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -135,5 +135,17 @@ describe('pi footer', () => {
 
   it('keeps the bar visible instead of treating the screen as a menu', () => {
     expect(readFooter(piScreen).questionMode).toBe(false);
+  });
+});
+
+describe('declaredAgent', () => {
+  it('trusts the agent the sidecar reports', () => {
+    expect(declaredAgent({ agent: 'pi', model: 'gpt-5.6-sol' })).toBe('pi');
+  });
+
+  it('falls back to claude for the statusline, and to nothing without state', () => {
+    expect(declaredAgent({ model: 'opus' })).toBe('claude');
+    expect(declaredAgent({ agent: 'not-an-agent' })).toBe('claude');
+    expect(declaredAgent(null)).toBe(null);
   });
 });

@@ -7,7 +7,7 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
-import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, declaredAgent, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -236,7 +236,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             setAgentType(null);
           } else {
             const live = getStructured();
-            if (live && currentType === 'generic') setAgentType('claude');
+            const declared = declaredAgent(live);
+            if (declared && currentType === 'generic') setAgentType(declared);
             setStructured(live);
           }
         }
@@ -250,7 +251,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         lastSeenRef.current = now;
         seenRef.current = true;
         if (!currentType || currentType === 'generic') {
-          const identity = getStructured() ? 'claude' : detectAgentIdentity(lines.join('\n'));
+          const identity = declaredAgent(getStructured()) ?? detectAgentIdentity(lines.join('\n'));
           if (identity || !currentType) setAgentType(identity ?? 'generic');
         }
       } else if (seenRef.current && now - lastSeenRef.current > GONE_MS) {

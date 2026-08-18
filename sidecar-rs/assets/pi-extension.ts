@@ -6,6 +6,8 @@ import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent
 
 const MOUSE_TRACKING = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 
+const AGENT_STATE = "\x1b]777;notify;panorama://agent-state;";
+
 const CTRL_BACKSPACE = "\x08";
 const DELETE_WORD_BACKWARD = "\x17";
 
@@ -21,6 +23,10 @@ if (-not [P.C]::GetConsoleMode($handle, [ref]$mode)) { exit 1 }
 $wanted = ($mode -band (-bnot 0x0040)) -bor 0x0080 -bor 0x0010
 if (-not [P.C]::SetConsoleMode($handle, $wanted)) { exit 1 }
 `;
+
+function announce(state: Record<string, unknown>): void {
+	process.stdout.write(`${AGENT_STATE}${JSON.stringify(state)}\x07`);
+}
 
 class PanoramaEditor extends CustomEditor {
 	handleInput(data: string): void {
@@ -77,6 +83,8 @@ function enableConsoleMouse(): boolean {
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+
+		announce({ agent: "pi" });
 
 		const options = editorOptions(ctx.cwd);
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => new PanoramaEditor(tui, theme, keybindings, options));
