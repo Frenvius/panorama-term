@@ -53,6 +53,7 @@ export interface FileDiff {
   new: string;
   binary: boolean;
   crlf: boolean;
+  old_crlf: boolean;
 }
 
 export interface LogRow {

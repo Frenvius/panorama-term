@@ -786,6 +786,7 @@ pub struct FileDiff {
     new: String,
     binary: bool,
     crlf: bool,
+    old_crlf: bool,
 }
 
 fn is_binary(text: &[u8]) -> bool {
@@ -824,17 +825,20 @@ pub async fn git_diff_file(path: String, file: String) -> Result<FileDiff, Strin
             new: String::new(),
             binary: true,
             crlf: false,
+            old_crlf: false,
         });
     }
 
     let new = String::from_utf8_lossy(&bytes).into_owned();
     let crlf = new.contains("\r\n");
+    let old_crlf = old.contains("\r\n");
 
     Ok(FileDiff {
         old: old.replace("\r\n", "\n"),
         new: new.replace("\r\n", "\n"),
         binary: false,
         crlf,
+        old_crlf,
     })
 }
 

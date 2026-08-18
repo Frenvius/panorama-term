@@ -3,7 +3,7 @@ import type { DiffViewMode, HighlightMode } from '~/domain/interfaces/diff.inter
 
 import React from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { X, Space, Undo2, Shrink, ArrowUp, ArrowDown, LayoutGrid, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import { X, Info, Space, Undo2, Shrink, ArrowUp, ArrowDown, LayoutGrid, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 
 import Panes from '~/components/DiffViewer/Panes';
 import Picker from '~/components/DiffViewer/Picker';
@@ -43,6 +43,8 @@ const VIEW_MODES: DiffViewMode[] = ['side-by-side', 'unified'];
 const HIGHLIGHT_MODES: HighlightMode[] = ['lines', 'words', 'characters', 'none'];
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
 
 const DiffViewer = ({
   root,
@@ -195,6 +197,9 @@ const DiffViewer = ({
   };
 
   const ready = Boolean(diff) && !error;
+  const same = ready && !diff!.binary && chunks.length === 0;
+  const eolOnly = same && diff!.crlf !== diff!.old_crlf;
+  const banner = !same ? null : eolOnly ? 'Contents have differences only in line separators' : 'Contents are identical';
   const total = chunks.length === 1 ? '1 difference' : `${chunks.length} differences`;
   const status = chunkIndex < 0 ? total : `${chunkIndex + 1} of ${total}`;
 
@@ -208,7 +213,6 @@ const DiffViewer = ({
       );
     }
     if (diff.binary) return <div className={styles.notice}>Binary file</div>;
-    if (!chunks.length) return <div className={styles.notice}>No changes</div>;
 
     if (view === 'unified') {
       return <Unified old={diff.old} next={diff.new} lang={lang} chunks={chunks} collapse={collapse} />;
@@ -341,6 +345,18 @@ const DiffViewer = ({
         <span className={styles.spacer} />
         {ready && <span className={styles.status}>{status}</span>}
       </div>
+
+      {banner && (
+        <div className={styles.banner}>
+          <Info size={13} strokeWidth={2} />
+          <span>{banner}</span>
+          {eolOnly && (
+            <span className={styles.eol}>
+              {eolLabel(diff!.old_crlf)} to {eolLabel(diff!.crlf)}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className={styles.body}>{body()}</div>
     </div>
