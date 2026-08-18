@@ -149,8 +149,26 @@ fn read_temp_image(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[cfg(target_os = "windows")]
+fn exclude_from_switcher(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    let Ok(handle) = win.hwnd() else {
+        return;
+    };
+    let hwnd = handle.0 as HWND;
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let next = (ex & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next as isize);
+    }
+}
+
 fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(app, "notif", WebviewUrl::App("index.html".into()))
+    let win = WebviewWindowBuilder::new(app, "notif", WebviewUrl::App("index.html".into()))
         .title("Panorama Notifications")
         .inner_size(NOTIF_WIDTH, 120.0)
         .decorations(false)
@@ -163,6 +181,9 @@ fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .visible(false)
         .content_protected(true)
         .build()?;
+    #[cfg(target_os = "windows")]
+    exclude_from_switcher(&win);
+    let _ = win;
     Ok(())
 }
 
