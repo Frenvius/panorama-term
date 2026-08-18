@@ -1897,6 +1897,8 @@ fn linked_peers_context() -> Option<String> {
 
 fn install_pi_extension() {
     const SOURCE: &str = include_str!("../assets/pi-extension.ts");
+    const STALE_FILES: &[&str] = &[];
+    const STALE_DIRS: &[&str] = &["panorama"];
 
     let Some(home) = std::env::var("USERPROFILE")
         .ok()
@@ -1911,6 +1913,15 @@ fn install_pi_extension() {
     let extensions = agent_dir.join("extensions");
     if std::fs::create_dir_all(&extensions).is_err() {
         return;
+    }
+    for name in STALE_FILES {
+        let _ = std::fs::remove_file(extensions.join(name));
+    }
+    for name in STALE_DIRS {
+        let dir = extensions.join(name);
+        if dir.join("index.ts").is_file() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
     let file = extensions.join("panorama.ts");
     if std::fs::read_to_string(&file).ok().as_deref() == Some(SOURCE) {
