@@ -114,6 +114,9 @@ const buildDirTree = (files: FileChange[], prefix: string): TreeNode[] => {
 const collectPaths = (nodes: TreeNode[]): string[] =>
   nodes.flatMap((node) => (node.kind === 'file' ? [node.change.path] : collectPaths(node.children)));
 
+const collectFiles = (nodes: TreeNode[]): FileChange[] =>
+  nodes.flatMap((node) => (node.kind === 'file' ? [node.change] : collectFiles(node.children)));
+
 const collectFolderIds = (nodes: TreeNode[]): string[] =>
   nodes.flatMap((node) => (node.kind === 'folder' ? [node.id, ...collectFolderIds(node.children)] : []));
 
@@ -141,6 +144,18 @@ const TriCheckbox = ({ state, onChange }: TriCheckboxProps) => {
   return <input ref={ref} type="checkbox" checked={state === 'all'} onChange={change} onClick={stop} />;
 };
 
+const rollbackText = (files: FileChange[]): string => {
+  if (files.length === 1) {
+    const file = files[0];
+    return file.is_untracked || statusKey(file) === 'added'
+      ? `'${file.path}' is not in the last commit and will be deleted.`
+      : `Revert changes in '${file.path}' to the last commit?`;
+  }
+  const gone = files.filter((f) => f.is_untracked || statusKey(f) === 'added').length;
+  const base = `Revert changes in ${pluralize(files.length)} to the last commit?`;
+  return gone > 0 ? `${base} ${pluralize(gone)} not in the last commit will be deleted.` : base;
+};
+
 const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const listRef = React.useRef<HTMLDivElement>(null);
   const [view, setView] = React.useState<View>(savedView);
@@ -158,10 +173,21 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const [groupBy, setGroupBy] = React.useState<'directory' | 'module'>('module');
   const [amendMenu, setAmendMenu] = React.useState<CommitMessageEntry[] | null>(null);
   const [viewMenu, setViewMenu] = React.useState<{ x: number; y: number } | null>(null);
-  const [fileMenu, setFileMenu] = React.useState<{ x: number; y: number; rel: string; file: FileChange | null } | null>(
-    null
-  );
-  const [rollback, setRollback] = React.useState<FileChange | null>(null);
+  const [fileMenu, setFileMenu] = React.useState<{
+    x: number;
+    y: number;
+    rel: string;
+    file: FileChange | null;
+    files: FileChange[];
+  } | null>(null);
+  const [sectionMenu, setSectionMenu] = React.useState<{
+    x: number;
+    y: number;
+    id: string;
+    paths: string[];
+    files: FileChange[];
+  } | null>(null);
+  const [rollback, setRollback] = React.useState<FileChange[] | null>(null);
   const [rollbackBusy, setRollbackBusy] = React.useState(false);
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
@@ -340,23 +366,71 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const openFileMenu = (e: React.MouseEvent, file: FileChange) => {
     e.preventDefault();
     e.stopPropagation();
-    setFileMenu({ x: e.clientX, y: e.clientY, rel: file.path, file });
+    setFileMenu({ x: e.clientX, y: e.clientY, rel: file.path, file, files: [file] });
   };
 
-  const openFolderMenu = (e: React.MouseEvent, rel: string) => {
+  const openFolderMenu = (e: React.MouseEvent, rel: string, files: FileChange[]) => {
     e.preventDefault();
     e.stopPropagation();
-    setFileMenu({ x: e.clientX, y: e.clientY, rel, file: null });
+    setFileMenu({ x: e.clientX, y: e.clientY, rel, file: null, files });
   };
 
   const closeFileMenu = () => setFileMenu(null);
+
+  const closeSectionMenu = () => setSectionMenu(null);
+
+  const collapseSection = (id: string) => {
+    if (!status) return;
+    const files = id === 'changes' ? status.changes : status.unversioned;
+    setCollapsed((prev) => new Set([...prev, id, ...collectFolderIds(buildDirTree(files, id))]));
+  };
+
+  const expandSection = (id: string) => {
+    if (!status) return;
+    const files = id === 'changes' ? status.changes : status.unversioned;
+    const ids = new Set([id, ...collectFolderIds(buildDirTree(files, id))]);
+    setCollapsed((prev) => new Set([...prev].filter((x) => !ids.has(x))));
+  };
+
+  const sectionItems = (id: string, paths: string[], files: FileChange[]): ContextMenuEntry[] => [
+    {
+      label: 'Select all',
+      icon: <Check size={15} strokeWidth={1.75} />,
+      onSelect: () => setMany(paths, true)
+    },
+    {
+      label: 'Deselect all',
+      icon: <span />,
+      onSelect: () => setMany(paths, false)
+    },
+    'separator',
+    {
+      label: 'Expand all',
+      icon: <ListTree size={15} strokeWidth={1.75} />,
+      onSelect: () => expandSection(id)
+    },
+    {
+      label: 'Collapse all',
+      icon: <ListCollapse size={15} strokeWidth={1.75} />,
+      onSelect: () => collapseSection(id)
+    },
+    'separator',
+    {
+      label: `Rollback ${pluralize(files.length)}...`,
+      icon: <Undo2 size={15} strokeWidth={1.75} />,
+      danger: true,
+      onSelect: () => setRollback(files)
+    },
+    gitEntry(files.map((f) => f.path))
+  ];
 
   const sep = root.includes('/') ? '/' : '\\';
   const absPath = (rel: string) => root + sep + rel.replace(/\//g, sep);
   const absDir = (file: FileChange) => (file.dir ? root + sep + file.dir.replace(/\//g, sep) : root);
 
-  const addIgnore = (rel: string, local: boolean) => {
-    gitAddIgnore(root, rel, local)
+  const addIgnore = (patterns: string[], local: boolean) => {
+    patterns
+      .reduce((chain, pattern) => chain.then(() => gitAddIgnore(root, pattern, local)), Promise.resolve())
       .then(() => fetchStatus(true))
       .catch((err: unknown) => setError(message(err)));
   };
@@ -366,7 +440,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   const confirmRollback = () => {
     if (!rollback || rollbackBusy) return;
     setRollbackBusy(true);
-    gitRollbackFile(root, rollback.path)
+    rollback
+      .reduce((chain, file) => chain.then(() => gitRollbackFile(root, file.path)), Promise.resolve())
       .then(() => {
         setRollback(null);
         fetchStatus(true);
@@ -386,17 +461,27 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
     </>
   );
 
-  const gitEntry = (rel: string): ContextMenuEntry => ({
+  const gitEntry = (patterns: string[]): ContextMenuEntry => ({
     label: 'Git',
     icon: <GitBranch size={15} strokeWidth={1.75} />,
     submenu: [
-      { label: 'Add local exclude', onSelect: () => addIgnore(rel, true) },
-      { label: 'Add to .gitignore', onSelect: () => addIgnore(rel, false) }
+      { label: 'Add local exclude', onSelect: () => addIgnore(patterns, true) },
+      { label: 'Add to .gitignore', onSelect: () => addIgnore(patterns, false) }
     ]
   });
 
-  const menuItems = (rel: string, file: FileChange | null): ContextMenuEntry[] => {
-    if (!file) return [gitEntry(rel)];
+  const menuItems = (rel: string, file: FileChange | null, files: FileChange[]): ContextMenuEntry[] => {
+    if (!file)
+      return [
+        {
+          label: `Rollback ${pluralize(files.length)}...`,
+          icon: <Undo2 size={15} strokeWidth={1.75} />,
+          danger: true,
+          onSelect: () => setRollback(files)
+        },
+        'separator',
+        gitEntry([rel])
+      ];
     return [
       {
         label: 'Commit file',
@@ -412,7 +497,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         label: 'Rollback...',
         icon: <Undo2 size={15} strokeWidth={1.75} />,
         danger: true,
-        onSelect: () => setRollback(file)
+        onSelect: () => setRollback([file])
       },
       'separator',
       { label: 'Copy path', icon: <Copy size={15} strokeWidth={1.75} />, onSelect: () => writeClipboard(absPath(rel)) },
@@ -424,7 +509,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         onSelect: () => revealPath(absDir(file))
       },
       'separator',
-      gitEntry(rel)
+      gitEntry([rel])
     ];
   };
 
@@ -511,7 +596,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
       const paths = collectPaths(node.children);
       const open = () => toggleCollapse(node.id);
       const check = (on: boolean) => setMany(paths, on);
-      const menu = (e: React.MouseEvent) => openFolderMenu(e, node.id.slice(node.id.indexOf(':') + 1));
+      const files = collectFiles(node.children);
+      const menu = (e: React.MouseEvent) => openFolderMenu(e, node.id.slice(node.id.indexOf(':') + 1), files);
 
       return (
         <div key={node.id}>
@@ -594,10 +680,15 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
     const shut = !needle && collapsed.has(id);
     const open = () => toggleCollapse(id);
     const check = (on: boolean) => setMany(paths, on);
+    const menu = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setSectionMenu({ x: e.clientX, y: e.clientY, id, paths, files: shown });
+    };
 
     return (
       <div>
-        <div className={styles.sectionHead} onClick={open}>
+        <div className={styles.sectionHead} onClick={open} onContextMenu={menu}>
           {shut ? (
             <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
           ) : (
@@ -759,15 +850,24 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
 
       {viewMenu && <ContextMenu x={viewMenu.x} y={viewMenu.y} items={viewItems} onClose={closeViewMenu} />}
       {fileMenu && (
-        <ContextMenu x={fileMenu.x} y={fileMenu.y} items={menuItems(fileMenu.rel, fileMenu.file)} onClose={closeFileMenu} />
+        <ContextMenu
+          x={fileMenu.x}
+          y={fileMenu.y}
+          items={menuItems(fileMenu.rel, fileMenu.file, fileMenu.files)}
+          onClose={closeFileMenu}
+        />
+      )}
+      {sectionMenu && (
+        <ContextMenu
+          x={sectionMenu.x}
+          y={sectionMenu.y}
+          items={sectionItems(sectionMenu.id, sectionMenu.paths, sectionMenu.files)}
+          onClose={closeSectionMenu}
+        />
       )}
       {rollback && (
         <Dialog title="Rollback changes" footer={rollbackFooter} onClose={closeRollback} onSubmit={confirmRollback}>
-          <p className={styles.confirmText}>
-            {rollback.is_untracked || statusKey(rollback) === 'added'
-              ? `'${rollback.path}' is not in the last commit and will be deleted.`
-              : `Revert changes in '${rollback.path}' to the last commit?`}
-          </p>
+          <p className={styles.confirmText}>{rollbackText(rollback)}</p>
         </Dialog>
       )}
     </div>
