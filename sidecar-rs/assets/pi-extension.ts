@@ -132,6 +132,18 @@ export default function (pi: ExtensionAPI) {
 		if (enableConsoleMouse()) process.stdout.write(MOUSE_TRACKING);
 	});
 
-	pi.on("model_select", (event) => announce({ model: event.model.id, efforts: efforts(event.model) }));
+	pi.registerCommand("panorama-effort", {
+		description: "Set the thinking level",
+		handler: async (args) => {
+			const level = args.trim() as ThinkingLevel;
+			if (THINKING_LEVELS.includes(level)) pi.setThinkingLevel(level);
+		},
+	});
+
+	// Bridged providers report a placeholder id for messages the backing agent answered locally.
+	pi.on("model_select", (event) => {
+		if (event.model.id.startsWith("<")) return;
+		announce({ model: event.model.id, efforts: efforts(event.model) });
+	});
 	pi.on("thinking_level_select", (event) => announce({ effort: event.level }));
 }

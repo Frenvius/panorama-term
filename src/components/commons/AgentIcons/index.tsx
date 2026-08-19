@@ -296,22 +296,21 @@ export const OpenCodeLogo = ({ size = 18, className, style }: LogoProps) => (
 
 export const PiLogo = ({ size = 18, className, style }: LogoProps) => (
   <svg
-    viewBox="0 0 24 24"
+    viewBox="0 0 800 800"
     width={size}
     height={size}
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
     xmlns="http://www.w3.org/2000/svg"
     className={className}
     style={{ flex: 'none', lineHeight: 1, ...style }}
   >
     <title>pi</title>
-    <path d="M4 7h16" />
-    <path d="M9.5 7v11" />
-    <path d="M16 7v8c0 1.7.9 2.6 2.5 2.6" />
+    <rect width="800" height="800" rx="120" fill="#09090b" />
+    <path
+      fill="#fff"
+      fillRule="evenodd"
+      d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+    />
+    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
   </svg>
 );
 

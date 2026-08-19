@@ -2,16 +2,18 @@ import React from 'react';
 import { Brain, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 
 import Suggest from './Suggest';
+import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
+import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, declaredAgent, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
-import type { ClaudeState } from '~/domain/interfaces/pty.interface';
+import type { AgentModel, ClaudeState } from '~/domain/interfaces/pty.interface';
 import type { ContentPart, ParsedStatus, SuggestTrigger, AgentBarProps, PromptSuggestion, AgentSuggestHandle } from './types';
 
 import styles from './styles.module.scss';
@@ -85,6 +87,7 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
 
 const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive }: AgentBarProps) => {
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
+  const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
   const [history, setHistory] = React.useState<ContentPart[][]>(() => loadHistory());
   const [suggest, setSuggest] = React.useState<SuggestTrigger>(null);
@@ -295,6 +298,23 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (qTimer) clearTimeout(qTimer);
     };
   }, [getLines, getStructured]);
+
+  const catalog = structured?.models;
+
+  React.useEffect(() => {
+    const sync = () => setHiddenProviders(getHiddenProviders());
+    window.addEventListener(AGENT_PROVIDERS_EVENT, sync);
+    return () => window.removeEventListener(AGENT_PROVIDERS_EVENT, sync);
+  }, []);
+
+  React.useEffect(() => {
+    if (catalog) rememberProviders(catalog.map((entry) => entry.provider));
+  }, [catalog]);
+
+  const piModels = React.useMemo(
+    () => visibleModels(catalog ?? [], hiddenProviders),
+    [catalog, hiddenProviders]
+  );
 
   const onAgentActiveRef = React.useRef(onAgentActive);
   onAgentActiveRef.current = onAgentActive;
@@ -825,6 +845,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     if (scraped) {
       base.model = scraped.model;
       base.contextInfo = scraped.contextInfo;
+    } else if (agentType === 'pi' && structured?.model) {
+      base.model = structured.model;
     } else if (structured?.model) {
       const pm = prettyModel(structured.model);
       if (pm.model) base.model = pm.model;
@@ -844,7 +866,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (!base.contextInfo) base.contextInfo = is1M ? '1M' : '200k';
     }
     return base;
-  }, [status, scraped, structured, is1M]);
+  }, [status, scraped, structured, is1M, agentType]);
 
   const effort = structured?.effort ?? '';
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
@@ -872,6 +894,16 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     void sendDraft({ text: `/model ${id}`, images: [] });
     setModelMenu(false);
   };
+
+  const pickPiModel = (entry: AgentModel) => {
+    void sendDraft({ text: `/model ${entry.provider}/${entry.id}`, images: [] });
+  };
+
+  const pickPiEffort = (level: string) => {
+    void sendDraft({ text: `/panorama-effort ${level}`, images: [] });
+  };
+
+  const piPick = { model: pickPiModel, effort: pickPiEffort };
 
   const pickEffort = (id: string) => () => {
     void sendDraft({ text: `/effort ${id}`, images: [] });
@@ -925,7 +957,12 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
           {meta.logo}
         </button>
       )}
-      <div className={styles.bar} style={hidden ? { display: 'none' } : undefined} onClick={focusEditor}>
+      <div
+        className={styles.bar}
+        data-agent={agentType}
+        style={hidden ? { display: 'none' } : undefined}
+        onClick={focusEditor}
+      >
         <div className={styles.row}>
           <div className={styles.logo} aria-hidden="true">
             {meta.logo}
@@ -946,6 +983,15 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             onClick={handleEditorClick}
             onKeyDown={onKeyDown}
           />
+          {agentType === 'pi' && (
+            <PiActions
+              models={piModels}
+              model={structured?.model ?? parsed.model}
+              effort={effort}
+              efforts={structured?.efforts}
+              onPick={piPick}
+            />
+          )}
           {agentType === 'claude' && (
             <div className={styles.actions}>
               <div className={styles.action} ref={effortRef}>

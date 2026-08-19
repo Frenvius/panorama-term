@@ -1,8 +1,9 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { X, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHorizontal } from 'lucide-react';
+import { X, Bot, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
@@ -142,12 +143,13 @@ const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
   );
 };
 
-type Section = 'general' | 'appearance' | 'terminal' | 'shortcuts';
+type Section = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'shortcuts';
 
 const SECTIONS: { id: Section; label: string; Icon: LucideIcon }[] = [
   { id: 'general', label: 'General', Icon: SlidersHorizontal },
   { id: 'appearance', label: 'Appearance', Icon: Palette },
   { id: 'terminal', label: 'Terminal', Icon: SquareTerminal },
+  { id: 'agentBar', label: 'Agent bar', Icon: Bot },
   { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard }
 ];
 
@@ -176,6 +178,8 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [minimapCorner, setCorner] = React.useState(getMinimapCorner);
   const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
   const [placement, setPlacement] = React.useState(getNotifPlacement);
+  const [providers] = React.useState(getSeenProviders);
+  const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
 
   React.useEffect(() => {
     void listMonitors().then(setMonitors).catch(() => {});
@@ -188,6 +192,12 @@ const Settings = ({ onClose }: SettingsProps) => {
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
   }, [onClose]);
+
+  const toggleProvider = (provider: string) => () => {
+    const hidden = !hiddenProviders.includes(provider);
+    setProviderHidden(provider, hidden);
+    setHiddenProviders(getHiddenProviders());
+  };
 
   const selectTarget = (id: string) => {
     setTarget(id);
@@ -383,6 +393,34 @@ const Settings = ({ onClose }: SettingsProps) => {
                     />
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+          {section === 'agentBar' && (
+            <div className={styles.pane}>
+              <div className={styles.paneHead}>
+                <h2 className={styles.title}>Agent bar</h2>
+                <p className={styles.subtitle}>Prompt box shown over terminals running an agent.</p>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Model providers</p>
+                {providers.length === 0 ? (
+                  <p className={styles.subtitle}>
+                    No providers seen yet. Open a terminal running an agent that reports its models.
+                  </p>
+                ) : (
+                  <div className={styles.options}>
+                    {providers.map((provider) => (
+                      <ToggleOption
+                        key={provider}
+                        label={provider}
+                        checked={!hiddenProviders.includes(provider)}
+                        description="List this provider's models in the model picker."
+                        onToggle={toggleProvider(provider)}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

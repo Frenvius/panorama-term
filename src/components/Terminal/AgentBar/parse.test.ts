@@ -149,3 +149,15 @@ describe('declaredAgent', () => {
     expect(declaredAgent(null)).toBe(null);
   });
 });
+
+describe('pi placeholder model', () => {
+  it('ignores the bridged placeholder id and keeps the rest of the footer', () => {
+    const status = parseStatusLines([
+      '~/workspace/projects/panorama-term (main)',
+      '$0.000 (sub) 4.0%/1.0M (auto)                          (claude-bridge) <synthetic> • medium'
+    ]);
+    expect(status.model).toBeUndefined();
+    expect(status.contextInfo).toBe('1.0M');
+    expect(status.mode).toBe('medium');
+  });
+});

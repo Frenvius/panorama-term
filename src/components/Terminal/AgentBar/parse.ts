@@ -74,6 +74,8 @@ export const declaredAgent = (state: ClaudeState | null): AgentType | null => {
 export const detectAgentIdentity = (text: string): AgentType | null =>
   (AGENT_SIGNATURES.find(([, re]) => re.test(text)) ?? AGENT_MODEL_HINTS.find(([, re]) => re.test(text)))?.[0] ?? null;
 
+const PLACEHOLDER_MODEL = /^<.+>$/;
+
 const parsePiStatus = (lines: string[]): ParsedStatus | null => {
   const stats = lines.find((line) => PI_STATS.test(line));
   const context = stats?.match(PI_STATS);
@@ -85,7 +87,7 @@ const parsePiStatus = (lines: string[]): ParsedStatus | null => {
   const right = stats.slice(stats.indexOf(context[0]) + context[0].length).trim();
   const [name, thinking] = right.replace(/^\([^)]*\)\s*/, '').split('•');
   const model = name?.trim();
-  if (model) result.model = model;
+  if (model && !PLACEHOLDER_MODEL.test(model)) result.model = model;
   const level = thinking?.trim();
   if (level && level !== 'thinking off') result.mode = level;
   return result;

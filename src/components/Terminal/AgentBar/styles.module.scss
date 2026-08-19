@@ -47,6 +47,11 @@ $accent: #d97757;
   border: 1px solid var(--border-2);
   border-radius: 4px;
   box-shadow: var(--shadow-pop);
+
+  &[data-agent='pi'] {
+    padding-top: 8px;
+    padding-bottom: 7px;
+  }
 }
 
 .row {
@@ -176,6 +181,12 @@ $accent: #d97757;
   border: 1px solid var(--border-2);
   border-radius: 8px;
   box-shadow: var(--shadow-pop);
+}
+
+.menuScroll {
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .menuItem {
