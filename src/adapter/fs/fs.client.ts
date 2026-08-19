@@ -4,6 +4,7 @@ export interface DirEntry {
   name: string;
   path: string;
   dir: boolean;
+  ignored?: boolean;
 }
 
 export const readDir = (path: string): Promise<DirEntry[]> =>

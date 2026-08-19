@@ -53,6 +53,7 @@ const Node = ({ entry, depth, query, expanded, onOpen, onMenu }: NodeProps) => {
         onDoubleClick={pin}
         onContextMenu={menu}
         data-dim={hidden || undefined}
+        data-ignored={entry.ignored || undefined}
       >
         {entry.dir ? (
           <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} data-open={open || undefined} />

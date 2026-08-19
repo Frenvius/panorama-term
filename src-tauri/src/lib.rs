@@ -438,6 +438,40 @@ struct DirEntry {
     name: String,
     path: String,
     dir: bool,
+    ignored: bool,
+}
+
+fn ignored_names(dir: &str, names: &[String]) -> std::collections::HashSet<String> {
+    use std::io::Write;
+
+    let mut set = std::collections::HashSet::new();
+    let Ok(mut child) = hidden_command("git")
+        .args(["-C", dir, "check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return set;
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for name in names {
+            if stdin.write_all(name.as_bytes()).is_err() || stdin.write_all(b"\0").is_err() {
+                break;
+            }
+        }
+    }
+
+    let Ok(out) = child.wait_with_output() else {
+        return set;
+    };
+    for raw in String::from_utf8_lossy(&out.stdout).split('\0') {
+        if !raw.is_empty() {
+            set.insert(raw.to_string());
+        }
+    }
+    set
 }
 
 #[tauri::command]
@@ -447,14 +481,21 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name == "node_modules" {
+            if name == ".git" {
                 return None;
             }
             let dir = entry.file_type().ok()?.is_dir();
             let path = entry.path().to_string_lossy().into_owned();
-            Some(DirEntry { name, path, dir })
+            Some(DirEntry { name, path, dir, ignored: false })
         })
         .collect();
+
+    let names: Vec<String> = out.iter().map(|e| e.name.clone()).collect();
+    let ignored = ignored_names(&path, &names);
+    for entry in out.iter_mut() {
+        entry.ignored = ignored.contains(&entry.name);
+    }
+
     out.sort_by(|a, b| {
         b.dir
             .cmp(&a.dir)

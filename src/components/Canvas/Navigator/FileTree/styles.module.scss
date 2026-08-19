@@ -19,6 +19,14 @@
     background: var(--hover-2);
   }
 
+  &[data-ignored='true'] {
+    color: var(--text-dim);
+
+    &:hover {
+      color: var(--text-muted);
+    }
+  }
+
   &[data-dim='true'] {
     opacity: 0.45;
   }
