@@ -1,6 +1,6 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { Code, Globe, Image, Search, Network, StickyNote, SquareTerminal } from 'lucide-react';
+import { Code, Globe, Image, Search, Network, FileCode, StickyNote, SquareTerminal } from 'lucide-react';
 
 import type { Tile } from '~/domain/interfaces/canvas.interface';
 import type { TileType } from '~/domain/interfaces/workspace.interface';
@@ -12,6 +12,7 @@ const TYPE_ICON: Record<TileType, { Icon: LucideIcon; color: string }> = {
   term: { Icon: SquareTerminal, color: '#7aab6e' },
   note: { Icon: StickyNote, color: '#8a7aab' },
   code: { Icon: Code, color: '#7a8aab' },
+  editor: { Icon: FileCode, color: '#6ea8ab' },
   image: { Icon: Image, color: '#c07a6e' },
   graph: { Icon: Network, color: '#c8a35a' },
   browser: { Icon: Globe, color: '#5c9bcf' }

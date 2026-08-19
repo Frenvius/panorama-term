@@ -11,7 +11,7 @@ interface NodeProps {
   depth: number;
   query: string;
   expanded?: boolean;
-  onOpen: (path: string) => void;
+  onOpen: (path: string, preview: boolean) => void;
   onMenu: (e: React.MouseEvent, entry: DirEntry) => void;
 }
 
@@ -32,7 +32,11 @@ const Node = ({ entry, depth, query, expanded, onOpen, onMenu }: NodeProps) => {
 
   const toggle = () => {
     if (entry.dir) setOpen((v) => !v);
-    else onOpen(entry.path);
+    else onOpen(entry.path, true);
+  };
+
+  const pin = () => {
+    if (!entry.dir) onOpen(entry.path, false);
   };
 
   const menu = (e: React.MouseEvent) => onMenu(e, entry);
@@ -46,6 +50,7 @@ const Node = ({ entry, depth, query, expanded, onOpen, onMenu }: NodeProps) => {
         className={styles.row}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={toggle}
+        onDoubleClick={pin}
         onContextMenu={menu}
         data-dim={hidden || undefined}
       >
@@ -69,7 +74,7 @@ const Node = ({ entry, depth, query, expanded, onOpen, onMenu }: NodeProps) => {
 interface FileTreeProps {
   root: string;
   query: string;
-  onOpen: (path: string) => void;
+  onOpen: (path: string, preview: boolean) => void;
   onMenu: (e: React.MouseEvent, entry: DirEntry) => void;
 }
 

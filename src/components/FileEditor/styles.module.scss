@@ -1,0 +1,59 @@
+.wrap {
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  color: var(--shiki-foreground);
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.status {
+  gap: 8px;
+  display: flex;
+  padding: 0 8px;
+  font-size: 10px;
+  flex-shrink: 0;
+  line-height: 20px;
+  align-items: center;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border-1);
+}
+
+.name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dirty {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.error {
+  overflow: hidden;
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--danger);
+  text-overflow: ellipsis;
+}
+
+.reload {
+  padding: 0 6px;
+  border: none;
+  cursor: pointer;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--accent);
+  border-radius: 4px;
+  background: transparent;
+
+  &:hover {
+    background: var(--hover-2);
+  }
+}

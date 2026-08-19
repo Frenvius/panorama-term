@@ -1,4 +1,4 @@
-export type TileType = 'term' | 'note' | 'code' | 'image' | 'graph' | 'browser';
+export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser';
 
 export interface Tile {
   id: string;

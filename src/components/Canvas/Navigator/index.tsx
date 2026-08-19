@@ -10,6 +10,7 @@ import {
   Trash2,
   Pencil,
   Network,
+  FileCode,
   Container,
   GitBranch,
   Crosshair,
@@ -44,6 +45,7 @@ const TYPE_ICON: Record<TileType, { Icon: LucideIcon; color: string }> = {
   term: { Icon: SquareTerminal, color: '#7aab6e' },
   note: { Icon: StickyNote, color: '#8a7aab' },
   code: { Icon: Code, color: '#7a8aab' },
+  editor: { Icon: FileCode, color: '#6ea8ab' },
   image: { Icon: Image, color: '#c07a6e' },
   graph: { Icon: Network, color: '#c8a35a' },
   browser: { Icon: Globe, color: '#5c9bcf' }
@@ -56,21 +58,26 @@ interface Menu {
   entry?: DirEntry;
 }
 
-interface NavigatorProps {
-  tiles: Tile[];
-  frames: Frame[];
-  activeTile: string | null;
-  alerts: Map<string, NotifyKind>;
-  agents: Map<string, 'idle' | 'busy'>;
+export interface NavigatorHandlers {
   onNewTile: () => void;
   onFocusTile: (id: string, zoomToMax?: boolean) => void;
   onFocusFrame: (id: string) => void;
   onRenameTile: (id: string, title: string) => void;
   onCloseTile: (id: string) => void;
-  activeDiff: string | null;
   onDiffFiles: (files: string[]) => void;
   onOpenDiff: (root: string, file: string) => void;
+  onOpenFile: (root: string, file: string, preview?: boolean) => void;
   onClose: () => void;
+}
+
+interface NavigatorProps {
+  tiles: Tile[];
+  frames: Frame[];
+  activeTile: string | null;
+  activeDiff: string | null;
+  alerts: Map<string, NotifyKind>;
+  agents: Map<string, 'idle' | 'busy'>;
+  handlers: NavigatorHandlers;
 }
 
 const WIDTH_KEY = 'panorama:navWidth';
@@ -99,22 +106,9 @@ const savedCollapsed = (): Set<string> => {
   }
 };
 
-const Navigator = ({
-  tiles,
-  frames,
-  activeTile,
-  alerts,
-  agents,
-  onNewTile,
-  onFocusTile,
-  onFocusFrame,
-  onRenameTile,
-  onCloseTile,
-  activeDiff,
-  onDiffFiles,
-  onOpenDiff,
-  onClose
-}: NavigatorProps) => {
+const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, handlers }: NavigatorProps) => {
+  const { onNewTile, onFocusTile, onFocusFrame, onRenameTile, onCloseTile, onDiffFiles, onOpenDiff, onOpenFile, onClose } =
+    handlers;
   const [tab, setTab] = React.useState<Tab>(savedTab);
   const [hasDocker, setHasDocker] = React.useState(false);
 
@@ -192,6 +186,10 @@ const Navigator = ({
     setMenu({ x: e.clientX, y: e.clientY, tile });
   };
 
+  const openFile = (path: string, preview = false) => {
+    if (root) onOpenFile(root, path, preview);
+  };
+
   const openFileMenu = (e: React.MouseEvent, entry: DirEntry) => {
     e.preventDefault();
     setMenu({ x: e.clientX, y: e.clientY, entry });
@@ -238,7 +236,13 @@ const Navigator = ({
     if (menu?.entry) {
       const entry = menu.entry;
       return [
-        { label: 'Open', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
+        {
+          label: 'Edit',
+          icon: <Pencil size={15} strokeWidth={1.75} />,
+          onSelect: () => openFile(entry.path),
+          disabled: entry.dir
+        },
+        { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
         {
           label: 'Copy path',
           icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
@@ -446,7 +450,7 @@ const Navigator = ({
 
         {tab === 'files' &&
           (root ? (
-            <FileTree key={root} root={root} query={needle} onOpen={revealPath} onMenu={openFileMenu} />
+            <FileTree key={root} root={root} query={needle} onOpen={openFile} onMenu={openFileMenu} />
           ) : (
             <div className={styles.empty}>Focus a terminal to see its folder</div>
           ))}

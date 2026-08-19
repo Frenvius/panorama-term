@@ -294,7 +294,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     });
   }, []);
 
-  const addCode = React.useCallback((cwd: string, filePath: string) => {
+  const addFile = React.useCallback((cwd: string, filePath: string, type: 'code' | 'editor') => {
     setView((v) => {
       const cx = (window.innerWidth / 2 - v.x) / v.k;
       const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
@@ -302,7 +302,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
         ...prev,
         {
           id: createId(),
-          type: 'code',
+          type,
           cwd,
           filePath,
           autoTitle: filePath.split(/[\\/]/).pop(),
@@ -316,6 +316,10 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
       return v;
     });
   }, []);
+
+  const addCode = React.useCallback((cwd: string, filePath: string) => addFile(cwd, filePath, 'code'), [addFile]);
+
+  const addEditor = React.useCallback((cwd: string, filePath: string) => addFile(cwd, filePath, 'editor'), [addFile]);
 
   const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {
     setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -869,6 +873,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     onWheel,
     addTile,
     addCode,
+    addEditor,
     addRunView,
     patchTile,
     addFrame,

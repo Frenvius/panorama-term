@@ -10,8 +10,9 @@ import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import Palette from '~/components/Canvas/Palette';
 import TileFrame from '~/components/Canvas/TileFrame';
-import Navigator from '~/components/Canvas/Navigator';
-import DiffViewer from '~/components/DiffViewer';
+import Workbench, { type WorkbenchHandlers } from '~/components/Workbench';
+import UnsavedDialog from '~/components/commons/UnsavedDialog';
+import Navigator, { type NavigatorHandlers } from '~/components/Canvas/Navigator';
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
@@ -22,6 +23,9 @@ import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { useNotifyBridge, type NotifyKind } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
+import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty } from '~/usecase/util/dirtyFiles';
+import { tabKey, openTab, pinTab } from '~/usecase/util/editorTabs';
+import type { EditorTab, EditorTabKind } from '~/domain/interfaces/editor.interface';
 
 import styles from './styles.module.scss';
 
@@ -66,6 +70,7 @@ const Canvas = () => {
     noteRenderDefault,
     addTile,
     addCode,
+    addEditor,
     addRunView,
     patchTile,
     addFrame,
@@ -131,10 +136,13 @@ const Canvas = () => {
     }
   }, [tiles, activeTabId, focusTile, activateTile]);
 
-  const [diff, setDiff] = React.useState<{ root: string; file: string } | null>(null);
+  const [editorTabs, setEditorTabs] = React.useState<EditorTab[]>([]);
+  const [activeEditorTab, setActiveEditorTab] = React.useState<string | null>(null);
+  const [tileToClose, setTileToClose] = React.useState<{ id: string; path: string } | null>(null);
+  const closeTileRef = React.useRef<(id: string) => void>(() => {});
   const [diffFiles, setDiffFiles] = React.useState<string[]>([]);
-  const [diffExit, setDiffExit] = React.useState(false);
-  const diffTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [tabsExit, setTabsExit] = React.useState(false);
+  const tabsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const fsIdRef = React.useRef<string | null>(fsId);
   fsIdRef.current = fsId;
   const activeTileRef = React.useRef<string | null>(activeTile);
@@ -189,7 +197,7 @@ const Canvas = () => {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  React.useEffect(() => () => clearTimeout(diffTimer.current), []);
+  React.useEffect(() => () => clearTimeout(tabsTimer.current), []);
 
   const exitFs = React.useCallback(() => {
     clearTimeout(fsTimer.current);
@@ -234,7 +242,7 @@ const Canvas = () => {
       if (cmd === 'tile.close') {
         const id = activeTileRef.current;
         if (!id) return false;
-        closeTile(id);
+        closeTileRef.current(id);
         return true;
       }
       if (cmd === 'tile.reopen') {
@@ -247,6 +255,8 @@ const Canvas = () => {
         focusTile(id, true);
         return true;
       }
+      if (cmd === 'editor.save') return dispatchSave().handled;
+      if (cmd === 'editor.find') return requestFind();
       if (cmd === 'view.resetZoom') {
         resetZoom();
         return true;
@@ -541,31 +551,94 @@ const Canvas = () => {
     [exitFs, navFocus]
   );
 
-  const openDiff = (root: string, file: string) => {
-    clearTimeout(diffTimer.current);
-    setDiffExit(false);
-    setDiff({ root, file });
+  const openEditorTab = (kind: EditorTabKind, root: string, path: string, preview?: boolean) => {
+    clearTimeout(tabsTimer.current);
+    setTabsExit(false);
+    setEditorTabs((prev) => openTab(prev, { kind, root, path, preview }));
+    setActiveEditorTab(tabKey(kind, path));
   };
 
-  const closeDiff = () => {
-    setDiffExit(true);
-    diffTimer.current = setTimeout(() => {
-      setDiff(null);
-      setDiffExit(false);
+  const openEditorFile = (root: string, path: string, preview?: boolean) => openEditorTab('file', root, path, preview);
+  const openDiff = (root: string, path: string) => openEditorTab('diff', root, path);
+  const pinEditorTab = (key: string) => setEditorTabs((prev) => pinTab(prev, key));
+
+  React.useEffect(
+    () =>
+      subscribeDirty(() =>
+        setEditorTabs((prev) =>
+          prev.some((t) => t.preview && isDirty(t.path))
+            ? prev.map((t) => (t.preview && isDirty(t.path) ? { ...t, preview: undefined } : t))
+            : prev
+        )
+      ),
+    []
+  );
+
+  const closeEditorTab = (key: string) => {
+    setEditorTabs((prev) => {
+      const next = prev.filter((t) => t.key !== key);
+      setActiveEditorTab((cur) => (cur === key ? next[next.length - 1]?.key ?? null : cur));
+      return next;
+    });
+  };
+
+  const closeEditorTabs = () => {
+    setTabsExit(true);
+    tabsTimer.current = setTimeout(() => {
+      setEditorTabs([]);
+      setActiveEditorTab(null);
+      setTabsExit(false);
     }, DIFF_ANIM);
   };
 
-  const diffToCanvas = () => {
-    if (!diff) return;
-    addCode(diff.root, diff.file);
-    closeDiff();
+  const tabToCanvas = (tab: EditorTab) => {
+    if (tab.kind === 'diff') addCode(tab.root, tab.path);
+    else addEditor(tab.root, tab.path);
+    closeEditorTab(tab.key);
   };
 
-  const diffAt = diff ? diffFiles.indexOf(diff.file) : -1;
-  const stepFile = (step: number) => () => {
-    if (!diff) return;
-    setDiff({ root: diff.root, file: diffFiles[diffAt + step] });
+  const stepDiffFile = (step: number) => {
+    const current = editorTabs.find((t) => t.key === activeEditorTab);
+    if (current?.kind !== 'diff') return;
+    const next = diffFiles[diffFiles.indexOf(current.path) + step];
+    if (next) openDiff(current.root, next);
   };
+
+  const requestCloseTile = (id: string) => {
+    const tile = tiles.find((t) => t.id === id);
+    if (tile?.type === 'editor' && tile.filePath && isDirty(tile.filePath)) {
+      setTileToClose({ id, path: tile.filePath });
+      return;
+    }
+    closeTile(id);
+  };
+  closeTileRef.current = requestCloseTile;
+
+  const discardTile = () => {
+    if (tileToClose) closeTile(tileToClose.id);
+    setTileToClose(null);
+  };
+
+  const saveAndCloseTile = async () => {
+    if (!tileToClose) return;
+    await requestSave(tileToClose.path);
+    closeTile(tileToClose.id);
+    setTileToClose(null);
+  };
+
+  const onSaveTile = () => void saveAndCloseTile();
+  const cancelCloseTile = () => setTileToClose(null);
+
+  const workbenchHandlers: WorkbenchHandlers = {
+    onSelect: setActiveEditorTab,
+    onCloseTab: closeEditorTab,
+    onAddToCanvas: tabToCanvas,
+    onStepFile: stepDiffFile,
+    onPinTab: pinEditorTab,
+    onClose: closeEditorTabs
+  };
+
+  const activeDiffFile = editorTabs.find((t) => t.key === activeEditorTab && t.kind === 'diff')?.path ?? null;
 
   const moveTileToTabWrapper = React.useCallback(
     (tileId: string, targetTabId: string) => {
@@ -574,6 +647,18 @@ const Canvas = () => {
     },
     [moveTileToTab, tiles, frames, view]
   );
+
+  const navHandlers: NavigatorHandlers = {
+    onNewTile: addTile,
+    onFocusTile: navFocus,
+    onFocusFrame: focusFrame,
+    onRenameTile: setTileTitle,
+    onCloseTile: requestCloseTile,
+    onDiffFiles: setDiffFiles,
+    onOpenDiff: openDiff,
+    onOpenFile: openEditorFile,
+    onClose: hideNav
+  };
 
   useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert, onClear: clearAlert });
 
@@ -680,7 +765,7 @@ const Canvas = () => {
               onLinkDragStart={startLinkDrag}
               onMove={moveTile}
               onSnap={snapTile}
-              onClose={closeTile}
+              onClose={requestCloseTile}
               onResize={resizeTile}
               onActivate={activateAndClear}
               onFocusTile={focusTile}
@@ -756,26 +841,25 @@ const Canvas = () => {
           alerts={alerts}
           agents={agents}
           activeTile={activeTile}
-          onNewTile={addTile}
-          onFocusTile={navFocus}
-          onFocusFrame={focusFrame}
-          onRenameTile={setTileTitle}
-          onCloseTile={closeTile}
-          activeDiff={diff?.file ?? null}
-          onDiffFiles={setDiffFiles}
-          onOpenDiff={openDiff}
-          onClose={hideNav}
+          activeDiff={activeDiffFile}
+          handlers={navHandlers}
         />
       )}
-      {!fsId && diff && (
-        <DiffViewer
-          root={diff.root}
-          file={diff.file}
-          exiting={diffExit}
-          onClose={closeDiff}
-          onPrevFile={diffAt > 0 ? stepFile(-1) : undefined}
-          onNextFile={diffAt >= 0 && diffAt < diffFiles.length - 1 ? stepFile(1) : undefined}
-          onAddToCanvas={diffToCanvas}
+      {!fsId && activeEditorTab && (
+        <Workbench
+          tabs={editorTabs}
+          active={activeEditorTab}
+          exiting={tabsExit}
+          diffFiles={diffFiles}
+          handlers={workbenchHandlers}
+        />
+      )}
+      {tileToClose && (
+        <UnsavedDialog
+          paths={[tileToClose.path]}
+          onSave={onSaveTile}
+          onDiscard={discardTile}
+          onCancel={cancelCloseTile}
         />
       )}
       {!fsId && !navOpen && (

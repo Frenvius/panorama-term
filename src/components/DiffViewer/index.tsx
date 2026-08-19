@@ -15,15 +15,24 @@ import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } fr
 
 import styles from './styles.module.scss';
 
-interface DiffViewerProps {
-  root: string;
-  file: string;
+export interface DiffViewerMode {
   embedded?: boolean;
   exiting?: boolean;
+  keys?: boolean;
+}
+
+export interface DiffViewerHandlers {
   onClose?: () => void;
   onPrevFile?: () => void;
   onNextFile?: () => void;
   onAddToCanvas?: () => void;
+}
+
+interface DiffViewerProps {
+  root: string;
+  file: string;
+  mode?: DiffViewerMode;
+  handlers?: DiffViewerHandlers;
 }
 
 const VIEW_LABELS: Record<DiffViewMode, string> = {
@@ -46,16 +55,9 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 
 const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
 
-const DiffViewer = ({
-  root,
-  file,
-  embedded,
-  exiting,
-  onClose,
-  onPrevFile,
-  onNextFile,
-  onAddToCanvas
-}: DiffViewerProps) => {
+const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
+  const { embedded, exiting, keys = !mode?.embedded } = mode ?? {};
+  const { onClose, onPrevFile, onNextFile, onAddToCanvas } = handlers ?? {};
   const shellRef = React.useRef<HTMLDivElement>(null);
   const [diff, setDiff] = React.useState<FileDiff | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -121,7 +123,7 @@ const DiffViewer = ({
   }, [chunks]);
 
   React.useEffect(() => {
-    if (embedded) return;
+    if (!keys) return;
 
     const onKey = (e: KeyboardEvent) => {
       if (isCapturing()) return;
@@ -160,7 +162,7 @@ const DiffViewer = ({
 
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [embedded, onClose, onPrevFile, onNextFile, chunks.length]);
+  }, [keys, onClose, onPrevFile, onNextFile, chunks.length]);
   const intra = React.useMemo(
     () => (diff ? computeIntraLine(diff.old, diff.new, chunks, highlight) : null),
     [diff, chunks, highlight]
@@ -175,7 +177,7 @@ const DiffViewer = ({
   const nextChunk = () => setChunkIndex((i) => Math.min(chunks.length - 1, i + 1));
   const toggleCollapse = () => setCollapse((v) => !v);
   const toggleWs = () => setIgnoreWs((v) => !v);
-  const combo = (id: CommandId) => (embedded ? undefined : formatCombo(getBinding(id)));
+  const combo = (id: CommandId) => (keys ? formatCombo(getBinding(id)) : undefined);
 
   const revert = () => {
     const chunk = chunks[chunkIndex];

@@ -8,6 +8,7 @@ import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/components/commons/Notifications/bridge';
 import NoteTile from '~/components/Canvas/NoteTile';
+import EditorTile from '~/components/Canvas/EditorTile';
 import DiffViewer from '~/components/DiffViewer';
 import { noteTheme } from '~/usecase/util/note';
 import { parseFrontTitle } from '~/usecase/util/noteMeta';
@@ -79,6 +80,8 @@ interface TileFrameProps {
   activeTabId: string | null;
   onMoveToTab: (id: string, targetTabId: string) => void;
 }
+
+const EMBED = { embedded: true };
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
@@ -179,13 +182,14 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ? tile.userTitle || tile.autoTitle || 'run'
     : tile.userTitle
       || (agentType && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
-      || tile.cwd
+      || (tile.type === 'editor' ? tile.autoTitle : tile.cwd)
       || tile.autoTitle
       || `${tile.type} · ${tile.id}`;
   const folder = tile.cwd && label !== tile.cwd ? tile.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
 
   const note = tile.type === 'note';
   const code = tile.type === 'code';
+  const editor = tile.type === 'editor';
   const runView = Boolean(tile.runCwd);
   const runCwd = tile.type === 'term' ? tile.runCwd ?? tile.cwd : undefined;
   const runTile = tile.type === 'term' ? (runView ? tile.ptySessionId?.replace(/^(run|build):/, '') : tile.id) : undefined;
@@ -740,7 +744,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 {fullscreen ? <Minimize size={13} strokeWidth={2} /> : <Maximize size={13} strokeWidth={2} />}
               </button>
             )}
-            {!note && !code && !runView && parts.restart && (
+            {!note && !code && !editor && !runView && parts.restart && (
               <button
                 className={styles.action}
                 onClick={restartTile}
@@ -777,7 +781,8 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           {note && (
             <NoteTile tile={tile} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
           )}
-          {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} embedded />}
+          {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} mode={EMBED} />}
+          {editor && tile.filePath && <EditorTile tile={tile} active={active} onActivate={onActivate} />}
           {term && (
             <GridTerminal
               sessionId={tile.ptySessionId}
@@ -799,7 +804,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               onContextMenu={openMenu}
             />
           )}
-          {!note && !code && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
+          {!note && !code && !editor && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
         </div>
       </div>
       {!fullscreen && (

@@ -1,0 +1,174 @@
+.overlay {
+  position: absolute;
+  top: 47px;
+  right: 9px;
+  bottom: 9px;
+  left: calc(9px + var(--nav-inset, 0px));
+  z-index: 106;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--surface-3);
+  box-shadow: var(--shadow-pop);
+  animation: pop 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.exit {
+  animation: unpop 0.13s ease-in both;
+  pointer-events: none;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.985) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes unpop {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.985) translateY(6px);
+  }
+}
+
+.header {
+  gap: 6px;
+  height: 36px;
+  flex: none;
+  display: flex;
+  padding: 0 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.tabs {
+  gap: 2px;
+  display: flex;
+  overflow-x: auto;
+  align-items: center;
+  scrollbar-width: none;
+}
+
+.tab {
+  gap: 6px;
+  height: 26px;
+  display: flex;
+  flex: none;
+  padding: 0 4px 0 8px;
+  cursor: pointer;
+  max-width: 220px;
+  align-items: center;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+
+  &[data-active] {
+    color: var(--text-strong);
+    background: var(--hover-2);
+  }
+
+  &[data-preview] .name {
+    font-style: italic;
+  }
+}
+
+.diffIcon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.tabClose {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: flex;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  border-radius: 4px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-3);
+  }
+}
+
+.spacer {
+  flex: 1;
+}
+
+.action {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: flex;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  border-radius: 5px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-2);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.4;
+    background: transparent;
+  }
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.pane {
+  position: absolute;
+  inset: 0;
+
+  &[data-hidden] {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
