@@ -431,6 +431,8 @@ fn reveal_path(path: String) -> Result<(), String> {
     return spawn("xdg-open", &[&path]);
 }
 
+const MAX_TEXT_FILE: u64 = 8 * 1024 * 1024;
+
 #[derive(serde::Serialize)]
 struct DirEntry {
     name: String,
@@ -459,6 +461,24 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(out)
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_TEXT_FILE {
+        return Err(format!("file too large ({} bytes)", meta.len()));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.contains(&0) {
+        return Err("binary file".into());
+    }
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
 fn run_watchers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>> {
@@ -501,6 +521,45 @@ fn run_watch_manifests(app: tauri::AppHandle, path: String) -> Result<u32, Strin
     let id = NEXT_RUN_WATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     run_watchers().lock().unwrap().insert(id, watcher);
     Ok(id)
+}
+
+fn file_watchers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>>> =
+        std::sync::OnceLock::new();
+    W.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+static NEXT_FILE_WATCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+#[tauri::command]
+fn watch_text_file(app: tauri::AppHandle, path: String) -> Result<u32, String> {
+    use notify::Watcher;
+    use tauri::Emitter;
+    let full = PathBuf::from(&path);
+    let dir = full.parent().ok_or("no parent dir")?.to_path_buf();
+    let name = full.file_name().ok_or("no file name")?.to_os_string();
+    let target = path.clone();
+    let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+        let Ok(event) = res else { return };
+        if event.kind.is_access() {
+            return;
+        }
+        if event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == name)) {
+            let _ = app.emit("file:changed", serde_json::json!({ "path": target }));
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(&dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+    let id = NEXT_FILE_WATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    file_watchers().lock().unwrap().insert(id, watcher);
+    Ok(id)
+}
+
+#[tauri::command]
+fn unwatch_text_file(id: u32) {
+    file_watchers().lock().unwrap().remove(&id);
 }
 
 #[tauri::command]
@@ -689,6 +748,10 @@ pub fn run() {
             set_pending_count,
             reveal_path,
             read_dir,
+            read_text_file,
+            watch_text_file,
+            unwatch_text_file,
+            write_text_file,
             run_commands,
             run_watch_manifests,
             run_unwatch_manifests,
