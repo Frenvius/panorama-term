@@ -5,5 +5,6 @@ export interface EditorTab {
   kind: EditorTabKind;
   root: string;
   path: string;
+  commit?: string;
   preview?: boolean;
 }

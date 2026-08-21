@@ -6,15 +6,16 @@ interface OpenRequest {
   kind: EditorTabKind;
   root: string;
   path: string;
+  commit?: string;
   preview?: boolean;
 }
 
 export const tabKey = (kind: EditorTabKind, path: string): string => (kind === 'diff' ? DIFF_KEY : `file:${path}`);
 
 export const openTab = (tabs: EditorTab[], request: OpenRequest): EditorTab[] => {
-  const { kind, root, path, preview } = request;
+  const { kind, root, path, commit, preview } = request;
   const key = tabKey(kind, path);
-  const next: EditorTab = { key, kind, root, path, preview: preview || undefined };
+  const next: EditorTab = { key, kind, root, path, commit, preview: preview || undefined };
 
   if (tabs.some((t) => t.key === key)) {
     return tabs.map((t) => (t.key === key ? { ...next, preview: preview ? t.preview : undefined } : t));

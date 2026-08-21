@@ -3,13 +3,25 @@ import type { DiffViewMode, HighlightMode } from '~/domain/interfaces/diff.inter
 
 import React from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { X, Info, Space, Undo2, Shrink, ArrowUp, ArrowDown, LayoutGrid, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import {
+  X,
+  Info,
+  Space,
+  Undo2,
+  Shrink,
+  ArrowUp,
+  ArrowDown,
+  LayoutGrid,
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle
+} from 'lucide-react';
 
 import Panes from '~/components/DiffViewer/Panes';
 import Picker from '~/components/DiffViewer/Picker';
 import Unified from '~/components/DiffViewer/Unified';
 import FileIcon from '~/components/commons/FileIcon';
-import { gitDiffFile, gitRevertHunk, gitWatchFile, gitUnwatchFile } from '~/adapter/git/git.client';
+import { gitDiffFile, gitRevertHunk, gitWatchFile, gitUnwatchFile, gitCommitDiffFile } from '~/adapter/git/git.client';
 import { langOf, computeDiff, revertChunk, computeIntraLine } from '~/usecase/util/diff';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 
@@ -31,6 +43,7 @@ export interface DiffViewerHandlers {
 interface DiffViewerProps {
   root: string;
   file: string;
+  commit?: string;
   mode?: DiffViewerMode;
   handlers?: DiffViewerHandlers;
 }
@@ -55,7 +68,7 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 
 const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
 
-const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
+const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => {
   const { embedded, exiting, keys = !mode?.embedded } = mode ?? {};
   const { onClose, onPrevFile, onNextFile, onAddToCanvas } = handlers ?? {};
   const shellRef = React.useRef<HTMLDivElement>(null);
@@ -77,7 +90,7 @@ const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
     setChunkIndex(-1);
 
     const load = (quiet: boolean) =>
-      gitDiffFile(root, file)
+      (commit ? gitCommitDiffFile(root, commit, file) : gitDiffFile(root, file))
         .then((result) => {
           if (!alive) return;
           setDiff((prev) =>
@@ -93,6 +106,8 @@ const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
       window.clearTimeout(debounce);
       debounce = window.setTimeout(() => void load(true), 150);
     };
+
+    if (commit) return () => (alive = false);
 
     void gitWatchFile(root, file)
       .then((id) => {
@@ -114,7 +129,7 @@ const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
       if (watchId !== null) void gitUnwatchFile(watchId);
       void off.then((un) => un());
     };
-  }, [root, file]);
+  }, [root, file, commit]);
 
   const chunks = React.useMemo(() => (diff ? computeDiff(diff.old, diff.new, ignoreWs) : []), [diff, ignoreWs]);
 
@@ -287,7 +302,7 @@ const DiffViewer = ({ root, file, mode, handlers }: DiffViewerProps) => {
         <button
           className={styles.tool}
           onClick={revert}
-          disabled={!ready || !chunks[chunkIndex]}
+          disabled={!ready || Boolean(commit) || !chunks[chunkIndex]}
           data-tooltip="Revert difference"
           aria-label="Revert difference"
         >

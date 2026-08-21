@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   LogRow,
   FileDiff,
+  FileChange,
   CommitInfo,
   TrackCounts,
   BranchSnapshot,
@@ -79,6 +80,12 @@ export const gitUnpushedCommits = (path: string): Promise<CommitMessageEntry[]> 
 
 export const gitDiffFile = (path: string, file: string): Promise<FileDiff> =>
   invoke<FileDiff>('git_diff_file', { path, file });
+
+export const gitCommitFiles = (path: string, commit: string): Promise<FileChange[]> =>
+  invoke<FileChange[]>('git_commit_files', { path, commit });
+
+export const gitCommitDiffFile = (path: string, commit: string, file: string): Promise<FileDiff> =>
+  invoke<FileDiff>('git_commit_diff_file', { path, commit, file });
 
 export const gitRollbackFile = (path: string, file: string): Promise<void> =>
   invoke<void>('git_rollback_file', { path, file });

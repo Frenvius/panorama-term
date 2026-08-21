@@ -18,6 +18,7 @@ import {
   GitCompareArrows
 } from 'lucide-react';
 
+import type { TreeNode } from '~/usecase/util/fileTree';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { FileChange, StatusSnapshot, CommitMessageEntry } from '~/domain/interfaces/git.interface';
 import Dialog from '~/components/commons/Dialog';
@@ -26,6 +27,15 @@ import ContextMenu from '~/components/commons/ContextMenu';
 import Log from '~/components/Canvas/Navigator/GitTab/History';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
+import {
+  statusKey,
+  STATUS_COLOR,
+  buildDirTree,
+  collectFiles,
+  collectPaths,
+  flattenTree,
+  collectFolderIds
+} from '~/usecase/util/fileTree';
 import {
   gitStatus,
   gitCommit,
@@ -43,7 +53,7 @@ interface GitTabProps {
   query: string;
   active: string | null;
   onFiles: (files: string[]) => void;
-  onOpenDiff: (file: string) => void;
+  onOpenDiff: (file: string, commit?: string) => void;
 }
 
 const stopClick = (e: React.MouseEvent) => e.stopPropagation();
@@ -57,74 +67,11 @@ const savedView = (): View => {
   return VIEWS.includes(raw as View) ? (raw as View) : 'changes';
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  modified: '#6897bb',
-  added: '#629755',
-  deleted: '#6f737a',
-  renamed: '#3a87ad',
-  copied: '#3a87ad',
-  untracked: '#d1675a',
-  conflicted: '#d5756c'
-};
-
 const message = (err: unknown): string => (typeof err === 'string' ? err : String(err));
-
-const statusKey = (file: FileChange): string => {
-  if (file.is_untracked) return 'untracked';
-  const x = file.status_index;
-  const y = file.status_worktree;
-  if (x === 'U' || y === 'U') return 'conflicted';
-  if (x === 'A' || y === 'A') return 'added';
-  if (x === 'D' || y === 'D') return 'deleted';
-  if (x === 'R') return 'renamed';
-  if (x === 'C') return 'copied';
-  return 'modified';
-};
 
 const displayDir = (dir: string): string => dir.replace(/\//g, '\\');
 
 const pluralize = (n: number): string => (n === 1 ? '1 file' : `${n} files`);
-
-type TreeNode =
-  | { kind: 'folder'; id: string; name: string; children: TreeNode[] }
-  | { kind: 'file'; id: string; change: FileChange };
-
-const buildDirTree = (files: FileChange[], prefix: string): TreeNode[] => {
-  const root: TreeNode[] = [];
-  for (const file of files) {
-    const segments = file.dir ? file.dir.split('/').filter(Boolean) : [];
-    let current = root;
-    let sofar = '';
-    for (const segment of segments) {
-      sofar = sofar ? `${sofar}/${segment}` : segment;
-      let folder = current.find(
-        (n): n is Extract<TreeNode, { kind: 'folder' }> => n.kind === 'folder' && n.name === segment
-      );
-      if (!folder) {
-        folder = { kind: 'folder', id: `${prefix}:${sofar}`, name: segment, children: [] };
-        current.push(folder);
-      }
-      current = folder.children;
-    }
-    current.push({ kind: 'file', id: `${prefix}:${file.path}`, change: file });
-  }
-  return root;
-};
-
-const collectPaths = (nodes: TreeNode[]): string[] =>
-  nodes.flatMap((node) => (node.kind === 'file' ? [node.change.path] : collectPaths(node.children)));
-
-const collectFiles = (nodes: TreeNode[]): FileChange[] =>
-  nodes.flatMap((node) => (node.kind === 'file' ? [node.change] : collectFiles(node.children)));
-
-const collectFolderIds = (nodes: TreeNode[]): string[] =>
-  nodes.flatMap((node) => (node.kind === 'folder' ? [node.id, ...collectFolderIds(node.children)] : []));
-
-const flattenTree = (nodes: TreeNode[], shut: (id: string) => boolean): string[] =>
-  nodes.flatMap((node) => {
-    if (node.kind === 'file') return [node.change.path];
-    return shut(node.id) ? [] : flattenTree(node.children, shut);
-  });
 
 interface TriCheckboxProps {
   state: 'all' | 'none' | 'partial';
@@ -514,7 +461,11 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
   };
 
   const viewItems: ContextMenuEntry[] = [
-    { label: 'Directory', icon: groupBy === 'directory' ? <Check size={15} strokeWidth={2} /> : <span />, onSelect: groupDirectory },
+    {
+      label: 'Directory',
+      icon: groupBy === 'directory' ? <Check size={15} strokeWidth={2} /> : <span />,
+      onSelect: groupDirectory
+    },
     { label: 'Module', icon: groupBy === 'module' ? <Check size={15} strokeWidth={2} /> : <span />, onSelect: groupModule }
   ];
 
@@ -722,7 +673,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         </button>
       </div>
 
-      {view === 'history' && <Log root={root} />}
+      {view === 'history' && <Log root={root} active={active} onOpenDiff={onOpenDiff} />}
 
       <div className={styles.pane} style={{ display: view === 'changes' ? undefined : 'none' }}>
         <div className={styles.toolbar}>
@@ -735,13 +686,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
           <button className={styles.tool} onClick={expandAll} disabled={blocked} title="Expand all" aria-label="Expand all">
             <ListTree size={12} strokeWidth={2} />
           </button>
-          <button
-            className={styles.tool}
-            onClick={collapseAll}
-            disabled={blocked}
-            title="Collapse all"
-            aria-label="Collapse all"
-          >
+          <button className={styles.tool} onClick={collapseAll} disabled={blocked} title="Collapse all" aria-label="Collapse all">
             <ListCollapse size={12} strokeWidth={2} />
           </button>
         </div>

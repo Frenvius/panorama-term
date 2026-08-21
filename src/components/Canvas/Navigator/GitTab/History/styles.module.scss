@@ -102,6 +102,7 @@
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  outline: none;
   scrollbar-width: thin;
   scrollbar-color: var(--border-2) transparent;
 }
@@ -115,8 +116,14 @@
   border-radius: 5px;
   font-size: 13px;
 
+  cursor: pointer;
+
   &:hover {
     background: var(--hover-1);
+  }
+
+  &[data-picked] {
+    background: var(--hover-2);
   }
 
   &[data-head] {

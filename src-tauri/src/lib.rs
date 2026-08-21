@@ -822,6 +822,8 @@ pub fn run() {
             git::git_remote_url,
             git::git_unpushed_commits,
             git::git_diff_file,
+            git::git_commit_files,
+            git::git_commit_diff_file,
             git::git_add_ignore,
             git::git_rollback_file,
             git::git_revert_hunk,

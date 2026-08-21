@@ -551,15 +551,16 @@ const Canvas = () => {
     [exitFs, navFocus]
   );
 
-  const openEditorTab = (kind: EditorTabKind, root: string, path: string, preview?: boolean) => {
+  const openEditorTab = (kind: EditorTabKind, root: string, path: string, preview?: boolean, commit?: string) => {
     clearTimeout(tabsTimer.current);
     setTabsExit(false);
-    setEditorTabs((prev) => openTab(prev, { kind, root, path, preview }));
+    setEditorTabs((prev) => openTab(prev, { kind, root, path, preview, commit }));
     setActiveEditorTab(tabKey(kind, path));
   };
 
   const openEditorFile = (root: string, path: string, preview?: boolean) => openEditorTab('file', root, path, preview);
-  const openDiff = (root: string, path: string) => openEditorTab('diff', root, path);
+  const openDiff = (root: string, path: string, commit?: string) =>
+    openEditorTab('diff', root, path, undefined, commit);
   const pinEditorTab = (key: string) => setEditorTabs((prev) => pinTab(prev, key));
 
   React.useEffect(
@@ -601,7 +602,7 @@ const Canvas = () => {
     const current = editorTabs.find((t) => t.key === activeEditorTab);
     if (current?.kind !== 'diff') return;
     const next = diffFiles[diffFiles.indexOf(current.path) + step];
-    if (next) openDiff(current.root, next);
+    if (next) openDiff(current.root, next, current.commit);
   };
 
   const requestCloseTile = (id: string) => {

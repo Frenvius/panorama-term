@@ -65,7 +65,7 @@ export interface NavigatorHandlers {
   onRenameTile: (id: string, title: string) => void;
   onCloseTile: (id: string) => void;
   onDiffFiles: (files: string[]) => void;
-  onOpenDiff: (root: string, file: string) => void;
+  onOpenDiff: (root: string, file: string, commit?: string) => void;
   onOpenFile: (root: string, file: string, preview?: boolean) => void;
   onClose: () => void;
 }
@@ -388,7 +388,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
             query=""
             active={activeDiff}
             onFiles={onDiffFiles}
-            onOpenDiff={(file) => onOpenDiff(root, file)}
+            onOpenDiff={(file, commit) => onOpenDiff(root, file, commit)}
           />
         ) : (
           <div className={styles.empty}>Focus a terminal to see its repo</div>

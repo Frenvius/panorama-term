@@ -5,19 +5,24 @@ import type { LogRow } from '~/domain/interfaces/git.interface';
 import type { GraphRow, GraphEdge } from '~/usecase/util/commitGraph';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import ContextMenu from '~/components/commons/ContextMenu';
+import Files from '~/components/Canvas/Navigator/GitTab/History/Files';
 import { commitUrl } from '~/usecase/util/gitRemote';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { gitLogGraph, gitRemoteUrl, gitUnpushedCommits } from '~/adapter/git/git.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
+import { isCapturing } from '~/usecase/util/keybindings';
 import { graphColor, graphColorLocal, buildCommitGraph } from '~/usecase/util/commitGraph';
 
 import styles from './styles.module.scss';
 
 interface HistoryProps {
   root: string;
+  active: string | null;
+  onOpenDiff: (file: string, commit?: string) => void;
 }
 
 const PAGE = 200;
+const EXIT_MS = 160;
 const WIDE = 460;
 const COL = 12;
 const DOT = 3.5;
@@ -96,7 +101,8 @@ const LaneCell = ({ row, height, head, local, childLocal }: LaneCellProps) => {
   );
 };
 
-const History = ({ root }: HistoryProps) => {
+const History = ({ root, active, onOpenDiff }: HistoryProps) => {
+  const rootRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const [rows, setRows] = React.useState<LogRow[] | null>(null);
   const [limit, setLimit] = React.useState(PAGE);
@@ -107,6 +113,9 @@ const History = ({ root }: HistoryProps) => {
   const [local, setLocal] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<{ x: number; y: number; row: LogRow } | null>(null);
   const [filter, setFilter] = React.useState('');
+  const [picked, setPicked] = React.useState<LogRow | null>(null);
+  const [exiting, setExiting] = React.useState(false);
+  const exitTimer = React.useRef(0);
 
   const fetchLog = React.useCallback(
     (quiet: boolean) => {
@@ -165,6 +174,41 @@ const History = ({ root }: HistoryProps) => {
     return all.filter(({ row }) => matchRow(row, needle));
   }, [rows, needle]);
 
+  const closePanel = React.useCallback(() => {
+    setPicked((prev) => {
+      if (!prev) return prev;
+      setExiting(true);
+      exitTimer.current = window.setTimeout(() => {
+        setPicked(null);
+        setExiting(false);
+      }, EXIT_MS);
+      return prev;
+    });
+  }, []);
+
+  React.useEffect(() => () => window.clearTimeout(exitTimer.current), []);
+
+  React.useEffect(() => {
+    if (!picked) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || isCapturing() || active) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && !rootRef.current?.contains(focused)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closePanel();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [picked, active, closePanel]);
+
+  const pick = (row: LogRow) => {
+    listRef.current?.focus({ preventScroll: true });
+    window.clearTimeout(exitTimer.current);
+    setExiting(false);
+    setPicked((prev) => (prev?.short === row.short ? prev : row));
+  };
+
   const onFilter = (e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value);
 
   const more = () => setLimit((prev) => prev + PAGE);
@@ -212,7 +256,7 @@ const History = ({ root }: HistoryProps) => {
     );
 
   return (
-    <div className={styles.root}>
+    <div ref={rootRef} className={styles.root}>
       <div className={styles.toolbar}>
         <button className={styles.tool} onClick={load} disabled={busy} title="Refresh" aria-label="Refresh">
           <RefreshCw size={12} strokeWidth={2} className={busy ? styles.spinning : undefined} />
@@ -224,15 +268,18 @@ const History = ({ root }: HistoryProps) => {
         <span className={styles.count}>{shown.length === 1 ? '1 commit' : `${shown.length} commits`}</span>
       </div>
 
-      <div ref={listRef} className={styles.list}>
+      <div ref={listRef} className={styles.list} tabIndex={-1}>
         {shown.map(({ row, at }) => {
           const menuAt = (e: React.MouseEvent) => openMenu(e, row);
+          const select = () => pick(row);
           return (
             <div
               key={row.short}
               className={styles.row}
               style={{ height, paddingLeft: needle ? 8 : undefined }}
+              onClick={select}
               onContextMenu={menuAt}
+              data-picked={row.short === picked?.short || undefined}
               data-wide={wide || undefined}
               data-merge={row.parents.length > 1 || undefined}
               data-head={at === headAt || undefined}
@@ -272,6 +319,10 @@ const History = ({ root }: HistoryProps) => {
           </button>
         )}
       </div>
+
+      {picked && (
+        <Files root={root} commit={picked} active={active} exiting={exiting} onOpenDiff={onOpenDiff} onClose={closePanel} />
+      )}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.row)} onClose={closeMenu} />}
     </div>
