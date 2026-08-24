@@ -1,4 +1,5 @@
 import type { FileDiff } from '~/domain/interfaces/git.interface';
+import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { DiffViewMode, HighlightMode } from '~/domain/interfaces/diff.interface';
 
 import React from 'react';
@@ -9,6 +10,7 @@ import {
   Space,
   Undo2,
   Shrink,
+  PenLine,
   ArrowUp,
   ArrowDown,
   LayoutGrid,
@@ -21,6 +23,7 @@ import Panes from '~/components/DiffViewer/Panes';
 import Picker from '~/components/DiffViewer/Picker';
 import Unified from '~/components/DiffViewer/Unified';
 import FileIcon from '~/components/commons/FileIcon';
+import ContextMenu from '~/components/commons/ContextMenu';
 import { gitDiffFile, gitRevertHunk, gitWatchFile, gitUnwatchFile, gitCommitDiffFile } from '~/adapter/git/git.client';
 import { langOf, computeDiff, revertChunk, computeIntraLine } from '~/usecase/util/diff';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
@@ -37,6 +40,7 @@ export interface DiffViewerHandlers {
   onClose?: () => void;
   onPrevFile?: () => void;
   onNextFile?: () => void;
+  onEditFile?: () => void;
   onAddToCanvas?: () => void;
 }
 
@@ -70,7 +74,7 @@ const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
 
 const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => {
   const { embedded, exiting, keys = !mode?.embedded } = mode ?? {};
-  const { onClose, onPrevFile, onNextFile, onAddToCanvas } = handlers ?? {};
+  const { onClose, onPrevFile, onNextFile, onEditFile, onAddToCanvas } = handlers ?? {};
   const shellRef = React.useRef<HTMLDivElement>(null);
   const [diff, setDiff] = React.useState<FileDiff | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -79,6 +83,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
   const [collapse, setCollapse] = React.useState(true);
   const [ignoreWs, setIgnoreWs] = React.useState(false);
   const [chunkIndex, setChunkIndex] = React.useState(-1);
+  const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
 
   React.useEffect(() => {
     let alive = true;
@@ -167,6 +172,10 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
           onNextFile();
           return true;
         }
+        if (cmd === 'diff.editFile' && onEditFile) {
+          onEditFile();
+          return true;
+        }
         return false;
       };
 
@@ -177,7 +186,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
 
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [keys, onClose, onPrevFile, onNextFile, chunks.length]);
+  }, [keys, onClose, onPrevFile, onNextFile, onEditFile, chunks.length]);
   const intra = React.useMemo(
     () => (diff ? computeIntraLine(diff.old, diff.new, chunks, highlight) : null),
     [diff, chunks, highlight]
@@ -212,6 +221,28 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
       })
       .catch((err: unknown) => setError(message(err)));
   };
+
+  const openMenu = (e: React.MouseEvent) => {
+    if (!onEditFile) return;
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const closeMenu = () => setMenu(null);
+
+  const editFile = () => {
+    closeMenu();
+    onEditFile?.();
+  };
+
+  const menuItems: ContextMenuEntry[] = [
+    {
+      label: 'Edit file',
+      icon: <PenLine size={15} strokeWidth={1.75} />,
+      shortcut: combo('diff.editFile'),
+      onSelect: editFile
+    }
+  ];
 
   const ready = Boolean(diff) && !error;
   const same = ready && !diff!.binary && chunks.length === 0;
@@ -375,7 +406,11 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
         </div>
       )}
 
-      <div className={styles.body}>{body()}</div>
+      <div className={styles.body} onContextMenu={openMenu}>
+        {body()}
+      </div>
+
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
     </div>
   );
 };

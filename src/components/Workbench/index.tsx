@@ -7,7 +7,7 @@ import FileEditor from '~/components/FileEditor';
 import FileIcon from '~/components/commons/FileIcon';
 import { fileName } from '~/usecase/util/codeEditor';
 import UnsavedDialog from '~/components/commons/UnsavedDialog';
-import { getBinding, formatCombo } from '~/usecase/util/keybindings';
+import { isCapturing, matchCombo, getBinding, formatCombo } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, subscribeDirty } from '~/usecase/util/dirtyFiles';
 
 import styles from './styles.module.scss';
@@ -16,6 +16,7 @@ export interface WorkbenchHandlers {
   onSelect: (key: string) => void;
   onCloseTab: (key: string) => void;
   onAddToCanvas: (tab: EditorTab) => void;
+  onEditFile: (tab: EditorTab) => void;
   onStepFile: (step: number) => void;
   onPinTab: (key: string) => void;
   onClose: () => void;
@@ -32,7 +33,7 @@ interface WorkbenchProps {
 const filePaths = (tabs: EditorTab[]): string[] => tabs.filter((t) => t.kind === 'file').map((t) => t.path);
 
 const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProps) => {
-  const { onSelect, onCloseTab, onAddToCanvas, onStepFile, onPinTab, onClose } = handlers;
+  const { onSelect, onCloseTab, onAddToCanvas, onEditFile, onStepFile, onPinTab, onClose } = handlers;
   const [pending, setPending] = React.useState<{ keys: string[]; scope: 'tab' | 'all' } | null>(null);
 
   const dirtyKey = React.useSyncExternalStore(subscribeDirty, () => filePaths(tabs).filter(isDirty).join('\n'));
@@ -53,23 +54,33 @@ const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProp
     setPending({ keys: dirtyKeys, scope: 'all' });
   }, [dirtyKeys, onClose]);
 
+  const closeTab = React.useCallback(
+    (tab: EditorTab) => {
+      if (dirtyKeys.includes(tab.key)) {
+        setPending({ keys: [tab.key], scope: 'tab' });
+        return;
+      }
+      onCloseTab(tab.key);
+    },
+    [dirtyKeys, onCloseTab]
+  );
+
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || pending) return;
+      if (pending || isCapturing()) return;
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        requestCloseAll();
+        return;
+      }
+      if (!activeTab || !matchCombo(e, getBinding('tile.close'))) return;
+      e.preventDefault();
       e.stopPropagation();
-      requestCloseAll();
+      closeTab(activeTab);
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [pending, requestCloseAll]);
-
-  const closeTab = (tab: EditorTab) => {
-    if (dirtyKeys.includes(tab.key)) {
-      setPending({ keys: [tab.key], scope: 'tab' });
-      return;
-    }
-    onCloseTab(tab.key);
-  };
+  }, [pending, activeTab, closeTab, requestCloseAll]);
 
   const discardPending = () => {
     if (!pending) return;
@@ -98,6 +109,7 @@ const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProp
   const diffAt = activeTab?.kind === 'diff' ? diffFiles.indexOf(activeTab.path) : -1;
   const prevFile = diffAt > 0 ? () => onStepFile(-1) : undefined;
   const nextFile = diffAt >= 0 && diffAt < diffFiles.length - 1 ? () => onStepFile(1) : undefined;
+  const editFile = () => activeTab?.kind === 'diff' && onEditFile(activeTab);
 
   const shell = exiting ? `${styles.overlay} ${styles.exit}` : styles.overlay;
 
@@ -193,7 +205,7 @@ const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProp
                 file={tab.path}
                 commit={tab.commit}
                 mode={{ embedded: true, keys: true }}
-                handlers={{ onPrevFile: prevFile, onNextFile: nextFile }}
+                handlers={{ onPrevFile: prevFile, onNextFile: nextFile, onEditFile: editFile }}
               />
             </div>
           );

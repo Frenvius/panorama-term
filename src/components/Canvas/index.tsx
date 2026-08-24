@@ -147,6 +147,8 @@ const Canvas = () => {
   fsIdRef.current = fsId;
   const activeTileRef = React.useRef<string | null>(activeTile);
   activeTileRef.current = activeTile;
+  const tabsOpenRef = React.useRef(false);
+  tabsOpenRef.current = editorTabs.length > 0;
   const fsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activated = React.useRef<Set<string>>(new Set());
 
@@ -241,7 +243,7 @@ const Canvas = () => {
       }
       if (cmd === 'tile.close') {
         const id = activeTileRef.current;
-        if (!id) return false;
+        if (!id || tabsOpenRef.current) return false;
         closeTileRef.current(id);
         return true;
       }
@@ -630,10 +632,16 @@ const Canvas = () => {
   const onSaveTile = () => void saveAndCloseTile();
   const cancelCloseTile = () => setTileToClose(null);
 
+  const editTabFile = (tab: EditorTab) => {
+    const sep = tab.root.includes('/') ? '/' : '\\';
+    openEditorFile(tab.root, tab.root + sep + tab.path.replace(/\//g, sep));
+  };
+
   const workbenchHandlers: WorkbenchHandlers = {
     onSelect: setActiveEditorTab,
     onCloseTab: closeEditorTab,
     onAddToCanvas: tabToCanvas,
+    onEditFile: editTabFile,
     onStepFile: stepDiffFile,
     onPinTab: pinEditorTab,
     onClose: closeEditorTabs

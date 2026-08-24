@@ -6,6 +6,7 @@ import {
   Undo2,
   History,
   ArrowUp,
+  PenLine,
   ListTree,
   GitBranch,
   RefreshCw,
@@ -45,6 +46,7 @@ import {
   gitLogMessages,
   gitUnpushedCommits
 } from '~/adapter/git/git.client';
+import { matchCombo, getBinding, formatCombo } from '~/usecase/util/keybindings';
 
 import styles from './styles.module.scss';
 
@@ -54,6 +56,7 @@ interface GitTabProps {
   active: string | null;
   onFiles: (files: string[]) => void;
   onOpenDiff: (file: string, commit?: string) => void;
+  onOpenFile: (file: string) => void;
 }
 
 const stopClick = (e: React.MouseEvent) => e.stopPropagation();
@@ -103,7 +106,7 @@ const rollbackText = (files: FileChange[]): string => {
   return gone > 0 ? `${base} ${pluralize(gone)} not in the last commit will be deleted.` : base;
 };
 
-const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
+const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTabProps) => {
   const listRef = React.useRef<HTMLDivElement>(null);
   const [view, setView] = React.useState<View>(savedView);
   const [status, setStatus] = React.useState<StatusSnapshot | null>(null);
@@ -243,7 +246,13 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
     onOpenDiff(path);
   };
 
-  const onArrows = (e: React.KeyboardEvent) => {
+  const onListKeys = (e: React.KeyboardEvent) => {
+    if (matchCombo(e.nativeEvent, getBinding('diff.editFile'))) {
+      if (!active) return;
+      e.preventDefault();
+      onOpenFile(absPath(active));
+      return;
+    }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     if (visible.length === 0) return;
     e.preventDefault();
@@ -439,6 +448,12 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
         label: 'Show diff',
         icon: <GitCompareArrows size={15} strokeWidth={1.75} />,
         onSelect: () => openDiff(file.path)
+      },
+      {
+        label: 'Edit file',
+        icon: <PenLine size={15} strokeWidth={1.75} />,
+        shortcut: formatCombo(getBinding('diff.editFile')),
+        onSelect: () => onOpenFile(absPath(file.path))
       },
       {
         label: 'Rollback...',
@@ -691,7 +706,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff }: GitTabProps) => {
           </button>
         </div>
 
-        <div ref={listRef} className={styles.list} tabIndex={-1} onKeyDown={onArrows}>
+        <div ref={listRef} className={styles.list} tabIndex={-1} onKeyDown={onListKeys}>
           {!status && !error && (
             <div className={styles.notice}>
               <LoaderCircle size={16} strokeWidth={2} className={styles.spinning} />

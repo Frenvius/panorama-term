@@ -389,6 +389,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
             active={activeDiff}
             onFiles={onDiffFiles}
             onOpenDiff={(file, commit) => onOpenDiff(root, file, commit)}
+            onOpenFile={(file) => onOpenFile(root, file)}
           />
         ) : (
           <div className={styles.empty}>Focus a terminal to see its repo</div>
