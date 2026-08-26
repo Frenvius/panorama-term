@@ -41,11 +41,15 @@ fn run_docker(args: &[&str]) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn docker_available() -> bool {
-    run_docker(&["--version"]).is_ok()
+    crate::blocking(|| run_docker(&["--version"]).is_ok()).await
 }
 
 #[tauri::command]
 pub async fn docker_ps() -> Result<Vec<Container>, String> {
+    crate::blocking(ps_sync).await
+}
+
+fn ps_sync() -> Result<Vec<Container>, String> {
     let out = run_docker(&["ps", "-a", "--no-trunc", "--format", "{{json .}}"])?;
     let mut list: Vec<Container> = out
         .lines()
@@ -102,6 +106,6 @@ pub async fn docker_action(id: String, action: String) -> Result<(), String> {
         "start" | "stop" | "restart" => action.as_str(),
         _ => return Err(format!("unknown action: {}", action)),
     };
-    run_docker(&[verb, &id])?;
-    Ok(())
+    let verb = verb.to_string();
+    crate::blocking(move || run_docker(&[&verb, &id]).map(|_| ())).await
 }

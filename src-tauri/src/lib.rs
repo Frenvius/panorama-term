@@ -14,13 +14,37 @@ mod ide;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
+    cmd.stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10")
+        .env("GCM_INTERACTIVE", "never");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
+        let ssh = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into()))
+            .join("System32")
+            .join("OpenSSH")
+            .join("ssh.exe");
+        if ssh.is_file() {
+            cmd.env_remove("SSH_AUTH_SOCK").env(
+                "GIT_SSH_COMMAND",
+                format!("'{}' -oBatchMode=yes -oConnectTimeout=10", ssh.display()),
+            );
+        }
     }
     cmd
+}
+
+pub(crate) async fn blocking<F, T>(job: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .expect("blocking task panicked")
 }
 
 const SIDECAR_PORT: u16 = 9777;

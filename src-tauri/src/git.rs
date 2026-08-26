@@ -597,8 +597,11 @@ pub async fn git_checkout(path: String, branch: String) -> Result<BranchSnapshot
 
 #[tauri::command]
 pub async fn git_fetch(path: String) -> Result<BranchSnapshot, String> {
-    run_git(&path, &["fetch", "--prune", "--all"])?;
-    snapshot(&path)
+    crate::blocking(move || {
+        run_git(&path, &["fetch", "--prune", "--all"])?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -691,24 +694,30 @@ pub async fn git_rebase_onto(path: String, branch: String) -> Result<BranchSnaps
 
 #[tauri::command]
 pub async fn git_update_branch(path: String, rebase: bool) -> Result<BranchSnapshot, String> {
-    if rebase {
-        run_git(&path, &["pull", "--rebase"])?;
-    } else {
-        run_git(&path, &["pull", "--ff"])?;
-    }
-    snapshot(&path)
+    crate::blocking(move || {
+        if rebase {
+            run_git(&path, &["pull", "--rebase"])?;
+        } else {
+            run_git(&path, &["pull", "--ff"])?;
+        }
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_push_current(path: String) -> Result<BranchSnapshot, String> {
-    if let Err(e) = run_git(&path, &["push"]) {
-        let needs_upstream = e.contains("no upstream") || e.contains("set-upstream");
-        let Some(current) = head_name(&path).filter(|_| needs_upstream) else {
-            return Err(e);
-        };
-        run_git(&path, &["push", "--set-upstream", "origin", &current])?;
-    }
-    snapshot(&path)
+    crate::blocking(move || {
+        if let Err(e) = run_git(&path, &["push"]) {
+            let needs_upstream = e.contains("no upstream") || e.contains("set-upstream");
+            let Some(current) = head_name(&path).filter(|_| needs_upstream) else {
+                return Err(e);
+            };
+            run_git(&path, &["push", "--set-upstream", "origin", &current])?;
+        }
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
