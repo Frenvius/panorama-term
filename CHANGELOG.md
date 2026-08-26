@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.2.5]
+
+### Added
+- Tabbed file editor: open files from the Files tab, the diff viewer, the git tab or a canvas tile, with unsaved-change guards.
+- Browse and diff the files of any commit straight from the git history tab.
+- pi agent support in the agent bar: identity detection, model catalog and effort pickers, plus mouse and word-delete handling.
+- Hover-reveal minimap with drag panning and agent state colors, an always-visible toggle and a configurable corner.
+- General settings tab, and appearance toggles for individual tile header elements.
+- Configurable notification corner and target display.
+- Opus 5 in the model switcher, now grouped by family.
+- Open a tile working directory in the detected IDE from the context menu.
+- Context menu on git sections and folders, and copy tile title from the header menu.
+- Filter commits in the git history tab.
+- Background fetch that flags pending pulls on tracked branches.
+- Notification when a Claude compact finishes.
+- go-task Taskfile targets detected for the run and build buttons.
+- Dotfiles shown in the file tree, with git-ignored entries dimmed, and broader file icon coverage.
+- Empty diffs now show the file content plus a line-separator notice.
+
+### Fixed
+- Ctrl+C not killing running processes in terminal tiles.
+- Terminal restart racing the old pty on the same key.
+- Diff panel rendering underneath the minimap.
+- Notification window appearing in the Alt+Tab switcher.
+- Agent bar stuck hidden after the resume transcript menu, and prompts interrupting Claude instead of queueing.
+- Main window not restoring when clicking a tray notification.
+- Claude identified from sidecar state and footer model.
+- Console windows flashing when git and docker commands ran.
+- Git and docker commands freezing the UI by blocking the async runtime.
+- Agent bar context warning now triggers earlier.
+
 ## [0.2.0]
 
 ### Added
