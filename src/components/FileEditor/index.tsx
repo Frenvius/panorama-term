@@ -7,10 +7,11 @@ import { history, defaultKeymap, historyKeymap, indentWithTab } from '@codemirro
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
 
 import type { EditorRequest } from '~/usecase/util/dirtyFiles';
+import { humanSize } from '~/usecase/util/bytes';
 import { markDirty } from '~/usecase/util/dirtyFiles';
 import { shikiHighlight } from '~/usecase/util/shikiEditor';
-import { fileName, languageFor, codeHighlight } from '~/usecase/util/codeEditor';
-import { readTextFile, writeTextFile, watchFile, unwatchFile } from '~/adapter/fs/fs.client';
+import { fileName, isImageFile, languageFor, codeHighlight } from '~/usecase/util/codeEditor';
+import { readFileBytes, readTextFile, writeTextFile, watchFile, unwatchFile } from '~/adapter/fs/fs.client';
 
 import styles from './styles.module.scss';
 
@@ -77,6 +78,10 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
   const [dirty, setDirty] = React.useState(false);
   const [stale, setStale] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [preview, setPreview] = React.useState<{ url: string; size: number } | null>(null);
+  const [dims, setDims] = React.useState('');
+
+  const image = isImageFile(path);
 
   const applyDisk = React.useCallback(
     (editor: EditorView, text: string) => {
@@ -103,7 +108,29 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
   }, [path, applyDisk]);
 
   React.useEffect(() => {
-    if (!host.current || !path) return;
+    if (!image) return;
+    let alive = true;
+    let url: string | null = null;
+    setPreview(null);
+    setDims('');
+
+    readFileBytes(path)
+      .then((buf) => {
+        if (!alive) return;
+        url = URL.createObjectURL(new Blob([buf]));
+        setPreview({ url, size: buf.byteLength });
+        setError(null);
+      })
+      .catch((e: unknown) => alive && setError(String(e)));
+
+    return () => {
+      alive = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [path, image]);
+
+  React.useEffect(() => {
+    if (!host.current || !path || image) return;
 
     const editor = new EditorView({
       parent: host.current,
@@ -156,7 +183,7 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
       editor.destroy();
       view.current = null;
     };
-  }, [path, applyDisk]);
+  }, [path, image, applyDisk]);
 
   React.useEffect(() => {
     const save = async (editor: EditorView) => {
@@ -200,7 +227,7 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
   }, [active, path]);
 
   React.useEffect(() => {
-    if (!path) return;
+    if (!path || image) return;
     let alive = true;
     let watchId: number | null = null;
     let debounce = 0;
@@ -224,7 +251,7 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
       if (watchId !== null) void unwatchFile(watchId);
       void off.then((un) => un());
     };
-  }, [path, syncFromDisk]);
+  }, [path, image, syncFromDisk]);
 
   const reloadFromDisk = () => {
     const editor = view.current;
@@ -234,11 +261,25 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
       .catch((e: unknown) => setError(String(e)));
   };
 
+  const onImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    setDims(`${img.naturalWidth} x ${img.naturalHeight}`);
+  };
+
   return (
     <div className={styles.wrap}>
-      <div ref={host} className={styles.editor} />
+      {image ? (
+        <div className={styles.preview}>
+          {preview && <img src={preview.url} alt={fileName(path)} onLoad={onImageLoad} />}
+        </div>
+      ) : (
+        <div ref={host} className={styles.editor} />
+      )}
       <div className={styles.status}>
         <span className={styles.name}>{fileName(path)}</span>
+        {image && preview && (
+          <span className={styles.meta}>{dims ? `${dims} - ${humanSize(preview.size)}` : humanSize(preview.size)}</span>
+        )}
         {error && <span className={styles.error}>{error}</span>}
         {!error && stale && (
           <button className={styles.reload} onClick={reloadFromDisk}>

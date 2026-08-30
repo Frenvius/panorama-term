@@ -65,6 +65,9 @@ export const gitToggleBranchFavorite = (path: string, fullName: string): Promise
 
 export const gitRepos = (path: string): Promise<RepoEntry[]> => invoke<RepoEntry[]>('git_repos', { path });
 
+export const gitBlob = (path: string, file: string, old: boolean, commit?: string): Promise<ArrayBuffer> =>
+  invoke<ArrayBuffer>('git_blob', { path, file, old, commit: commit ?? null });
+
 export const gitStatus = (path: string): Promise<StatusSnapshot> => invoke<StatusSnapshot>('git_status', { path });
 
 export const gitCommit = (path: string, files: string[], message: string, amend: boolean): Promise<void> =>

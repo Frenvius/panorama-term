@@ -481,6 +481,7 @@ fn reveal_path(path: String) -> Result<(), String> {
 }
 
 const MAX_TEXT_FILE: u64 = 8 * 1024 * 1024;
+const MAX_BINARY_FILE: u64 = 64 * 1024 * 1024;
 
 #[derive(serde::Serialize)]
 struct DirEntry {
@@ -564,6 +565,16 @@ fn read_text_file(path: String) -> Result<String, String> {
         return Err("binary file".into());
     }
     String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_BINARY_FILE {
+        return Err(format!("file too large ({} bytes)", meta.len()));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -840,6 +851,7 @@ pub fn run() {
             reveal_path,
             read_dir,
             read_text_file,
+            read_file_bytes,
             watch_text_file,
             unwatch_text_file,
             write_text_file,
@@ -866,6 +878,7 @@ pub fn run() {
             git::git_compare_with_current,
             git::git_toggle_branch_favorite,
             git::git_repos,
+            git::git_blob,
             git::git_status,
             git::git_commit,
             git::git_log_messages,

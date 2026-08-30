@@ -20,11 +20,13 @@ import {
 } from 'lucide-react';
 
 import Panes from '~/components/DiffViewer/Panes';
+import Images from '~/components/DiffViewer/Images';
 import Picker from '~/components/DiffViewer/Picker';
 import Unified from '~/components/DiffViewer/Unified';
 import FileIcon from '~/components/commons/FileIcon';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { gitDiffFile, gitRevertHunk, gitWatchFile, gitUnwatchFile, gitCommitDiffFile } from '~/adapter/git/git.client';
+import { isImageFile } from '~/usecase/util/codeEditor';
 import { langOf, computeDiff, revertChunk, computeIntraLine } from '~/usecase/util/diff';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 
@@ -71,6 +73,7 @@ const HIGHLIGHT_MODES: HighlightMode[] = ['lines', 'words', 'characters', 'none'
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
+
 
 const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => {
   const { embedded, exiting, keys = !mode?.embedded } = mode ?? {};
@@ -260,7 +263,10 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
         </div>
       );
     }
-    if (diff.binary) return <div className={styles.notice}>Binary file</div>;
+    if (diff.binary) {
+      if (!isImageFile(name)) return <div className={styles.notice}>Binary file</div>;
+      return <Images root={root} file={file} commit={commit} />;
+    }
 
     if (view === 'unified') {
       return <Unified old={diff.old} next={diff.new} lang={lang} chunks={chunks} collapse={collapse} />;

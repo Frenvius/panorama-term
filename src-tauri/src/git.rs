@@ -904,6 +904,56 @@ fn is_binary(text: &[u8]) -> bool {
     text.iter().take(8000).any(|b| *b == 0)
 }
 
+fn show_bytes(repo: &str, spec: &str) -> Vec<u8> {
+    let Ok(out) = crate::hidden_command("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show", spec])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if out.status.success() {
+        out.stdout
+    } else {
+        Vec::new()
+    }
+}
+
+#[tauri::command]
+pub async fn git_blob(
+    path: String,
+    file: String,
+    old: bool,
+    commit: Option<String>,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = crate::blocking(move || match (commit, old) {
+        (Some(commit), true) => {
+            let source = commit_changes(&path, &commit)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|(_, _, to)| *to == file)
+                .map(|(_, from, _)| from)
+                .unwrap_or_else(|| file.clone());
+            show_bytes(&path, &format!("{}^:{}", commit, source))
+        }
+        (Some(commit), false) => show_bytes(&path, &format!("{}:{}", commit, file)),
+        (None, true) => {
+            let head = show_bytes(&path, &format!("HEAD:{}", file));
+            if !head.is_empty() {
+                return head;
+            }
+            match rename_source(&path, &file) {
+                Some(from) => show_bytes(&path, &format!("HEAD:{}", from)),
+                None => Vec::new(),
+            }
+        }
+        (None, false) => fs::read(PathBuf::from(&path).join(&file)).unwrap_or_default(),
+    })
+    .await;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 fn rename_source(repo: &str, file: &str) -> Option<String> {
     let out = run_git(repo, &["diff", "-M", "--name-status", "HEAD", "--", file]).ok()?;
     out.lines().find_map(|line| {
@@ -1158,6 +1208,15 @@ pub async fn git_revert_hunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G'];
+
+    #[test]
+    fn show_bytes_keeps_binary_content_intact() {
+        let repo = env!("CARGO_MANIFEST_DIR");
+        let png = show_bytes(repo, "HEAD:app-icon.png");
+        assert_eq!(&png[..4], PNG_MAGIC);
+    }
 
     #[test]
     fn scan_repos_finds_nested_repos_and_skips_noise() {

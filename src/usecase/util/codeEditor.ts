@@ -50,6 +50,11 @@ export const codeHighlight = (): Extension => syntaxHighlighting(style);
 
 export const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 
+const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'];
+
+export const isImageFile = (path: string): boolean =>
+  IMAGE_EXT.includes(fileName(path).split('.').pop()?.toLowerCase() ?? '');
+
 export const languageFor = async (path: string): Promise<Extension | null> => {
   const desc = LanguageDescription.matchFilename(languages, fileName(path));
   if (!desc) return null;
