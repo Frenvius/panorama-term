@@ -7,7 +7,7 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { getNotifPlacement, NOTIF_PLACEMENT_EVENT } from '~/usecase/util/notifPlacement';
 
 import type { NotifPlacement } from '~/usecase/util/notifPlacement';
-import type { NotifyKind, NotifyPayload } from '~/components/commons/Notifications/bridge';
+import type { NotifyKind, NotifyPayload } from '~/domain/interfaces/notify.interface';
 
 import styles from './styles.module.scss';
 import finishedSound from './notif-finished.wav';
@@ -132,7 +132,7 @@ const NotificationOverlay = () => {
   }, [toasts, expanded, heights, bottoms, placement]);
 
   const open = (toast: NotifyPayload) => {
-    void emit('notif:open', { tileId: toast.tileId });
+    void emit('notif:open', { tileId: toast.tileId, wsId: toast.wsId, tabId: toast.tabId });
     void invoke('focus_main');
     setToasts((prev) => prev.filter((t) => t.id !== toast.id));
   };

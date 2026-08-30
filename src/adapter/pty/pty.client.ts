@@ -19,6 +19,7 @@ export interface PtyConnectionParams {
   target?: string;
   elevated?: boolean;
   attach?: boolean;
+  watch?: boolean;
 }
 
 export interface PtyHandlers {
@@ -61,12 +62,13 @@ const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
 };
 
 export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHandlers): WebSocket => {
-  const { tileId, cols, rows, cwd, target, elevated, attach } = params;
+  const { tileId, cols, rows, cwd, target, elevated, attach, watch } = params;
   let query = `tileId=${encodeURIComponent(tileId)}&cols=${cols}&rows=${rows}`;
   if (cwd) query += `&cwd=${encodeURIComponent(cwd)}`;
   if (target) query += `&target=${encodeURIComponent(target)}`;
   if (elevated) query += '&elevated=1';
   if (attach) query += '&attach=1';
+  if (watch) query += '&watch=1';
   const ws = new WebSocket(`${SIDECAR_WS}/pty?${query}`);
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (e) => {

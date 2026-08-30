@@ -26,7 +26,7 @@ import {
 import type { Tile, Frame } from '~/domain/interfaces/canvas.interface';
 import type { TileType } from '~/domain/interfaces/workspace.interface';
 import type { DirEntry } from '~/adapter/fs/fs.client';
-import type { NotifyKind } from '~/components/commons/Notifications/bridge';
+import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import GitTab from '~/components/Canvas/Navigator/GitTab';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
 import DockerTab from '~/components/Canvas/Navigator/DockerTab';

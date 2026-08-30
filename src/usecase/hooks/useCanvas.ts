@@ -5,6 +5,7 @@ import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { THEME_EVENT } from '~/usecase/util/theme';
+import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
@@ -378,6 +379,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
   }, [bindKey]);
 
   const closeTile = React.useCallback((id: string) => {
+    clearAlert(id);
     const closing = tilesRef.current.find((t) => t.id === id);
     if (closing && !closing.runCwd) {
       const ws = wsIdRef.current;

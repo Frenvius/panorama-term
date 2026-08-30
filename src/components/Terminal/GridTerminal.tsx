@@ -9,6 +9,8 @@ import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
 import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
+import { createAgentNotifier } from '~/usecase/util/agentNotify';
+import { markTerminalLive } from '~/usecase/util/liveTerminals';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
@@ -44,7 +46,6 @@ const CELL_H = 15;
 const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
-const NOTIFY_IDLE_GRACE_MS = 10000;
 const DEFAULT_FG = 0xc7d0e0;
 const NO_LINES: string[] = [];
 const isLinux = /linux/i.test(navigator.userAgent);
@@ -236,9 +237,6 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const onClaudeStatusRef = React.useRef(onClaudeStatus);
   const onClaudeDiffRef = React.useRef(onClaudeDiff);
   const onProgressRef = React.useRef(onProgress);
-  const agentEventsRef = React.useRef(false);
-  const lastAgentEventRef = React.useRef(0);
-  const lastNotifyRef = React.useRef(0);
   activeRef.current = active;
   visibleRef.current = visible;
   elevatedRef.current = elevated;
@@ -267,6 +265,21 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     const onScreen = !document.hidden && document.hasFocus();
     return activeRef.current && inView && onScreen;
   }, []);
+
+  const notifier = React.useMemo(
+    () =>
+      createAgentNotifier({
+        suppressed: isWatching,
+        notify: (kind, text, title) => notifyClaude(tileId, kind, text, title),
+        clear: () => clearNotify(tileId)
+      }),
+    [tileId, isWatching]
+  );
+
+  React.useEffect(() => {
+    markTerminalLive(tileId, true);
+    return () => markTerminalLive(tileId, false);
+  }, [tileId]);
 
   const draw = React.useCallback(() => {
     const rowsEl = rowsRefEl.current;
@@ -397,43 +410,15 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             if (next && next !== prev) {
               statusRef.current = next;
               onClaudeStatusRef.current?.(next);
-              if (!isWatching() && !agentEventsRef.current) {
-                if (prev === 'busy' && next === 'idle') notifyClaude(tileId, 'finished');
-                else if (next === 'waiting') notifyClaude(tileId, 'attention');
-              }
+              notifier.onStatus(prev, next);
             }
           },
           onCwd: (dir, branch) => onCwdRef.current(tileId, dir, branch),
           onClipboard: (text) => writeClipboard(text),
           onTitle: (title) => onOscTitleRef.current(tileId, title),
-          onNotify: (title, body) => {
-            if (Date.now() - lastAgentEventRef.current < 5000) return;
-            if (!isWatching()) notifyClaude(tileId, 'generic', body, title || undefined);
-          },
+          onNotify: (title, body) => notifier.onNotify(title, body),
           onProgress: (state, pct) => onProgressRef.current?.(state, pct),
-          onAgentEvent: (evt) => {
-            agentEventsRef.current = true;
-            lastAgentEventRef.current = Date.now();
-            if (evt.event === 'prompt-submit') {
-              clearNotify(tileId);
-              return;
-            }
-            if (isWatching()) return;
-            if (evt.event === 'stop') {
-              lastNotifyRef.current = Date.now();
-              notifyClaude(tileId, 'finished', evt.response || undefined);
-            } else if (evt.event === 'permission') {
-              const detail = [evt.toolName, evt.message].filter(Boolean).join(': ');
-              lastNotifyRef.current = Date.now();
-              notifyClaude(tileId, 'permission', detail || undefined);
-            } else if (evt.event === 'notification') {
-              if (Date.now() - lastNotifyRef.current < NOTIFY_IDLE_GRACE_MS) return;
-              if (!document.hasFocus()) notifyClaude(tileId, 'idle', evt.message || undefined);
-            } else if (evt.event === 'compact') {
-              lastNotifyRef.current = Date.now();
-              notifyClaude(tileId, 'generic', undefined, 'Context compacted');
-            }
-          },
+          onAgentEvent: (evt) => notifier.onAgentEvent(evt),
           onReady: (info) => {
             const w = wsRef.current;
             if (w) {

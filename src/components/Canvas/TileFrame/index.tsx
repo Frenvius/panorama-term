@@ -6,7 +6,7 @@ import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { NotifyKind } from '~/components/commons/Notifications/bridge';
+import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import NoteTile from '~/components/Canvas/NoteTile';
 import EditorTile from '~/components/Canvas/EditorTile';
 import DiffViewer from '~/components/DiffViewer';

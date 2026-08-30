@@ -2,11 +2,15 @@ import React from 'react';
 import { X, Plus } from 'lucide-react';
 
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
+import { getAlerts, subscribeAlerts } from '~/usecase/util/alerts';
 
 import styles from './styles.module.scss';
 
 const TabsBar = () => {
   const { tabs, activeTabId, switchTab, createTab, deleteTab, renameTab } = useWorkspace();
+  const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
+
+  const alerted = React.useMemo(() => new Set([...alerts.values()].map((alert) => alert.tabId)), [alerts]);
 
   const addTab = () => void createTab();
 
@@ -31,6 +35,7 @@ const TabsBar = () => {
             onDoubleClick={rename}
             data-active={tab.id === activeTabId}
           >
+            {alerted.has(tab.id) && tab.id !== activeTabId && <span className={styles.dot} />}
             <span className={styles.name}>{tab.name}</span>
             <button
               className={styles.close}

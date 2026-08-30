@@ -4,16 +4,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { stripSpinner } from '~/usecase/util/title';
 
 import type { Tile } from '~/domain/interfaces/canvas.interface';
-
-export type NotifyKind = 'finished' | 'attention' | 'permission' | 'idle' | 'generic';
-
-export interface NotifyPayload {
-  id: number;
-  tileId: string;
-  kind: NotifyKind;
-  title: string;
-  text?: string;
-}
+import type { NotifyKind, NotifyPayload, NotifyTarget } from '~/domain/interfaces/notify.interface';
 
 const NOTIFY_EVENT = 'panorama:notify';
 const NOTIFY_CLEAR_EVENT = 'panorama:notify-clear';
@@ -23,13 +14,16 @@ interface NotifyDetail {
   kind: NotifyKind;
   text?: string;
   title?: string;
+  target?: NotifyTarget;
 }
 
 interface BridgeArgs {
   tiles: Tile[];
+  wsId: string | null;
+  tabId: string | null;
   activeTile: string | null;
-  onOpen: (tileId: string) => void;
-  onAlert: (tileId: string, kind: NotifyKind) => void;
+  onOpen: (target: NotifyTarget) => void;
+  onAlert: (tileId: string, kind: NotifyKind, tabId: string | null) => void;
   onClear: (tileId: string) => void;
 }
 
@@ -37,6 +31,11 @@ let seq = 0;
 
 export const notifyClaude = (tileId: string, kind: NotifyKind, text?: string, title?: string): void => {
   window.dispatchEvent(new CustomEvent<NotifyDetail>(NOTIFY_EVENT, { detail: { tileId, kind, text, title } }));
+};
+
+export const notifyBackground = (target: NotifyTarget, kind: NotifyKind, text?: string, title?: string): void => {
+  const detail: NotifyDetail = { tileId: target.tileId, kind, text, title, target };
+  window.dispatchEvent(new CustomEvent<NotifyDetail>(NOTIFY_EVENT, { detail }));
 };
 
 export const clearNotify = (tileId: string): void => {
@@ -52,9 +51,12 @@ const tileTitle = (tile: Tile | undefined): string => {
   return 'Terminal';
 };
 
-export const useNotifyBridge = ({ tiles, activeTile, onOpen, onAlert, onClear }: BridgeArgs): void => {
+export const useNotifyBridge = ({ tiles, wsId, tabId, activeTile, onOpen, onAlert, onClear }: BridgeArgs): void => {
   const tilesRef = React.useRef(tiles);
   tilesRef.current = tiles;
+
+  const scopeRef = React.useRef({ wsId, tabId });
+  scopeRef.current = { wsId, tabId };
 
   const onOpenRef = React.useRef(onOpen);
   onOpenRef.current = onOpen;
@@ -69,15 +71,18 @@ export const useNotifyBridge = ({ tiles, activeTile, onOpen, onAlert, onClear }:
     const onNotify = (e: Event) => {
       const detail = (e as CustomEvent<NotifyDetail>).detail;
       const tile = tilesRef.current.find((t) => t.id === detail.tileId);
+      const target = detail.target ?? { ...scopeRef.current, tileId: detail.tileId };
       const payload: NotifyPayload = {
         id: ++seq,
         tileId: detail.tileId,
+        wsId: target.wsId,
+        tabId: target.tabId,
         kind: detail.kind,
         title: detail.title || tileTitle(tile),
         text: detail.text
       };
       void emit('notif:show', payload);
-      onAlertRef.current(detail.tileId, detail.kind);
+      onAlertRef.current(detail.tileId, detail.kind, target.tabId);
     };
     const onNotifyClear = (e: Event) => {
       const { tileId } = (e as CustomEvent<{ tileId: string }>).detail;
@@ -93,7 +98,7 @@ export const useNotifyBridge = ({ tiles, activeTile, onOpen, onAlert, onClear }:
   }, []);
 
   React.useEffect(() => {
-    const unlisten = listen<{ tileId: string }>('notif:open', (e) => onOpenRef.current(e.payload.tileId));
+    const unlisten = listen<NotifyTarget>('notif:open', (e) => onOpenRef.current(e.payload));
     return () => {
       void unlisten.then((off) => off());
     };

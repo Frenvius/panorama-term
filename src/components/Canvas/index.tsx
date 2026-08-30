@@ -1,5 +1,4 @@
 import React from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import type { EditorView } from '@codemirror/view';
 import { Group, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
@@ -21,30 +20,32 @@ import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
 import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
-import { useNotifyBridge, type NotifyKind } from '~/components/commons/Notifications/bridge';
+import { workspaceService } from '~/usecase/service/workspace.service';
+import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
+import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty } from '~/usecase/util/dirtyFiles';
 import { tabKey, openTab, pinTab } from '~/usecase/util/editorTabs';
 import type { EditorTab, EditorTabKind } from '~/domain/interfaces/editor.interface';
+import type { NotifyKind, NotifyTarget } from '~/domain/interfaces/notify.interface';
 
 import styles from './styles.module.scss';
 
 const FS_ANIM = 170;
 const DIFF_ANIM = 130;
 
+const DBLCLICK_MS = 400;
+
 let pendingFocusTileId: string | null = null;
 
-const DBLCLICK_MS = 400;
-const ALERTS_KEY = 'panorama:alerts';
-
-const loadAlerts = (): Map<string, NotifyKind> => {
-  try {
-    const raw = localStorage.getItem(ALERTS_KEY);
-    return raw ? new Map(Object.entries(JSON.parse(raw) as Record<string, NotifyKind>)) : new Map();
-  } catch {
-    return new Map();
-  }
+const jumpToWorkspaceTab = async (
+  wsId: string,
+  tabId: string,
+  switchWorkspace: (id: string) => Promise<void>
+): Promise<void> => {
+  await workspaceService.setActiveTab(wsId, tabId);
+  await switchWorkspace(wsId);
 };
 
 interface Menu {
@@ -55,7 +56,8 @@ interface Menu {
 }
 
 const Canvas = () => {
-  const { activeId, activeState, saveActiveState, tabs, activeTabId, moveTileToTab } = useWorkspace();
+  const { activeId, activeState, saveActiveState, tabs, activeTabId, moveTileToTab, switchTab, switchWorkspace } =
+    useWorkspace();
   const {
     view,
     tiles,
@@ -109,7 +111,7 @@ const Canvas = () => {
   } = useCanvas({ seed: activeState, wsId: activeId, onPersist: saveActiveState });
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
-  const [alerts, setAlerts] = React.useState<Map<string, NotifyKind>>(loadAlerts);
+  const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
   const [agents, setAgents] = React.useState<Map<string, 'idle' | 'busy'>>(new Map());
   const [noteEditors, setNoteEditors] = React.useState<Record<string, EditorView>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
@@ -486,11 +488,13 @@ const Canvas = () => {
     if (menu) addFrame(menu.wx, menu.wy);
   };
 
-  const addAlert = React.useCallback((id: string, kind: NotifyKind) => {
-    setAlerts((prev) => {
-      if (prev.get(id) === kind) return prev;
-      return new Map(prev).set(id, kind);
-    });
+  const alertKinds = React.useMemo(
+    () => new Map([...alerts].map(([id, alert]): [string, NotifyKind] => [id, alert.kind])),
+    [alerts]
+  );
+
+  const addAlert = React.useCallback((id: string, kind: NotifyKind, tabId: string | null) => {
+    setAlert(id, kind, tabId ?? '');
   }, []);
 
   const setAgentState = React.useCallback((id: string, live: boolean, busy: boolean) => {
@@ -504,33 +508,36 @@ const Canvas = () => {
     });
   }, []);
 
-  const clearAlert = React.useCallback((id: string) => {
-    setAlerts((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Map(prev);
-      next.delete(id);
-      return next;
-    });
-  }, []);
-
   React.useEffect(() => {
     if (activeTile) clearAlert(activeTile);
-  }, [activeTile, clearAlert]);
+  }, [activeTile]);
 
   const activateAndClear = React.useCallback(
     (id: string) => {
       clearAlert(id);
       activateTile(id);
     },
-    [clearAlert, activateTile]
+    [activateTile]
   );
 
   const openNotified = React.useCallback(
-    (id: string) => {
-      activateAndClear(id);
-      focusTile(id, true);
+    ({ tileId, wsId, tabId }: NotifyTarget) => {
+      if (tiles.some((t) => t.id === tileId)) {
+        activateAndClear(tileId);
+        focusTile(tileId, true);
+        return;
+      }
+      if (!tabId) return;
+      if (wsId && wsId !== activeId) {
+        pendingFocusTileId = tileId;
+        void jumpToWorkspaceTab(wsId, tabId, switchWorkspace);
+        return;
+      }
+      if (!tabs.some((t) => t.id === tabId)) return;
+      pendingFocusTileId = tileId;
+      void switchTab(tabId);
     },
-    [activateAndClear, focusTile]
+    [tiles, tabs, activeId, activateAndClear, focusTile, switchTab, switchWorkspace]
   );
 
   const navFocus = React.useCallback(
@@ -676,12 +683,15 @@ const Canvas = () => {
     onClose: hideNav
   };
 
-  useNotifyBridge({ tiles, activeTile, onOpen: openNotified, onAlert: addAlert, onClear: clearAlert });
-
-  React.useEffect(() => {
-    void invoke('set_pending_count', { count: alerts.size }).catch(() => {});
-    localStorage.setItem(ALERTS_KEY, JSON.stringify(Object.fromEntries(alerts)));
-  }, [alerts]);
+  useNotifyBridge({
+    tiles,
+    wsId: activeId,
+    tabId: activeTabId,
+    activeTile,
+    onOpen: openNotified,
+    onAlert: addAlert,
+    onClear: clearAlert
+  });
 
   return (
     <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root}>
@@ -808,7 +818,7 @@ const Canvas = () => {
               activeTabId={activeTabId}
               active={t.id === activeTile}
               selected={selected.has(t.id)}
-              alert={alerts.get(t.id) ?? null}
+              alert={alertKinds.get(t.id) ?? null}
               visible={vis}
               live={live}
               fullscreen={t.id === fsId}
@@ -846,7 +856,7 @@ const Canvas = () => {
           100%
         </div>
         {!fsId && (
-          <Minimap view={view} tiles={tiles} agents={agents} alerts={alerts} viewportRef={bgRef} onPan={panTo} />
+          <Minimap view={view} tiles={tiles} agents={agents} alerts={alertKinds} viewportRef={bgRef} onPan={panTo} />
         )}
       </div>
       {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
@@ -854,7 +864,7 @@ const Canvas = () => {
         <Navigator
           tiles={tiles}
           frames={frames}
-          alerts={alerts}
+          alerts={alertKinds}
           agents={agents}
           activeTile={activeTile}
           activeDiff={activeDiffFile}

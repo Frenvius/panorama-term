@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { TabMeta, CanvasState, WorkspaceMeta } from '~/domain/interfaces/workspace.interface';
+import { clearTabAlerts } from '~/usecase/util/alerts';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { toStored, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 
@@ -99,7 +100,9 @@ export const useWorkspaces = () => {
     async (tabId: string) => {
       if (!activeId) return;
       const res = await workspaceService.deleteTab(activeId, tabId);
-      if (res.deleted) await loadTabs(activeId, res.activeTabId ?? undefined);
+      if (!res.deleted) return;
+      clearTabAlerts(tabId);
+      await loadTabs(activeId, res.activeTabId ?? undefined);
     },
     [activeId, loadTabs]
   );

@@ -2165,6 +2165,7 @@ struct Params {
     spawn_cmd: Option<String>,
     run_kind: String,
     attach_only: bool,
+    watch_only: bool,
 }
 
 fn default_shell() -> String {
@@ -3110,7 +3111,9 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
             return;
         }
     };
-    resize_session(&session, params.cols, params.rows);
+    if !params.watch_only {
+        resize_session(&session, params.cols, params.rows);
+    }
 
     let ready = serde_json::json!({
         "t": "ready",
@@ -3123,14 +3126,16 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     if tx.send(Message::Text(ready)).await.is_err() {
         return;
     }
-    if tx
-        .send(Message::Binary(build_frame(&session)))
-        .await
-        .is_err()
-    {
-        return;
+    if !params.watch_only {
+        if tx
+            .send(Message::Binary(build_frame(&session)))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        session.dirty.store(false, Ordering::Relaxed);
     }
-    session.dirty.store(false, Ordering::Relaxed);
 
     let mut tick = tokio::time::interval(Duration::from_millis(60));
     let mut claude = ClaudeTracker::default();
@@ -3151,7 +3156,8 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                     let _ = tx.send(Message::Text("{\"t\":\"exit\"}".into())).await;
                     break;
                 }
-                if session.visible.load(Ordering::Relaxed)
+                if !params.watch_only
+                    && session.visible.load(Ordering::Relaxed)
                     && session.dirty.load(Ordering::Relaxed)
                     && (session.focused.load(Ordering::Relaxed)
                         || last_frame.elapsed() >= Duration::from_millis(UNFOCUSED_FRAME_MS))
@@ -3326,6 +3332,7 @@ async fn handle_conn(mut stream: TcpStream) {
             Some(t) if !t.is_empty() => t.clone(),
             _ => return,
         };
+        let watch_only = q.get("watch").map(|v| v == "1").unwrap_or(false);
         let params = Params {
             tile_id,
             cols: q.get("cols").and_then(|c| c.parse().ok()).unwrap_or(80),
@@ -3336,7 +3343,8 @@ async fn handle_conn(mut stream: TcpStream) {
             elevated: q.get("elevated").map(|v| v == "1").unwrap_or(false),
             spawn_cmd: None,
             run_kind: "run".into(),
-            attach_only: q.get("attach").map(|v| v == "1").unwrap_or(false),
+            attach_only: watch_only || q.get("attach").map(|v| v == "1").unwrap_or(false),
+            watch_only,
         };
         let ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
         handle_ws(ws, params).await;
@@ -3469,6 +3477,7 @@ async fn handle_conn(mut stream: TcpStream) {
                         spawn_cmd: Some(cmd),
                         run_kind: kind.clone(),
                         attach_only: false,
+                        watch_only: false,
                     };
                     match get_or_create(&params).await {
                         Ok(_) => run_status_json(run_lookup_tile(&kind, &tile)),

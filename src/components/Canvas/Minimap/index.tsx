@@ -1,7 +1,7 @@
 import React from 'react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
-import type { NotifyKind } from '~/components/commons/Notifications/bridge';
+import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import { themeInk, THEME_EVENT } from '~/usecase/util/theme';
 import { getMinimapCorner, getMinimapPinned, MINIMAP_SETTINGS_EVENT } from '~/usecase/util/minimap';
 

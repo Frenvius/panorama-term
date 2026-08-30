@@ -36,6 +36,14 @@
   }
 }
 
+.dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: #e0a33e;
+}
+
 .name {
   max-width: 120px;
   overflow: hidden;
