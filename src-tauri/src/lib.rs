@@ -173,6 +173,31 @@ fn read_temp_image(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[tauri::command]
+fn has_clipboard_image() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::DataExchange::{
+            CloseClipboard, IsClipboardFormatAvailable, OpenClipboard,
+        };
+        use windows_sys::Win32::System::Ole::{CF_BITMAP, CF_DIB};
+
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return false;
+            }
+            let has_image = IsClipboardFormatAvailable(CF_DIB as u32) != 0
+                || IsClipboardFormatAvailable(CF_BITMAP as u32) != 0;
+            CloseClipboard();
+            has_image
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn exclude_from_switcher(win: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::HWND;
@@ -807,6 +832,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             write_temp_image,
             read_temp_image,
+            has_clipboard_image,
             notif_layout,
             list_monitors,
             focus_main,

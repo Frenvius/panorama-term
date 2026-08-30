@@ -28,7 +28,7 @@ export const keyToBytes = (e: KeyEvent): string | null => {
   const mod = 1 + (shiftKey ? 1 : 0) + (altKey ? 2 : 0) + (ctrlKey ? 4 : 0);
 
   if (key === 'Backspace') {
-    if (ctrlKey) return '\x08';
+    if (ctrlKey) return '\x1b\x7f';
     if (altKey) return '\x1b\x7f';
     return '\x7f';
   }

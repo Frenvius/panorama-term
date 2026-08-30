@@ -10,13 +10,15 @@ export const readClipboard = (): Promise<string> => {
 };
 
 export const hasClipboardImage = async (): Promise<boolean> => {
-  if (!navigator.clipboard?.read) return false;
-  try {
-    const items = await navigator.clipboard.read();
-    return items.some((item) => item.types.some((t) => t.startsWith('image/')));
-  } catch {
-    return false;
+  if (navigator.clipboard?.read) {
+    try {
+      const items = await navigator.clipboard.read();
+      if (items.some((item) => item.types.some((t) => t.startsWith('image/')))) return true;
+    } catch {
+      void 0;
+    }
   }
+  return invoke<boolean>('has_clipboard_image').catch(() => false);
 };
 
 const MIME_EXT: Record<string, string> = {

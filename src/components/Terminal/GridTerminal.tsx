@@ -586,7 +586,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     const ws = wsRef.current;
     if (!ws) return;
     void hasClipboardImage().then((hasImage) => {
-      if (hasImage) sendPtyInput(ws, '\x1bv');
+      if (hasImage) sendPtyInput(ws, '\x16');
       else pasteText(ws);
     });
   };
