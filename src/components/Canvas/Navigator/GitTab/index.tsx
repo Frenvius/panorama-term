@@ -24,6 +24,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { RepoEntry, FileChange, StatusSnapshot, CommitMessageEntry } from '~/domain/interfaces/git.interface';
 import Dialog from '~/components/commons/Dialog';
 import FileIcon from '~/components/commons/FileIcon';
+import { getPref, setPref } from '~/usecase/util/prefs';
 import ContextMenu from '~/components/commons/ContextMenu';
 import Log from '~/components/Canvas/Navigator/GitTab/History';
 import { revealPath } from '~/adapter/shell/shell.client';
@@ -74,7 +75,7 @@ const SECTIONS = [
 ] as const;
 
 const savedView = (): View => {
-  const raw = localStorage.getItem(VIEW_KEY);
+  const raw = getPref(VIEW_KEY);
   return VIEWS.includes(raw as View) ? (raw as View) : 'changes';
 };
 
@@ -158,7 +159,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   const primary = repos[0]?.root ?? root;
 
   React.useEffect(() => {
-    localStorage.setItem(VIEW_KEY, view);
+    setPref(VIEW_KEY, view);
   }, [view]);
 
   React.useEffect(() => {

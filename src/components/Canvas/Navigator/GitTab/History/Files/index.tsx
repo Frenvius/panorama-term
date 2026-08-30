@@ -5,6 +5,7 @@ import type { TreeNode } from '~/usecase/util/fileTree';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { LogRow, FileChange } from '~/domain/interfaces/git.interface';
 import FileIcon from '~/components/commons/FileIcon';
+import { getPref, setPref } from '~/usecase/util/prefs';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { gitCommitFiles } from '~/adapter/git/git.client';
 import { sortTree, changeKey, statusKey, STATUS_COLOR, buildDirTree, collectFolderIds } from '~/usecase/util/fileTree';
@@ -26,11 +27,11 @@ const MIN_HEIGHT = 96;
 const MAX_HEIGHT = 720;
 
 const savedHeight = (): number => {
-  const raw = Number(localStorage.getItem(HEIGHT_KEY));
+  const raw = Number(getPref(HEIGHT_KEY));
   return raw >= MIN_HEIGHT && raw <= MAX_HEIGHT ? raw : 240;
 };
 
-const savedGroup = (): boolean => localStorage.getItem(GROUP_KEY) === 'directory';
+const savedGroup = (): boolean => getPref(GROUP_KEY) === 'directory';
 
 const message = (err: unknown): string => (typeof err === 'string' ? err : String(err));
 
@@ -61,7 +62,7 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
   }, [root, commit.short]);
 
   React.useEffect(() => {
-    localStorage.setItem(GROUP_KEY, byDir ? 'directory' : 'list');
+    setPref(GROUP_KEY, byDir ? 'directory' : 'list');
   }, [byDir]);
 
   const tree = React.useMemo(
@@ -84,7 +85,7 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
     const up = () => {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      localStorage.setItem(HEIGHT_KEY, String(next));
+      setPref(HEIGHT_KEY, String(next));
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);

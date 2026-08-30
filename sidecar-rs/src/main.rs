@@ -129,16 +129,22 @@ impl HostHandle {
     }
 
     fn snapshot(&self, key: &str) -> Vec<u8> {
+        self.snapshot_total(key).0
+    }
+
+    fn snapshot_total(&self, key: &str) -> (Vec<u8>, u64) {
         let reply = match self.rpc_raw(serde_json::json!({"op": "snapshot", "key": key})) {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            Err(_) => return (Vec::new(), 0),
         };
         if !reply["ok"].as_bool().unwrap_or(false) {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
-        base64::engine::general_purpose::STANDARD
+        let data = base64::engine::general_purpose::STANDARD
             .decode(reply["data"].as_str().unwrap_or(""))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let total = reply["total"].as_u64().unwrap_or(0);
+        (data, total)
     }
 }
 
@@ -323,6 +329,7 @@ fn reconnect_sessions() {
             pid,
             parser: Mutex::new(parser),
             dirty: AtomicBool::new(true),
+            flushed_total: AtomicU64::new(0),
             exited: AtomicBool::new(!alive),
             visible: AtomicBool::new(true),
             cols: AtomicU16::new(cols),
@@ -1020,6 +1027,7 @@ struct Session {
     pid: u32,
     parser: Mutex<vt100::Parser<CwdSink>>,
     dirty: AtomicBool,
+    flushed_total: AtomicU64,
     exited: AtomicBool,
     visible: AtomicBool,
     cols: AtomicU16,
@@ -1037,6 +1045,16 @@ struct Session {
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
     run: Option<RunState>,
+}
+
+fn write_atomic(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
+    let path = path.as_ref();
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
@@ -1066,9 +1084,14 @@ fn flush_session(s: &Session) {
     if s.run.is_some() {
         return;
     }
-    let data = host_handle().snapshot(&s.tile_id);
+    let (data, total) = host_handle().snapshot_total(&s.tile_id);
+    if total != 0 && total == s.flushed_total.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(p) = buffer_path(&s.tile_id) {
-        let _ = std::fs::write(p, &data);
+        if write_atomic(p, &data).is_ok() {
+            s.flushed_total.store(total, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1137,7 +1160,7 @@ fn clear_binding_session(tile_id: &str) {
     };
     let obj = rec.as_object_mut().unwrap();
     if obj.remove("agentSessionId").is_some() {
-        let _ = std::fs::write(path, rec.to_string());
+        let _ = write_atomic(path, rec.to_string().as_bytes());
     }
 }
 
@@ -1856,7 +1879,7 @@ fn record_agent() {
             obj.insert("agentSessionId".into(), session_id.into());
             obj.insert("cwd".into(), cwd.map(Into::into).unwrap_or(serde_json::Value::Null));
             obj.insert("tileId".into(), tile_id.clone().into());
-            let _ = std::fs::write(path, rec.to_string());
+            let _ = write_atomic(path, rec.to_string().as_bytes());
         }
     }
 }
@@ -1968,7 +1991,7 @@ fn install_pi_extension() {
     if std::fs::read_to_string(&file).ok().as_deref() == Some(SOURCE) {
         return;
     }
-    let _ = std::fs::write(&file, SOURCE);
+    let _ = write_atomic(&file, SOURCE.as_bytes());
 }
 
 fn install_claude_hook() {
@@ -2055,7 +2078,7 @@ fn install_claude_hook() {
             let trimmed = prev.trim();
             if !trimmed.is_empty() && !trimmed.ends_with(" statusline") {
                 if let Some(path) = statusline_chain_path() {
-                    let _ = std::fs::write(path, serde_json::json!({ "command": prev }).to_string());
+                    let _ = write_atomic(path, serde_json::json!({ "command": prev }).to_string().as_bytes());
                 }
             }
         }
@@ -2066,7 +2089,7 @@ fn install_claude_hook() {
     }
 
     if let Ok(text) = serde_json::to_string_pretty(&json) {
-        let _ = std::fs::write(&file, text);
+        let _ = write_atomic(&file, text.as_bytes());
     }
 }
 
@@ -2459,6 +2482,7 @@ fn spawn_session(
         pid,
         parser: Mutex::new(parser),
         dirty: AtomicBool::new(true),
+        flushed_total: AtomicU64::new(0),
         exited: AtomicBool::new(false),
         visible: AtomicBool::new(true),
         cols: AtomicU16::new(cols),

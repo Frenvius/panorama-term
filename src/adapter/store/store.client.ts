@@ -7,3 +7,6 @@ export const storeDelete = (name: string): Promise<void> => invoke('store_delete
 export const storeWrite = (name: string, value: unknown): Promise<void> => invoke('store_write', { name, value });
 
 export const storeRead = <T>(name: string): Promise<T | null> => invoke('store_read', { name });
+
+export const storeWriteMany = (entries: { name: string; value: unknown }[]): Promise<void> =>
+  invoke('store_write_many', { entries });

@@ -99,26 +99,19 @@ fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn favorites_path() -> Result<PathBuf, String> {
-    let dir = dirs::config_dir().ok_or("no config dir")?.join("panorama");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("branch-favorites.json"))
-}
+const FAVORITES_KEY: &str = "branch-favorites.json";
 
 fn read_favorites() -> HashMap<String, Vec<String>> {
-    let Ok(path) = favorites_path() else {
-        return HashMap::new();
-    };
-    fs::read_to_string(&path)
+    crate::store::read_value(FAVORITES_KEY)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .flatten()
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default()
 }
 
 fn write_favorites(map: &HashMap<String, Vec<String>>) -> Result<(), String> {
-    let path = favorites_path()?;
-    let text = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| e.to_string())
+    let value = serde_json::to_value(map).map_err(|e| e.to_string())?;
+    crate::store::write_value(FAVORITES_KEY, &value)
 }
 
 fn paths_equal(a: &str, b: &str) -> bool {
@@ -1186,7 +1179,7 @@ pub async fn git_add_ignore(path: String, pattern: String, local: bool) -> Resul
     }
     out.push_str(&line);
     out.push('\n');
-    fs::write(&file, out).map_err(|e| e.to_string())
+    crate::store::write_atomic(&file, out.as_bytes())
 }
 
 #[tauri::command]
@@ -1202,7 +1195,7 @@ pub async fn git_revert_hunk(
     } else {
         content
     };
-    fs::write(&full, text).map_err(|e| e.to_string())
+    crate::store::write_atomic(&full, text.as_bytes())
 }
 
 #[cfg(test)]

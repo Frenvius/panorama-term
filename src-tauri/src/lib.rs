@@ -579,7 +579,7 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
 
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    store::write_atomic(std::path::Path::new(&path), content.as_bytes())
 }
 
 fn run_watchers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>> {
@@ -823,6 +823,9 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            if let Err(err) = store::init() {
+                eprintln!("[store] init failed: {err}");
+            }
             spawn_sidecar();
             create_notif_window(app.handle())?;
             notes::start_notes_watch(app.handle().clone());
@@ -861,6 +864,7 @@ pub fn run() {
             open_url,
             store::store_read,
             store::store_write,
+            store::store_write_many,
             store::store_delete,
             store::store_list,
             git::git_branches,

@@ -3,6 +3,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import App from '~/App';
 import { initTheme } from '~/usecase/util/theme';
+import { initPrefs } from '~/usecase/util/prefs';
+import { hydrateAlerts } from '~/usecase/util/alerts';
 import { loadHackFont } from '~/usecase/util/fontUtils';
 import { initSettings } from '~/adapter/settings/settings.client';
 import NotificationOverlay from '~/components/commons/Notifications';
@@ -31,8 +33,15 @@ const mountOverlay = () => {
 const isOverlay = getCurrentWindow().label === 'notif';
 
 void loadHackFont();
-void initSettings().finally(() => {
+const boot = async (): Promise<void> => {
+  await initSettings().catch(() => {});
+  if (!isOverlay) {
+    await initPrefs().catch(() => {});
+    hydrateAlerts();
+  }
   initTheme();
   if (isOverlay) mountOverlay();
   else mountApp();
-});
+};
+
+void boot();

@@ -27,6 +27,7 @@ import type { Tile, Frame } from '~/domain/interfaces/canvas.interface';
 import type { TileType } from '~/domain/interfaces/workspace.interface';
 import type { DirEntry } from '~/adapter/fs/fs.client';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
+import { getPref, setPref } from '~/usecase/util/prefs';
 import GitTab from '~/components/Canvas/Navigator/GitTab';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
 import DockerTab from '~/components/Canvas/Navigator/DockerTab';
@@ -87,20 +88,20 @@ const TABS = ['files', 'tiles', 'git', 'docker'] as const;
 type Tab = (typeof TABS)[number];
 
 const savedTab = (): Tab => {
-  const raw = localStorage.getItem(TAB_KEY);
+  const raw = getPref(TAB_KEY);
   return TABS.includes(raw as Tab) ? (raw as Tab) : 'files';
 };
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 800;
 
 const savedWidth = (): number => {
-  const raw = Number(localStorage.getItem(WIDTH_KEY));
+  const raw = Number(getPref(WIDTH_KEY));
   return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : 248;
 };
 
 const savedCollapsed = (): Set<string> => {
   try {
-    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]'));
+    return new Set(JSON.parse(getPref(COLLAPSED_KEY) ?? '[]'));
   } catch {
     return new Set();
   }
@@ -113,7 +114,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
   const [hasDocker, setHasDocker] = React.useState(false);
 
   React.useEffect(() => {
-    localStorage.setItem(TAB_KEY, tab);
+    setPref(TAB_KEY, tab);
   }, [tab]);
   const [width, setWidth] = React.useState(savedWidth);
 
@@ -161,7 +162,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      setPref(COLLAPSED_KEY, JSON.stringify([...next]));
       return next;
     });
   };
@@ -212,7 +213,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
     const up = () => {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      localStorage.setItem(WIDTH_KEY, String(next));
+      setPref(WIDTH_KEY, String(next));
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);

@@ -81,7 +81,7 @@ fn suppress_desktop_ui() {
         return;
     }
     obj.insert("OpenUIOnStartupDisabled".into(), serde_json::Value::Bool(true));
-    let _ = fs::write(&path, json.to_string());
+    let _ = crate::store::write_atomic(&path, json.to_string().as_bytes());
 }
 
 #[tauri::command]

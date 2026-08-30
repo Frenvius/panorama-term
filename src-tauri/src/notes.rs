@@ -81,7 +81,7 @@ pub fn read_note(ws_id: String, note_id: String) -> Option<String> {
 #[tauri::command]
 pub fn write_note(ws_id: String, note_id: String, content: String) -> Result<(), String> {
     let p = note_path(&ws_id, &note_id).ok_or("no note path")?;
-    fs::write(p, content).map_err(|e| e.to_string())
+    crate::store::write_atomic(&p, content.as_bytes())
 }
 
 #[tauri::command]
@@ -121,7 +121,7 @@ pub fn link_note(
     let arr = notes.as_array_mut().unwrap();
     arr.retain(|n| n.get("noteId").and_then(|v| v.as_str()) != Some(note_id.as_str()));
     arr.push(serde_json::json!({ "noteId": note_id, "title": title, "path": md_str }));
-    fs::write(&bp, rec.to_string()).map_err(|e| e.to_string())?;
+    crate::store::write_atomic(&bp, rec.to_string().as_bytes())?;
 
     Ok(md_str)
 }
@@ -143,7 +143,7 @@ fn peers_upsert(tile_id: &str, peer_id: &str, peer_name: &str) -> Result<(), Str
     let arr = peers.as_array_mut().unwrap();
     arr.retain(|p| p.get("tileId").and_then(|v| v.as_str()) != Some(peer_id));
     arr.push(serde_json::json!({ "tileId": peer_id, "name": peer_name }));
-    fs::write(&bp, rec.to_string()).map_err(|e| e.to_string())
+    crate::store::write_atomic(&bp, rec.to_string().as_bytes())
 }
 
 fn peers_remove(tile_id: &str, peer_id: &str) {
@@ -153,7 +153,7 @@ fn peers_remove(tile_id: &str, peer_id: &str) {
     if let Some(arr) = rec.get_mut("peers").and_then(|p| p.as_array_mut()) {
         arr.retain(|p| p.get("tileId").and_then(|v| v.as_str()) != Some(peer_id));
     }
-    let _ = fs::write(&bp, rec.to_string());
+    let _ = crate::store::write_atomic(&bp, rec.to_string().as_bytes());
 }
 
 #[tauri::command]
@@ -177,7 +177,7 @@ pub fn unlink_note(note_id: String, term_tile_id: String) -> Result<(), String> 
                 if let Some(arr) = rec.get_mut("notes").and_then(|n| n.as_array_mut()) {
                     arr.retain(|n| n.get("noteId").and_then(|v| v.as_str()) != Some(note_id.as_str()));
                 }
-                let _ = fs::write(&bp, rec.to_string());
+                let _ = crate::store::write_atomic(&bp, rec.to_string().as_bytes());
             }
         }
     }

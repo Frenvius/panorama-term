@@ -2,6 +2,7 @@ import React from 'react';
 import type { EditorView } from '@codemirror/view';
 import { Group, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
+import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
@@ -117,12 +118,12 @@ const Canvas = () => {
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
-  const [navOpen, setNavOpen] = React.useState(() => localStorage.getItem('panorama:navOpen') === '1');
+  const [navOpen, setNavOpen] = React.useState(() => getPref('panorama:navOpen') === '1');
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const paletteRef = React.useRef(paletteOpen);
   paletteRef.current = paletteOpen;
   React.useEffect(() => {
-    localStorage.setItem('panorama:navOpen', navOpen ? '1' : '0');
+    setPref('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
 
   React.useEffect(() => {

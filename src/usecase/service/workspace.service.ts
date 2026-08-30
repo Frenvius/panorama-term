@@ -1,4 +1,4 @@
-import { storeList, storeRead, storeWrite, storeDelete } from '~/adapter/store/store.client';
+import { storeList, storeRead, storeWrite, storeDelete, storeWriteMany } from '~/adapter/store/store.client';
 import {
   TabMeta,
   TabState,
@@ -80,6 +80,14 @@ class Service {
     await storeWrite(wsFile(file.meta.id), file);
   }
 
+  private async writeWorkspaceAndIndex(file: WorkspaceFile, idx: WorkspaceIndex): Promise<void> {
+    this.cachedIndex = idx;
+    await storeWriteMany([
+      { name: wsFile(file.meta.id), value: file },
+      { name: INDEX_FILE, value: idx }
+    ]);
+  }
+
   private async readWorkspace(id: string): Promise<WorkspaceFile | null> {
     const raw = await storeRead<unknown>(wsFile(id));
     const file = migrate(raw);
@@ -119,9 +127,8 @@ class Service {
     const now = Date.now();
     const meta: WorkspaceMeta = { id, name: 'Workspace 1', color: COLORS[0]!, createdAt: now, lastFocusedAt: now };
     const firstTab = emptyTab('Tab 1');
-    await this.writeWorkspace({ meta, tabs: [firstTab], activeTabId: firstTab.id });
     const idx: WorkspaceIndex = { version: 1, activeId: id, order: [id] };
-    await storeWrite(INDEX_FILE, idx);
+    await this.writeWorkspaceAndIndex({ meta, tabs: [firstTab], activeTabId: firstTab.id }, idx);
     return idx;
   }
 
@@ -147,12 +154,13 @@ class Service {
     const idx = await this.loadIndex();
     if (!idx.order.includes(id)) return;
     idx.activeId = id;
-    await this.saveIndex(idx);
     const file = await this.readWorkspace(id);
-    if (file) {
-      file.meta.lastFocusedAt = Date.now();
-      await this.writeWorkspace(file);
+    if (!file) {
+      await this.saveIndex(idx);
+      return;
     }
+    file.meta.lastFocusedAt = Date.now();
+    await this.writeWorkspaceAndIndex(file, idx);
   }
 
   async create(name?: string): Promise<WorkspaceMeta> {
@@ -167,9 +175,8 @@ class Service {
       lastFocusedAt: now
     };
     const firstTab = emptyTab('Tab 1');
-    await this.writeWorkspace({ meta, tabs: [firstTab], activeTabId: firstTab.id });
     idx.order.push(id);
-    await this.saveIndex(idx);
+    await this.writeWorkspaceAndIndex({ meta, tabs: [firstTab], activeTabId: firstTab.id }, idx);
     return meta;
   }
 

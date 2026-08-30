@@ -5,6 +5,7 @@ import Suggest from './Suggest';
 import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
@@ -28,7 +29,7 @@ const MODE_CLASS: Record<string, string> = {
 
 const loadHistory = (): ContentPart[][] => {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY);
+    const raw = getPref(HISTORY_KEY);
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr) ? arr.filter((e) => Array.isArray(e)) : [];
   } catch {
@@ -329,7 +330,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       hydratedDraftTileRef.current = tileId;
       let restored = cloneDraft(EMPTY_DRAFT);
       try {
-        const raw = localStorage.getItem(draftKey(tileId));
+        const raw = getPref(draftKey(tileId));
         const parsed = raw ? JSON.parse(raw) : null;
         if (parsed && typeof parsed.text === 'string') {
           restored = { text: parsed.text, images: Array.isArray(parsed.images) ? parsed.images : [] };
@@ -359,7 +360,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     if (!agentType) return;
     if (isDraftEmpty(draft)) {
       try {
-        localStorage.removeItem(draftKey(tileId));
+        removePref(draftKey(tileId));
       } catch {
         void 0;
       }
@@ -367,7 +368,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(draftKey(tileId), JSON.stringify({ text: draft.text, images: draft.images }));
+        setPref(draftKey(tileId), JSON.stringify({ text: draft.text, images: draft.images }));
       } catch {
         void 0;
       }
@@ -457,7 +458,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     const current = loadHistory();
     const updated = [...current.filter((e) => historyKey(partsToDraft(e)) !== key), parts].slice(-50);
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      setPref(HISTORY_KEY, JSON.stringify(updated));
     } catch {
       void 0;
     }
@@ -537,7 +538,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     histDraftRef.current = cloneDraft(EMPTY_DRAFT);
     setSuggest(null);
     try {
-      localStorage.removeItem(draftKey(tileId));
+      removePref(draftKey(tileId));
     } catch {
       void 0;
     }

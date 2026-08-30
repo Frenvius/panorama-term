@@ -7,6 +7,7 @@ import { drawGrid } from '~/usecase/util/gridUtils';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
+import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
@@ -52,7 +53,7 @@ const CLOSED_MAX = 20;
 const loadClosed = (ws: string | null): Tile[] => {
   if (!ws) return [];
   try {
-    return JSON.parse(localStorage.getItem(`${CLOSED_KEY}:${ws}`) || '[]');
+    return JSON.parse(getPref(`${CLOSED_KEY}:${ws}`) || '[]');
   } catch {
     return [];
   }
@@ -61,7 +62,7 @@ const loadClosed = (ws: string | null): Tile[] => {
 const saveClosed = (ws: string | null, stack: Tile[]): void => {
   if (!ws) return;
   try {
-    localStorage.setItem(`${CLOSED_KEY}:${ws}`, JSON.stringify(stack.slice(-CLOSED_MAX)));
+    setPref(`${CLOSED_KEY}:${ws}`, JSON.stringify(stack.slice(-CLOSED_MAX)));
   } catch {}
 };
 

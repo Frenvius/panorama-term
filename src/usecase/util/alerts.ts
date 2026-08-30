@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
+import { getPref, setPref } from '~/usecase/util/prefs';
 
 export interface TileAlert {
   kind: NotifyKind;
@@ -13,7 +14,7 @@ const listeners = new Set<() => void>();
 
 const load = (): Map<string, TileAlert> => {
   try {
-    const raw = localStorage.getItem(ALERTS_KEY);
+    const raw = getPref(ALERTS_KEY);
     if (!raw) return new Map();
     const parsed = JSON.parse(raw) as Record<string, NotifyKind | TileAlert>;
     const entries = Object.entries(parsed).map<[string, TileAlert]>(([id, value]) =>
@@ -25,13 +26,17 @@ const load = (): Map<string, TileAlert> => {
   }
 };
 
-let alerts = load();
+let alerts = new Map<string, TileAlert>();
 
-void invoke('set_pending_count', { count: alerts.size }).catch(() => {});
+export const hydrateAlerts = (): void => {
+  alerts = load();
+  void invoke('set_pending_count', { count: alerts.size }).catch(() => {});
+  listeners.forEach((fn) => fn());
+};
 
 const commit = (next: Map<string, TileAlert>): void => {
   alerts = next;
-  localStorage.setItem(ALERTS_KEY, JSON.stringify(Object.fromEntries(next)));
+  setPref(ALERTS_KEY, JSON.stringify(Object.fromEntries(next)));
   void invoke('set_pending_count', { count: next.size }).catch(() => {});
   listeners.forEach((fn) => fn());
 };
