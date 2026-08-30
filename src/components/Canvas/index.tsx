@@ -17,6 +17,7 @@ import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
 import { writeNote } from '~/adapter/notes/notes.client';
+import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
 import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
@@ -603,8 +604,13 @@ const Canvas = () => {
   const stepDiffFile = (step: number) => {
     const current = editorTabs.find((t) => t.key === activeEditorTab);
     if (current?.kind !== 'diff') return;
-    const next = diffFiles[diffFiles.indexOf(current.path) + step];
-    if (next) openDiff(current.root, next, current.commit);
+    const at = diffFiles.indexOf(fileKey(current.root, current.path));
+    if (at < 0) return;
+    const next = diffFiles[at + step];
+    if (next) {
+      const { repo, path } = splitKey(next);
+      openDiff(repo, path, current.commit);
+    }
   };
 
   const requestCloseTile = (id: string) => {
@@ -647,7 +653,8 @@ const Canvas = () => {
     onClose: closeEditorTabs
   };
 
-  const activeDiffFile = editorTabs.find((t) => t.key === activeEditorTab && t.kind === 'diff')?.path ?? null;
+  const activeDiffTab = editorTabs.find((t) => t.key === activeEditorTab && t.kind === 'diff');
+  const activeDiffFile = activeDiffTab ? fileKey(activeDiffTab.root, activeDiffTab.path) : null;
 
   const moveTileToTabWrapper = React.useCallback(
     (tileId: string, targetTabId: string) => {

@@ -388,7 +388,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
             query=""
             active={activeDiff}
             onFiles={onDiffFiles}
-            onOpenDiff={(file, commit) => onOpenDiff(root, file, commit)}
+            onOpenDiff={onOpenDiff}
             onOpenFile={(file) => onOpenFile(root, file)}
           />
         ) : (

@@ -865,6 +865,7 @@ pub fn run() {
             git::git_set_upstream,
             git::git_compare_with_current,
             git::git_toggle_branch_favorite,
+            git::git_repos,
             git::git_status,
             git::git_commit,
             git::git_log_messages,

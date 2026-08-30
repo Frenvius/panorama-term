@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   LogRow,
   FileDiff,
+  RepoEntry,
   FileChange,
   CommitInfo,
   TrackCounts,
@@ -61,6 +62,8 @@ export const gitCompareWithCurrent = (path: string, branch: string): Promise<Com
 
 export const gitToggleBranchFavorite = (path: string, fullName: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_toggle_branch_favorite', { path, fullName });
+
+export const gitRepos = (path: string): Promise<RepoEntry[]> => invoke<RepoEntry[]>('git_repos', { path });
 
 export const gitStatus = (path: string): Promise<StatusSnapshot> => invoke<StatusSnapshot>('git_status', { path });
 

@@ -33,7 +33,14 @@ export interface CommitInfo {
   date: string;
 }
 
+export interface RepoEntry {
+  root: string;
+  name: string;
+  branch: string | null;
+}
+
 export interface FileChange {
+  repo: string;
   path: string;
   name: string;
   dir: string;

@@ -22,8 +22,20 @@ export const statusKey = (file: FileChange): string => {
   return 'modified';
 };
 
+const KEY_SEP = '\n';
+
+export const fileKey = (repo: string, path: string): string => `${repo}${KEY_SEP}${path}`;
+
+export const changeKey = (change: FileChange): string => fileKey(change.repo, change.path);
+
+export const splitKey = (key: string): { repo: string; path: string } => {
+  const at = key.indexOf(KEY_SEP);
+  return at < 0 ? { repo: '', path: key } : { repo: key.slice(0, at), path: key.slice(at + 1) };
+};
+
 export type TreeNode =
-  { kind: 'folder'; id: string; name: string; children: TreeNode[] } | { kind: 'file'; id: string; change: FileChange };
+  | { kind: 'folder'; id: string; name: string; dir: string; children: TreeNode[] }
+  | { kind: 'file'; id: string; change: FileChange };
 
 export const buildDirTree = (files: FileChange[], prefix: string): TreeNode[] => {
   const root: TreeNode[] = [];
@@ -35,7 +47,7 @@ export const buildDirTree = (files: FileChange[], prefix: string): TreeNode[] =>
       sofar = sofar ? `${sofar}/${segment}` : segment;
       let folder = current.find((n): n is Extract<TreeNode, { kind: 'folder' }> => n.kind === 'folder' && n.name === segment);
       if (!folder) {
-        folder = { kind: 'folder', id: `${prefix}:${sofar}`, name: segment, children: [] };
+        folder = { kind: 'folder', id: `${prefix}:${sofar}`, name: segment, dir: sofar, children: [] };
         current.push(folder);
       }
       current = folder.children;
@@ -55,8 +67,8 @@ export const sortTree = (nodes: TreeNode[]): TreeNode[] =>
     })
     .map((node) => (node.kind === 'folder' ? { ...node, children: sortTree(node.children) } : node));
 
-export const collectPaths = (nodes: TreeNode[]): string[] =>
-  nodes.flatMap((node) => (node.kind === 'file' ? [node.change.path] : collectPaths(node.children)));
+export const collectKeys = (nodes: TreeNode[]): string[] =>
+  nodes.flatMap((node) => (node.kind === 'file' ? [changeKey(node.change)] : collectKeys(node.children)));
 
 export const collectFiles = (nodes: TreeNode[]): FileChange[] =>
   nodes.flatMap((node) => (node.kind === 'file' ? [node.change] : collectFiles(node.children)));
@@ -66,6 +78,6 @@ export const collectFolderIds = (nodes: TreeNode[]): string[] =>
 
 export const flattenTree = (nodes: TreeNode[], shut: (id: string) => boolean): string[] =>
   nodes.flatMap((node) => {
-    if (node.kind === 'file') return [node.change.path];
+    if (node.kind === 'file') return [changeKey(node.change)];
     return shut(node.id) ? [] : flattenTree(node.children, shut);
   });

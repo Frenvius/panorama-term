@@ -145,6 +145,19 @@
   align-self: center;
 }
 
+.branch {
+  overflow: hidden;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  align-self: center;
+  background: var(--hover-soft);
+}
+
 .row {
   display: flex;
   align-items: center;

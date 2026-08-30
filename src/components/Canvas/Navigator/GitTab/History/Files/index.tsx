@@ -7,7 +7,7 @@ import type { LogRow, FileChange } from '~/domain/interfaces/git.interface';
 import FileIcon from '~/components/commons/FileIcon';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { gitCommitFiles } from '~/adapter/git/git.client';
-import { sortTree, statusKey, STATUS_COLOR, buildDirTree, collectFolderIds } from '~/usecase/util/fileTree';
+import { sortTree, changeKey, statusKey, STATUS_COLOR, buildDirTree, collectFolderIds } from '~/usecase/util/fileTree';
 
 import styles from './styles.module.scss';
 
@@ -127,7 +127,7 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
         style={{ paddingLeft: pad }}
         title={file.path}
         onClick={open}
-        data-active={file.path === active || undefined}
+        data-active={changeKey(file) === active || undefined}
       >
         {dir && <span className={styles.caret} />}
         <FileIcon name={file.name} size={14} />

@@ -6,6 +6,7 @@ import { sortTree, buildDirTree } from '~/usecase/util/fileTree';
 const change = (path: string): FileChange => {
   const slash = path.lastIndexOf('/');
   return {
+    repo: '/repo',
     path,
     name: slash < 0 ? path : path.slice(slash + 1),
     dir: slash < 0 ? '' : path.slice(0, slash),

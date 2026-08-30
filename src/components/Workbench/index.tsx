@@ -6,6 +6,7 @@ import DiffViewer from '~/components/DiffViewer';
 import FileEditor from '~/components/FileEditor';
 import FileIcon from '~/components/commons/FileIcon';
 import { fileName } from '~/usecase/util/codeEditor';
+import { fileKey } from '~/usecase/util/fileTree';
 import UnsavedDialog from '~/components/commons/UnsavedDialog';
 import { isCapturing, matchCombo, getBinding, formatCombo } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, subscribeDirty } from '~/usecase/util/dirtyFiles';
@@ -106,7 +107,7 @@ const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProp
   const findActive = () => requestFind();
   const addToCanvas = () => activeTab && onAddToCanvas(activeTab);
 
-  const diffAt = activeTab?.kind === 'diff' ? diffFiles.indexOf(activeTab.path) : -1;
+  const diffAt = activeTab?.kind === 'diff' ? diffFiles.indexOf(fileKey(activeTab.root, activeTab.path)) : -1;
   const prevFile = diffAt > 0 ? () => onStepFile(-1) : undefined;
   const nextFile = diffAt >= 0 && diffAt < diffFiles.length - 1 ? () => onStepFile(1) : undefined;
   const editFile = () => activeTab?.kind === 'diff' && onEditFile(activeTab);

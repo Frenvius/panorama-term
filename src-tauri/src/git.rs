@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::Emitter;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 #[derive(Serialize)]
 pub struct LocalBranch {
@@ -54,7 +54,15 @@ pub struct LogRow {
 }
 
 #[derive(Serialize)]
+pub struct RepoEntry {
+    root: String,
+    name: String,
+    branch: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct FileChange {
+    repo: String,
     path: String,
     name: String,
     dir: String,
@@ -309,7 +317,11 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
                 .iter()
                 .position(|&c| c != b'0')
                 .map_or(&b_num[b_num.len()..], |i| &b_num[i..]);
-            match a_trim.len().cmp(&b_trim.len()).then_with(|| a_trim.cmp(b_trim)) {
+            match a_trim
+                .len()
+                .cmp(&b_trim.len())
+                .then_with(|| a_trim.cmp(b_trim))
+            {
                 Ordering::Equal => {}
                 other => return other,
             }
@@ -345,7 +357,7 @@ fn basename(p: &str) -> String {
         .unwrap_or_else(|| p.to_string())
 }
 
-fn parse_porcelain_z(out: &[u8]) -> Vec<FileChange> {
+fn parse_porcelain_z(repo: &str, out: &[u8]) -> Vec<FileChange> {
     let mut entries = Vec::new();
     let mut i = 0;
     while i + 3 <= out.len() {
@@ -376,6 +388,7 @@ fn parse_porcelain_z(out: &[u8]) -> Vec<FileChange> {
         let (name, dir) = split_name_dir(&path);
         let is_untracked = x == '?' && y == '?';
         entries.push(FileChange {
+            repo: repo.to_string(),
             path,
             name,
             dir,
@@ -417,6 +430,68 @@ fn repo_root(path: &str) -> Result<String, String> {
     run_git(path, &["rev-parse", "--show-toplevel"]).map(|out| out.trim().to_string())
 }
 
+const SCAN_SKIP: [&str; 8] = [
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "out",
+    "coverage",
+    "__pycache__",
+];
+
+fn scan_repos(base: &Path, depth: u32, out: &mut Vec<String>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || SCAN_SKIP.contains(&name.as_str()) {
+            continue;
+        }
+        let dir = entry.path();
+        if dir.join(".git").exists() {
+            out.push(dir.to_string_lossy().replace('\\', "/"));
+            continue;
+        }
+        scan_repos(&dir, depth - 1, out);
+    }
+}
+
+#[tauri::command]
+pub async fn git_repos(path: String) -> Result<Vec<RepoEntry>, String> {
+    crate::blocking(move || {
+        let base = repo_root(&path).unwrap_or_else(|_| path.replace('\\', "/"));
+        let mut roots = Vec::new();
+        if Path::new(&base).join(".git").exists() {
+            roots.push(base.clone());
+        }
+        let mut nested = Vec::new();
+        scan_repos(Path::new(&base), 5, &mut nested);
+        nested.sort_by(|a, b| natural_cmp(a, b));
+        roots.extend(nested);
+        if roots.is_empty() {
+            return Err("not a git repository".to_string());
+        }
+        Ok(roots
+            .into_iter()
+            .map(|root| RepoEntry {
+                name: basename(&root),
+                branch: head_name(&root),
+                root,
+            })
+            .collect())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
     let path = repo_root(&path)?;
@@ -433,7 +508,7 @@ pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
     let repo_name = basename(&path);
     let mut changes = Vec::new();
     let mut unversioned = Vec::new();
-    for mut entry in parse_porcelain_z(&out.stdout) {
+    for mut entry in parse_porcelain_z(&path, &out.stdout) {
         if entry.dir.is_empty() {
             entry.dir = repo_name.clone();
         }
@@ -444,8 +519,9 @@ pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
         }
     }
 
-    let by_name =
-        |a: &FileChange, b: &FileChange| natural_cmp(&a.name, &b.name).then_with(|| natural_cmp(&a.path, &b.path));
+    let by_name = |a: &FileChange, b: &FileChange| {
+        natural_cmp(&a.name, &b.name).then_with(|| natural_cmp(&a.path, &b.path))
+    };
     changes.sort_by(by_name);
     unversioned.sort_by(by_name);
 
@@ -456,7 +532,12 @@ pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
 }
 
 #[tauri::command]
-pub async fn git_commit(path: String, files: Vec<String>, message: String, amend: bool) -> Result<(), String> {
+pub async fn git_commit(
+    path: String,
+    files: Vec<String>,
+    message: String,
+    amend: bool,
+) -> Result<(), String> {
     if files.is_empty() && !amend {
         return Err("No files selected".into());
     }
@@ -486,11 +567,20 @@ pub async fn git_commit(path: String, files: Vec<String>, message: String, amend
 }
 
 #[tauri::command]
-pub async fn git_log_messages(path: String, limit: Option<u32>) -> Result<Vec<CommitMessageEntry>, String> {
+pub async fn git_log_messages(
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<CommitMessageEntry>, String> {
     let n = limit.unwrap_or(20).to_string();
     let out = run_git(
         &path,
-        &["log", "--format=%x1e%h%x1f%ad%x1f%B", "--date=short", "-n", &n],
+        &[
+            "log",
+            "--format=%x1e%h%x1f%ad%x1f%B",
+            "--date=short",
+            "-n",
+            &n,
+        ],
     )?;
     Ok(parse_commit_entries(&out))
 }
@@ -543,7 +633,9 @@ pub async fn git_remote_url(path: String) -> Result<String, String> {
     } else {
         names.into_iter().next().ok_or("no remote")?
     };
-    Ok(run_git(&path, &["remote", "get-url", &name])?.trim().to_string())
+    Ok(run_git(&path, &["remote", "get-url", &name])?
+        .trim()
+        .to_string())
 }
 
 #[tauri::command]
@@ -562,15 +654,18 @@ pub struct TrackCounts {
 
 #[tauri::command]
 pub async fn git_ahead_behind(path: String) -> TrackCounts {
-    let (ahead, behind) = run_git(&path, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
-        .ok()
-        .and_then(|out| {
-            let mut it = out.split_whitespace();
-            let behind = it.next()?.parse().ok()?;
-            let ahead = it.next()?.parse().ok()?;
-            Some((ahead, behind))
-        })
-        .unwrap_or((0, 0));
+    let (ahead, behind) = run_git(
+        &path,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    )
+    .ok()
+    .and_then(|out| {
+        let mut it = out.split_whitespace();
+        let behind = it.next()?.parse().ok()?;
+        let ahead = it.next()?.parse().ok()?;
+        Some((ahead, behind))
+    })
+    .unwrap_or((0, 0));
     TrackCounts { ahead, behind }
 }
 
@@ -729,7 +824,11 @@ pub async fn git_set_upstream(
     match upstream.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(up) => run_git(
             &path,
-            &["branch", &format!("--set-upstream-to={}", up), branch.trim()],
+            &[
+                "branch",
+                &format!("--set-upstream-to={}", up),
+                branch.trim(),
+            ],
         )?,
         None => run_git(&path, &["branch", "--unset-upstream", branch.trim()])?,
     };
@@ -737,7 +836,10 @@ pub async fn git_set_upstream(
 }
 
 #[tauri::command]
-pub async fn git_compare_with_current(path: String, branch: String) -> Result<Vec<CommitInfo>, String> {
+pub async fn git_compare_with_current(
+    path: String,
+    branch: String,
+) -> Result<Vec<CommitInfo>, String> {
     let current = head_name(&path).unwrap_or_else(|| "HEAD".into());
     let range = format!("{}..{}", current, branch.trim());
     let out = run_git(
@@ -838,7 +940,11 @@ fn commit_changes(repo: &str, commit: &str) -> Result<Vec<(String, String, Strin
         let Some(status) = cols.next() else { continue };
         let Some(first) = cols.next() else { continue };
         let renamed = status.starts_with('R') || status.starts_with('C');
-        let to = if renamed { cols.next().unwrap_or(first) } else { first };
+        let to = if renamed {
+            cols.next().unwrap_or(first)
+        } else {
+            first
+        };
         rows.push((status.to_string(), first.to_string(), to.to_string()));
     }
     Ok(rows)
@@ -851,6 +957,7 @@ pub async fn git_commit_files(path: String, commit: String) -> Result<Vec<FileCh
         let (name, dir) = split_name_dir(&to);
         let renamed = status.starts_with('R') || status.starts_with('C');
         entries.push(FileChange {
+            repo: path.clone(),
             path: to,
             name,
             dir,
@@ -866,7 +973,11 @@ pub async fn git_commit_files(path: String, commit: String) -> Result<Vec<FileCh
 }
 
 #[tauri::command]
-pub async fn git_commit_diff_file(path: String, commit: String, file: String) -> Result<FileDiff, String> {
+pub async fn git_commit_diff_file(
+    path: String,
+    commit: String,
+    file: String,
+) -> Result<FileDiff, String> {
     let source = commit_changes(&path, &commit)
         .unwrap_or_default()
         .into_iter()
@@ -939,29 +1050,34 @@ fn watchers() -> &'static Mutex<HashMap<u32, RecommendedWatcher>> {
 }
 
 #[tauri::command]
-pub async fn git_watch_file(app: tauri::AppHandle, path: String, file: String) -> Result<u32, String> {
+pub async fn git_watch_file(
+    app: tauri::AppHandle,
+    path: String,
+    file: String,
+) -> Result<u32, String> {
     let full = PathBuf::from(&path).join(&file);
     let dir = full.parent().ok_or("no parent dir")?.to_path_buf();
     let name = full.file_name().ok_or("no file name")?.to_os_string();
     let git_dir = PathBuf::from(&path).join(".git");
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-        let Ok(event) = res else { return };
-        if event.kind.is_access() {
-            return;
-        }
-        let relevant = event
-            .paths
-            .iter()
-            .any(|p| p.file_name().is_some_and(|n| n == name || n == "HEAD" || n == "index"));
-        if relevant {
-            let _ = app.emit(
-                "diff:changed",
-                serde_json::json!({ "root": path, "file": file }),
-            );
-        }
-    })
-    .map_err(|e| e.to_string())?;
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            let Ok(event) = res else { return };
+            if event.kind.is_access() {
+                return;
+            }
+            let relevant = event.paths.iter().any(|p| {
+                p.file_name()
+                    .is_some_and(|n| n == name || n == "HEAD" || n == "index")
+            });
+            if relevant {
+                let _ = app.emit(
+                    "diff:changed",
+                    serde_json::json!({ "root": path, "file": file }),
+                );
+            }
+        })
+        .map_err(|e| e.to_string())?;
 
     watcher
         .watch(&dir, RecursiveMode::NonRecursive)
@@ -1024,7 +1140,12 @@ pub async fn git_add_ignore(path: String, pattern: String, local: bool) -> Resul
 }
 
 #[tauri::command]
-pub async fn git_revert_hunk(path: String, file: String, content: String, crlf: bool) -> Result<(), String> {
+pub async fn git_revert_hunk(
+    path: String,
+    file: String,
+    content: String,
+    crlf: bool,
+) -> Result<(), String> {
     let full = PathBuf::from(&path).join(&file);
     let text = if crlf {
         content.replace('\n', "\r\n")
@@ -1032,4 +1153,33 @@ pub async fn git_revert_hunk(path: String, file: String, content: String, crlf: 
         content
     };
     fs::write(&full, text).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_repos_finds_nested_repos_and_skips_noise() {
+        let base = std::env::temp_dir().join("panorama-scan-test");
+        let _ = fs::remove_dir_all(&base);
+        for dir in [
+            "api/.git",
+            "front/.git",
+            "infra/spoke/.git",
+            "node_modules/dep/.git",
+            "plain/src",
+        ] {
+            fs::create_dir_all(base.join(dir)).unwrap();
+        }
+
+        let mut found = Vec::new();
+        scan_repos(&base, 5, &mut found);
+        found.sort();
+
+        let names: Vec<String> = found.iter().map(|p| basename(p)).collect();
+        assert_eq!(names, vec!["api", "front", "spoke"]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }
