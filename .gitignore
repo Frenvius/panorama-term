@@ -5,7 +5,7 @@ dist-ssr
 
 src-tauri/target
 src-tauri/binaries
-sidecar-rs/target
+sidecar-rs/**/target
 
 *.log
 .DS_Store
