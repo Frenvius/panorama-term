@@ -56,6 +56,7 @@ const Rendered = ({ text }: { text: string }) => (
   <>
     {miniMarkdown(text).map((block) => {
       if (block.kind === 'code') return <pre key={block.key} className={styles.code}>{block.body}</pre>;
+      if (block.kind === 'table') return <div key={block.key} className={styles.table}>{block.body}</div>;
       if (block.kind === 'bullet')
         return (
           <p key={block.key} className={styles.bullet}>

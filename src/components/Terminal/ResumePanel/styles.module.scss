@@ -209,6 +209,40 @@ $accent: #d97757;
   }
 }
 
+.line em,
+.bullet em,
+.table em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.table {
+  overflow-x: auto;
+  font-size: 11px;
+  scrollbar-width: thin;
+
+  table {
+    border-collapse: collapse;
+  }
+
+  th,
+  td {
+    padding: 2px 8px;
+    text-align: left;
+    white-space: nowrap;
+    border: 1px solid var(--border-2);
+  }
+
+  th {
+    color: var(--text-strong);
+    background: var(--hover-1);
+  }
+
+  td {
+    color: var(--text-muted);
+  }
+}
+
 .code {
   margin: 0;
   padding: 8px;
