@@ -215,37 +215,19 @@ $accent: #d97757;
   font-weight: 600;
 }
 
-.menuRow {
-  position: relative;
+.menuTick {
   display: flex;
-
-  &:hover .submenu,
-  &:focus-within .submenu {
-    display: flex;
-  }
+  flex-shrink: 0;
+  align-items: center;
+  width: 10px;
+  margin-right: 6px;
+  color: $accent;
 }
 
-.menuArrow {
-  margin-left: auto;
-  padding-left: 8px;
-  color: var(--text-muted);
-  opacity: 0.7;
-}
-
-.submenu {
-  position: absolute;
-  top: -4px;
-  right: 100%;
-  z-index: 11;
-  display: none;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 104px;
-  padding: 3px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  box-shadow: var(--shadow-pop);
+.menuDivider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-2);
 }
 
 .menuSub {

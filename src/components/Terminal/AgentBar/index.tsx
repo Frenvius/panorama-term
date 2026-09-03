@@ -1,5 +1,5 @@
 import React from 'react';
-import { Brain, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
+import { Brain, Check, Sparkles, ChevronDown } from 'lucide-react';
 
 import Suggest from './Suggest';
 import PiActions from './PiActions';
@@ -840,6 +840,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   }, [scraped, structured, is1M]);
 
   const currentModelBase = baseModelId(currentModelId);
+  const currentContextSuffix = currentModelId.includes('[1m]') ? '[1m]' : '';
 
   const parsed = React.useMemo<ParsedStatus>(() => {
     const base: ParsedStatus = { ...status };
@@ -1030,32 +1031,22 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                 {modelMenu && (
                   <div className={styles.menu}>
                     {MODEL_QUICK_SWITCHES.map((m) => (
-                      <div key={m.id} className={styles.menuRow}>
-                        <button
-                          type="button"
-                          onClick={pickModel(m.id)}
-                          className={m.id === currentModelBase ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                        >
-                          {m.title}
-                          <ChevronRight size={11} className={styles.menuArrow} />
-                        </button>
-                        <div className={styles.submenu}>
-                          {MODEL_CONTEXT_VARIANTS.map((v) => (
-                            <button
-                              key={v.suffix}
-                              type="button"
-                              onClick={pickModel(`${m.id}${v.suffix}`)}
-                              className={
-                                `${m.id}${v.suffix}` === currentModelId
-                                  ? `${styles.menuItem} ${styles.menuActive}`
-                                  : styles.menuItem
-                              }
-                            >
-                              {v.title}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                      <button key={m.id} type="button" className={styles.menuItem} onClick={pickModel(`${m.id}${currentContextSuffix}`)}>
+                        <span className={styles.menuTick}>{m.id === currentModelBase && <Check size={10} />}</span>
+                        {m.title}
+                      </button>
+                    ))}
+                    <div className={styles.menuDivider} />
+                    {MODEL_CONTEXT_VARIANTS.map((v) => (
+                      <button
+                        key={v.title}
+                        type="button"
+                        className={styles.menuItem}
+                        onClick={pickModel(`${currentModelBase}${v.suffix}`)}
+                      >
+                        <span className={styles.menuTick}>{v.suffix === currentContextSuffix && <Check size={10} />}</span>
+                        {v.title}
+                      </button>
                     ))}
                   </div>
                 )}

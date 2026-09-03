@@ -18,6 +18,7 @@ export const BPM_END = '\x1b[201~';
 export const draftKey = (tileId: string): string => `agent:draft:${tileId}`;
 
 export const MODEL_QUICK_SWITCHES = [
+  { id: 'claude-fable-5-1', title: 'Fable 5.1' },
   { id: 'claude-fable-5', title: 'Fable 5' },
   { id: 'claude-opus-5', title: 'Opus 5' },
   { id: 'claude-opus-4-8', title: 'Opus 4.8' },
@@ -54,6 +55,7 @@ export const CLAUDE_MODELS: AgentModel[] = [
   { name: 'claude-sonnet-5', desc: 'Sonnet 5' },
   { name: 'claude-sonnet-4-6', desc: 'Sonnet 4.6' },
   { name: 'claude-haiku-4-5', desc: 'Haiku 4.5 - fastest' },
+  { name: 'claude-fable-5-1', desc: 'Fable 5.1 - latest' },
   { name: 'claude-fable-5', desc: 'Fable 5' }
 ];
 
