@@ -346,6 +346,7 @@ fn reconnect_sessions() {
             events: Mutex::new(Vec::new()),
             focused,
             focus_reporting,
+            kimi: AtomicBool::new(false),
             run,
         });
 
@@ -1044,6 +1045,7 @@ struct Session {
     events: Mutex<Vec<String>>,
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
+    kimi: AtomicBool,
     run: Option<RunState>,
 }
 
@@ -1616,6 +1618,7 @@ fn handle_agent_status(body: &[u8]) {
     };
     let session = sessions().lock().unwrap().get(&tile_id).cloned();
     if let Some(s) = session {
+        s.kimi.store(kimi, Ordering::Relaxed);
         s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
     }
 }
@@ -2682,6 +2685,7 @@ fn spawn_session(
         events: Mutex::new(Vec::new()),
         focused,
         focus_reporting,
+        kimi: AtomicBool::new(false),
         run,
     });
 
@@ -2900,18 +2904,22 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
         )
     };
 
-    if mouse != vt100::MouseProtocolMode::None {
+    // kimi-code runs full-screen and handles the wheel itself, but on Windows ConPTY drops its
+    // mouse-tracking escapes (see docs/kimi-support.md), so the mode never reaches vt100. Feed it
+    // SGR wheel events anyway: its parser reads them regardless of whether tracking was enabled.
+    let kimi_wheel =
+        alt && mouse == vt100::MouseProtocolMode::None && s.kimi.load(Ordering::Relaxed);
+
+    if mouse != vt100::MouseProtocolMode::None || kimi_wheel {
         let cb: i64 = if dir > 0 { 64 } else { 65 };
+        let sgr = kimi_wheel || matches!(enc, vt100::MouseProtocolEncoding::Sgr);
         let mut seq: Vec<u8> = Vec::new();
-        match enc {
-            vt100::MouseProtocolEncoding::Sgr => {
-                seq.extend_from_slice(format!("\x1b[<{};{};{}M", cb, col, row).as_bytes());
-            }
-            _ => {
-                let cx = (col.min(223) as u8).saturating_add(32);
-                let cy = (row.min(223) as u8).saturating_add(32);
-                seq.extend_from_slice(&[0x1b, b'[', b'M', (cb as u8) + 32, cx, cy]);
-            }
+        if sgr {
+            seq.extend_from_slice(format!("\x1b[<{};{};{}M", cb, col, row).as_bytes());
+        } else {
+            let cx = (col.min(223) as u8).saturating_add(32);
+            let cy = (row.min(223) as u8).saturating_add(32);
+            seq.extend_from_slice(&[0x1b, b'[', b'M', (cb as u8) + 32, cx, cy]);
         }
         for _ in 0..lines.max(1) {
             host_handle().write(&s.tile_id, &seq);
@@ -3152,6 +3160,10 @@ fn build_frame(s: &Session) -> Vec<u8> {
     let (cur_r, cur_c) = screen.cursor_position();
     let cursor = ((cur_r as u32) << 16) | (cur_c as u32);
     let hidden = screen.hide_cursor();
+    // Leaving the alternate screen means the agent quit; the tile is a plain shell again.
+    if !screen.alternate_screen() {
+        s.kimi.store(false, Ordering::Relaxed);
+    }
     let mouse_byte: u8 = match screen.mouse_protocol_mode() {
         vt100::MouseProtocolMode::None => 0,
         vt100::MouseProtocolMode::Press => 1,
