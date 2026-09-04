@@ -1549,17 +1549,69 @@ fn status_ws_msg(v: &serde_json::Value) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
+fn is_kimi_status(v: &serde_json::Value) -> bool {
+    v.get("agent").and_then(|a| a.as_str()) == Some("kimi")
+}
+
+fn kimi_mode(v: &serde_json::Value) -> Option<serde_json::Value> {
+    if v.get("planMode").and_then(|p| p.as_bool()) == Some(true) {
+        return Some("plan".into());
+    }
+    match v.get("permissionMode").and_then(|m| m.as_str())? {
+        "auto" => Some("never ask".into()),
+        "yolo" => Some("ask when needed".into()),
+        "manual" => Some("always ask".into()),
+        other => Some(other.into()),
+    }
+}
+
+fn kimi_status_ws_msg(v: &serde_json::Value) -> Option<String> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("t".into(), "claude".into());
+    obj.insert("agent".into(), "kimi".into());
+    let mut put = |k: &str, val: Option<serde_json::Value>| {
+        if let Some(val) = val {
+            if !val.is_null() {
+                obj.insert(k.into(), val);
+            }
+        }
+    };
+    put("model", v.get("modelAlias").cloned());
+    put("effort", v.get("thinkingEffort").cloned());
+    put("models", v.get("models").cloned());
+    put("mode", kimi_mode(v));
+    put("sessionName", v.get("sessionTitle").cloned());
+    let tokens = v.get("contextTokens").and_then(|t| t.as_f64());
+    let window = v.get("maxContextTokens").and_then(|t| t.as_f64()).filter(|w| *w > 0.0);
+    put("contextTokens", tokens.map(|t| (t.round() as u64).into()));
+    put("contextWindow", window.map(|w| (w.round() as u64).into()));
+    let percent = match (tokens, window) {
+        (Some(t), Some(w)) => Some((t / w * 100.0).ceil()),
+        _ => v.get("contextUsage").and_then(|u| u.as_f64()).map(|u| (u * 100.0).ceil()),
+    };
+    put("contextPercent", percent.map(|p| p.clamp(0.0, 100.0).into()));
+    Some(serde_json::Value::Object(obj).to_string())
+}
+
 fn handle_agent_status(body: &[u8]) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return;
     };
-    let Some(session_id) = v.get("session_id").and_then(|s| s.as_str()) else {
-        return;
+    let kimi = is_kimi_status(&v);
+    let tile_id = match v.get("tileId").and_then(|t| t.as_str()) {
+        Some(tile) => tile.to_string(),
+        None => {
+            let Some(session_id) = v.get("session_id").and_then(|s| s.as_str()) else {
+                return;
+            };
+            let Some(tile_id) = tile_for_session(session_id) else {
+                return;
+            };
+            tile_id
+        }
     };
-    let Some(tile_id) = tile_for_session(session_id) else {
-        return;
-    };
-    let Some(msg) = status_ws_msg(&v) else {
+    let msg = if kimi { kimi_status_ws_msg(&v) } else { status_ws_msg(&v) };
+    let Some(msg) = msg else {
         return;
     };
     let session = sessions().lock().unwrap().get(&tile_id).cloned();
@@ -1649,9 +1701,62 @@ fn default_status_line(v: &serde_json::Value) -> String {
     parts.join(" \u{00b7} ")
 }
 
+fn kimi_status_line(v: &serde_json::Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(model) = v.get("model").and_then(|s| s.as_str()) {
+        let effort = v.get("thinkingEffort").and_then(|s| s.as_str()).unwrap_or("off");
+        parts.push(match effort {
+            "off" => model.to_string(),
+            "on" => format!("{model} thinking"),
+            level => format!("{model} thinking: {level}"),
+        });
+    }
+    if v.get("planMode").and_then(|p| p.as_bool()) == Some(true) {
+        parts.push("plan".to_string());
+    }
+    if let Some(cwd) = v.get("cwd").and_then(|s| s.as_str()) {
+        let tail: Vec<&str> = cwd
+            .split(['/', '\\'])
+            .filter(|s| !s.is_empty())
+            .rev()
+            .take(2)
+            .collect();
+        if !tail.is_empty() {
+            parts.push(tail.into_iter().rev().collect::<Vec<_>>().join("/"));
+        }
+    }
+    if let Some(branch) = v.get("gitBranch").and_then(|s| s.as_str()) {
+        parts.push(format!("({branch})"));
+    }
+    if parts.is_empty() {
+        parts.push("Kimi Code".to_string());
+    }
+    parts.join("  ")
+}
+
+fn with_tile_id(input: &str) -> String {
+    let Some(tile_id) = std::env::var("PANORAMA_TILE_ID").ok().filter(|t| !t.is_empty()) else {
+        return input.to_string();
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(input) else {
+        return input.to_string();
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return input.to_string();
+    };
+    obj.insert("tileId".into(), tile_id.into());
+    v.to_string()
+}
+
 fn statusline_cmd() {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
+    let v: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+    if is_kimi_status(&v) {
+        post_agent_status(&with_tile_id(&input));
+        println!("{}", kimi_status_line(&v));
+        return;
+    }
     post_agent_status(&input);
     if let Some(chain) = load_statusline_chain() {
         if let Some(line) = run_chained_statusline(&chain, &input) {
@@ -1659,7 +1764,6 @@ fn statusline_cmd() {
             return;
         }
     }
-    let v: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
     println!("{}", default_status_line(&v));
 }
 
@@ -1992,6 +2096,85 @@ fn install_pi_extension() {
         return;
     }
     let _ = write_atomic(&file, SOURCE.as_bytes());
+}
+
+fn kimi_home() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("KIMI_CODE_HOME") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())?;
+    Some(Path::new(&home).join(".kimi-code"))
+}
+
+fn toml_basic_string(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+fn is_section_header(line: &str) -> bool {
+    line.trim_start().starts_with('[')
+}
+
+fn kimi_statusline_toml(existing: &str, entry: &str) -> Option<String> {
+    if existing.trim().is_empty() {
+        return Some(format!("[status_line]\n{entry}\n"));
+    }
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    let Some(header) = lines.iter().position(|line| line.trim() == "[status_line]") else {
+        if !lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+            lines.push(String::new());
+        }
+        lines.push("[status_line]".to_string());
+        lines.push(entry.to_string());
+        return Some(format!("{}\n", lines.join("\n")));
+    };
+
+    let end = lines[header + 1..]
+        .iter()
+        .position(|line| is_section_header(line))
+        .map(|offset| header + 1 + offset)
+        .unwrap_or(lines.len());
+    let current = lines[header + 1..end]
+        .iter()
+        .position(|line| line.trim_start().starts_with("command"))
+        .map(|offset| header + 1 + offset);
+
+    match current {
+        Some(index) => {
+            let value = lines[index].trim();
+            if value == entry || !value.contains(" statusline\"") {
+                return None;
+            }
+            lines[index] = entry.to_string();
+        }
+        None => lines.insert(header + 1, entry.to_string()),
+    }
+    Some(format!("{}\n", lines.join("\n")))
+}
+
+fn install_kimi_statusline() {
+    let Some(dir) = kimi_home().filter(|d| d.exists()) else {
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let command = format!("\"{}\" statusline", exe.display());
+    let entry = format!("command = \"{}\"", toml_basic_string(&command));
+    let file = dir.join("tui.toml");
+    let existing = std::fs::read_to_string(&file).unwrap_or_default();
+    if let Some(next) = kimi_statusline_toml(&existing, &entry) {
+        let _ = write_atomic(&file, next.as_bytes());
+    }
 }
 
 fn install_claude_hook() {
@@ -3651,6 +3834,7 @@ async fn main() {
     tokio::task::block_in_place(|| reconnect_sessions());
     install_claude_hook();
     install_pi_extension();
+    install_kimi_statusline();
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
@@ -3735,6 +3919,57 @@ mod tests {
         assert!(v.get("rateSevenDay").is_none());
         assert_eq!(default_status_line(&input), "Fable 5 \u{00b7} 8% ctx \u{b7} $0.50");
         assert!(status_ws_msg(&serde_json::json!({"session_id": "x"})).is_none());
+    }
+
+    #[test]
+    fn kimi_statusline_json_becomes_claude_msg() {
+        let input = serde_json::json!({
+            "agent": "kimi",
+            "model": "Kimi K2",
+            "modelAlias": "k2",
+            "thinkingEffort": "high",
+            "models": [{ "id": "k2", "provider": "kimi", "efforts": ["off", "high"] }],
+            "cwd": "D:\\workspace\\projects\\panorama-term",
+            "gitBranch": "main",
+            "permissionMode": "yolo",
+            "planMode": false,
+            "contextUsage": 0.1,
+            "contextTokens": 25600,
+            "maxContextTokens": 256000
+        });
+        let msg = super::kimi_status_ws_msg(&input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["t"], "claude");
+        assert_eq!(v["agent"], "kimi");
+        assert_eq!(v["model"], "k2");
+        assert_eq!(v["effort"], "high");
+        assert_eq!(v["mode"], "ask when needed");
+        assert_eq!(v["models"][0]["id"], "k2");
+        assert_eq!(v["contextWindow"], 256000);
+        assert_eq!(v["contextPercent"], 10.0);
+        assert_eq!(
+            super::kimi_status_line(&input),
+            "Kimi K2 thinking: high  projects/panorama-term  (main)"
+        );
+    }
+
+    #[test]
+    fn kimi_statusline_toml_keeps_foreign_commands() {
+        let entry = "command = \"\\\"C:\\\\brain.exe\\\" statusline\"";
+        let fresh = super::kimi_statusline_toml("", entry).unwrap();
+        assert_eq!(fresh, format!("[status_line]\n{entry}\n"));
+
+        let commented = "theme = \"auto\"\n\n# [status_line]\n# command = \"x\"\n";
+        let added = super::kimi_statusline_toml(commented, entry).unwrap();
+        assert!(added.ends_with(&format!("[status_line]\n{entry}\n")));
+
+        let items = "[status_line]\nitems = [\"model\"]\n";
+        let merged = super::kimi_statusline_toml(items, entry).unwrap();
+        assert_eq!(merged, format!("[status_line]\n{entry}\nitems = [\"model\"]\n"));
+        assert!(super::kimi_statusline_toml(&merged, entry).is_none());
+
+        let foreign = "[status_line]\ncommand = \"~/mine.sh\"\n";
+        assert!(super::kimi_statusline_toml(foreign, entry).is_none());
     }
 
     #[test]

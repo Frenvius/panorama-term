@@ -13,7 +13,7 @@ import DiffViewer from '~/components/DiffViewer';
 import { noteTheme } from '~/usecase/util/note';
 import { parseFrontTitle } from '~/usecase/util/noteMeta';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
+import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
@@ -603,6 +603,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   {agentType === 'codex' && <CodexLogo size={11} />}
                   {agentType === 'opencode' && <OpenCodeLogo size={11} />}
                   {agentType === 'pi' && <PiLogo size={11} />}
+                  {agentType === 'kimi' && <KimiLogo size={11} />}
                   {agentType === 'generic' && <GenericAgentLogo size={11} />}
                   {agentType === 'claude' && <ClaudeLogo size={11} />}
                 </span>

@@ -12,6 +12,8 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
 export const modeKey = (mode: string): string => {
   const m = mode.toLowerCase();
   if (m.includes('plan')) return 'plan';
+  if (m.includes('never ask')) return 'bypass';
+  if (m.includes('ask when needed')) return 'accept';
   if (m.includes('accept')) return 'accept';
   if (m.includes('bypass')) return 'bypass';
   if (m.includes('auto')) return 'auto';
@@ -22,6 +24,25 @@ export const prettyMode = (raw: string | undefined): string | undefined => {
   if (!raw) return undefined;
   const key = raw.toLowerCase().replace(/[\s_-]/g, '');
   return PERMISSION_MODE_LABELS[key] ?? raw.toLowerCase().replace(/\s+/g, ' ');
+};
+
+const ACRONYMS = new Set(['gpt', 'glm', 'sdk', 'ai', 'xai']);
+
+const capitalize = (word: string): string =>
+  ACRONYMS.has(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1);
+
+export const aliasLabel = (id: string, provider?: string): string => {
+  const bare = provider && id.startsWith(`${provider}/`) ? id.slice(provider.length + 1) : id;
+  const oneM = /(?:[-_]|\[)1m\]?$/i.test(bare);
+  const core = oneM ? bare.replace(/(?:[-_]|\[)1m\]?$/i, '') : bare;
+  const label = core
+    .replace(/(\d)-(\d)/g, '$1.$2')
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(capitalize)
+    .join(' ');
+  if (!label) return bare;
+  return oneM ? `${label} · 1M` : label;
 };
 
 export const prettyModel = (raw: string | undefined): { model?: string; contextInfo?: string } => {
@@ -41,16 +62,20 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
   return out;
 };
 
-export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'pi' | 'generic';
+export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'pi' | 'kimi' | 'generic';
 
-const AGENT_UI = /[╭╮╰╯]|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\d+(?:\.\d+)?%\/\d+(?:\.\d+)?[kM]|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
+const AGENT_UI = /[╭╮╰╯]|context:\s*\d{1,3}%|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\d+(?:\.\d+)?%\/\d+(?:\.\d+)?[kM]|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
 
 export const hasAgentUi = (text: string): boolean => AGENT_UI.test(text);
 
 const PI_STATS = /(?:\d+\.\d|\?)%\/(\d+(?:\.\d)?[kMB])(?: \(auto\))?(?:\s{2,}|\s*$)/;
 
+const KIMI_CONTEXT = /context:\s*(\d{1,3})%(?:\s*\(\s*([\d.]+[kMB]?)\s*\/\s*([\d.]+[kMB]?)\s*\))?/i;
+
 const AGENT_SIGNATURES: [AgentType, RegExp][] = [
-  ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code|\/help for help/i],
+  ['kimi', /welcome to kimi code|kimi code v\d|\/help for help information/i],
+  ['kimi', KIMI_CONTEXT],
+  ['claude', /welcome to claude code|claude code v\d|claude\.ai\/|anthropic\.com\/(?:s\/)?claude-code|\/help for help\b(?! information)/i],
   ['codex', /openai codex|codex cli|\bcodex\b\s+v\d|>_\s*codex/i],
   ['antigravity', /welcome to antigravity|antigravity cli|\bantigravity\b\s+v\d|>_\s*antigravity/i],
   ['opencode', /welcome to opencode|opencode cli|\bopencode\b\s+v\d/i],
@@ -63,7 +88,7 @@ const AGENT_MODEL_HINTS: [AgentType, RegExp][] = [
   ['antigravity', /\bgemini[\s-][\d.]/i]
 ];
 
-const DECLARED_AGENTS: AgentType[] = ['claude', 'antigravity', 'codex', 'opencode', 'pi', 'generic'];
+const DECLARED_AGENTS: AgentType[] = ['claude', 'antigravity', 'codex', 'opencode', 'pi', 'kimi', 'generic'];
 
 export const declaredAgent = (state: ClaudeState | null): AgentType | null => {
   if (!state) return null;
@@ -93,8 +118,18 @@ const parsePiStatus = (lines: string[]): ParsedStatus | null => {
   return result;
 };
 
+const parseKimiStatus = (lines: string[]): ParsedStatus | null => {
+  const context = lines.map((line) => line.match(KIMI_CONTEXT)).find(Boolean);
+  if (!context?.[1]) return null;
+  const result: ParsedStatus = { progress: parseInt(context[1], 10) };
+  if (context[3]) result.contextInfo = context[3];
+  return result;
+};
+
 export const parseStatusLines = (lines: string[]): ParsedStatus => {
   if (lines.length === 0) return {};
+  const kimi = parseKimiStatus(lines);
+  if (kimi) return kimi;
   const pi = parsePiStatus(lines);
   if (pi) return pi;
   const combined = lines.join(' ').replace(/\s+/g, ' ');
@@ -144,7 +179,8 @@ const scrapeModel = (rows: string[]): { model: string; contextInfo?: string } | 
 };
 
 const isBoxBottom = (s: string): boolean => s.includes('╰') && s.includes('╯');
-const isBoxTop = (s: string): boolean => s.includes('╭') && s.includes('╮');
+const isBoxTop = (s: string): boolean =>
+  (s.includes('╭') && s.includes('╮')) || (s.includes('├') && s.includes('┤'));
 
 const PLACEHOLDER = /^(try\b|write a prompt|ask\b|\/ for commands|\? for shortcuts)/i;
 

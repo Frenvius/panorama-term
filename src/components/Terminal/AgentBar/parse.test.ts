@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { aliasLabel, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -135,6 +135,52 @@ describe('pi footer', () => {
 
   it('keeps the bar visible instead of treating the screen as a menu', () => {
     expect(readFooter(piScreen).questionMode).toBe(false);
+  });
+});
+
+describe('kimi footer', () => {
+  const kimiScreen = [
+    '  Welcome to Kimi Code!  Send /help for help information.',
+    RULE,
+    '  >                                  ',
+    RULE,
+    '  auto plan  kimi-k2 thinking: high  panorama-term  main',
+    '                                                     context: 12% (30.7k/256k)'
+  ];
+
+  it('identifies kimi instead of claude', () => {
+    expect(detectAgentIdentity(kimiScreen.join('\n'))).toBe('kimi');
+  });
+
+  it('reads context usage from the second footer line', () => {
+    const status = parseStatusLines(readFooter(kimiScreen).status);
+    expect(status.progress).toBe(12);
+    expect(status.contextInfo).toBe('256k');
+  });
+
+  it('keeps the bar visible', () => {
+    expect(readFooter(kimiScreen).questionMode).toBe(false);
+  });
+});
+
+describe('aliasLabel', () => {
+  it('drops the provider prefix the alias already repeats', () => {
+    expect(aliasLabel('claude_agent_sdk/claude-opus-5', 'claude_agent_sdk')).toBe('Claude Opus 5');
+    expect(aliasLabel('openai/gpt-5', undefined)).toBe('Openai/gpt 5');
+  });
+
+  it('reads version digits and the 1M context suffix', () => {
+    expect(aliasLabel('claude-opus-4-8-1m')).toBe('Claude Opus 4.8 · 1M');
+    expect(aliasLabel('fable-5-1-1m')).toBe('Fable 5.1 · 1M');
+    expect(aliasLabel('opus-1m')).toBe('Opus · 1M');
+    expect(aliasLabel('claude-sonnet-5')).toBe('Claude Sonnet 5');
+    expect(aliasLabel('gpt-5.6-sol')).toBe('GPT 5.6 Sol');
+    expect(aliasLabel('haiku')).toBe('Haiku');
+    expect(aliasLabel('kimi-k2')).toBe('Kimi K2');
+  });
+
+  it('keeps aliases that differ only by prefix distinguishable', () => {
+    expect(aliasLabel('opus-4-8-1m')).not.toBe(aliasLabel('claude-opus-4-8-1m'));
   });
 });
 

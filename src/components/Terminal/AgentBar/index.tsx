@@ -6,12 +6,12 @@ import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
-import { AntigravityLogo, CodexLogo, OpenCodeLogo, PiLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
+import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
-import { readFooter, modeKey, hasAgentUi, prettyMode, prettyModel, declaredAgent, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
-import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
+import { readFooter, modeKey, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { AgentModel, ClaudeState } from '~/domain/interfaces/pty.interface';
@@ -528,6 +528,15 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     await waitUntil(inputEmpty, 1200);
   };
 
+  const applyKimiModel = (id: string) => {
+    sendChainRef.current = sendChainRef.current
+      .then(() => sendDraft({ text: `/model ${id}`, images: [] }))
+      .then(async () => {
+        if (await waitUntil(() => getLines().some((row) => /select a model/i.test(row)), 4000)) send('\r');
+      })
+      .catch(() => undefined);
+  };
+
   const handleSend = () => {
     const live = draftRef.current;
     if (isDraftEmpty(live)) return;
@@ -659,7 +668,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       ? CLAUDE_SLASH_COMMANDS
       : agentType === 'antigravity'
         ? ANTIGRAVITY_SLASH_COMMANDS
-        : [];
+        : agentType === 'kimi'
+          ? KIMI_SLASH_COMMANDS
+          : [];
 
     return source.filter(
       (c) =>
@@ -675,15 +686,40 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }));
   }, [agentType]);
 
+  const currentModel = React.useMemo(
+    () => piModels.find((entry) => entry.id === structured?.model),
+    [piModels, structured]
+  );
+
+  const catalogEfforts = React.useMemo(
+    () => currentModel?.efforts ?? structured?.efforts ?? [],
+    [currentModel, structured]
+  );
+
   const fetchModels = React.useCallback((query: string): PromptSuggestion[] => {
     const q = query.toLowerCase();
+    if (agentType === 'kimi') {
+      return piModels
+        .filter((m) => m.id.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q))
+        .map((m) => ({ id: m.id, display: aliasLabel(m.id, m.provider), subtext: m.provider, icon: 'model' }));
+    }
     return CLAUDE_MODELS.filter(
       (m) => m.name.toLowerCase().includes(q) || m.desc.toLowerCase().includes(q)
     ).map((m) => ({ id: m.name, display: m.name, subtext: m.desc, icon: 'model' }));
-  }, []);
+  }, [agentType, piModels]);
 
   const fetchEfforts = React.useCallback((query: string): PromptSuggestion[] => {
     const q = query.toLowerCase();
+    if (agentType === 'kimi') {
+      return catalogEfforts
+        .filter((level) => level.includes(q))
+        .map((level) => {
+          const known = EFFORT_LEVELS.find((l) => l.id === level);
+          return known
+            ? { id: level, color: known.color, display: level, subtext: known.desc, icon: 'effort' as const }
+            : { id: level, display: level, icon: 'effort' as const };
+        });
+    }
     return EFFORT_LEVELS.filter((l) => l.id.includes(q) || l.desc.toLowerCase().includes(q)).map((l) => ({
       id: l.id,
       color: l.color,
@@ -691,18 +727,18 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       subtext: l.desc,
       icon: 'effort'
     }));
-  }, []);
+  }, [agentType, catalogEfforts]);
 
   const onSlashSelect = (item: PromptSuggestion, submit?: boolean) => {
     const name = item.display;
-    const isClaude = agentType === 'claude';
-    const noSubmit = (name === '/model' && isClaude) || (name === '/effort' && isClaude) || item.takesArg === true;
+    const inline = agentType === 'claude' || agentType === 'kimi';
+    const noSubmit = (name === '/model' && inline) || (name === '/effort' && inline) || item.takesArg === true;
     const doSubmit = submit && !noSubmit;
     const next = { text: name + (doSubmit ? '' : ' '), images: [] };
     setDraft(next);
     commitDraft(next);
-    if (name === '/model' && isClaude) setSuggest({ kind: 'model', query: '' });
-    else if (name === '/effort' && isClaude) setSuggest({ kind: 'effort', query: '' });
+    if (name === '/model' && inline) setSuggest({ kind: 'model', query: '' });
+    else if (name === '/effort' && inline) setSuggest({ kind: 'effort', query: '' });
     else setSuggest(null);
     if (doSubmit) void handleSend();
   };
@@ -716,6 +752,13 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   };
 
   const onModelSelect = (item: PromptSuggestion, submit?: boolean) => {
+    if (agentType === 'kimi' && submit) {
+      setDraft(cloneDraft(EMPTY_DRAFT));
+      commitDraft(cloneDraft(EMPTY_DRAFT));
+      setSuggest(null);
+      applyKimiModel(item.id);
+      return;
+    }
     const next = { text: `/model ${item.display}`, images: [] };
     setDraft(next);
     commitDraft(next);
@@ -847,8 +890,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     if (scraped) {
       base.model = scraped.model;
       base.contextInfo = scraped.contextInfo;
-    } else if (agentType === 'pi' && structured?.model) {
-      base.model = structured.model;
+    } else if ((agentType === 'pi' || agentType === 'kimi') && structured?.model) {
+      base.model = aliasLabel(structured.model, currentModel?.provider);
     } else if (structured?.model) {
       const pm = prettyModel(structured.model);
       if (pm.model) base.model = pm.model;
@@ -868,7 +911,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (!base.contextInfo) base.contextInfo = is1M ? '1M' : '200k';
     }
     return base;
-  }, [status, scraped, structured, is1M, agentType]);
+  }, [status, scraped, structured, is1M, agentType, currentModel]);
 
   const effort = structured?.effort ?? '';
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
@@ -905,7 +948,16 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     void sendDraft({ text: `/panorama-effort ${level}`, images: [] });
   };
 
+  const pickKimiModel = (entry: AgentModel) => {
+    applyKimiModel(entry.id);
+  };
+
+  const pickKimiEffort = (level: string) => {
+    void sendDraft({ text: `/effort ${level}`, images: [] });
+  };
+
   const piPick = { model: pickPiModel, effort: pickPiEffort };
+  const kimiPick = { model: pickKimiModel, effort: pickKimiEffort };
 
   const pickEffort = (id: string) => () => {
     void sendDraft({ text: `/effort ${id}`, images: [] });
@@ -933,6 +985,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         return {
           placeholder: 'Tell pi what to do... (up-arrow history)',
           logo: <PiLogo size={18} className={styles.agentIcon} />
+        };
+      case 'kimi':
+        return {
+          placeholder: 'Tell Kimi what to do... (/ commands, up-arrow history)',
+          logo: <KimiLogo size={18} className={styles.agentIcon} />
         };
       case 'generic':
         return {
@@ -985,13 +1042,13 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             onClick={handleEditorClick}
             onKeyDown={onKeyDown}
           />
-          {agentType === 'pi' && (
+          {(agentType === 'pi' || agentType === 'kimi') && (
             <PiActions
               models={piModels}
               model={structured?.model ?? parsed.model}
               effort={effort}
               efforts={structured?.efforts}
-              onPick={piPick}
+              onPick={agentType === 'kimi' ? kimiPick : piPick}
             />
           )}
           {agentType === 'claude' && (

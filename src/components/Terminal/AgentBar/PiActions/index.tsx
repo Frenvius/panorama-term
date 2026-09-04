@@ -1,6 +1,7 @@
 import React from 'react';
 import { Brain, ChevronDown } from 'lucide-react';
 
+import { aliasLabel } from '~/components/Terminal/AgentBar/parse';
 import { EFFORT_LEVELS } from '~/components/Terminal/AgentBar/constants';
 
 import type { AgentModel } from '~/domain/interfaces/pty.interface';
@@ -15,7 +16,7 @@ interface PiActionsProps {
   onPick: { model: (entry: AgentModel) => void; effort: (level: string) => void };
 }
 
-const MAX_LABEL = 18;
+const MAX_LABEL = 22;
 
 const shortLabel = (id: string): string => (id.length > MAX_LABEL ? `${id.slice(0, MAX_LABEL - 3)}...` : id);
 
@@ -40,6 +41,7 @@ const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) =
 
   const current = models.find((entry) => entry.id === model);
   const levels = current?.efforts ?? efforts ?? [];
+  const currentLabel = current ? aliasLabel(current.id, current.provider) : model;
 
   const toggleModelMenu = () => setModelMenu((open) => !open);
   const toggleEffortMenu = () => setEffortMenu((open) => !open);
@@ -88,7 +90,7 @@ const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) =
       )}
       <div className={styles.action} ref={modelRef}>
         <button type="button" className={styles.model} title={model ?? 'Switch model'} onClick={toggleModelMenu}>
-          {model ? shortLabel(model) : 'Model'}
+          {currentLabel ? shortLabel(currentLabel) : 'Model'}
           <ChevronDown size={11} />
         </button>
         {modelMenu && (
@@ -100,7 +102,7 @@ const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) =
                 onClick={pickModel(entry)}
                 className={entry.id === model ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
               >
-                {entry.id}
+                {aliasLabel(entry.id, entry.provider)}
                 <span className={styles.menuSub}>{entry.provider}</span>
               </button>
             ))}
