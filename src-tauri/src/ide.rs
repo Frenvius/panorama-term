@@ -49,9 +49,9 @@ struct ToolboxState {
 #[derive(Deserialize)]
 struct ToolboxTool {
     #[serde(rename = "productCode")]
-    product_code: String,
+    product_code: Option<String>,
     #[serde(rename = "displayName")]
-    display_name: String,
+    display_name: Option<String>,
     #[serde(rename = "launchCommand")]
     launch_command: Option<String>,
 }
@@ -112,10 +112,10 @@ fn toolbox_ides() -> Vec<IdeInfo> {
         .into_iter()
         .filter_map(|tool| {
             let command = tool.launch_command?;
-            let id = jb_id(&tool.product_code)?;
+            let id = jb_id(&tool.product_code?)?;
             Some(IdeInfo {
                 id: id.into(),
-                label: tool.display_name,
+                label: tool.display_name?,
                 command,
                 family: "jetbrains",
                 recommended: false,
