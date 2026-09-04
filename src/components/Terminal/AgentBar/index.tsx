@@ -948,6 +948,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     void sendDraft({ text: `/panorama-effort ${level}`, images: [] });
   };
 
+  const pickPiContext = (tokens: number) => {
+    void sendDraft({ text: `/panorama-context ${tokens}`, images: [] });
+  };
+
   const pickKimiModel = (entry: AgentModel) => {
     applyKimiModel(entry.id);
   };
@@ -956,7 +960,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     void sendDraft({ text: `/effort ${level}`, images: [] });
   };
 
-  const piPick = { model: pickPiModel, effort: pickPiEffort };
+  const piPick = { model: pickPiModel, effort: pickPiEffort, context: pickPiContext };
   const kimiPick = { model: pickKimiModel, effort: pickKimiEffort };
 
   const pickEffort = (id: string) => () => {
@@ -1048,6 +1052,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
               model={structured?.model ?? parsed.model}
               effort={effort}
               efforts={structured?.efforts}
+              contextWindow={structured?.contextWindow}
               onPick={agentType === 'kimi' ? kimiPick : piPick}
             />
           )}

@@ -119,7 +119,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		announce({ agent: "pi", model: ctx.model?.id, effort: ctx.thinkingLevel });
+		announce({ agent: "pi", model: ctx.model?.id, effort: ctx.thinkingLevel, contextWindow: ctx.model?.contextWindow });
 		announceCatalog(ctx);
 
 		const options = editorOptions(ctx.cwd);
@@ -140,10 +140,19 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("panorama-context", {
+		description: "Set the context window budget for this session",
+		handler: async (args, ctx) => {
+			const tokens = Number.parseInt(args.trim(), 10);
+			if (!ctx.model || !Number.isFinite(tokens) || tokens <= 0) return;
+			if (await pi.setModel({ ...ctx.model, contextWindow: tokens })) announce({ contextWindow: tokens });
+		},
+	});
+
 	// Bridged providers report a placeholder id for messages the backing agent answered locally.
 	pi.on("model_select", (event) => {
 		if (event.model.id.startsWith("<")) return;
-		announce({ model: event.model.id, efforts: efforts(event.model) });
+		announce({ model: event.model.id, efforts: efforts(event.model), contextWindow: event.model.contextWindow });
 	});
 	pi.on("thinking_level_select", (event) => announce({ effort: event.level }));
 }

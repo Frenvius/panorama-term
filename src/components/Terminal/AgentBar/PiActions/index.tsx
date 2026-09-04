@@ -13,38 +13,51 @@ interface PiActionsProps {
   model?: string;
   efforts?: string[];
   models: AgentModel[];
-  onPick: { model: (entry: AgentModel) => void; effort: (level: string) => void };
+  contextWindow?: number;
+  onPick: { model: (entry: AgentModel) => void; effort: (level: string) => void; context?: (tokens: number) => void };
 }
 
 const MAX_LABEL = 22;
+
+const BASE_WINDOW = 200_000;
 
 const shortLabel = (id: string): string => (id.length > MAX_LABEL ? `${id.slice(0, MAX_LABEL - 3)}...` : id);
 
 const effortColor = (level: string): string | undefined => EFFORT_LEVELS.find((l) => l.id === level)?.color;
 
-const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) => {
+const windowLabel = (tokens: number): string =>
+  tokens >= 1_000_000 ? `${Number((tokens / 1_000_000).toFixed(2))}M` : `${Math.round(tokens / 1000)}k`;
+
+const PiActions = ({ models, model, effort, efforts, contextWindow, onPick }: PiActionsProps) => {
   const [modelMenu, setModelMenu] = React.useState(false);
   const [effortMenu, setEffortMenu] = React.useState(false);
+  const [windowMenu, setWindowMenu] = React.useState(false);
   const modelRef = React.useRef<HTMLDivElement>(null);
   const effortRef = React.useRef<HTMLDivElement>(null);
+  const windowRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    if (!modelMenu && !effortMenu) return;
+    if (!modelMenu && !effortMenu && !windowMenu) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (!modelRef.current?.contains(target)) setModelMenu(false);
       if (!effortRef.current?.contains(target)) setEffortMenu(false);
+      if (!windowRef.current?.contains(target)) setWindowMenu(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [modelMenu, effortMenu]);
+  }, [modelMenu, effortMenu, windowMenu]);
 
   const current = models.find((entry) => entry.id === model);
   const levels = current?.efforts ?? efforts ?? [];
   const currentLabel = current ? aliasLabel(current.id, current.provider) : model;
+  const maxWindow = current?.contextWindow ?? 0;
+  const activeWindow = contextWindow ?? maxWindow;
+  const windows = onPick.context && maxWindow > BASE_WINDOW ? [BASE_WINDOW, maxWindow] : [];
 
   const toggleModelMenu = () => setModelMenu((open) => !open);
   const toggleEffortMenu = () => setEffortMenu((open) => !open);
+  const toggleWindowMenu = () => setWindowMenu((open) => !open);
 
   const pickModel = (entry: AgentModel) => () => {
     onPick.model(entry);
@@ -54,6 +67,11 @@ const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) =
   const pickEffort = (level: string) => () => {
     onPick.effort(level);
     setEffortMenu(false);
+  };
+
+  const pickWindow = (tokens: number) => () => {
+    onPick.context?.(tokens);
+    setWindowMenu(false);
   };
 
   if (models.length === 0) return null;
@@ -82,6 +100,29 @@ const PiActions = ({ models, model, effort, efforts, onPick }: PiActionsProps) =
                   className={level === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
                 >
                   {level}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {windows.length > 0 && (
+        <div className={styles.action} ref={windowRef}>
+          <button type="button" className={styles.model} title="Context window" onClick={toggleWindowMenu}>
+            {windowLabel(activeWindow)}
+            <ChevronDown size={11} />
+          </button>
+          {windowMenu && (
+            <div className={styles.menu}>
+              {windows.map((tokens) => (
+                <button
+                  key={tokens}
+                  type="button"
+                  onClick={pickWindow(tokens)}
+                  className={tokens === activeWindow ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                >
+                  {windowLabel(tokens)}
+                  <span className={styles.menuSub}>context</span>
                 </button>
               ))}
             </div>
