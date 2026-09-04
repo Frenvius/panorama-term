@@ -13,6 +13,7 @@ import {
 const MOUSE_TRACKING = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 
 const AGENT_STATE = "\x1b]777;notify;panorama://agent-state;";
+const AGENT_EVENT = "\x1b]777;notify;panorama://cli-agent;";
 
 const CATALOG_MAX = 12000;
 
@@ -61,6 +62,10 @@ function announceCatalog(ctx: ExtensionContext): void {
 
 function announce(state: Record<string, unknown>): void {
 	process.stdout.write(`${AGENT_STATE}${JSON.stringify(state)}\x07`);
+}
+
+function emit(event: string): void {
+	process.stdout.write(`${AGENT_EVENT}${JSON.stringify({ v: 1, agent: "pi", event })}\x07`);
 }
 
 class PanoramaEditor extends CustomEditor {
@@ -119,7 +124,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		announce({ agent: "pi", model: ctx.model?.id, effort: ctx.thinkingLevel, contextWindow: ctx.model?.contextWindow });
+		announce({ agent: "pi", model: ctx.model?.id, status: "idle", effort: ctx.thinkingLevel, contextWindow: ctx.model?.contextWindow });
 		announceCatalog(ctx);
 
 		const options = editorOptions(ctx.cwd);
@@ -131,6 +136,14 @@ export default function (pi: ExtensionAPI) {
 		// has ENABLE_MOUSE_INPUT, so the ones pi sent at startup were dropped.
 		if (enableConsoleMouse()) process.stdout.write(MOUSE_TRACKING);
 	});
+
+	pi.on("before_agent_start", () => emit("prompt-submit"));
+	pi.on("agent_start", () => announce({ status: "busy" }));
+	pi.on("agent_settled", () => {
+		announce({ status: "idle" });
+		emit("stop");
+	});
+	pi.on("session_shutdown", () => announce({ status: "idle" }));
 
 	pi.registerCommand("panorama-effort", {
 		description: "Set the thinking level",

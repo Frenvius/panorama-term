@@ -1482,6 +1482,7 @@ fn agent_event_ws_msg(body: &str) -> Option<String> {
     let msg = serde_json::json!({
         "t": "agentEvent",
         "event": event,
+        "agent": field("agent"),
         "sessionId": field("session_id"),
         "project": field("project"),
         "query": field("query"),
@@ -4054,6 +4055,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
         assert_eq!(v["t"], "agentEvent");
         assert_eq!(v["event"], "stop");
+        assert_eq!(v["agent"], "claude");
         assert_eq!(v["sessionId"], "s1");
         assert_eq!(v["response"], "done");
         assert!(agent_event_ws_msg("not json").is_none());

@@ -36,6 +36,12 @@ test('agent events take over status transitions', () => {
   expect(sent).toEqual(['finished:done']);
 });
 
+test('pi stop identifies pi in the notification', () => {
+  const { sent, notifier } = setup();
+  notifier.onAgentEvent({ agent: 'pi', event: 'stop' });
+  expect(sent).toEqual(['finished:Pi finished']);
+});
+
 test('prompt-submit clears and generic notify is muted right after an agent event', () => {
   const { sent, notifier } = setup();
   notifier.onAgentEvent({ event: 'prompt-submit' });

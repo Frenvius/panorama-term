@@ -73,6 +73,7 @@ export interface PtyNotifyMessage {
 }
 
 export interface AgentEvent {
+  agent?: string;
   event: string;
   sessionId?: string;
   project?: string;

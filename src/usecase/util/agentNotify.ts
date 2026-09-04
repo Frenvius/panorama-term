@@ -38,7 +38,8 @@ export const createAgentNotifier = ({ suppressed, notify, clear, focused }: Noti
     if (suppressed()) return;
     if (evt.event === 'stop') {
       lastNotify = Date.now();
-      notify('finished', evt.response || undefined);
+      const agent = evt.agent === 'pi' ? 'Pi' : 'Claude';
+      notify('finished', evt.response || `${agent} finished`);
       return;
     }
     if (evt.event === 'permission') {
