@@ -42,6 +42,11 @@ interface GridTerminalProps {
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
+interface ResumeTarget {
+  id: string;
+  agent: string;
+}
+
 const CELL_H = 15;
 const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
@@ -204,7 +209,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
 };
 
 const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, visible, elevated, restartKey, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
-  const [resumeId, setResumeId] = React.useState<string | null>(null);
+  const [resume, setResume] = React.useState<ResumeTarget | null>(null);
   const termRef = React.useRef<HTMLDivElement>(null);
   const rowsRefEl = React.useRef<HTMLDivElement>(null);
   const overlayRef = React.useRef<HTMLDivElement>(null);
@@ -226,7 +231,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const wheelAccRef = React.useRef(0);
   const pendingResumeRef = React.useRef(true);
   const restartingRef = React.useRef(false);
-  const resumeCandidateRef = React.useRef<string | null>(null);
+  const resumeCandidateRef = React.useRef<ResumeTarget | null>(null);
   const activeRef = React.useRef(active);
   const visibleRef = React.useRef(visible);
   const elevatedRef = React.useRef(elevated);
@@ -395,7 +400,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             const candidate = resumeCandidateRef.current;
             if (!candidate) return;
             resumeCandidateRef.current = null;
-            if (!hasAgentUi(frame.lines.join('\n'))) setResumeId(candidate);
+            if (!hasAgentUi(frame.lines.join('\n'))) setResume(candidate);
           },
           onExit: () => {
             exited = true;
@@ -428,7 +433,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
             if (!info.resumeId) return;
-            resumeCandidateRef.current = info.resumeId;
+            resumeCandidateRef.current = { id: info.resumeId, agent: info.resumeAgent ?? 'claude' };
           }
         }
       );
@@ -472,7 +477,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     lastRestartRef.current = restartKey;
     const ws = wsRef.current;
     if (!ws) return;
-    setResumeId(null);
+    setResume(null);
     frameRef.current = null;
     rowCacheRef.current = [];
     if (rowsRefEl.current) rowsRefEl.current.innerHTML = '';
@@ -788,7 +793,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   };
 
   const closeResume = () => {
-    setResumeId(null);
+    setResume(null);
     focusTerminal();
   };
 
@@ -800,7 +805,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
 
   const startResume = () => {
     const ws = wsRef.current;
-    if (ws) sendPtyInput(ws, ` claude --resume ${resumeId}\r`);
+    const command = resume?.agent === 'pi' ? `pi --session ${resume?.id}` : `claude --resume ${resume?.id}`;
+    if (ws) sendPtyInput(ws, ` ${command}\r`);
     closeResume();
   };
 
@@ -846,8 +852,15 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       </div>
       {!readOnly && (
         <div className={styles.agentOverlay}>
-          {resumeId && (
-            <ResumePanel sessionId={resumeId} cwd={cwd} active={active} onResume={startResume} onSkip={dismissResume} />
+          {resume && (
+            <ResumePanel
+              agent={resume.agent}
+              sessionId={resume.id}
+              cwd={cwd}
+              active={active}
+              onResume={startResume}
+              onSkip={dismissResume}
+            />
           )}
           <AgentBar
             tileId={tileId}

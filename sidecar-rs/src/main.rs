@@ -344,6 +344,7 @@ fn reconnect_sessions() {
             title: Mutex::new(None),
             title_dirty: AtomicBool::new(false),
             events: Mutex::new(Vec::new()),
+            agent_state: Mutex::new(serde_json::Map::new()),
             focused,
             focus_reporting,
             kimi: AtomicBool::new(false),
@@ -1043,6 +1044,7 @@ struct Session {
     title: Mutex<Option<String>>,
     title_dirty: AtomicBool,
     events: Mutex<Vec<String>>,
+    agent_state: Mutex<serde_json::Map<String, serde_json::Value>>,
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
     kimi: AtomicBool,
@@ -1140,12 +1142,33 @@ fn tile_for_session(session_id: &str) -> Option<String> {
     None
 }
 
-fn read_binding(tile_id: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(binding_path(tile_id)?).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("agentSessionId")
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string())
+fn bind_agent_session(tile_id: &str, body: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+    let (Some(agent), Some(session_id)) = (
+        v.get("agent").and_then(|a| a.as_str()),
+        v.get("sessionId").and_then(|s| s.as_str()),
+    ) else {
+        return;
+    };
+    let Some(path) = binding_path(tile_id) else {
+        return;
+    };
+    let mut rec = read_binding_rec(tile_id)
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let obj = rec.as_object_mut().unwrap();
+    if obj.get("agentSessionId").and_then(|s| s.as_str()) == Some(session_id)
+        && obj.get("agent").and_then(|s| s.as_str()) == Some(agent)
+    {
+        return;
+    }
+    obj.insert("agent".into(), agent.into());
+    obj.insert("agentSessionId".into(), session_id.into());
+    obj.insert("cwd".into(), v.get("cwd").cloned().unwrap_or(serde_json::Value::Null));
+    obj.insert("tileId".into(), tile_id.into());
+    let _ = write_atomic(path, rec.to_string().as_bytes());
 }
 
 fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
@@ -1406,6 +1429,9 @@ impl ClaudeTracker {
 
     fn poll(&mut self, tile_id: &str) -> Option<String> {
         let rec = read_binding_rec(tile_id)?;
+        if rec.get("agent").and_then(|a| a.as_str()).is_some_and(|a| a != "claude") {
+            return None;
+        }
         let id = rec.get("agentSessionId").and_then(|s| s.as_str())?.to_string();
         if self.agent_id.as_deref() != Some(id.as_str()) {
             let rebind = self.agent_id.is_some();
@@ -1525,6 +1551,35 @@ fn agent_state_ws_msg(body: &str) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
+const AGENT_STATE_VOLATILE: &[&str] = &["t", "status", "reset", "linesAdded", "linesRemoved"];
+
+fn merge_agent_state(cache: &mut serde_json::Map<String, serde_json::Value>, msg: &str) {
+    let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(msg) else {
+        return;
+    };
+    for (key, val) in obj {
+        if AGENT_STATE_VOLATILE.contains(&key.as_str()) {
+            continue;
+        }
+        cache.insert(key, val);
+    }
+}
+
+fn remember_agent_state(session: &Session, msg: &str) {
+    let mut cache = session.agent_state.lock().unwrap_or_else(|e| e.into_inner());
+    merge_agent_state(&mut cache, msg);
+}
+
+fn cached_agent_state(session: &Session) -> Option<String> {
+    let cache = session.agent_state.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.is_empty() {
+        return None;
+    }
+    let mut obj = cache.clone();
+    obj.insert("t".into(), "claude".into());
+    Some(serde_json::Value::Object(obj).to_string())
+}
+
 fn status_ws_msg(v: &serde_json::Value) -> Option<String> {
     let mut obj = serde_json::Map::new();
     obj.insert("t".into(), "claude".into());
@@ -1620,6 +1675,7 @@ fn handle_agent_status(body: &[u8]) {
     let session = sessions().lock().unwrap().get(&tile_id).cloned();
     if let Some(s) = session {
         s.kimi.store(kimi, Ordering::Relaxed);
+        remember_agent_state(&s, &msg);
         s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
     }
 }
@@ -1984,6 +2040,7 @@ fn record_agent() {
                 .filter(|v| v.is_object())
                 .unwrap_or_else(|| serde_json::json!({}));
             let obj = rec.as_object_mut().unwrap();
+            obj.insert("agent".into(), "claude".into());
             obj.insert("agentSessionId".into(), session_id.into());
             obj.insert("cwd".into(), cwd.map(Into::into).unwrap_or(serde_json::Value::Null));
             obj.insert("tileId".into(), tile_id.clone().into());
@@ -2684,6 +2741,7 @@ fn spawn_session(
         title: Mutex::new(None),
         title_dirty: AtomicBool::new(false),
         events: Mutex::new(Vec::new()),
+        agent_state: Mutex::new(serde_json::Map::new()),
         focused,
         focus_reporting,
         kimi: AtomicBool::new(false),
@@ -2770,7 +2828,9 @@ fn run_consumer_loop(
                         }
                     }
                     for body in p.callbacks_mut().take_agent_states() {
+                        bind_agent_session(&s.tile_id, &body);
                         if let Some(msg) = agent_state_ws_msg(&body) {
+                            remember_agent_state(&s, &msg);
                             outgoing.push(msg);
                         }
                     }
@@ -3335,16 +3395,30 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
         resize_session(&session, params.cols, params.rows);
     }
 
+    let binding = read_binding_rec(&params.tile_id);
+    let binding_field = |key: &str| {
+        binding
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+    };
     let ready = serde_json::json!({
         "t": "ready",
         "cols": session.cols.load(Ordering::Relaxed),
         "rows": session.rows.load(Ordering::Relaxed),
         "reused": reused,
-        "resumeId": read_binding(&params.tile_id),
+        "resumeId": binding_field("agentSessionId"),
+        "resumeAgent": binding_field("agent"),
     })
     .to_string();
     if tx.send(Message::Text(ready)).await.is_err() {
         return;
+    }
+    if let Some(state) = cached_agent_state(&session) {
+        if tx.send(Message::Text(state)).await.is_err() {
+            return;
+        }
     }
     if !params.watch_only {
         if tx
@@ -3878,10 +3952,21 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, sanitize_event_text,
-        status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, RunLog,
+        agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, merge_agent_state,
+        sanitize_event_text, status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, RunLog,
         OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
+
+    #[test]
+    fn agent_state_cache_keeps_catalog_across_updates() {
+        let mut cache = serde_json::Map::new();
+        merge_agent_state(&mut cache, r#"{"t":"claude","models":[{"id":"a"}],"model":"a"}"#);
+        merge_agent_state(&mut cache, r#"{"t":"claude","status":"busy","model":"b"}"#);
+        assert_eq!(cache["models"][0]["id"], "a");
+        assert_eq!(cache["model"], "b");
+        assert!(!cache.contains_key("status"));
+        assert!(!cache.contains_key("t"));
+    }
 
     #[test]
     fn run_log_strips_ansi_and_paginates() {

@@ -4,6 +4,7 @@ export interface PtyReadyMessage {
   cols: number;
   rows: number;
   resumeId: string | null;
+  resumeAgent: string | null;
 }
 
 export interface PtyExitMessage {

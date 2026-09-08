@@ -124,7 +124,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		announce({ agent: "pi", model: ctx.model?.id, status: "idle", effort: ctx.thinkingLevel, contextWindow: ctx.model?.contextWindow });
+		announce({
+			agent: "pi",
+			sessionId: ctx.sessionManager.getSessionId(),
+			cwd: ctx.cwd,
+			model: ctx.model?.id,
+			status: "idle",
+			effort: ctx.thinkingLevel,
+			contextWindow: ctx.model?.contextWindow,
+		});
 		announceCatalog(ctx);
 
 		const options = editorOptions(ctx.cwd);

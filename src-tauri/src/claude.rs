@@ -5,34 +5,34 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-const TAIL_BYTES: u64 = 512 * 1024;
-const MAX_TURNS: usize = 20;
-const MAX_TURN_CHARS: usize = 700;
-const MAX_TOOLS_PER_TURN: usize = 12;
+pub const TAIL_BYTES: u64 = 512 * 1024;
+pub const MAX_TURNS: usize = 20;
+pub const MAX_TURN_CHARS: usize = 700;
+pub const MAX_TOOLS_PER_TURN: usize = 12;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Turn {
-    role: &'static str,
-    text: String,
-    tools: Vec<String>,
+    pub role: &'static str,
+    pub text: String,
+    pub tools: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
-    session_id: String,
-    cwd: Option<String>,
-    branch: Option<String>,
-    model: Option<String>,
-    version: Option<String>,
-    ended_at: Option<String>,
-    prompt_count: usize,
-    partial: bool,
-    turns: Vec<Turn>,
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub branch: Option<String>,
+    pub model: Option<String>,
+    pub version: Option<String>,
+    pub ended_at: Option<String>,
+    pub prompt_count: usize,
+    pub partial: bool,
+    pub turns: Vec<Turn>,
 }
 
-fn read_tail(path: &Path) -> Option<(String, bool)> {
+pub fn read_tail(path: &Path) -> Option<(String, bool)> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     if len <= TAIL_BYTES {
@@ -123,7 +123,7 @@ fn collapse_blank_lines(text: &str) -> String {
     out.join("\n")
 }
 
-fn strip_wrappers(text: &str) -> String {
+pub fn strip_wrappers(text: &str) -> String {
     let mut out = text.to_string();
     for tag in HARNESS_TAGS {
         out = drop_span(&out, &format!("<{tag}>"), &format!("</{tag}>"));
@@ -133,7 +133,7 @@ fn strip_wrappers(text: &str) -> String {
     collapse_blank_lines(out.trim())
 }
 
-fn truncate(text: &str, max: usize) -> String {
+pub fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
@@ -146,12 +146,12 @@ fn flag(row: &Value, key: &str) -> bool {
     row.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
-fn is_interrupt_notice(text: &str) -> bool {
+pub fn is_interrupt_notice(text: &str) -> bool {
     let t = text.trim();
     t.starts_with("[Request interrupted") && t.ends_with(']') && !t.contains('\n')
 }
 
-fn is_slash_command(text: &str) -> bool {
+pub fn is_slash_command(text: &str) -> bool {
     let trimmed = text.trim();
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return false;
@@ -212,7 +212,7 @@ fn assistant_parts(row: &Value) -> (String, Vec<String>) {
     (text.trim().to_string(), tools)
 }
 
-fn push_assistant(turns: &mut Vec<Turn>, text: String, tools: Vec<String>) {
+pub fn push_assistant(turns: &mut Vec<Turn>, text: String, tools: Vec<String>) {
     if text.is_empty() && tools.is_empty() {
         return;
     }
@@ -291,6 +291,11 @@ pub fn claude_session_summary(session_id: String, cwd: Option<String>) -> Option
         }
     }
 
+    keep_last_turns(&mut summary, turns);
+    Some(summary)
+}
+
+pub fn keep_last_turns(summary: &mut SessionSummary, mut turns: Vec<Turn>) {
     let start = turns.len().saturating_sub(MAX_TURNS);
     if start > 0 {
         summary.partial = true;
@@ -301,7 +306,6 @@ pub fn claude_session_summary(session_id: String, cwd: Option<String>) -> Option
         turn.tools.truncate(MAX_TOOLS_PER_TURN);
     }
     summary.turns = kept;
-    Some(summary)
 }
 
 #[cfg(test)]

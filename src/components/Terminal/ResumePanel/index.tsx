@@ -2,15 +2,17 @@ import React from 'react';
 import { Play, Wrench, Terminal, LoaderCircle } from 'lucide-react';
 
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { PiLogo } from '~/components/commons/AgentIcons';
 import { miniMarkdown } from '~/usecase/util/miniMarkdown';
 import { prettyModel } from '~/components/Terminal/AgentBar/parse';
-import { claudeSessionSummary } from '~/adapter/claude/claude.client';
+import { agentSessionSummary } from '~/adapter/claude/claude.client';
 
 import type { SessionTurn, SessionSummary } from '~/domain/interfaces/claude.interface';
 
 import styles from './styles.module.scss';
 
 interface ResumePanelProps {
+  agent: string;
   sessionId: string;
   cwd?: string;
   active: boolean;
@@ -72,11 +74,11 @@ const Rendered = ({ text }: { text: string }) => (
   </>
 );
 
-const TurnRow = React.memo(({ turn }: { turn: SessionTurn }) => {
+const TurnRow = React.memo(({ turn, agentName }: { turn: SessionTurn; agentName: string }) => {
   const user = turn.role === 'user';
   return (
     <div className={user ? styles.turnUser : styles.turnAgent}>
-      <span className={styles.who}>{user ? 'You' : 'Claude'}</span>
+      <span className={styles.who}>{user ? 'You' : agentName}</span>
       <div className={styles.bubble}>
         {turn.text && <Rendered text={turn.text} />}
         {turn.tools.length > 0 && (
@@ -97,7 +99,7 @@ const TurnRow = React.memo(({ turn }: { turn: SessionTurn }) => {
 
 TurnRow.displayName = 'TurnRow';
 
-const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelProps) => {
+const ResumePanel = ({ agent, sessionId, cwd, active, onResume, onSkip }: ResumePanelProps) => {
   const [summary, setSummary] = React.useState<SessionSummary | null>(null);
   const [loading, setLoading] = React.useState(true);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -105,7 +107,7 @@ const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelPr
 
   React.useEffect(() => {
     let alive = true;
-    claudeSessionSummary(sessionId, cwd)
+    agentSessionSummary(agent, sessionId, cwd)
       .then((next) => {
         if (!alive) return;
         setSummary(next);
@@ -117,7 +119,7 @@ const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelPr
     return () => {
       alive = false;
     };
-  }, [sessionId, cwd]);
+  }, [agent, sessionId, cwd]);
 
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -127,6 +129,8 @@ const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelPr
   React.useEffect(() => {
     if (active && !loading) resumeRef.current?.focus({ preventScroll: true });
   }, [active, loading]);
+
+  const agentName = agent === 'pi' ? 'Pi' : 'Claude';
 
   const meta = React.useMemo(() => {
     if (!summary) return [];
@@ -145,9 +149,7 @@ const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelPr
   return (
     <div className={styles.panel}>
       <div className={styles.head}>
-        <span className={styles.logo}>
-          <ClaudeLogo />
-        </span>
+        <span className={styles.logo}>{agent === 'pi' ? <PiLogo size={16} /> : <ClaudeLogo />}</span>
         <span className={styles.title}>Previous session</span>
         <span className={styles.id}>{sessionId.slice(0, 8)}</span>
       </div>
@@ -167,7 +169,7 @@ const ResumePanel = ({ sessionId, cwd, active, onResume, onSkip }: ResumePanelPr
           <div className={styles.scroll} ref={scrollRef} data-scroll={active ? 'on' : undefined}>
             {summary.partial && <div className={styles.older}>earlier turns not shown</div>}
             {summary.turns.map((turn, at) => (
-              <TurnRow key={at} turn={turn} />
+              <TurnRow key={at} turn={turn} agentName={agentName} />
             ))}
           </div>
         </>

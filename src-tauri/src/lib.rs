@@ -10,6 +10,7 @@ mod store;
 mod docker;
 mod notes;
 mod claude;
+mod pi;
 mod ide;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
@@ -909,6 +910,7 @@ pub fn run() {
             notes::write_note,
             notes::delete_note,
             claude::claude_session_summary,
+            pi::pi_session_summary,
             ide::detect_ides,
             ide::open_in_ide
         ])

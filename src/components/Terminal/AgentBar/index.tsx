@@ -505,23 +505,24 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     if (onlyPart?.type === 'text') {
       if (!(await submitPtyMessage(sessionId, onlyPart.content))) throw new Error('Could not submit Claude input');
       await pause(250);
-    } else {
-      let images = countInputImages(getLines());
-      for (const part of parts) {
-        if (part.type === 'text') {
-          if (part.content.length > 0 && !(await sendWhenReady(BPM_START + part.content + BPM_END))) {
-            throw new Error('Claude terminal is disconnected');
-          }
-        } else {
-          if (!(await sendWhenReady(`${BPM_START}${part.path}${BPM_END}`))) {
-            throw new Error('Claude terminal is disconnected');
-          }
-          images++;
-          await waitUntil(() => countInputImages(getLines()) >= images, 2500);
-        }
-      }
-      if (!(await sendWhenReady('\r'))) throw new Error('Claude terminal is disconnected');
+      await waitUntil(inputEmpty, 1200);
+      return;
     }
+    let images = countInputImages(getLines());
+    for (const part of parts) {
+      if (part.type === 'text') {
+        if (part.content.length > 0 && !(await sendWhenReady(BPM_START + part.content + BPM_END))) {
+          throw new Error('Claude terminal is disconnected');
+        }
+      } else {
+        if (!(await sendWhenReady(`${BPM_START}${part.path}${BPM_END}`))) {
+          throw new Error('Claude terminal is disconnected');
+        }
+        images++;
+        await waitUntil(() => countInputImages(getLines()) >= images, 2500);
+      }
+    }
+    if (!(await sendWhenReady('\r'))) throw new Error('Claude terminal is disconnected');
     if (!(await waitUntil(inputEmpty, 400))) {
       send('\r');
     }

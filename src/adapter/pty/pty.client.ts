@@ -9,6 +9,7 @@ export interface PtyReadyInfo {
   cols: number;
   rows: number;
   resumeId: string | null;
+  resumeAgent: string | null;
 }
 
 export interface PtyConnectionParams {
@@ -74,7 +75,14 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
   ws.onmessage = (e) => {
     if (typeof e.data === 'string') {
       const msg = JSON.parse(e.data) as PtyServerMessage;
-      if (msg.t === 'ready') handlers.onReady({ reused: msg.reused, cols: msg.cols, rows: msg.rows, resumeId: msg.resumeId });
+      if (msg.t === 'ready')
+        handlers.onReady({
+          reused: msg.reused,
+          cols: msg.cols,
+          rows: msg.rows,
+          resumeId: msg.resumeId,
+          resumeAgent: msg.resumeAgent
+        });
       else if (msg.t === 'exit') handlers.onExit();
       else if (msg.t === 'error') handlers.onNotify('Terminal', msg.msg);
       else if (msg.t === 'cwd') handlers.onCwd(msg.cwd, msg.branch ?? undefined);
