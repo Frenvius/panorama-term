@@ -1962,7 +1962,8 @@ fn emit_event(event: &str) {
     let seq = format!("\x1b]777;notify;{AGENT_EVENT_SENTINEL};{body}\x07");
     let mut out = serde_json::json!({ "terminalSequence": seq });
     if event == "prompt-submit" {
-        let parts: Vec<String> = [linked_notes_context(), linked_peers_context(), run_context(&cwd)]
+        let tile_id = std::env::var("PANORAMA_TILE_ID").unwrap_or_default();
+        let parts: Vec<String> = [linked_notes_context(&tile_id), linked_peers_context(&tile_id), run_context(&cwd)]
             .into_iter()
             .flatten()
             .collect();
@@ -2071,9 +2072,8 @@ fn front_title(path: &str) -> Option<String> {
     None
 }
 
-fn linked_notes_context() -> Option<String> {
-    let tile_id = std::env::var("PANORAMA_TILE_ID").ok()?;
-    let rec = read_binding_rec(&tile_id)?;
+fn linked_notes_context(tile_id: &str) -> Option<String> {
+    let rec = read_binding_rec(tile_id)?;
     let notes = rec.get("notes").and_then(|n| n.as_array())?;
     let mut lines: Vec<String> = notes
         .iter()
@@ -2099,9 +2099,8 @@ fn linked_notes_context() -> Option<String> {
     Some(lines.join("\n"))
 }
 
-fn linked_peers_context() -> Option<String> {
-    let tile_id = std::env::var("PANORAMA_TILE_ID").ok()?;
-    let rec = read_binding_rec(&tile_id)?;
+fn linked_peers_context(tile_id: &str) -> Option<String> {
+    let rec = read_binding_rec(tile_id)?;
     let peers = rec.get("peers").and_then(|p| p.as_array())?;
     let entries: Vec<String> = peers
         .iter()
@@ -3659,6 +3658,23 @@ async fn handle_conn(mut stream: TcpStream) {
         let _ = stream
             .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
             .await;
+        return;
+    }
+
+    if path_only == "/agent/context" {
+        let q = parse_query(query);
+        let tile_id = q.get("tileId").map(String::as_str).unwrap_or_default();
+        let body = [linked_notes_context(tile_id), linked_peers_context(tile_id)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
         return;
     }
 

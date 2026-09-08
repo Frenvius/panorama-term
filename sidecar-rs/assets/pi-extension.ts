@@ -68,6 +68,21 @@ function emit(event: string): void {
 	process.stdout.write(`${AGENT_EVENT}${JSON.stringify({ v: 1, agent: "pi", event })}\x07`);
 }
 
+async function canvasContext(): Promise<string | null> {
+	const tileId = process.env.PANORAMA_TILE_ID;
+	if (!tileId) return null;
+	try {
+		const response = await fetch(`http://127.0.0.1:9777/agent/context?tileId=${encodeURIComponent(tileId)}`, {
+			signal: AbortSignal.timeout(500),
+		});
+		if (!response.ok) return null;
+		const text = (await response.text()).trim();
+		return text || null;
+	} catch {
+		return null;
+	}
+}
+
 class PanoramaEditor extends CustomEditor {
 	handleInput(data: string): void {
 		super.handleInput(data === CTRL_BACKSPACE ? DELETE_WORD_BACKWARD : data);
@@ -145,7 +160,12 @@ export default function (pi: ExtensionAPI) {
 		if (enableConsoleMouse()) process.stdout.write(MOUSE_TRACKING);
 	});
 
-	pi.on("before_agent_start", () => emit("prompt-submit"));
+	pi.on("before_agent_start", async (event) => {
+		emit("prompt-submit");
+		const context = await canvasContext();
+		if (!context) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
+	});
 	pi.on("agent_start", () => announce({ status: "busy" }));
 	pi.on("agent_settled", () => {
 		announce({ status: "idle" });
