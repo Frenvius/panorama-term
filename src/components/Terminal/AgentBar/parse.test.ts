@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { aliasLabel, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { aliasLabel, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -123,6 +123,10 @@ describe('pi footer', () => {
 
   it('identifies pi from the stats line', () => {
     expect(detectAgentIdentity(piScreen.join('\n'))).toBe('pi');
+  });
+
+  it('keeps pi detected while the compaction card replaces its footer', () => {
+    expect(hasAgentUi('[compaction]\nCompacted from 210.251 tokens (ctrl+o to expand)')).toBe(true);
   });
 
   it('reads model, context and thinking level', () => {

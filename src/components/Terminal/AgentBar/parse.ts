@@ -64,7 +64,7 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
 
 export type AgentType = 'claude' | 'antigravity' | 'codex' | 'opencode' | 'pi' | 'kimi' | 'generic';
 
-const AGENT_UI = /[╭╮╰╯]|context:\s*\d{1,3}%|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|\d+(?:\.\d+)?%\/\d+(?:\.\d+)?[kM]|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
+const AGENT_UI = /[╭╮╰╯]|context:\s*\d{1,3}%|\besc to interrupt\b|\?\s*for shortcuts|auto-?accept edits|auto mode on|⏵⏵|bypass permissions|plan mode on|for agents\b|to cycle\)|press ctrl-?c again|compacted from [\d.,]+ tokens\s+\(ctrl\+o to expand\)|\d+(?:\.\d+)?%\/\d+(?:\.\d+)?[kM]|\[[^\]\n]*\b(opus|sonnet|haiku|fable|gpt|gemini)\b[^\]\n]*\]/i;
 
 export const hasAgentUi = (text: string): boolean => AGENT_UI.test(text);
 
