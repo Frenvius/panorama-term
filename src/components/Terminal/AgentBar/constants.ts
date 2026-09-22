@@ -20,6 +20,7 @@ export const draftKey = (tileId: string): string => `agent:draft:${tileId}`;
 export const MODEL_QUICK_SWITCHES = [
   { id: 'claude-fable-5-1', title: 'Fable 5.1' },
   { id: 'claude-fable-5', title: 'Fable 5' },
+  { id: 'claude-opus-5-5', title: 'Opus 5.5' },
   { id: 'claude-opus-5', title: 'Opus 5' },
   { id: 'claude-opus-4-8', title: 'Opus 4.8' },
   { id: 'claude-opus-4-7', title: 'Opus 4.7' },
@@ -48,7 +49,8 @@ export const CLAUDE_MODELS: AgentModel[] = [
   { name: 'sonnet', desc: 'Latest Claude Sonnet' },
   { name: 'haiku', desc: 'Latest Claude Haiku' },
   { name: 'opusplan', desc: 'Opus for planning, Sonnet for execution' },
-  { name: 'claude-opus-5', desc: 'Opus 5 - latest' },
+  { name: 'claude-opus-5-5', desc: 'Opus 5.5 - latest' },
+  { name: 'claude-opus-5', desc: 'Opus 5' },
   { name: 'claude-opus-4-8', desc: 'Opus 4.8' },
   { name: 'claude-opus-4-7', desc: 'Opus 4.7' },
   { name: 'claude-opus-4-6', desc: 'Opus 4.6' },
