@@ -9,7 +9,7 @@
 
 .bg {
   position: absolute;
-  inset: 46px 8px 8px;
+  inset: 46px 8px 24px;
   overflow: hidden;
   cursor: grab;
   background: var(--surface-2);
@@ -104,7 +104,7 @@
 .navRevealZone {
   position: absolute;
   top: 47px;
-  bottom: 9px;
+  bottom: 25px;
   left: 0;
   z-index: 20;
   width: 26px;

@@ -1,3 +1,5 @@
+import type { UsageProvider } from '~/domain/interfaces/usage.interface';
+
 export const CELL = 20;
 export const MAJOR = 80;
 export const BASE_FONT = 12;
@@ -29,6 +31,8 @@ export const FRAME_MIN_WIDTH = 120;
 export const FRAME_MIN_HEIGHT = 80;
 export const FRAME_COLOR = '#6b7280';
 export const FRAME_PAD_KEY = 'framePad';
+export const STATUS_BAR_USAGE_KEY = 'statusBarUsage';
+export const USAGE_PROVIDERS: UsageProvider[] = ['claude', 'codex'];
 
 export const CULL_MARGIN = 400;
 export const MIN_LIVE_WIDTH = 260;

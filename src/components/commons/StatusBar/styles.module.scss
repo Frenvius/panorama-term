@@ -1,0 +1,53 @@
+.root {
+  position: fixed;
+  right: 8px;
+  bottom: 0;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.icon,
+.add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-dim);
+  border-radius: 4px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+}
+
+.icon {
+  width: 16px;
+}
+
+.add {
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

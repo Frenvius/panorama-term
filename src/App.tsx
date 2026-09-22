@@ -1,6 +1,7 @@
 import Canvas from '~/components/Canvas';
 import Tooltip from '~/components/commons/Tooltip';
 import Titlebar from '~/components/commons/Titlebar';
+import StatusBar from '~/components/commons/StatusBar';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { useBackgroundNotify } from '~/components/commons/Notifications/backgroundWatch';
 
@@ -13,6 +14,7 @@ const App = () => {
     <>
       <Titlebar />
       {activeTabId && <Canvas key={tabKey} />}
+      <StatusBar />
       <Tooltip />
     </>
   );

@@ -36,7 +36,10 @@ const Tooltip = () => {
 
       const forced = (target as HTMLElement).dataset.tooltipPlace;
 
-      if (forced === 'bottom') {
+      if (forced === 'top') {
+        el.style.left = `${Math.max(GAP, Math.min(rect.left + (rect.width - tw) / 2, vw - tw - GAP))}px`;
+        el.style.top = `${rect.top - th - GAP}px`;
+      } else if (forced === 'bottom') {
         el.style.left = `${Math.max(GAP, Math.min(rect.left + (rect.width - tw) / 2, vw - tw - GAP))}px`;
         el.style.top = `${rect.bottom + GAP}px`;
       } else if (rect.left < vw * 0.25) {

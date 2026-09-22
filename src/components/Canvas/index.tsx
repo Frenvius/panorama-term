@@ -344,7 +344,7 @@ const Canvas = () => {
   }, [tiles, fsId]);
 
   const vpW = size.w - 16;
-  const vpH = size.h - 54;
+  const vpH = size.h - 70;
 
   const inset = TILE_GAP / 2;
   const isVisible = (t: (typeof tiles)[number]): boolean => {
