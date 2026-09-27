@@ -584,6 +584,26 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     store::write_atomic(std::path::Path::new(&path), content.as_bytes())
 }
 
+#[tauri::command]
+fn create_entry(path: String, dir: bool) -> Result<(), String> {
+    let path = std::path::Path::new(&path);
+    if path.exists() {
+        return Err("already exists".into());
+    }
+    if dir {
+        return std::fs::create_dir_all(path).map_err(|e| e.to_string());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 fn run_watchers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>> {
     static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, notify::RecommendedWatcher>>> =
         std::sync::OnceLock::new();
@@ -860,6 +880,7 @@ pub fn run() {
             watch_text_file,
             unwatch_text_file,
             write_text_file,
+            create_entry,
             run_commands,
             run_watch_manifests,
             run_unwatch_manifests,

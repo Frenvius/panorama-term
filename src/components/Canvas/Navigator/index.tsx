@@ -10,6 +10,7 @@ import {
   Trash2,
   Pencil,
   Network,
+  FilePlus,
   FileCode,
   Container,
   GitBranch,
@@ -17,6 +18,7 @@ import {
   FolderTree,
   StickyNote,
   FolderOpen,
+  FolderPlus,
   ChevronRight,
   ClipboardCopy,
   PanelLeftClose,
@@ -27,6 +29,7 @@ import type { Tile, Frame } from '~/domain/interfaces/canvas.interface';
 import type { TileType } from '~/domain/interfaces/workspace.interface';
 import type { DirEntry } from '~/adapter/fs/fs.client';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
+import type { Creating } from '~/components/Canvas/Navigator/FileTree';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import GitTab from '~/components/Canvas/Navigator/GitTab';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
@@ -131,6 +134,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
   const [renaming, setRenaming] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState('');
   const [menu, setMenu] = React.useState<Menu | null>(null);
+  const [creating, setCreating] = React.useState<Creating | null>(null);
 
   React.useEffect(() => {
     const root = document.documentElement;
@@ -196,6 +200,24 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
     setMenu({ x: e.clientX, y: e.clientY, entry });
   };
 
+  const openBlankMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (tab !== 'files' || !root || e.target !== e.currentTarget) return;
+    setMenu({ x: e.clientX, y: e.clientY, entry: { name: '', path: root, dir: true } });
+  };
+
+  const startCreate = (entry: DirEntry, dir: boolean) => {
+    const parent = entry.dir ? entry.path : entry.path.replace(/[\\/][^\\/]+$/, '');
+    setCreating({ parent, dir });
+  };
+
+  const endCreate = (path?: string) => {
+    if (path && !creating?.dir) openFile(path);
+    setCreating(null);
+  };
+
+  const fileTreeHandlers = { onOpen: openFile, onMenu: openFileMenu, onCreateEnd: endCreate };
+
   const closeMenu = () => setMenu(null);
 
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -237,6 +259,8 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
     if (menu?.entry) {
       const entry = menu.entry;
       return [
+        { label: 'New file', icon: <FilePlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, false) },
+        { label: 'New folder', icon: <FolderPlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, true) },
         {
           label: 'Edit',
           icon: <Pencil size={15} strokeWidth={1.75} />,
@@ -398,7 +422,11 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
 
       {tab === 'docker' && <DockerTab query={needle} />}
 
-      <div className={styles.body} style={{ display: tab === 'git' || tab === 'docker' ? 'none' : undefined }}>
+      <div
+        className={styles.body}
+        onContextMenu={openBlankMenu}
+        style={{ display: tab === 'git' || tab === 'docker' ? 'none' : undefined }}
+      >
         {tab === 'tiles' && (
           <>
             {frames.map((frame) => {
@@ -452,7 +480,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
 
         {tab === 'files' &&
           (root ? (
-            <FileTree key={root} root={root} query={needle} onOpen={openFile} onMenu={openFileMenu} />
+            <FileTree key={root} root={root} query={needle} creating={creating} handlers={fileTreeHandlers} />
           ) : (
             <div className={styles.empty}>Focus a terminal to see its folder</div>
           ))}
