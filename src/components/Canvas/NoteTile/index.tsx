@@ -1,18 +1,21 @@
 import React from 'react';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
+import type { Extension } from '@codemirror/state';
 import { history, defaultKeymap, historyKeymap, indentWithTab } from '@codemirror/commands';
 
 import type { Tile } from '~/domain/interfaces/canvas.interface';
 import { noteTheme } from '~/usecase/util/note';
+import { tabText, withTabText } from '~/usecase/util/noteTabs';
 import { readNote, writeNote } from '~/adapter/notes/notes.client';
-import { stripFrontmatter, parseFrontTitle, applyFrontTitle } from '~/usecase/util/noteMeta';
+import { withBody, stripFrontmatter, parseFrontTitle, applyFrontTitle } from '~/usecase/util/noteMeta';
 import { livePreview, markdownBase } from '~/usecase/util/markdownLivePreview';
 
 import styles from './styles.module.scss';
 
 interface NoteTileProps {
   tile: Tile;
+  tab: number;
   wsId: string | null;
   active: boolean;
   onChange: (id: string, content: string) => void;
@@ -37,50 +40,62 @@ const theme = EditorView.theme({
   '.cm-scroller::-webkit-scrollbar-button': { display: 'none' }
 });
 
-const NoteTile = ({ tile, wsId, active, onChange, onActivate, onEditor }: NoteTileProps) => {
+const NoteTile = ({ tile, tab, wsId, active, onChange, onActivate, onEditor }: NoteTileProps) => {
   const host = React.useRef<HTMLDivElement | null>(null);
   const view = React.useRef<EditorView | null>(null);
   const preview = React.useRef(new Compartment());
+  const exts = React.useRef<Extension[]>([]);
   const save = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastEmit = React.useRef(stripFrontmatter(tile.content || ''));
+  const flush = React.useRef<(() => void) | null>(null);
+  const lastEmit = React.useRef(tabText(tile.content, tab));
   const emit = React.useRef(onChange);
   emit.current = onChange;
 
   const rawRef = React.useRef(tile.content || '');
   rawRef.current = tile.content || '';
+  const tabRef = React.useRef(tab);
+  tabRef.current = tab;
+  const renderOnly = React.useRef(tile.renderOnly);
+  renderOnly.current = tile.renderOnly;
   const seed = React.useRef(tile.content || '');
   const userTitle = React.useRef(tile.userTitle || '');
   userTitle.current = tile.userTitle || '';
 
+  const makeState = (doc: string) =>
+    EditorState.create({
+      doc,
+      extensions: [...exts.current, preview.current.of(livePreview(renderOnly.current ? 'render' : 'edit'))]
+    });
+
   React.useEffect(() => {
     if (!host.current) return;
 
-    const editor = new EditorView({
-      parent: host.current,
-      state: EditorState.create({
-        doc: '',
-        extensions: [
-          history(),
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-          markdownBase(),
-          preview.current.of(livePreview(tile.renderOnly ? 'render' : 'edit')),
-          EditorView.lineWrapping,
-          placeholder('Click to edit...'),
-          theme,
-          EditorView.updateListener.of((u) => {
-            if (!u.docChanged) return;
-            if (save.current) clearTimeout(save.current);
-            const body = u.state.doc.toString();
-            save.current = setTimeout(() => {
-              const full = applyFrontTitle(body, parseFrontTitle(rawRef.current));
-              lastEmit.current = body;
-              if (wsId) void writeNote(wsId, tile.id, full).catch(() => {});
-              emit.current(tile.id, full);
-            }, 300);
-          })
-        ]
+    exts.current = [
+      history(),
+      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      markdownBase(),
+      EditorView.lineWrapping,
+      placeholder('Click to edit...'),
+      theme,
+      EditorView.updateListener.of((u) => {
+        if (!u.docChanged) return;
+        if (save.current) clearTimeout(save.current);
+        const body = u.state.doc.toString();
+        const at = tabRef.current;
+        flush.current = () => {
+          flush.current = null;
+          const raw = rawRef.current;
+          const full = withBody(raw, withTabText(stripFrontmatter(raw), at, body));
+          if (at === tabRef.current) lastEmit.current = body;
+          rawRef.current = full;
+          if (wsId) void writeNote(wsId, tile.id, full).catch(() => {});
+          emit.current(tile.id, full);
+        };
+        save.current = setTimeout(() => flush.current?.(), 300);
       })
-    });
+    ];
+
+    const editor = new EditorView({ parent: host.current, state: makeState('') });
 
     view.current = editor;
     onEditor(tile.id, editor);
@@ -92,7 +107,7 @@ const NoteTile = ({ tile, wsId, active, onChange, onActivate, onEditor }: NoteTi
       if (!alive) return;
       let full = fromFile && fromFile.length ? fromFile : seed.current;
       if (!parseFrontTitle(full) && userTitle.current.trim()) full = applyFrontTitle(full, userTitle.current.trim());
-      const body = stripFrontmatter(full);
+      const body = tabText(full, tabRef.current);
       lastEmit.current = body;
       if (body) editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: body } });
       emit.current(tile.id, full);
@@ -113,10 +128,25 @@ const NoteTile = ({ tile, wsId, active, onChange, onActivate, onEditor }: NoteTi
     view.current?.dispatch({ effects: preview.current.reconfigure(livePreview(tile.renderOnly ? 'render' : 'edit')) });
   }, [tile.renderOnly]);
 
+  const firstTab = React.useRef(true);
+  React.useEffect(() => {
+    if (firstTab.current) {
+      firstTab.current = false;
+      return;
+    }
+    if (save.current) clearTimeout(save.current);
+    flush.current?.();
+    const v = view.current;
+    if (!v) return;
+    const text = tabText(rawRef.current, tab);
+    lastEmit.current = text;
+    v.setState(makeState(text));
+  }, [tab]);
+
   React.useEffect(() => {
     const v = view.current;
     if (!v) return;
-    const nextBody = stripFrontmatter(tile.content || '');
+    const nextBody = tabText(tile.content, tabRef.current);
     if (nextBody === lastEmit.current) return;
     const cur = v.state.doc.toString();
     if (cur === nextBody) return;

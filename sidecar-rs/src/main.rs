@@ -2093,7 +2093,7 @@ fn linked_notes_context(tile_id: &str) -> Option<String> {
     }
     lines.insert(
         0,
-        "Notes linked to this terminal are plain markdown files (checkbox = \"- [ ]\" unchecked / \"- [x]\" checked). The note title is the `title:` field in the leading YAML frontmatter; edit it there to rename. Read or edit these files only when the user asks:"
+        "Notes linked to this terminal are plain markdown files (checkbox = \"- [ ]\" unchecked / \"- [x]\" checked). The note title is the `title:` field in the leading YAML frontmatter; edit it there to rename. A note may be split into tabs: each tab starts with a `<!-- tab: Name -->` line, and the frontmatter `tab:` field names the tab the user currently has open (\"this tab\" / \"the open tab\" means that one). Keep the markers intact when editing. Read or edit these files only when the user asks:"
             .to_string(),
     );
     Some(lines.join("\n"))

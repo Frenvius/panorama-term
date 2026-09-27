@@ -1,0 +1,123 @@
+.wrap {
+  position: absolute;
+  height: 0;
+  pointer-events: none;
+}
+
+.row {
+  position: absolute;
+  right: 8px;
+  bottom: -4px;
+  left: 8px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.tab {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 32px;
+  max-width: 128px;
+  height: 24px;
+  padding: 0 8px 4px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--note-text);
+  cursor: pointer;
+  user-select: none;
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--note-body) 78%, #000);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  opacity: 0.85;
+  transition:
+    opacity 0.12s ease,
+    height 0.12s ease;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.current {
+  height: 28px;
+  background: var(--note-body);
+  opacity: 1;
+}
+
+.name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.input {
+  width: 80px;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.close {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  opacity: 0.55;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.armed {
+  color: #fff;
+  background: var(--danger);
+  opacity: 1;
+}
+
+.add {
+  flex: none;
+  justify-content: center;
+  min-width: 24px;
+  padding: 0 4px 4px;
+  opacity: 0.6;
+}
+
+.raised .row {
+  animation: tabs-rise 140ms ease-out;
+}
+
+@keyframes tabs-rise {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raised .row {
+    animation: none;
+  }
+}

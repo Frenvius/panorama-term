@@ -8,10 +8,15 @@ import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import NoteTile from '~/components/Canvas/NoteTile';
+import NoteTabs from '~/components/Canvas/NoteTabs';
 import EditorTile from '~/components/Canvas/EditorTile';
 import DiffViewer from '~/components/DiffViewer';
 import { noteTheme } from '~/usecase/util/note';
-import { parseFrontTitle } from '~/usecase/util/noteMeta';
+import { parseFrontTitle, parseFrontField, setFrontField, withBody } from '~/usecase/util/noteMeta';
+import { joinTabs, nameTabs, noteTabs } from '~/usecase/util/noteTabs';
+import type { NoteTab } from '~/usecase/util/noteTabs';
+import type { NoteTabActions } from '~/components/Canvas/NoteTabs';
+import { writeNote } from '~/adapter/notes/notes.client';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
@@ -326,6 +331,35 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const stopDrag = (e: React.PointerEvent) => e.stopPropagation();
   const startLinkDrag = (e: React.PointerEvent) => onLinkDragStart(tile.id, e);
 
+  const sections = note ? noteTabs(tile.content) : [];
+  const activeTabName = note ? parseFrontField(tile.content, 'tab') : '';
+  const tab = Math.max(0, sections.findIndex((s) => s.name === activeTabName));
+
+  const saveTabs = (next: NoteTab[], active: number) => {
+    const named = nameTabs(next);
+    const current = named.length > 1 ? named[active].name : '';
+    const full = setFrontField(withBody(tile.content || '', joinTabs(named)), 'tab', current);
+    onNoteChange(tile.id, full);
+    if (wsId) void writeNote(wsId, tile.id, full).catch(() => {});
+  };
+
+  const tabActions: NoteTabActions = {
+    select: (i) => {
+      onActivate(tile.id);
+      if (i !== tab) saveTabs(sections, i);
+    },
+    add: () => saveTabs([...sections, { name: '', text: '' }], sections.length),
+    rename: (i, name) => {
+      if (sections.some((s, j) => j !== i && s.name === name)) return;
+      saveTabs(sections.map((s, j) => (j === i ? { ...s, name } : s)), tab);
+    },
+    close: (i) => {
+      const rest = sections.filter((_, j) => j !== i);
+      const next = i < tab ? tab - 1 : Math.min(tab, rest.length - 1);
+      saveTabs(rest.length === 1 ? [{ name: '', text: rest[0].text }] : rest, next);
+    }
+  };
+
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [menuInContent, setMenuInContent] = React.useState(false);
   const [ides, setIdes] = React.useState<IdeInfo[]>(cachedIdes);
@@ -564,6 +598,17 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
   const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, note && linkActive && styles.linkActive, selected && !fullscreen && styles.selected, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
   const gone = { display: hidden ? 'none' : undefined };
+  const showTabs = note && !fullscreen && !hidden && (active || sections.length > 1);
+  const tabsStyle: React.CSSProperties = {
+    top: sy,
+    left: sx,
+    width: bodyW,
+    zIndex: active ? 3 : 0,
+    transform: `scale(${k})`,
+    transformOrigin: 'top left',
+    ['--note-body' as string]: tint?.body,
+    ['--note-text' as string]: tint?.text
+  };
 
   return (
     <>
@@ -780,7 +825,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         </div>
         <div className={styles.body} onContextMenu={note ? (e) => openMenu(e, true) : undefined}>
           {note && (
-            <NoteTile tile={tile} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
+            <NoteTile tile={tile} tab={tab} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
           )}
           {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} mode={EMBED} />}
           {editor && tile.filePath && <EditorTile tile={tile} active={active} onActivate={onActivate} />}
@@ -808,6 +853,15 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           {!note && !code && !editor && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
         </div>
       </div>
+      {showTabs && (
+        <NoteTabs
+          current={tab}
+          raised={active}
+          actions={tabActions}
+          style={tabsStyle}
+          tabs={sections.map((s) => ({ name: s.name, empty: !s.text.trim() }))}
+        />
+      )}
       {!fullscreen && (
         <div data-tile={tile.id} className={styles.handles} style={{ top: sy, left: sx, zIndex: z, ...box, ...gone }}>
           {HANDLES.map((dir) => (
