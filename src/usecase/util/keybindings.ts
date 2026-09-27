@@ -9,6 +9,7 @@ export type CommandId =
   | 'tile.focus'
   | 'editor.save'
   | 'editor.find'
+  | 'editor.preview'
   | 'view.resetZoom'
   | 'view.navigator'
   | 'view.palette'
@@ -39,6 +40,7 @@ export const KEYBINDINGS: Command[] = [
   { id: 'tile.focus', label: 'Focus active tile', group: 'Canvas', defaultCombo: 'alt+f' },
   { id: 'editor.save', label: 'Save file', group: 'Editor', defaultCombo: 'mod+s' },
   { id: 'editor.find', label: 'Find in file', group: 'Editor', defaultCombo: 'mod+f' },
+  { id: 'editor.preview', label: 'Toggle Markdown preview', group: 'Editor', defaultCombo: 'mod+shift+v' },
   { id: 'view.resetZoom', label: 'Reset zoom', group: 'View', defaultCombo: 'mod+0' },
   { id: 'view.navigator', label: 'Toggle navigator', group: 'View', defaultCombo: 'mod+b' },
   { id: 'view.palette', label: 'Go to tile', group: 'View', defaultCombo: 'shift shift' },

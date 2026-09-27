@@ -8,10 +8,11 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLi
 
 import type { EditorRequest } from '~/usecase/util/dirtyFiles';
 import { humanSize } from '~/usecase/util/bytes';
+import MarkdownView from '~/components/MarkdownView';
 import { markDirty } from '~/usecase/util/dirtyFiles';
 import { shikiHighlight } from '~/usecase/util/shikiEditor';
-import { fileName, isImageFile, languageFor, codeHighlight } from '~/usecase/util/codeEditor';
 import { readFileBytes, readTextFile, writeTextFile, watchFile, unwatchFile } from '~/adapter/fs/fs.client';
+import { fileName, isImageFile, languageFor, codeHighlight, isMarkdownFile } from '~/usecase/util/codeEditor';
 
 import styles from './styles.module.scss';
 
@@ -80,8 +81,11 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
   const [error, setError] = React.useState<string | null>(null);
   const [preview, setPreview] = React.useState<{ url: string; size: number } | null>(null);
   const [dims, setDims] = React.useState('');
+  const [rendered, setRendered] = React.useState<string | null>(null);
+  const renderedRef = React.useRef(false);
 
   const image = isImageFile(path);
+  const markdown = isMarkdownFile(path);
 
   const applyDisk = React.useCallback(
     (editor: EditorView, text: string) => {
@@ -151,6 +155,7 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
           theme,
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return;
+            if (renderedRef.current) setRendered(u.state.doc.toString());
             const changed = u.state.doc.toString() !== saved.current;
             setDirty(changed);
             markDirty(path, changed);
@@ -185,6 +190,18 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
     };
   }, [path, image, applyDisk]);
 
+  const togglePreview = React.useCallback(() => {
+    const editor = view.current;
+    if (!editor) return;
+    renderedRef.current = !renderedRef.current;
+    setRendered(renderedRef.current ? editor.state.doc.toString() : null);
+  }, []);
+
+  React.useEffect(() => {
+    renderedRef.current = false;
+    setRendered(null);
+  }, [path]);
+
   React.useEffect(() => {
     const save = async (editor: EditorView) => {
       const text = editor.state.doc.toString();
@@ -213,18 +230,27 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
     const onFind = (e: Event) => {
       const detail = (e as CustomEvent<EditorRequest>).detail;
       const editor = view.current;
-      if (!active || !editor) return;
+      if (!active || !editor || renderedRef.current) return;
       detail.handled = true;
       openSearchPanel(editor);
     };
 
+    const onPreview = (e: Event) => {
+      const detail = (e as CustomEvent<EditorRequest>).detail;
+      if (!active || !markdown || !view.current) return;
+      detail.handled = true;
+      togglePreview();
+    };
+
     window.addEventListener('editor:save', onSave);
     window.addEventListener('editor:find', onFind);
+    window.addEventListener('editor:preview', onPreview);
     return () => {
       window.removeEventListener('editor:save', onSave);
       window.removeEventListener('editor:find', onFind);
+      window.removeEventListener('editor:preview', onPreview);
     };
-  }, [active, path]);
+  }, [active, path, markdown, togglePreview]);
 
   React.useEffect(() => {
     if (!path || image) return;
@@ -273,10 +299,16 @@ const FileEditor = ({ path, active }: FileEditorProps) => {
           {preview && <img src={preview.url} alt={fileName(path)} onLoad={onImageLoad} />}
         </div>
       ) : (
-        <div ref={host} className={styles.editor} />
+        <div ref={host} className={rendered === null ? styles.editor : `${styles.editor} ${styles.hidden}`} />
       )}
+      {rendered !== null && <MarkdownView path={path} source={rendered} />}
       <div className={styles.status}>
         <span className={styles.name}>{fileName(path)}</span>
+        {markdown && (
+          <button className={styles.toggle} onClick={togglePreview}>
+            {rendered === null ? 'preview' : 'source'}
+          </button>
+        )}
         {image && preview && (
           <span className={styles.meta}>{dims ? `${dims} - ${humanSize(preview.size)}` : humanSize(preview.size)}</span>
         )}

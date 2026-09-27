@@ -38,3 +38,9 @@ export const requestFind = (): boolean => {
   window.dispatchEvent(event);
   return event.detail.handled;
 };
+
+export const requestPreview = (): boolean => {
+  const event = new CustomEvent<EditorRequest>('editor:preview', { detail: { handled: false } });
+  window.dispatchEvent(event);
+  return event.detail.handled;
+};

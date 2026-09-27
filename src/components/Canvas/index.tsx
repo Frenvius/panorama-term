@@ -26,7 +26,7 @@ import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
 import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
-import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty } from '~/usecase/util/dirtyFiles';
+import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
 import { tabKey, openTab, pinTab } from '~/usecase/util/editorTabs';
 import type { EditorTab, EditorTabKind } from '~/domain/interfaces/editor.interface';
 import type { NotifyKind, NotifyTarget } from '~/domain/interfaces/notify.interface';
@@ -263,6 +263,7 @@ const Canvas = () => {
       }
       if (cmd === 'editor.save') return dispatchSave().handled;
       if (cmd === 'editor.find') return requestFind();
+      if (cmd === 'editor.preview') return requestPreview();
       if (cmd === 'view.resetZoom') {
         resetZoom();
         return true;
