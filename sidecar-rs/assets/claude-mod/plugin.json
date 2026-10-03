@@ -1,0 +1,6 @@
+{
+  "name": "panorama",
+  "version": "0.1.0",
+  "description": "Reports Claude Code session state to the Panorama tile hosting it",
+  "author": { "name": "Panorama" }
+}

@@ -10,11 +10,12 @@ import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgen
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
-import { readFooter, modeKey, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
-import type { AgentModel, ClaudeState } from '~/domain/interfaces/pty.interface';
+import type { AgentSlashCommand } from './constants';
+import type { AgentModel, ClaudeState, AgentCommand } from '~/domain/interfaces/pty.interface';
 import type { ContentPart, ParsedStatus, SuggestTrigger, AgentBarProps, PromptSuggestion, AgentSuggestHandle } from './types';
 
 import styles from './styles.module.scss';
@@ -38,6 +39,18 @@ const loadHistory = (): ContentPart[][] => {
 };
 
 const historyKey = (draft: { text: string }): string => draft.text.trim();
+
+const claudeCommands = (live?: AgentCommand[]): AgentSlashCommand[] =>
+  live?.length
+    ? live
+        .filter((c, i) => live.findIndex((other) => other.name === c.name) === i)
+        .map((c) => ({ ...CLAUDE_SLASH_COMMANDS.find((k) => k.name === c.name), name: c.name, desc: c.desc }))
+    : CLAUDE_SLASH_COMMANDS;
+
+const claudeModels = (options?: string[]) =>
+  options?.length
+    ? options.map((name) => ({ name, desc: CLAUDE_MODELS.find((m) => m.name === name)?.desc ?? '' }))
+    : CLAUDE_MODELS;
 
 const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
   a.mode === b.mode && a.model === b.model && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
@@ -95,6 +108,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const [status, setStatus] = React.useState<ParsedStatus>({});
   const [scraped, setScraped] = React.useState<{ model: string; contextInfo?: string } | null>(null);
   const [structured, setStructured] = React.useState<ClaudeState | null>(null);
+  const [liveMode, setLiveMode] = React.useState<string | undefined>(undefined);
   const [questionMode, setQuestionMode] = React.useState(false);
   const [manualHide, setManualHide] = React.useState(false);
   const [pending, setPending] = React.useState(0);
@@ -227,6 +241,12 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     let qMode = false;
     let qTarget: boolean | null = null;
     let qTimer: ReturnType<typeof setTimeout> | undefined;
+    let modes: ModeTrack = {};
+
+    const syncMode = (scrape: string | null, live: ClaudeState | null) => {
+      modes = trackMode(modes, scrape, live?.permissionMode ?? live?.mode);
+      setLiveMode(modes.value);
+    };
 
     const scan = () => {
       const lines = getLines();
@@ -243,6 +263,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             const declared = declaredAgent(live);
             if (declared && currentType === 'generic') setAgentType(declared);
             setStructured(live);
+            syncMode(null, live);
           }
         }
         return;
@@ -271,7 +292,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (model) {
         setScraped((prev) => (prev && prev.model === model.model && prev.contextInfo === model.contextInfo ? prev : model));
       }
-      setStructured(getStructured());
+      const live = getStructured();
+      setStructured(live);
+      syncMode(footer.boxed && footer.status.length ? nextStatus.mode ?? 'default' : null, live);
 
       const qm = footer.questionMode;
       if (qm === qMode) {
@@ -301,6 +324,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   }, [getLines, getStructured]);
 
   const catalog = structured?.models;
+  const commandArgs = agentType === 'claude' ? structured?.commandArgs : undefined;
+  const argCommands = React.useMemo(() => Object.keys(commandArgs ?? {}), [commandArgs]);
 
   React.useEffect(() => {
     const sync = () => setHiddenProviders(getHiddenProviders());
@@ -587,7 +612,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       return;
     }
     const caret = getCaretOffset(el) ?? next.text.length;
-    setSuggest(detectSuggestTrigger(next.text, caret));
+    setSuggest(detectSuggestTrigger(next.text, caret, argCommands));
   };
 
   const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -659,33 +684,32 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     histIdxRef.current = null;
 
     const cur = draftRef.current;
-    if (cur.text.startsWith('/')) setSuggest(detectSuggestTrigger(cur.text, getCaretOffset(el) ?? cur.text.length));
+    if (cur.text.startsWith('/')) setSuggest(detectSuggestTrigger(cur.text, getCaretOffset(el) ?? cur.text.length, argCommands));
     else setSuggest(null);
   };
 
   const fetchSlash = React.useCallback((query: string): PromptSuggestion[] => {
     const q = query.toLowerCase();
     const source = agentType === 'claude'
-      ? CLAUDE_SLASH_COMMANDS
+      ? claudeCommands(structured?.commands)
       : agentType === 'antigravity'
         ? ANTIGRAVITY_SLASH_COMMANDS
         : agentType === 'kimi'
           ? KIMI_SLASH_COMMANDS
           : [];
 
-    return source.filter(
-      (c) =>
-        c.name.includes(q) ||
-        c.desc.toLowerCase().includes(q) ||
-        c.aliases?.some((a) => a.toLowerCase().includes(q))
-    ).map((c) => ({
-      id: c.name,
-      display: c.name,
-      subtext: c.aliases?.length ? `${c.desc} (${c.aliases.join(', ')})` : c.desc,
-      icon: 'cmd',
-      takesArg: c.takesArg
-    }));
-  }, [agentType]);
+    return source
+      .map((c) => ({ c, score: slashScore(c, q) }))
+      .filter(({ score }) => score < NO_MATCH)
+      .sort((a, b) => a.score - b.score)
+      .map(({ c }) => ({
+        id: c.name,
+        display: c.name,
+        subtext: c.aliases?.length ? `${c.desc} (${c.aliases.join(', ')})` : c.desc,
+        icon: 'cmd',
+        takesArg: c.takesArg
+      }));
+  }, [agentType, structured?.commands]);
 
   const currentModel = React.useMemo(
     () => piModels.find((entry) => entry.id === structured?.model),
@@ -704,10 +728,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         .filter((m) => m.id.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q))
         .map((m) => ({ id: m.id, display: aliasLabel(m.id, m.provider), subtext: m.provider, icon: 'model' }));
     }
-    return CLAUDE_MODELS.filter(
+    return claudeModels(structured?.modelOptions).filter(
       (m) => m.name.toLowerCase().includes(q) || m.desc.toLowerCase().includes(q)
     ).map((m) => ({ id: m.name, display: m.name, subtext: m.desc, icon: 'model' }));
-  }, [agentType, piModels]);
+  }, [agentType, piModels, structured?.modelOptions]);
 
   const fetchEfforts = React.useCallback((query: string): PromptSuggestion[] => {
     const q = query.toLowerCase();
@@ -730,18 +754,42 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }));
   }, [agentType, catalogEfforts]);
 
+  const argCommand = suggest?.kind === 'arg' ? suggest.command : '';
+
+  const fetchArgs = React.useCallback((query: string): PromptSuggestion[] => {
+    const q = query.toLowerCase();
+    return (commandArgs?.[argCommand] ?? [])
+      .filter((option) => option.toLowerCase().includes(q))
+      .map((option) => ({
+        id: option,
+        display: option,
+        subtext: option === structured?.outputStyle ? 'current' : undefined,
+        icon: 'cmd'
+      }));
+  }, [commandArgs, argCommand, structured?.outputStyle]);
+
   const onSlashSelect = (item: PromptSuggestion, submit?: boolean) => {
     const name = item.display;
     const inline = agentType === 'claude' || agentType === 'kimi';
-    const noSubmit = (name === '/model' && inline) || (name === '/effort' && inline) || item.takesArg === true;
+    const hasArgs = argCommands.includes(name);
+    const noSubmit = (name === '/model' && inline) || (name === '/effort' && inline) || hasArgs || item.takesArg === true;
     const doSubmit = submit && !noSubmit;
     const next = { text: name + (doSubmit ? '' : ' '), images: [] };
     setDraft(next);
     commitDraft(next);
     if (name === '/model' && inline) setSuggest({ kind: 'model', query: '' });
     else if (name === '/effort' && inline) setSuggest({ kind: 'effort', query: '' });
+    else if (hasArgs) setSuggest({ kind: 'arg', query: '', command: name });
     else setSuggest(null);
     if (doSubmit) void handleSend();
+  };
+
+  const onArgSelect = (item: PromptSuggestion, submit?: boolean) => {
+    const next = { text: `${argCommand} ${item.display}`, images: [] };
+    setDraft(next);
+    commitDraft(next);
+    setSuggest(null);
+    if (submit) void handleSend();
   };
 
   const onEffortSelect = (item: PromptSuggestion, submit?: boolean) => {
@@ -898,7 +946,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (pm.model) base.model = pm.model;
       if (!base.contextInfo && pm.contextInfo) base.contextInfo = pm.contextInfo;
     }
-    if (!base.mode && structured) base.mode = prettyMode(structured.permissionMode ?? structured.mode);
+    if (agentType === 'claude') base.mode = liveMode;
+    else if (!base.mode && structured) base.mode = prettyMode(structured.permissionMode ?? structured.mode);
     if (structured?.contextPercent != null) {
       base.progress = Math.min(100, Math.round(structured.contextPercent));
       base.contextInfo = structured.contextWindow
@@ -912,15 +961,15 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (!base.contextInfo) base.contextInfo = is1M ? '1M' : '200k';
     }
     return base;
-  }, [status, scraped, structured, is1M, agentType, currentModel]);
+  }, [status, scraped, structured, is1M, agentType, currentModel, liveMode]);
 
   const effort = structured?.effort ?? '';
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
 
   const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null);
 
-  const suggestFetch = { slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
-  const suggestSelect = { slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };
+  const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
+  const suggestSelect = { arg: onArgSelect, slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };
 
   const toggleModelMenu = () => setModelMenu((o) => !o);
   const toggleEffortMenu = () => setEffortMenu((o) => !o);

@@ -345,6 +345,7 @@ fn reconnect_sessions() {
             title_dirty: AtomicBool::new(false),
             events: Mutex::new(Vec::new()),
             agent_state: Mutex::new(serde_json::Map::new()),
+            mod_session: Mutex::new(None),
             focused,
             focus_reporting,
             kimi: AtomicBool::new(false),
@@ -1045,6 +1046,7 @@ struct Session {
     title_dirty: AtomicBool,
     events: Mutex<Vec<String>>,
     agent_state: Mutex<serde_json::Map<String, serde_json::Value>>,
+    mod_session: Mutex<Option<String>>,
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
     kimi: AtomicBool,
@@ -1532,6 +1534,14 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "contextTokens",
     "contextPercent",
     "contextWindow",
+    "permissionMode",
+    "thinking",
+    "outputStyle",
+    "rateFiveHour",
+    "rateSevenDay",
+    "commands",
+    "commandArgs",
+    "modelOptions",
 ];
 
 fn agent_state_ws_msg(body: &str) -> Option<String> {
@@ -1651,6 +1661,21 @@ fn kimi_status_ws_msg(v: &serde_json::Value) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
+const MOD_OWNED_KEYS: &[&str] = &["model", "defaultModel", "contextTokens", "effort", "status"];
+
+fn strip_mod_owned(msg: &str) -> Option<String> {
+    let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str::<serde_json::Value>(msg) else {
+        return None;
+    };
+    for key in MOD_OWNED_KEYS {
+        obj.remove(*key);
+    }
+    if obj.len() <= 1 {
+        return None;
+    }
+    Some(serde_json::Value::Object(obj).to_string())
+}
+
 fn handle_agent_status(body: &[u8]) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return;
@@ -1668,19 +1693,29 @@ fn handle_agent_status(body: &[u8]) {
             tile_id
         }
     };
-    let msg = if kimi { kimi_status_ws_msg(&v) } else { status_ws_msg(&v) };
+    let from_mod = v.get("source").and_then(|s| s.as_str()) == Some("mod");
+    let msg = if from_mod {
+        agent_state_ws_msg(&v.to_string())
+    } else if kimi {
+        kimi_status_ws_msg(&v)
+    } else {
+        status_ws_msg(&v)
+    };
     let Some(msg) = msg else {
         return;
     };
     let session = sessions().lock().unwrap().get(&tile_id).cloned();
     if let Some(s) = session {
         s.kimi.store(kimi, Ordering::Relaxed);
+        if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()).filter(|_| from_mod) {
+            *s.mod_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
+        }
         remember_agent_state(&s, &msg);
         s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
     }
 }
 
-const STATUS_POST_MAX: usize = 64 * 1024;
+const STATUS_POST_MAX: usize = 256 * 1024;
 
 fn post_agent_status(input: &str) {
     if input.len() > STATUS_POST_MAX {
@@ -2156,6 +2191,45 @@ fn install_pi_extension() {
         return;
     }
     let _ = write_atomic(&file, SOURCE.as_bytes());
+}
+
+fn claude_mod_dir() -> &'static Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| panorama_dir().map(|d| d.join("claude-mod")))
+}
+
+fn install_claude_mod() {
+    const FILES: &[(&str, &str)] = &[
+        (".claude-plugin/plugin.json", include_str!("../assets/claude-mod/plugin.json")),
+        ("hooks/hooks.json", include_str!("../assets/claude-mod/hooks.json")),
+        ("hooks/register.ts", include_str!("../assets/claude-mod/register.ts")),
+    ];
+    let Some(dir) = claude_mod_dir() else {
+        return;
+    };
+    for (rel, source) in FILES {
+        let file = dir.join(rel);
+        if std::fs::read_to_string(&file).ok().as_deref() == Some(*source) {
+            continue;
+        }
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = write_atomic(&file, source.as_bytes());
+    }
+}
+
+fn claude_plugin_dirs() -> Option<String> {
+    let dir = claude_mod_dir().as_ref()?;
+    merge_plugin_dirs(std::env::var_os("CLAUDE_CODE_PLUGIN_DIRS"), dir)
+}
+
+fn merge_plugin_dirs(existing: Option<std::ffi::OsString>, dir: &Path) -> Option<String> {
+    let mut dirs: Vec<PathBuf> = existing
+        .map(|v| std::env::split_paths(&v).filter(|p| p != dir && !p.as_os_str().is_empty()).collect())
+        .unwrap_or_default();
+    dirs.push(dir.to_path_buf());
+    std::env::join_paths(dirs).ok()?.into_string().ok()
 }
 
 fn kimi_home() -> Option<PathBuf> {
@@ -2670,6 +2744,10 @@ fn spawn_session(
     env.push(("TERM".into(), "xterm-256color".into()));
     env.push(("PANORAMA_TERMINAL".into(), "1".into()));
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
+    env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
+    if let Some(dirs) = claude_plugin_dirs() {
+        env.push(("CLAUDE_CODE_PLUGIN_DIRS".into(), dirs));
+    }
     if p.spawn_cmd.is_some() {
         if let Some(path) = fresh_path() {
             env.push(("PATH".into(), path));
@@ -2741,6 +2819,7 @@ fn spawn_session(
         title_dirty: AtomicBool::new(false),
         events: Mutex::new(Vec::new()),
         agent_state: Mutex::new(serde_json::Map::new()),
+        mod_session: Mutex::new(None),
         focused,
         focus_reporting,
         kimi: AtomicBool::new(false),
@@ -3438,7 +3517,13 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     loop {
         tokio::select! {
             _ = claude_tick.tick() => {
-                if let Some(msg) = claude.poll(&params.tile_id) {
+                let polled = claude.poll(&params.tile_id);
+                let mod_owns = {
+                    let owner = session.mod_session.lock().unwrap_or_else(|e| e.into_inner());
+                    owner.is_some() && *owner == claude.agent_id
+                };
+                let polled = if mod_owns { polled.and_then(|m| strip_mod_owned(&m)) } else { polled };
+                if let Some(msg) = polled {
                     if tx.send(Message::Text(msg)).await.is_err() {
                         break;
                     }
@@ -3936,6 +4021,7 @@ async fn main() {
     }
     tokio::task::block_in_place(|| reconnect_sessions());
     install_claude_hook();
+    install_claude_mod();
     install_pi_extension();
     install_kimi_statusline();
     let listener = TcpListener::bind(("127.0.0.1", port()))
@@ -3969,8 +4055,8 @@ async fn main() {
 mod tests {
     use super::{
         agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, merge_agent_state,
-        sanitize_event_text, status_ws_msg, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, RunLog,
-        OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path,
+        RunLog, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
 
     #[test]
@@ -4147,6 +4233,36 @@ mod tests {
         assert_eq!(events, vec![body.to_string()]);
         let notifies = parser.callbacks_mut().take_notifies();
         assert_eq!(notifies, vec![("Build".to_string(), "done in 3s".to_string())]);
+    }
+
+    #[test]
+    fn plugin_dirs_keep_user_dirs_and_append_mod_once() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let dir = Path::new("mod");
+        assert_eq!(merge_plugin_dirs(None, dir).unwrap(), "mod");
+        let existing = format!("a{sep}mod{sep}{sep}b");
+        let merged = merge_plugin_dirs(Some(existing.into()), dir).unwrap();
+        assert_eq!(merged, format!("a{sep}b{sep}mod"));
+    }
+
+    #[test]
+    fn mod_state_keeps_catalog_and_drops_routing_fields() {
+        let body = r#"{"source":"mod","tileId":"t1","agent":"claude","permissionMode":"plan","commands":[{"name":"/clear","desc":"x"}],"modelOptions":["opus"]}"#;
+        let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
+        assert_eq!(v["t"], "claude");
+        assert_eq!(v["permissionMode"], "plan");
+        assert_eq!(v["commands"][0]["name"], "/clear");
+        assert_eq!(v["modelOptions"][0], "opus");
+        assert!(v.get("source").is_none() && v.get("tileId").is_none());
+    }
+
+    #[test]
+    fn mod_owned_keys_are_stripped_from_tracker_messages() {
+        let msg = r#"{"t":"claude","model":"stale","contextTokens":1,"status":"busy","linesAdded":3}"#;
+        let v: serde_json::Value = serde_json::from_str(&strip_mod_owned(msg).unwrap()).unwrap();
+        assert_eq!(v["linesAdded"], 3);
+        assert!(v.get("model").is_none() && v.get("contextTokens").is_none() && v.get("status").is_none());
+        assert_eq!(strip_mod_owned(r#"{"t":"claude","model":"stale"}"#), None);
     }
 
     #[test]

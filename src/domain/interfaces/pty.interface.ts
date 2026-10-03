@@ -29,9 +29,18 @@ export interface AgentModel {
   contextWindow?: number;
 }
 
+export interface AgentCommand {
+  name: string;
+  desc: string;
+  source?: string;
+}
+
 export interface ClaudeState {
   agent?: string;
   models?: AgentModel[];
+  modelOptions?: string[];
+  commands?: AgentCommand[];
+  commandArgs?: Record<string, string[]>;
   efforts?: string[];
   model?: string;
   mode?: string;

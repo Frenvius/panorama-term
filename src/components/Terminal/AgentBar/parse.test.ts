@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { aliasLabel, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { NO_MATCH, trackMode, slashScore, aliasLabel, detectSuggestTrigger, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -209,5 +209,46 @@ describe('pi placeholder model', () => {
     expect(status.model).toBeUndefined();
     expect(status.contextInfo).toBe('1.0M');
     expect(status.mode).toBe('medium');
+  });
+});
+
+describe('trackMode', () => {
+  it('lets the newest source win', () => {
+    let track = trackMode({}, 'auto', 'auto');
+    expect(track.value).toBe('auto');
+    track = trackMode(track, 'plan', 'auto');
+    expect(track.value).toBe('plan');
+    track = trackMode(track, null, 'acceptEdits');
+    expect(track.value).toBe('accept edits');
+    track = trackMode(track, 'plan', 'acceptEdits');
+    expect(track.value).toBe('accept edits');
+  });
+
+  it('treats a visible footer without a mode as the default mode', () => {
+    expect(trackMode({ value: 'auto', scrape: 'auto' }, 'default', 'auto').value).toBe('normal');
+  });
+});
+
+describe('detectSuggestTrigger', () => {
+  it('opens argument choices only for commands that declare them', () => {
+    expect(detectSuggestTrigger('/output-style co', 16, ['/output-style'])).toEqual({ kind: 'arg', query: 'co', command: '/output-style' });
+    expect(detectSuggestTrigger('/rename co', 10, ['/output-style'])).toBe(null);
+  });
+});
+
+describe('slashScore', () => {
+  const clear = { name: '/clear', desc: 'New conversation', aliases: ['/reset', '/new'] };
+  const schema = { name: '/database-schema-design', desc: 'Use when creating new databases' };
+  const commit = { name: '/caveman:caveman-commit', desc: 'Generate terse commit message' };
+
+  it('ranks an exact alias above a description hit', () => {
+    expect(slashScore(clear, 'new')).toBe(0);
+    expect(slashScore(schema, 'new')).toBe(3);
+  });
+
+  it('matches prefixes, inner name parts and drops non-matches', () => {
+    expect(slashScore(clear, 'cl')).toBe(1);
+    expect(slashScore(commit, 'commit')).toBe(2);
+    expect(slashScore(schema, 'zzz')).toBe(NO_MATCH);
   });
 });

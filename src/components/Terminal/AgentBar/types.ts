@@ -14,7 +14,10 @@ export interface AgentBarProps {
   onAgentActive?: (type: AgentType | null) => void;
 }
 
-export type SuggestTrigger = { kind: 'slash' | 'model' | 'effort'; query: string } | null;
+export type SuggestTrigger =
+  | { kind: 'slash' | 'model' | 'effort'; query: string }
+  | { kind: 'arg'; query: string; command: string }
+  | null;
 
 export type ContentPart = { type: 'text'; content: string } | { type: 'image'; path: string };
 
@@ -32,6 +35,7 @@ export interface ParsedStatus {
 }
 
 export interface FooterRead {
+  boxed: boolean;
   status: string[];
   uiPresent: boolean;
   questionMode: boolean;

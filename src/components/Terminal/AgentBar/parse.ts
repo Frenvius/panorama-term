@@ -9,6 +9,17 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
   bypasspermissions: 'bypass permissions'
 };
 
+export const NO_MATCH = 4;
+
+export const slashScore = (command: { name: string; desc: string; aliases?: string[] }, query: string): number => {
+  const typed = `/${query}`;
+  const names = [command.name, ...(command.aliases ?? [])].map((n) => n.toLowerCase());
+  if (names.includes(typed)) return 0;
+  if (names.some((n) => n.startsWith(typed))) return 1;
+  if (names.some((n) => n.includes(query))) return 2;
+  return command.desc.toLowerCase().includes(query) ? 3 : NO_MATCH;
+};
+
 export const modeKey = (mode: string): string => {
   const m = mode.toLowerCase();
   if (m.includes('plan')) return 'plan';
@@ -299,15 +310,31 @@ export const readFooter = (rows: string[]): FooterRead => {
   const uiPresent =
     hasInputBox || hasStatusMarker || hasFocusMarker || hasModeBanner || menuMode || exitBanner;
 
-  return model ? { status, uiPresent, questionMode, model } : { status, uiPresent, questionMode };
+  const boxed = hasInputBox;
+  return model ? { boxed, status, uiPresent, questionMode, model } : { boxed, status, uiPresent, questionMode };
 };
 
-export const detectSuggestTrigger = (text: string, caret: number): SuggestTrigger => {
+export interface ModeTrack {
+  scrape?: string;
+  value?: string;
+  reported?: string;
+}
+
+export const trackMode = (prev: ModeTrack, scrape: string | null, reported: string | undefined): ModeTrack => {
+  let value = prev.value;
+  if (reported && reported !== prev.reported) value = prettyMode(reported);
+  if (scrape !== null && scrape !== prev.scrape) value = prettyMode(scrape);
+  return { value, scrape: scrape ?? prev.scrape, reported: reported ?? prev.reported };
+};
+
+export const detectSuggestTrigger = (text: string, caret: number, argCommands: string[] = []): SuggestTrigger => {
   const before = text.slice(0, caret);
   const modelMatch = before.match(/^\/model\s+(\S*)$/);
   if (modelMatch) return { kind: 'model', query: modelMatch[1] ?? '' };
   const effortMatch = before.match(/^\/effort\s+(\S*)$/);
   if (effortMatch) return { kind: 'effort', query: effortMatch[1] ?? '' };
+  const argMatch = before.match(/^(\/\S+)\s+(\S*)$/);
+  if (argMatch?.[1] && argCommands.includes(argMatch[1])) return { kind: 'arg', query: argMatch[2] ?? '', command: argMatch[1] };
   if (/^\/\S*$/.test(before)) return { kind: 'slash', query: before.slice(1) };
   return null;
 };
