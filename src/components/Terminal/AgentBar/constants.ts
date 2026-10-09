@@ -1,3 +1,5 @@
+import type { CatalogModel } from '~/domain/interfaces/pty.interface';
+
 export interface AgentSlashCommand {
   name: string;
   desc: string;
@@ -17,20 +19,23 @@ export const BPM_END = '\x1b[201~';
 
 export const draftKey = (tileId: string): string => `agent:draft:${tileId}`;
 
-export const MODEL_QUICK_SWITCHES = [
-  { id: 'claude-fable-5-1', title: 'Fable 5.1' },
-  { id: 'claude-fable-5', title: 'Fable 5' },
-  { id: 'claude-opus-5-5', title: 'Opus 5.5' },
-  { id: 'claude-opus-5', title: 'Opus 5' },
-  { id: 'claude-opus-4-8', title: 'Opus 4.8' },
-  { id: 'claude-opus-4-7', title: 'Opus 4.7' },
-  { id: 'claude-opus-4-6', title: 'Opus 4.6' },
-  { id: 'claude-sonnet-5', title: 'Sonnet 5' },
-  { id: 'claude-sonnet-4-6', title: 'Sonnet 4.6' }
-] as const;
+export const FALLBACK_MODEL_CATALOG: CatalogModel[] = [
+  { id: 'claude-opus-5-5', name: 'Opus 5.5', section: 'main' },
+  { id: 'claude-fable-5-1', name: 'Fable 5.1', section: 'main' },
+  { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', section: 'main' },
+  { id: 'claude-haiku-5-5', name: 'Haiku 5.5', section: 'main' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', section: 'more' },
+  { id: 'claude-sonnet-5', name: 'Sonnet 5', section: 'more' },
+  { id: 'claude-opus-5', name: 'Opus 5', section: 'more' },
+  { id: 'claude-fable-5', name: 'Fable 5', section: 'more' },
+  { id: 'claude-opus-4-8', name: 'Opus 4.8', section: 'more' },
+  { id: 'claude-opus-4-7', name: 'Opus 4.7', section: 'more' },
+  { id: 'claude-opus-4-6', name: 'Opus 4.6', section: 'more' },
+  { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', section: 'more' }
+];
 
 export const MODEL_CONTEXT_VARIANTS = [
-  { suffix: '', title: 'default' },
+  { suffix: '', title: '200k context' },
   { suffix: '[1m]', title: '1M context' }
 ] as const;
 

@@ -35,10 +35,17 @@ export interface AgentCommand {
   source?: string;
 }
 
+export interface CatalogModel {
+  id: string;
+  name: string;
+  section: 'main' | 'more';
+}
+
 export interface ClaudeState {
   agent?: string;
   models?: AgentModel[];
   modelOptions?: string[];
+  modelCatalog?: CatalogModel[];
   commands?: AgentCommand[];
   commandArgs?: Record<string, string[]>;
   efforts?: string[];

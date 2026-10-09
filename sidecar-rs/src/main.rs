@@ -1542,6 +1542,7 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "commands",
     "commandArgs",
     "modelOptions",
+    "modelCatalog",
 ];
 
 fn agent_state_ws_msg(body: &str) -> Option<String> {

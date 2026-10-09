@@ -230,6 +230,20 @@ $accent: #d97757;
   background: var(--border-2);
 }
 
+.menuMore {
+  position: relative;
+}
+
+.menuFlyout {
+  right: 100%;
+  bottom: -3px;
+}
+
+.menuChevron {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
 .menuSub {
   margin-left: auto;
   padding-left: 8px;

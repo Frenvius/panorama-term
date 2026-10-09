@@ -1,7 +1,8 @@
 import React from 'react';
-import { Brain, Check, Sparkles, ChevronDown } from 'lucide-react';
+import { Brain, Sparkles, ChevronDown } from 'lucide-react';
 
 import Suggest from './Suggest';
+import ModelMenu from './ModelMenu';
 import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
@@ -11,11 +12,11 @@ import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
-import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, MODEL_QUICK_SWITCHES, MODEL_CONTEXT_VARIANTS, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
+import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { AgentSlashCommand } from './constants';
-import type { AgentModel, ClaudeState, AgentCommand } from '~/domain/interfaces/pty.interface';
+import type { AgentModel, ClaudeState, AgentCommand, CatalogModel } from '~/domain/interfaces/pty.interface';
 import type { ContentPart, ParsedStatus, SuggestTrigger, AgentBarProps, PromptSuggestion, AgentSuggestHandle } from './types';
 
 import styles from './styles.module.scss';
@@ -68,17 +69,17 @@ const formatCost = (v: number): string => {
 
 const baseModelId = (id: string): string => id.replace(/\[[^\]]*\]/, '');
 
-const matchQuickSwitchId = (raw: string | undefined): string => {
+const matchCatalogId = (catalog: CatalogModel[], raw: string | undefined): string => {
   if (!raw) return '';
   const m = baseModelId(raw.toLowerCase());
-  return MODEL_QUICK_SWITCHES.find((s) => s.id === m)?.id ?? '';
+  return catalog.find((s) => s.id === m)?.id ?? '';
 };
 
-const modelLabel = (id: string): string => {
+const modelLabel = (catalog: CatalogModel[], id: string): string => {
   const base = baseModelId(id);
-  const entry = MODEL_QUICK_SWITCHES.find((m) => m.id === base);
+  const entry = catalog.find((m) => m.id === base);
   if (!entry) return 'Model';
-  return base === id ? entry.title : `${entry.title} · 1M`;
+  return base === id ? entry.name : `${entry.name} · 1M`;
 };
 
 type UndoSnap = { text: string; images: string[]; caret: number };
@@ -910,6 +911,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }
   };
 
+  const modelCatalog = structured?.modelCatalog?.length ? structured.modelCatalog : FALLBACK_MODEL_CATALOG;
+
   const is1M = React.useMemo(() => {
     if (structured?.contextWindow) return structured.contextWindow >= 1_000_000;
     if (scraped && /1m/i.test(scraped.contextInfo ?? '')) return true;
@@ -927,12 +930,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       }
       return '';
     }
-    const base = matchQuickSwitchId(structured?.model);
+    const base = matchCatalogId(modelCatalog, structured?.model);
     return base && is1M ? `${base}[1m]` : base;
-  }, [scraped, structured, is1M]);
-
-  const currentModelBase = baseModelId(currentModelId);
-  const currentContextSuffix = currentModelId.includes('[1m]') ? '[1m]' : '';
+  }, [scraped, structured, is1M, modelCatalog]);
 
   const parsed = React.useMemo<ParsedStatus>(() => {
     const base: ParsedStatus = { ...status };
@@ -985,7 +985,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }
   };
 
-  const pickModel = (id: string) => () => {
+  const pickModel = (id: string) => {
     void sendDraft({ text: `/model ${id}`, images: [] });
     setModelMenu(false);
   };
@@ -1137,31 +1137,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
               </div>
               <div className={styles.action} ref={modelRef}>
                 <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
-                  {modelLabel(currentModelId)}
+                  {modelLabel(modelCatalog, currentModelId)}
                   <ChevronDown size={11} />
                 </button>
-                {modelMenu && (
-                  <div className={styles.menu}>
-                    {MODEL_QUICK_SWITCHES.map((m) => (
-                      <button key={m.id} type="button" className={styles.menuItem} onClick={pickModel(`${m.id}${currentContextSuffix}`)}>
-                        <span className={styles.menuTick}>{m.id === currentModelBase && <Check size={10} />}</span>
-                        {m.title}
-                      </button>
-                    ))}
-                    <div className={styles.menuDivider} />
-                    {MODEL_CONTEXT_VARIANTS.map((v) => (
-                      <button
-                        key={v.title}
-                        type="button"
-                        className={styles.menuItem}
-                        onClick={pickModel(`${currentModelBase}${v.suffix}`)}
-                      >
-                        <span className={styles.menuTick}>{v.suffix === currentContextSuffix && <Check size={10} />}</span>
-                        {v.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                {modelMenu && <ModelMenu catalog={modelCatalog} current={currentModelId} onPick={pickModel} />}
               </div>
             </div>
           )}

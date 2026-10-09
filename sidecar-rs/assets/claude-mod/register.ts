@@ -34,6 +34,23 @@ async function reportStatus($: EngineInterface) {
   })
 }
 
+async function readModelCatalog($: EngineInterface) {
+  const home = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))}/.claude`
+  const dir = `${home}/cache/model-catalog`
+  try {
+    const newest = (await $.fs.list(dir))
+      .filter(f => f.name.endsWith('-cc.json'))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
+    if (!newest) return undefined
+    const doc = JSON.parse(String(await $.fs.read(`${dir}/${newest.name}`)))
+    const models: { id: string; name: string; section?: string }[] = doc?.catalog?.config?.models ?? []
+    return models.map(m => ({ id: m.id, name: m.name, section: m.section === 'main' ? 'main' : 'more' }))
+  } catch (err) {
+    $.ui.log(`panorama: model catalog unreadable: ${String(err)}`, { to: 'debug' })
+    return undefined
+  }
+}
+
 async function reportCatalog($: EngineInterface) {
   const commands = (await $.command.list()).map(c => ({
     name: `/${c.name}`,
@@ -46,6 +63,7 @@ async function reportCatalog($: EngineInterface) {
     commands,
     commandArgs: { '/output-style': row('outputStyle')?.options ?? [] },
     modelOptions: row('model')?.options,
+    modelCatalog: await readModelCatalog($),
     thinking: row('thinking')?.value,
     outputStyle: row('outputStyle')?.value,
   })
