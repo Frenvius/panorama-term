@@ -71,6 +71,13 @@ const migrate = (raw: unknown): WorkspaceFile | null => {
 class Service {
   private cachedIndex: WorkspaceIndex | null = null;
   private loadedTabs = new Set<string>();
+  private queue: Promise<unknown> = Promise.resolve();
+
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
 
   private tabOf(file: WorkspaceFile, tabId: string): TabState | undefined {
     return file.tabs.find((t) => t.id === tabId);
@@ -132,14 +139,6 @@ class Service {
     return idx;
   }
 
-  private async activeRef(): Promise<{ workspaceId: string; tabId: string } | null> {
-    const idx = await this.loadIndex();
-    if (!idx.activeId) return null;
-    const file = await this.readWorkspace(idx.activeId);
-    if (!file) return null;
-    return { workspaceId: idx.activeId, tabId: file.activeTabId };
-  }
-
   async list(): Promise<{ activeId: string | null; workspaces: WorkspaceMeta[] }> {
     const idx = await this.loadIndex();
     const workspaces: WorkspaceMeta[] = [];
@@ -150,17 +149,19 @@ class Service {
     return { activeId: idx.activeId, workspaces };
   }
 
-  async setActive(id: string): Promise<void> {
-    const idx = await this.loadIndex();
-    if (!idx.order.includes(id)) return;
-    idx.activeId = id;
-    const file = await this.readWorkspace(id);
-    if (!file) {
-      await this.saveIndex(idx);
-      return;
-    }
-    file.meta.lastFocusedAt = Date.now();
-    await this.writeWorkspaceAndIndex(file, idx);
+  setActive(id: string): Promise<void> {
+    return this.serial(async () => {
+      const idx = await this.loadIndex();
+      if (!idx.order.includes(id)) return;
+      idx.activeId = id;
+      const file = await this.readWorkspace(id);
+      if (!file) {
+        await this.saveIndex(idx);
+        return;
+      }
+      file.meta.lastFocusedAt = Date.now();
+      await this.writeWorkspaceAndIndex(file, idx);
+    });
   }
 
   async create(name?: string): Promise<WorkspaceMeta> {
@@ -180,19 +181,23 @@ class Service {
     return meta;
   }
 
-  async rename(id: string, name: string): Promise<void> {
-    const file = await this.readWorkspace(id);
-    const trimmed = name.trim();
-    if (!file || !trimmed) return;
-    file.meta.name = trimmed;
-    await this.writeWorkspace(file);
+  rename(id: string, name: string): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(id);
+      const trimmed = name.trim();
+      if (!file || !trimmed) return;
+      file.meta.name = trimmed;
+      await this.writeWorkspace(file);
+    });
   }
 
-  async setColor(id: string, color: string): Promise<void> {
-    const file = await this.readWorkspace(id);
-    if (!file) return;
-    file.meta.color = color;
-    await this.writeWorkspace(file);
+  setColor(id: string, color: string): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(id);
+      if (!file) return;
+      file.meta.color = color;
+      await this.writeWorkspace(file);
+    });
   }
 
   async delete(id: string): Promise<{ activeId: string | null; deleted: boolean }> {
@@ -231,63 +236,63 @@ class Service {
     return null;
   }
 
-  async saveTabState(workspaceId: string, tabId: string, state: CanvasState): Promise<void> {
-    const file = await this.readWorkspace(workspaceId);
-    if (!file) return;
-    const tab = this.tabOf(file, tabId);
-    if (!tab) return;
-    const normalized = normalizeState(state);
-    const key = `${workspaceId}/${tabId}`;
-    if (normalized.tiles.length === 0 && tab.state.tiles.length > 0 && !this.loadedTabs.has(key)) return;
-    tab.state = normalized;
-    await this.writeWorkspace(file);
+  saveTabState(workspaceId: string, tabId: string, state: CanvasState): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file) return;
+      const tab = this.tabOf(file, tabId);
+      if (!tab) return;
+      const normalized = normalizeState(state);
+      const key = `${workspaceId}/${tabId}`;
+      if (normalized.tiles.length === 0 && tab.state.tiles.length > 0 && !this.loadedTabs.has(key)) return;
+      tab.state = normalized;
+      await this.writeWorkspace(file);
+    });
   }
 
-  async setActiveTab(workspaceId: string, tabId: string): Promise<void> {
-    const file = await this.readWorkspace(workspaceId);
-    if (!file || !this.tabOf(file, tabId)) return;
-    file.activeTabId = tabId;
-    await this.writeWorkspace(file);
+  setActiveTab(workspaceId: string, tabId: string): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file || !this.tabOf(file, tabId)) return;
+      file.activeTabId = tabId;
+      await this.writeWorkspace(file);
+    });
   }
 
-  async createTab(workspaceId: string, name?: string): Promise<TabMeta | null> {
-    const file = await this.readWorkspace(workspaceId);
-    if (!file) return null;
-    const tab = emptyTab(name?.trim() || nextTabName(file.tabs));
-    file.tabs.push(tab);
-    await this.writeWorkspace(file);
-    return { id: tab.id, name: tab.name };
+  createTab(workspaceId: string, name?: string): Promise<TabMeta | null> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file) return null;
+      const tab = emptyTab(name?.trim() || nextTabName(file.tabs));
+      file.tabs.push(tab);
+      await this.writeWorkspace(file);
+      return { id: tab.id, name: tab.name };
+    });
   }
 
-  async renameTab(workspaceId: string, tabId: string, name: string): Promise<void> {
-    const file = await this.readWorkspace(workspaceId);
-    if (!file) return;
-    const tab = this.tabOf(file, tabId);
-    const trimmed = name.trim();
-    if (!tab || !trimmed) return;
-    tab.name = trimmed;
-    await this.writeWorkspace(file);
+  renameTab(workspaceId: string, tabId: string, name: string): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file) return;
+      const tab = this.tabOf(file, tabId);
+      const trimmed = name.trim();
+      if (!tab || !trimmed) return;
+      tab.name = trimmed;
+      await this.writeWorkspace(file);
+    });
   }
 
-  async deleteTab(workspaceId: string, tabId: string): Promise<{ activeTabId: string | null; deleted: boolean }> {
-    const file = await this.readWorkspace(workspaceId);
-    if (!file || file.tabs.length <= 1) return { activeTabId: file?.activeTabId ?? null, deleted: false };
-    const removedAt = file.tabs.findIndex((t) => t.id === tabId);
-    if (removedAt === -1) return { activeTabId: file.activeTabId, deleted: false };
-    file.tabs.splice(removedAt, 1);
-    if (file.activeTabId === tabId) file.activeTabId = file.tabs[Math.max(0, removedAt - 1)]!.id;
-    await this.writeWorkspace(file);
-    return { activeTabId: file.activeTabId, deleted: true };
-  }
-
-  async loadActiveState(): Promise<CanvasState | null> {
-    const ref = await this.activeRef();
-    return ref ? this.loadTabState(ref.workspaceId, ref.tabId) : null;
-  }
-
-  async saveActiveState(state: CanvasState): Promise<void> {
-    const ref = await this.activeRef();
-    if (ref) await this.saveTabState(ref.workspaceId, ref.tabId, state);
+  deleteTab(workspaceId: string, tabId: string): Promise<{ activeTabId: string | null; deleted: boolean }> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file || file.tabs.length <= 1) return { activeTabId: file?.activeTabId ?? null, deleted: false };
+      const removedAt = file.tabs.findIndex((t) => t.id === tabId);
+      if (removedAt === -1) return { activeTabId: file.activeTabId, deleted: false };
+      file.tabs.splice(removedAt, 1);
+      if (file.activeTabId === tabId) file.activeTabId = file.tabs[Math.max(0, removedAt - 1)]!.id;
+      await this.writeWorkspace(file);
+      return { activeTabId: file.activeTabId, deleted: true };
+    });
   }
 }
 

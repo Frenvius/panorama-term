@@ -134,9 +134,12 @@ export const useWorkspaces = () => {
     [activeId, activeTabId, loadTabs]
   );
 
-  const saveActiveState = React.useCallback((state: CanvasState) => {
-    void workspaceService.saveActiveState(state);
-  }, []);
+  const saveActiveState = React.useCallback(
+    (state: CanvasState) => {
+      if (activeId && activeTabId) void workspaceService.saveTabState(activeId, activeTabId, state);
+    },
+    [activeId, activeTabId]
+  );
 
   const tabKey = `${activeId ?? 'none'}/${activeTabId ?? 'none'}`;
 
