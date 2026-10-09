@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.6]
+
+### Added
+- Claude agent bar fed by a Claude Code mod: live model, context, effort, permission mode, busy/waiting/idle status and the session's real slash commands.
+- Claude model picker loaded from the Claude Code model catalog: main models up front, older ones under "More models", plus a 200k / 1M context selector.
+- Argument choices for slash commands such as /output-style.
+- Agent usage status bar.
+- Kimi Code support in the agent bar.
+- Pi agent: resume sessions, notifications, context window selector and shared linked context.
+- Tabs in notes.
+- Create files and folders from the file tree.
+- Markdown preview in the file editor, with tables, headings and inline marks.
+- Image previews in the diff viewer and file editor.
+- Nested repository changes in the git tab.
+- Notifications from background tabs, opening the notified tab on click.
+- App state stored in SQLite with atomic, durable writes.
+
+### Fixed
+- Workspace writes racing each other and state saving to the wrong tab.
+- Agent bar disappearing after a Pi compaction.
+- Kimi transcript not scrolling with the mouse wheel on Windows.
+- Toolbox tools without a product code breaking IDE detection.
+- Image paste into terminal tiles.
+
 ## [0.2.5]
 
 ### Added
