@@ -26,7 +26,7 @@ const MarkdownView = ({ path, source }: MarkdownViewProps) => {
   const content = React.useMemo(() => {
     const slots: MarkdownSlots = {
       code: (lang, text, key) => <CodeBlock key={key} lang={lang} code={text} />,
-      image: (src, alt, key) => <MdImage key={key} src={src} alt={alt} file={path} />,
+      image: (src, alt, key, size) => <MdImage key={key} src={src} alt={alt} file={path} size={size} />,
       link: (href, children, key) => (
         <a key={key} href={href} title={href} onClick={followLink}>
           {children}

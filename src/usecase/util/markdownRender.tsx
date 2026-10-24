@@ -5,9 +5,14 @@ import { GFM, parser } from '@lezer/markdown';
 
 import { htmlToReact } from '~/usecase/util/markdownHtml';
 
+export interface ImageSize {
+  width?: string;
+  height?: string;
+}
+
 export interface MarkdownSlots {
   code: (lang: string, text: string, key: string) => React.ReactNode;
-  image: (src: string, alt: string, key: string) => React.ReactNode;
+  image: (src: string, alt: string, key: string, size?: ImageSize) => React.ReactNode;
   link: (href: string, children: React.ReactNode, key: string) => React.ReactNode;
 }
 

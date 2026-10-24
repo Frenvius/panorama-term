@@ -1,3 +1,5 @@
+import type { ImageSize } from '~/usecase/util/markdownRender';
+
 import React from 'react';
 
 import { readFileBytes } from '~/adapter/fs/fs.client';
@@ -7,9 +9,10 @@ interface MdImageProps {
   src: string;
   alt: string;
   file: string;
+  size?: ImageSize;
 }
 
-const MdImage = ({ src, alt, file }: MdImageProps) => {
+const MdImage = ({ src, alt, file, size }: MdImageProps) => {
   const remote = isRemoteUrl(src);
   const [url, setUrl] = React.useState<string | null>(remote ? src : null);
 
@@ -31,7 +34,7 @@ const MdImage = ({ src, alt, file }: MdImageProps) => {
   }, [src, file, remote]);
 
   if (!url) return <span title={src}>{alt}</span>;
-  return <img src={url} alt={alt} loading="lazy" />;
+  return <img src={url} alt={alt} width={size?.width} height={size?.height} loading="lazy" />;
 };
 
 export default MdImage;

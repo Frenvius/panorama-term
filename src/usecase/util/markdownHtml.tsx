@@ -1,4 +1,4 @@
-import type { MarkdownSlots } from '~/usecase/util/markdownRender';
+import type { ImageSize, MarkdownSlots } from '~/usecase/util/markdownRender';
 
 import React from 'react';
 
@@ -58,7 +58,17 @@ const attrsOf = (el: Element, key: string): Record<string, unknown> => {
   return props;
 };
 
-const nodeToReact = (node: Node, key: string, slots: MarkdownSlots): React.ReactNode => {
+const DIMENSION = /^\d+(\.\d+)?(px|%)?$/;
+
+const dimension = (el: Element, name: string): string | undefined => {
+  const value = el.getAttribute(name)?.trim();
+  if (!value || !DIMENSION.test(value)) return undefined;
+  return value.endsWith('px') ? value.slice(0, -2) : value;
+};
+
+const sizeOf = (el: Element): ImageSize => ({ width: dimension(el, 'width'), height: dimension(el, 'height') });
+
+const nodeToReact =(node: Node, key: string, slots: MarkdownSlots): React.ReactNode => {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent;
   if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
@@ -67,7 +77,7 @@ const nodeToReact = (node: Node, key: string, slots: MarkdownSlots): React.React
   if (DROP.has(tag)) return null;
 
   const children = Array.from(el.childNodes).map((child, at) => nodeToReact(child, `${key}-${at}`, slots));
-  if (tag === 'img') return slots.image(el.getAttribute('src') ?? '', el.getAttribute('alt') ?? '', key);
+  if (tag === 'img') return slots.image(el.getAttribute('src') ?? '', el.getAttribute('alt') ?? '', key, sizeOf(el));
   if (tag === 'a') return slots.link(el.getAttribute('href') ?? '', children, key);
   if (tag === 'center') return React.createElement('div', { key, style: { textAlign: 'center' } }, children);
   if (!TAGS.has(tag)) return <React.Fragment key={key}>{children}</React.Fragment>;
