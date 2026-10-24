@@ -89,13 +89,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      - name: Prepare release assets
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NSIS_DIR="src-tauri/target/release/bundle/nsis"
-          cp "$NSIS_DIR/Panorama_${VERSION}_x64-setup.exe" "$NSIS_DIR/panorama-setup.exe"
-
       - name: Read signature file
         id: signature
         shell: bash
@@ -111,7 +104,6 @@ jobs:
           name: 'Panorama v${{ steps.version.outputs.version }}'
           body_path: release-notes.md
           files: |
-            src-tauri/target/release/bundle/nsis/panorama-setup.exe
             src-tauri/target/release/bundle/nsis/Panorama_${{ steps.version.outputs.version }}_x64-setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
