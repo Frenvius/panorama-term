@@ -49,8 +49,8 @@ where
         .expect("blocking task panicked")
 }
 
-const SIDECAR_PORT: u16 = 9777;
-const HOST_PORT: u16 = 9778;
+const SIDECAR_PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
+const HOST_PORT: u16 = if cfg!(debug_assertions) { 9878 } else { 9778 };
 const NOTIF_WIDTH: f64 = 448.0;
 
 fn host_alive() -> bool {
@@ -58,15 +58,44 @@ fn host_alive() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
+// the host never runs from the installed binary, so an update can replace it without killing live PTYs
 fn host_bin(brain: &Path) -> PathBuf {
-    if !cfg!(debug_assertions) {
-        return brain.to_path_buf();
+    let name = if cfg!(debug_assertions) { "panorama-host.exe" } else { "panorama-host-release.exe" };
+    let dst = std::env::temp_dir().join(name);
+    for _ in 0..20 {
+        if std::fs::copy(brain, &dst).is_ok() {
+            return dst;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    let dst = std::env::temp_dir().join("panorama-host.exe");
-    if std::fs::copy(brain, &dst).is_ok() {
-        dst
-    } else {
-        brain.to_path_buf()
+    brain.to_path_buf()
+}
+
+fn host_record() -> Option<PathBuf> {
+    let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
+    Some(dirs::home_dir()?.join(name).join("host.json"))
+}
+
+fn outdated_host_pid(bin: &Path) -> Option<u32> {
+    let raw = std::fs::read_to_string(host_record()?).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let pid = u32::try_from(record.get("pid")?.as_u64()?).ok()?;
+    let running = record.get("id")?.as_str()?;
+    let out = hidden_command(&bin.to_string_lossy()).arg("host-id").output().ok()?;
+    let wanted = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!wanted.is_empty() && wanted != running).then_some(pid)
+}
+
+fn stop_host(pid: u32) {
+    #[cfg(windows)]
+    let _ = hidden_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+    #[cfg(not(windows))]
+    let _ = hidden_command("kill").arg(pid.to_string()).status();
+    for _ in 0..30 {
+        if !host_alive() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -89,10 +118,13 @@ fn sidecar_bin() -> PathBuf {
 }
 
 fn spawn_sidecar() {
-    if host_alive() {
-        return;
-    }
     let bin = sidecar_bin();
+    if host_alive() {
+        match outdated_host_pid(&bin) {
+            Some(pid) => stop_host(pid),
+            None => return,
+        }
+    }
     if !bin.exists() {
         eprintln!("[panorama] sidecar binary missing: {}", bin.display());
         return;

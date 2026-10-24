@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -165,11 +167,129 @@ impl Host {
     }
 }
 
+// bump when host-side code outside this file changes (RawRing, respawn_detached, port helpers)
+const REV: u32 = 1;
+
+pub fn id() -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let rev = REV.to_le_bytes();
+    let parts: [&[u8]; 3] = [include_bytes!("host.rs"), include_bytes!("../Cargo.lock"), &rev];
+    for part in parts {
+        for &b in part {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+fn record_identity() {
+    let Some(dir) = crate::panorama_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let body = serde_json::json!({ "id": id(), "pid": std::process::id() }).to_string();
+    let _ = std::fs::write(dir.join("host.json"), body);
+}
+
+pub fn brain_bin() -> PathBuf {
+    std::env::var("PANORAMA_BRAIN_BIN")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("sidecar"))
+}
+
+fn brain_run_copy(bin: &Path) -> PathBuf {
+    let name = if cfg!(debug_assertions) { "panorama-brain.exe" } else { "panorama-brain-release.exe" };
+    let dst = std::env::temp_dir().join(name);
+    if std::fs::copy(bin, &dst).is_ok() {
+        dst
+    } else {
+        bin.to_path_buf()
+    }
+}
+
+fn brain_alive() -> bool {
+    let addr = format!("127.0.0.1:{}", crate::port());
+    addr.parse()
+        .ok()
+        .map(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
+        .unwrap_or(false)
+}
+
+fn no_window(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn same_host(bin: &Path) -> bool {
+    no_window(Command::new(bin).arg("host-id").stdin(Stdio::null()).stderr(Stdio::null()))
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == id())
+        .unwrap_or(false)
+}
+
+fn watch_brain(child: &mut Child, bin: &Path, mut stamp: Option<SystemTime>) {
+    let mut seen = stamp;
+    while matches!(child.try_wait(), Ok(None)) {
+        std::thread::sleep(Duration::from_millis(1000));
+        let now = modified(bin);
+        // a replaced binary must hold still for a tick so a half-written build is never launched
+        let settled = now == seen;
+        seen = now;
+        if now == stamp || !settled {
+            continue;
+        }
+        stamp = now;
+        // a binary with different host code keeps the old brain until the app replaces this host
+        if same_host(bin) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+    }
+}
+
+pub fn supervise_brain() {
+    let bin = brain_bin();
+    let host_p = crate::host_port().to_string();
+    let brain_p = crate::port().to_string();
+    std::thread::spawn(move || loop {
+        if brain_alive() {
+            std::thread::sleep(Duration::from_millis(1000));
+            continue;
+        }
+        let stamp = modified(&bin);
+        let exe = brain_run_copy(&bin);
+        let mut cmd = Command::new(&exe);
+        cmd.arg(crate::DAEMON_ARG)
+            .env("PANORAMA_HOST_PORT", &host_p)
+            .env("PANORAMA_SIDECAR_PORT", &brain_p)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match no_window(&mut cmd).spawn() {
+            Ok(mut child) => watch_brain(&mut child, &bin, stamp),
+            Err(e) => eprintln!("[host] failed to spawn brain: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+    });
+}
+
 pub fn run_host_server(port: u16) {
     let host = Host::new();
     let listener = TcpListener::bind(("127.0.0.1", port))
         .unwrap_or_else(|e| panic!("host bind {port}: {e}"));
     eprintln!("[host] listening on 127.0.0.1:{port}");
+    record_identity();
     loop {
         match listener.accept() {
             Ok((stream, addr)) => {

@@ -15,11 +15,12 @@ pub struct Entry {
     value: Value,
 }
 
-fn base_dir() -> Result<PathBuf, String> {
+pub(crate) fn base_dir() -> Result<PathBuf, String> {
     if let Ok(dir) = std::env::var("PANORAMA_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    Ok(dirs::config_dir().ok_or("no config dir")?.join("panorama"))
+    let name = if cfg!(debug_assertions) { "panorama-dev" } else { "panorama" };
+    Ok(dirs::config_dir().ok_or("no config dir")?.join(name))
 }
 
 fn valid_name(name: &str) -> Result<(), String> {

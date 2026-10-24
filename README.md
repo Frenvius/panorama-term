@@ -15,9 +15,18 @@ bun install
 bun run dev
 ```
 
-Needs Rust and bun. `bun run dev` compiles the Rust PTY daemon, starts it on port 9777, runs Vite,
+Needs Rust and bun. `bun run dev` compiles the Rust PTY daemon, starts it on port 9877, runs Vite,
 and opens the Tauri window. An already-running daemon is reused, so a restart reattaches to live
 shells instead of respawning them.
+
+Dev builds are isolated from an installed release so both can run at once: ports 9877/9878
+(release 9777/9778), config in `%APPDATA%\panorama-dev`, runtime files in `~/.panorama-dev`,
+and the app identifier `com.frenvius.panorama.dev` (`src-tauri/tauri.dev.conf.json`). The dev binary
+is `panorama-dev.exe` so the release installer, which kills `panorama.exe` by name, leaves it alone.
+
+Updates keep live terminals: the PTY host and the brain run from copies in `%TEMP%`, the host restarts
+the brain when `sidecar.exe` changes, and the app replaces the host only when its code changed
+(`sidecar host-id`).
 
 `bun run build` produces an installer with the daemon bundled alongside the app.
 

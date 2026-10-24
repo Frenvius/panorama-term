@@ -19,7 +19,7 @@ fn sanitize(key: &str) -> String {
 }
 
 fn workspaces_root() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("panorama").join("workspaces"))
+    crate::store::base_dir().ok().map(|d| d.join("workspaces"))
 }
 
 fn note_path(ws_id: &str, note_id: &str) -> Option<PathBuf> {
@@ -29,7 +29,8 @@ fn note_path(ws_id: &str, note_id: &str) -> Option<PathBuf> {
 }
 
 fn binding_path(tile_id: &str) -> Option<PathBuf> {
-    let dir = home()?.join(".panorama").join("agent-bindings");
+    let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
+    let dir = home()?.join(name).join("agent-bindings");
     fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.json", sanitize(tile_id))))
 }

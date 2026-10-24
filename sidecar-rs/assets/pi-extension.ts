@@ -72,7 +72,8 @@ async function canvasContext(): Promise<string | null> {
 	const tileId = process.env.PANORAMA_TILE_ID;
 	if (!tileId) return null;
 	try {
-		const response = await fetch(`http://127.0.0.1:9777/agent/context?tileId=${encodeURIComponent(tileId)}`, {
+		const port = process.env.PANORAMA_SIDECAR_PORT ?? "9777";
+		const response = await fetch(`http://127.0.0.1:${port}/agent/context?tileId=${encodeURIComponent(tileId)}`, {
 			signal: AbortSignal.timeout(500),
 		});
 		if (!response.ok) return null;

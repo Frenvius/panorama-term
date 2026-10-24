@@ -3,7 +3,8 @@ import { listen } from '@tauri-apps/api/event';
 
 import type { RunStatus } from '~/domain/interfaces/run.interface';
 
-const SIDECAR_HTTP = 'http://127.0.0.1:9777';
+import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
+
 const POLL_MS = 3000;
 const NONE: RunStatus = { state: 'none' };
 

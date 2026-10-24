@@ -211,7 +211,7 @@ fn host_port() -> u16 {
     std::env::var("PANORAMA_HOST_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(9778)
+        .unwrap_or(if cfg!(debug_assertions) { 9878 } else { 9778 })
 }
 
 fn connect_to_host() -> std::net::TcpStream {
@@ -364,7 +364,7 @@ fn reconnect_sessions() {
     }
 }
 
-const PORT: u16 = 9777;
+const PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
 const DAEMON_ARG: &str = "--daemon";
 
 fn port() -> u16 {
@@ -399,66 +399,13 @@ fn respawn_detached(extra: &[&str]) {
         }
     }
 }
-fn brain_bin() -> PathBuf {
-    std::env::var("PANORAMA_BRAIN_BIN")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .unwrap_or_else(|| PathBuf::from("sidecar"))
-}
-
-fn brain_run_copy(bin: &Path) -> PathBuf {
-    if !cfg!(debug_assertions) {
-        return bin.to_path_buf();
-    }
-    let dst = std::env::temp_dir().join("panorama-brain.exe");
-    if std::fs::copy(bin, &dst).is_ok() {
-        dst
+fn hook_exe() -> Option<PathBuf> {
+    // release brains run from a temp copy; hooks target the installed binary so that copy is never held open
+    if cfg!(debug_assertions) {
+        std::env::current_exe().ok()
     } else {
-        bin.to_path_buf()
+        Some(host::brain_bin())
     }
-}
-
-fn brain_alive() -> bool {
-    let addr = format!("127.0.0.1:{}", port());
-    addr.parse()
-        .ok()
-        .map(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
-        .unwrap_or(false)
-}
-
-fn supervise_brain() {
-    use std::process::Stdio;
-    let bin = brain_bin();
-    let host_p = host_port().to_string();
-    let brain_p = port().to_string();
-    std::thread::spawn(move || loop {
-        if brain_alive() {
-            std::thread::sleep(Duration::from_millis(1000));
-            continue;
-        }
-        let exe = brain_run_copy(&bin);
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.arg(DAEMON_ARG)
-            .env("PANORAMA_HOST_PORT", &host_p)
-            .env("PANORAMA_SIDECAR_PORT", &brain_p)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        match cmd.spawn() {
-            Ok(mut child) => {
-                let _ = child.wait();
-            }
-            Err(e) => eprintln!("[host] failed to spawn brain: {e}"),
-        }
-        std::thread::sleep(Duration::from_millis(1000));
-    });
 }
 
 const DEFAULT_FG: u32 = 0xC7_D0_E0;
@@ -1064,10 +1011,7 @@ fn write_atomic(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
 }
 
 fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
-    let home = std::env::var("USERPROFILE")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok())?;
-    let dir = Path::new(&home).join(".panorama").join("pty-buffers");
+    let dir = panorama_dir()?.join("pty-buffers");
     std::fs::create_dir_all(&dir).ok()?;
     let mut name = String::with_capacity(tile_id.len());
     for ch in tile_id.chars() {
@@ -1101,11 +1045,19 @@ fn flush_session(s: &Session) {
     }
 }
 
-fn panorama_dir() -> Option<std::path::PathBuf> {
+fn shared_panorama_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var("USERPROFILE")
         .ok()
         .or_else(|| std::env::var("HOME").ok())?;
     Some(Path::new(&home).join(".panorama"))
+}
+
+fn panorama_dir() -> Option<std::path::PathBuf> {
+    let dir = shared_panorama_dir()?;
+    if cfg!(debug_assertions) {
+        return Some(dir.with_file_name(".panorama-dev"));
+    }
+    Some(dir)
 }
 
 fn sanitize_key(key: &str) -> String {
@@ -1736,7 +1688,8 @@ fn post_agent_status(input: &str) {
 }
 
 fn statusline_chain_path() -> Option<PathBuf> {
-    Some(panorama_dir()?.join("statusline-chain.json"))
+    // shared: ~/.claude/settings.json is global, so both builds must chain to the same original statusline
+    Some(shared_panorama_dir()?.join("statusline-chain.json"))
 }
 
 fn load_statusline_chain() -> Option<String> {
@@ -2300,7 +2253,7 @@ fn install_kimi_statusline() {
     let Some(dir) = kimi_home().filter(|d| d.exists()) else {
         return;
     };
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(exe) = hook_exe() else {
         return;
     };
     let command = format!("\"{}\" statusline", exe.display());
@@ -2323,7 +2276,7 @@ fn install_claude_hook() {
     if !claude_dir.exists() {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(exe) = hook_exe() else {
         return;
     };
     let file = claude_dir.join("settings.json");
@@ -3991,12 +3944,16 @@ fn restore_ctrl_c() {
 async fn main() {
     #[cfg(windows)]
     restore_ctrl_c();
+    if std::env::args().nth(1).as_deref() == Some("host-id") {
+        println!("{}", host::id());
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("host") {
         #[cfg(windows)]
         if std::env::args().nth(2).as_deref() != Some(DAEMON_ARG) {
             respawn_detached(&["host", DAEMON_ARG]);
         }
-        supervise_brain();
+        host::supervise_brain();
         host::run_host_server(host_port());
         return;
     }

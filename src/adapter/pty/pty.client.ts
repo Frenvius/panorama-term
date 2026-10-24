@@ -1,6 +1,8 @@
 import type { GridFrame, AgentEvent, ClaudeState, PtyServerMessage } from '~/domain/interfaces/pty.interface';
 
-const SIDECAR_WS = 'ws://127.0.0.1:9777';
+import { SIDECAR_PORT } from '~/adapter/pty/sidecar.client';
+
+const SIDECAR_WS = `ws://127.0.0.1:${SIDECAR_PORT}`;
 
 const decoder = new TextDecoder();
 

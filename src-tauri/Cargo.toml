@@ -9,6 +9,11 @@ license = "MIT"
 name = "panorama_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# the installer kills every process named after the main binary; tauri.conf.json renames it back for bundles
+[[bin]]
+name = "panorama-dev"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

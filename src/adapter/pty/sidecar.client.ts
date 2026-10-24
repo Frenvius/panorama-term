@@ -1,4 +1,5 @@
-const SIDECAR_HTTP = 'http://127.0.0.1:9777';
+export const SIDECAR_PORT = import.meta.env.DEV ? 9877 : 9777;
+export const SIDECAR_HTTP = `http://127.0.0.1:${SIDECAR_PORT}`;
 
 export const killPtySession = (tileId: string): Promise<unknown> =>
   fetch(`${SIDECAR_HTTP}/kill?tileId=${encodeURIComponent(tileId)}`).catch(() => undefined);

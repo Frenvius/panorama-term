@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const release = process.argv.includes('--release');
 const profile = release ? 'release' : 'debug';
@@ -11,14 +11,16 @@ const kill = (name: string) => {
   if (win) spawnSync('taskkill', ['/IM', `${name}.exe`, '/F'], { stdio: 'ignore' });
   else spawnSync('pkill', ['-x', name], { stdio: 'ignore' });
 };
+// the installed release app also runs as sidecar.exe, so only the binary cargo is about to overwrite may die
+const killBuilt = () => {
+  const bin = resolve('sidecar-rs', 'target', profile, `sidecar${ext}`);
+  if (win) {
+    const script = `Get-Process sidecar -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${bin}' } | Stop-Process -Force`;
+    spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: 'ignore' });
+  } else spawnSync('pkill', ['-f', bin], { stdio: 'ignore' });
+};
 
-if (release) {
-  kill('panorama-host');
-  kill('panorama-brain');
-  kill('sidecar');
-} else {
-  kill('sidecar');
-}
+killBuilt();
 
 const args = ['build', '--manifest-path', 'sidecar-rs/Cargo.toml'];
 if (release) args.push('--release');
