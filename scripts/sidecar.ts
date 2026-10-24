@@ -22,21 +22,25 @@ const killBuilt = () => {
 
 killBuilt();
 
+const info = spawnSync('rustc', ['-vV'], { encoding: 'utf8' }).stdout ?? '';
+const host = info.match(/host:\s*(\S+)/)?.[1];
+if (!host) {
+  console.error('[sidecar] could not resolve host target triple from rustc -vV');
+  process.exit(1);
+}
+const triple = process.env.TAURI_ENV_TARGET_TRIPLE || host;
+const cross = triple !== host;
+
 const args = ['build', '--manifest-path', 'sidecar-rs/Cargo.toml'];
 if (release) args.push('--release');
+if (cross) args.push('--target', triple);
 
 const build = spawnSync('cargo', args, { stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 if (!release) kill('panorama-brain');
 
-const info = spawnSync('rustc', ['-vV'], { encoding: 'utf8' }).stdout ?? '';
-const triple = info.match(/host:\s*(\S+)/)?.[1];
-if (!triple) {
-  console.error('[sidecar] could not resolve host target triple from rustc -vV');
-  process.exit(1);
-}
-
+const out = cross ? join('sidecar-rs', 'target', triple, profile) : join('sidecar-rs', 'target', profile);
 const dir = join('src-tauri', 'binaries');
 mkdirSync(dir, { recursive: true });
-copyFileSync(join('sidecar-rs', 'target', profile, `sidecar${ext}`), join(dir, `sidecar-${triple}${ext}`));
+copyFileSync(join(out, `sidecar${ext}`), join(dir, `sidecar-${triple}${ext}`));

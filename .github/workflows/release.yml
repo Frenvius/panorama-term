@@ -6,16 +6,33 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
-    permissions:
-      contents: write
-    runs-on: windows-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: darwin-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - platform: darwin-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -36,7 +53,7 @@ jobs:
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -44,18 +61,66 @@ jobs:
           workspaces: |
             src-tauri
             sidecar-rs
-          shared-key: tauri-release
+          shared-key: tauri-release-${{ matrix.target }}
+
+      - name: Build Tauri app
+        run: bun run tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Collect bundles
+        shell: bash
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' src-tauri/tauri.conf.json | head -1 | cut -d'"' -f4)
+          BUNDLE="src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir out
+          case "${{ matrix.platform }}" in
+            windows-*)
+              cp "$BUNDLE"/nsis/*-setup.exe "$BUNDLE"/nsis/*-setup.exe.sig out/
+              ;;
+            darwin-*)
+              ARCH=$([ "${{ matrix.target }}" = x86_64-apple-darwin ] && echo x64 || echo aarch64)
+              cp "$BUNDLE"/dmg/*.dmg out/
+              cp "$BUNDLE/macos/Panorama.app.tar.gz" "out/Panorama_${VERSION}_${ARCH}.app.tar.gz"
+              cp "$BUNDLE/macos/Panorama.app.tar.gz.sig" "out/Panorama_${VERSION}_${ARCH}.app.tar.gz.sig"
+              ;;
+            linux-*)
+              cp "$BUNDLE"/appimage/*.AppImage "$BUNDLE"/appimage/*.AppImage.sig "$BUNDLE"/deb/*.deb out/
+              ;;
+          esac
+          ls -la out
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
 
       - name: Get version
         id: version
-        shell: bash
         run: |
           VERSION=$(grep -o '"version": "[^"]*"' src-tauri/tauri.conf.json | head -1 | cut -d'"' -f4)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Extract release notes from CHANGELOG.md
-        id: notes
-        shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           if [ ! -f CHANGELOG.md ]; then
@@ -83,54 +148,43 @@ jobs:
           cat release-notes.md
           echo "::endgroup::"
 
-      - name: Build Tauri app
-        run: bun run tauri build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-
-      - name: Read signature file
-        id: signature
-        shell: bash
+      - name: Build updater.json
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          SIG=$(cat "src-tauri/target/release/bundle/nsis/Panorama_${VERSION}_x64-setup.exe.sig")
-          echo "signature=$SIG" >> $GITHUB_OUTPUT
-
-      - name: Create release and upload assets
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: 'Panorama v${{ steps.version.outputs.version }}'
-          body_path: release-notes.md
-          files: |
-            src-tauri/target/release/bundle/nsis/Panorama_${{ steps.version.outputs.version }}_x64-setup.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update updater.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          URL="https://github.com/Frenvius/panorama-term/releases/download/v${VERSION}/Panorama_${VERSION}_x64-setup.exe"
-          SIGNATURE='${{ steps.signature.outputs.signature }}'
+          BASE="https://github.com/Frenvius/panorama-term/releases/download/v${VERSION}"
+          PLATFORMS='{}'
+          for dir in bundles/*/; do
+            platform=$(basename "$dir")
+            sig=$(ls "$dir"*.sig)
+            file=$(basename "$sig" .sig)
+            PLATFORMS=$(jq --arg p "$platform" --arg url "$BASE/$file" --arg sig "$(cat "$sig")" \
+              '. + {($p): {url: $url, signature: $sig}}' <<< "$PLATFORMS")
+            rm "$sig"
+          done
 
           jq -n \
             --arg version "$VERSION" \
             --arg notes "$(cat release-notes.md)" \
-            --arg pub_date "$PUB_DATE" \
-            --arg url "$URL" \
-            --arg signature "$SIGNATURE" \
-            '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, signature: $signature}' \
+            --arg pub_date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --argjson platforms "$PLATFORMS" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' \
             > public/updater.json
 
           echo "::group::updater.json"
           cat public/updater.json
           echo "::endgroup::"
 
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: 'Panorama v${{ steps.version.outputs.version }}'
+          body_path: release-notes.md
+          files: bundles/*/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Commit updater.json
-        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
