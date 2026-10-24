@@ -16,6 +16,7 @@ const Titlebar = () => {
   const [maximized, setMaximized] = React.useState(false);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const restoreMaximized = React.useRef(false);
 
   React.useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -32,13 +33,21 @@ const Titlebar = () => {
   const toggleMaximize = () => void win.toggleMaximize();
   const toggleFullscreen = async () => {
     const isFS = await win.isFullscreen();
+    // a frameless window still flagged maximized gets clipped to the work area in fullscreen on Windows
+    if (!isFS && !IS_MAC && (await win.isMaximized())) {
+      restoreMaximized.current = true;
+      await win.unmaximize();
+    }
     await win.setFullscreen(!isFS);
     setIsFullscreen(!isFS);
+    if (isFS && restoreMaximized.current) {
+      restoreMaximized.current = false;
+      await win.maximize();
+    }
   };
   const handleMaximizeClick = async () => {
     if (isFullscreen) {
-      await win.setFullscreen(false);
-      setIsFullscreen(false);
+      await toggleFullscreen();
     } else {
       toggleMaximize();
     }
