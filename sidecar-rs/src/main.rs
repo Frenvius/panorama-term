@@ -901,13 +901,13 @@ fn run_lookup_tile(kind: &str, tile: &str) -> Option<Arc<Session>> {
     sessions().lock().unwrap().get(&run_key(kind, tile)).cloned()
 }
 
-fn run_lookup_cwd(cwd: &str) -> Option<Arc<Session>> {
+fn run_lookup_cwd(kind: &str, cwd: &str) -> Option<Arc<Session>> {
     let norm = norm_cwd(cwd);
     let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
     let mut best: Option<Arc<Session>> = None;
     for s in list {
         let Some(run) = &s.run else { continue };
-        if run.kind != "run" || run.cwd != norm {
+        if run.kind != kind || run.cwd != norm {
             continue;
         }
         let better = match &best {
@@ -929,7 +929,7 @@ fn run_lookup_cwd(cwd: &str) -> Option<Arc<Session>> {
 fn run_lookup(kind: &str, tile: Option<&str>, cwd: Option<&str>) -> Option<Arc<Session>> {
     match tile {
         Some(t) if !t.is_empty() => run_lookup_tile(kind, t),
-        _ => cwd.filter(|c| !c.is_empty()).and_then(run_lookup_cwd),
+        _ => cwd.filter(|c| !c.is_empty()).and_then(|c| run_lookup_cwd(kind, c)),
     }
 }
 
@@ -1981,24 +1981,45 @@ fn urlenc(s: &str) -> String {
     out
 }
 
+fn run_kind_context(kind: &str, cwd: &str, base: &str, enc: &str) -> Option<String> {
+    let body = run_status_json(run_lookup(kind, None, Some(cwd)));
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let state = match v.get("state").and_then(|s| s.as_str())? {
+        "none" => return None,
+        "running" => "running".to_string(),
+        _ => match v.get("exitCode").and_then(|c| c.as_i64()) {
+            Some(0) => "finished with exit code 0".to_string(),
+            Some(code) => format!("FAILED with exit code {code}"),
+            None => "exited".to_string(),
+        },
+    };
+    let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("?");
+    let label = if kind == "build" { "build" } else { "dev run" };
+    let kq = if kind == "build" { "&kind=build" } else { "" };
+    Some(format!(
+        "- {label} `{cmd}`: {state}. status: curl \"{base}/run/status?cwd={enc}{kq}\" | logs: curl \"{base}/run/logs?cwd={enc}{kq}&tail=50\""
+    ))
+}
+
 fn run_context(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let body = run_status_json(run_lookup("run", None, Some(cwd)));
-    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
-    let state = v.get("state").and_then(|s| s.as_str())?;
-    if state == "none" {
-        return None;
-    }
-    let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("?");
     let base = format!("http://127.0.0.1:{}", port());
     let enc = urlenc(cwd);
+    let sessions: Vec<String> = ["run", "build"]
+        .iter()
+        .filter_map(|kind| run_kind_context(kind, cwd, &base, &enc))
+        .collect();
+    if sessions.is_empty() {
+        return None;
+    }
     Some(format!(
-        "This project has a dev run session (`{cmd}`, currently {state}). When the user asks about the running app, its output, or errors in it, inspect the logs yourself:\n\
-         - status: curl \"{base}/run/status?cwd={enc}\"\n\
-         - logs: curl \"{base}/run/logs?cwd={enc}&tail=50\"\n\
-         Logs are numbered lines; the first response line reports the served range and total (max 500 per request). Start with a small tail (30-50 lines) and paginate with &from=<line>&count=<n> only when needed. Remember the last line you read and fetch only newer lines on later checks. Never fetch the whole log."
+        "This project has run sessions started from Panorama. When the user asks about the running app, a build, their output, or errors in them, inspect the logs yourself:\n\
+         {}\n\
+         A FAILED session usually has its error in the last lines: read a small tail before answering anything about that failure. \
+         Logs are numbered lines; the first response line reports the served range and total (max 500 per request). Start with a small tail (30-50 lines) and paginate with &from=<line>&count=<n> only when needed. Remember the last line you read and fetch only newer lines on later checks. Never fetch the whole log.",
+        sessions.join("\n")
     ))
 }
 
