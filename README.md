@@ -21,6 +21,7 @@
 </p>
 
 <p align="center">
+  <a href="https://usepanorama.dev"><b>Website</b></a> ·
   <a href="https://github.com/Frenvius/panorama-term/releases/latest"><b>Download</b></a>
 </p>
 
