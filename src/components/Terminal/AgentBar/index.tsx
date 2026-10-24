@@ -347,7 +347,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
 
   React.useEffect(() => {
     if (agentPresent) {
-      if (hydratedDraftTileRef.current === tileId) return;
+      if (hydratedDraftTileRef.current === tileId) {
+        renderAndFocus(draftRef.current, false);
+        return;
+      }
       hydratedDraftTileRef.current = tileId;
       let restored = cloneDraft(EMPTY_DRAFT);
       try {
