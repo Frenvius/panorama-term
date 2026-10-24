@@ -144,6 +144,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const startResize = (dir: string) => (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    e.preventDefault();
     onActivate(tile.id);
     (e.target as Element).setPointerCapture(e.pointerId);
     resize.current = { x: e.clientX, y: e.clientY, dir };
