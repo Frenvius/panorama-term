@@ -1,4 +1,17 @@
 {
+  "app": {
+    "windows": [
+      {
+        "title": "Panorama",
+        "width": 1280,
+        "height": 820,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 12, "y": 23 }
+      }
+    ]
+  },
   "bundle": {
     "targets": ["app", "dmg"]
   }

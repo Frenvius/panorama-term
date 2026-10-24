@@ -1,3 +1,4 @@
+import { IS_MAC } from '~/usecase/util/platform';
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 
 export type CommandId =
@@ -28,8 +29,6 @@ interface Command {
 }
 
 const BINDINGS_KEY = 'keybindings';
-
-const IS_MAC = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
 
 export const KEYBINDINGS: Command[] = [
   { id: 'tile.new', label: 'New terminal', group: 'Canvas', defaultCombo: 'mod+t' },

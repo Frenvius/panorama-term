@@ -11,6 +11,14 @@
   background: var(--surface-1);
   border-bottom: 1px solid var(--border-1);
   user-select: none;
+
+  &.mac {
+    padding-left: 72px;
+  }
+}
+
+.macControls {
+  align-items: center;
 }
 
 .settings {

@@ -859,6 +859,31 @@ fn dotnet_commands(dir: &std::path::Path, out: &mut Vec<String>) {
     }
 }
 
+// AppKit has no size option for the traffic lights: shrink the frame while keeping the bounds at the
+// original size so the button draws scaled; bounds stay put, which keeps this idempotent across resizes
+#[cfg(target_os = "macos")]
+fn compact_traffic_lights(ns_window: tauri::Result<*mut std::ffi::c_void>) {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+    use objc2_foundation::{NSPoint, NSSize};
+    const SCALE: f64 = 0.85;
+    const SPACING: f64 = 17.0;
+
+    let Ok(ptr) = ns_window else { return };
+    let ns_window = unsafe { &*ptr.cast::<NSWindow>() };
+    let kinds = [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton];
+    let Some(left) = ns_window.standardWindowButton(kinds[0]).map(|b| b.frame().origin.x) else { return };
+    for (i, kind) in kinds.into_iter().enumerate() {
+        let Some(button) = ns_window.standardWindowButton(kind) else { continue };
+        let frame = button.frame();
+        let full = button.bounds().size;
+        let size = NSSize::new(full.width * SCALE, full.height * SCALE);
+        let center_y = frame.origin.y + frame.size.height / 2.0;
+        button.setFrameSize(size);
+        button.setBoundsSize(full);
+        button.setFrameOrigin(NSPoint::new(left + i as f64 * SPACING, center_y - size.height / 2.0));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -881,6 +906,10 @@ pub fn run() {
                 eprintln!("[store] init failed: {err}");
             }
             spawn_sidecar();
+            #[cfg(target_os = "macos")]
+            if let Some(main) = app.get_webview_window("main") {
+                compact_traffic_lights(main.ns_window());
+            }
             create_notif_window(app.handle())?;
             notes::start_notes_watch(app.handle().clone());
             Ok(())
@@ -894,6 +923,8 @@ pub fn run() {
                 tauri::WindowEvent::Focused(true) => {
                     raise_notif_window(window.app_handle());
                 }
+                #[cfg(target_os = "macos")]
+                tauri::WindowEvent::Resized(_) => compact_traffic_lights(window.ns_window()),
                 _ => {}
             }
         })
