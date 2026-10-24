@@ -247,7 +247,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
 
   const onRunClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (running) run.stop();
+    if (running) run.restart();
     else if (run.status.state === 'exited') run.start(run.status.cmd);
     else run.start();
   };
@@ -726,7 +726,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   data-tooltip={running ? run.status.cmd : runFailed ? `exited (${run.status.exitCode})` : run.defaultCmd ?? 'Run'}
                 >
                   {running ? (
-                    <Square size={13} strokeWidth={2} className={styles.stopIcon} />
+                    <RotateCw size={13} strokeWidth={2} />
                   ) : runFailed ? (
                     <span className={`${styles.runDot} ${styles.runDotErr}`} />
                   ) : (
