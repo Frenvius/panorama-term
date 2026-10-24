@@ -7,6 +7,7 @@ import { termTheme, THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
+import { IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
 import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
@@ -373,6 +374,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     let exited = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const target = getSetting(TERMINAL_TARGET_KEY, 'auto');
+    const idleCompact = getSetting(IDLE_COMPACTION_KEY, true);
     const paint = setInterval(() => {
       if (!dirtyRef.current) return;
       dirtyRef.current = false;
@@ -389,7 +391,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           rows: rowsRef.current,
           target: readOnly ? undefined : target,
           elevated: elevatedRef.current,
-          attach: readOnly
+          attach: readOnly,
+          idleCompact
         },
         {
           acceptGrid: () => visibleRef.current && !document.hidden,

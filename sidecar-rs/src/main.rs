@@ -1455,6 +1455,13 @@ impl ClaudeTracker {
     }
 }
 
+fn is_claude_event(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("agent").and_then(|a| a.as_str()).map(|a| a == "claude"))
+        .unwrap_or(false)
+}
+
 fn agent_event_ws_msg(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     let event = v.get("event").and_then(|e| e.as_str())?;
@@ -1816,24 +1823,7 @@ fn statusline_cmd() {
     println!("{}", default_status_line(&v));
 }
 
-const EMIT_EVENT_MIN_CC: (u64, u64, u64) = (2, 1, 141);
 const EVENT_TEXT_CAP: usize = 200;
-
-fn cc_supports_terminal_sequence() -> bool {
-    let Ok(raw) = std::env::var("CLAUDE_CODE_VERSION") else {
-        return true;
-    };
-    let mut parts = raw
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<u64>().ok());
-    let ver = (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-    );
-    ver >= EMIT_EVENT_MIN_CC
-}
 
 fn sanitize_event_text(raw: &str) -> String {
     let clean: String = raw
@@ -1883,29 +1873,19 @@ fn transcript_last_texts(path: &str) -> (String, String) {
     (sanitize_event_text(&query), sanitize_event_text(&response))
 }
 
-fn emit_event(event: &str) {
-    let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
-    let evt: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
-
-    if std::env::var("PANORAMA_TILE_ID").is_err() {
-        return;
-    }
-    if !cc_supports_terminal_sequence() {
-        return;
-    }
+fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::Value> {
     if event == "stop"
         && evt
             .get("stop_hook_active")
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     {
-        return;
+        return None;
     }
 
     let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
     if event == "compact" && field("source") != "compact" {
-        return;
+        return None;
     }
     let cwd = field("cwd");
     let project = Path::new(&cwd)
@@ -1925,8 +1905,12 @@ fn emit_event(event: &str) {
     let obj = payload.as_object_mut().unwrap();
     match event {
         "stop" => {
-            std::thread::sleep(Duration::from_millis(300));
+            let last = field("last_assistant_message");
+            if last.trim().is_empty() {
+                std::thread::sleep(Duration::from_millis(300));
+            }
             let (query, response) = transcript_last_texts(&field("transcript_path"));
+            let response = if last.trim().is_empty() { response } else { sanitize_event_text(&last) };
             obj.insert("query".into(), query.into());
             obj.insert("response".into(), response.into());
         }
@@ -1946,27 +1930,42 @@ fn emit_event(event: &str) {
         }
         _ => {}
     }
+    Some(payload)
+}
 
-    let body = payload.to_string();
-    let seq = format!("\x1b]777;notify;{AGENT_EVENT_SENTINEL};{body}\x07");
-    let mut out = serde_json::json!({ "terminalSequence": seq });
-    if event == "prompt-submit" {
-        let tile_id = std::env::var("PANORAMA_TILE_ID").unwrap_or_default();
-        let parts: Vec<String> = [linked_notes_context(&tile_id), linked_peers_context(&tile_id), run_context(&cwd)]
-            .into_iter()
-            .flatten()
-            .collect();
-        if !parts.is_empty() {
-            out.as_object_mut().unwrap().insert(
-                "hookSpecificOutput".into(),
-                serde_json::json!({
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": parts.join("\n\n"),
-                }),
-            );
-        }
+fn prompt_context(tile_id: &str, cwd: &str) -> String {
+    [linked_notes_context(tile_id), linked_peers_context(tile_id), run_context(cwd)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn push_tile_event(tile_id: &str, msg: String) {
+    if let Some(s) = sessions().lock().unwrap().get(tile_id).cloned() {
+        s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
     }
-    println!("{out}");
+}
+
+fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
+    let Ok(evt) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return String::new();
+    };
+    let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let event = if event == "session-start" {
+        let binding = serde_json::json!({ "agent": "claude", "sessionId": field("session_id"), "cwd": evt.get("cwd") });
+        bind_agent_session(tile_id, &binding.to_string());
+        "compact"
+    } else {
+        event
+    };
+    if let Some(msg) = agent_event_body(event, &evt).and_then(|p| agent_event_ws_msg(&p.to_string())) {
+        push_tile_event(tile_id, msg);
+    }
+    if event == "prompt-submit" {
+        return prompt_context(tile_id, &field("cwd"));
+    }
+    String::new()
 }
 
 fn urlenc(s: &str) -> String {
@@ -1982,25 +1981,11 @@ fn urlenc(s: &str) -> String {
     out
 }
 
-fn sidecar_get(path_query: &str) -> Option<String> {
-    use std::net::TcpStream as StdTcp;
-    let addr = format!("127.0.0.1:{}", port());
-    let stream = StdTcp::connect_timeout(&addr.parse().ok()?, Duration::from_millis(300)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
-    let mut stream = stream;
-    let req = format!("GET {path_query} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).ok()?;
-    raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string())
-}
-
 fn run_context(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let body = sidecar_get(&format!("/run/status?cwd={}", urlenc(cwd)))?;
+    let body = run_status_json(run_lookup("run", None, Some(cwd)));
     let v: serde_json::Value = serde_json::from_str(&body).ok()?;
     let state = v.get("state").and_then(|s| s.as_str())?;
     if state == "none" {
@@ -2015,28 +2000,6 @@ fn run_context(cwd: &str) -> Option<String> {
          - logs: curl \"{base}/run/logs?cwd={enc}&tail=50\"\n\
          Logs are numbered lines; the first response line reports the served range and total (max 500 per request). Start with a small tail (30-50 lines) and paginate with &from=<line>&count=<n> only when needed. Remember the last line you read and fetch only newer lines on later checks. Never fetch the whole log."
     ))
-}
-
-fn record_agent() {
-    let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
-    let evt: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
-    let session_id = evt.get("session_id").and_then(|s| s.as_str());
-    let tile_id = std::env::var("PANORAMA_TILE_ID").ok();
-    if let (Some(session_id), Some(tile_id)) = (session_id, tile_id) {
-        if let Some(path) = binding_path(&tile_id) {
-            let cwd = evt.get("cwd").and_then(|s| s.as_str());
-            let mut rec = read_binding_rec(&tile_id)
-                .filter(|v| v.is_object())
-                .unwrap_or_else(|| serde_json::json!({}));
-            let obj = rec.as_object_mut().unwrap();
-            obj.insert("agent".into(), "claude".into());
-            obj.insert("agentSessionId".into(), session_id.into());
-            obj.insert("cwd".into(), cwd.map(Into::into).unwrap_or(serde_json::Value::Null));
-            obj.insert("tileId".into(), tile_id.clone().into());
-            let _ = write_atomic(path, rec.to_string().as_bytes());
-        }
-    }
 }
 
 fn front_title(path: &str) -> Option<String> {
@@ -2265,100 +2228,76 @@ fn install_kimi_statusline() {
     }
 }
 
-fn install_claude_hook() {
+fn strip_claude_hooks(json: &mut serde_json::Value, exe: &str, prev_status: Option<String>) -> bool {
+    let ours = |cmd: &str| {
+        cmd.starts_with(&format!("\"{exe}\" "))
+            && (cmd.ends_with(" record-agent") || cmd.contains(" emit-event "))
+    };
+    let mut changed = false;
+    let Some(obj) = json.as_object_mut() else {
+        return false;
+    };
+    if let Some(hooks) = obj.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for entries in hooks.values_mut() {
+            let Some(arr) = entries.as_array_mut() else {
+                continue;
+            };
+            let before = arr.len();
+            arr.retain(|entry| {
+                !entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|cmds| cmds.iter().any(|h| h.get("command").and_then(|c| c.as_str()).map(ours).unwrap_or(false)))
+                    .unwrap_or(false)
+            });
+            changed |= arr.len() != before;
+        }
+        hooks.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+        if hooks.is_empty() {
+            obj.remove("hooks");
+        }
+    }
+    let our_status = format!("\"{exe}\" statusline");
+    let status_is_ours = obj
+        .get("statusLine")
+        .and_then(|s| s.get("command"))
+        .and_then(|c| c.as_str())
+        == Some(our_status.as_str());
+    if status_is_ours {
+        match prev_status {
+            Some(prev) => {
+                obj.insert("statusLine".into(), serde_json::json!({ "type": "command", "command": prev }));
+            }
+            None => {
+                obj.remove("statusLine");
+            }
+        }
+        changed = true;
+    }
+    changed
+}
+
+fn uninstall_claude_hook() {
+    // the Panorama mod now carries these hooks; only this binary's own entries are removed so the other build keeps working
     let Some(home) = std::env::var("USERPROFILE")
         .ok()
         .or_else(|| std::env::var("HOME").ok())
     else {
         return;
     };
-    let claude_dir = Path::new(&home).join(".claude");
-    if !claude_dir.exists() {
-        return;
-    }
     let Some(exe) = hook_exe() else {
         return;
     };
-    let file = claude_dir.join("settings.json");
-
-    let mut json: serde_json::Value = std::fs::read_to_string(&file)
+    let file = Path::new(&home).join(".claude").join("settings.json");
+    let Some(mut json) = std::fs::read_to_string(&file)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !json.is_object() {
-        json = serde_json::json!({});
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    else {
+        return;
+    };
+    if !strip_claude_hooks(&mut json, &exe.display().to_string(), load_statusline_chain()) {
+        return;
     }
-
-    let hooks = json
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    if !hooks.is_object() {
-        *hooks = serde_json::json!({});
-    }
-    let hooks = hooks.as_object_mut().unwrap();
-
-    let exe = exe.display();
-    let entries: &[(&str, Option<&str>, String, &str)] = &[
-        ("SessionStart", None, format!("\"{exe}\" record-agent"), "record-agent"),
-        ("SessionStart", Some("compact"), format!("\"{exe}\" emit-event compact"), "emit-event"),
-        ("Stop", None, format!("\"{exe}\" emit-event stop"), "emit-event"),
-        ("PermissionRequest", None, format!("\"{exe}\" emit-event permission"), "emit-event"),
-        ("Notification", Some("idle_prompt"), format!("\"{exe}\" emit-event notification"), "emit-event"),
-        ("UserPromptSubmit", None, format!("\"{exe}\" emit-event prompt-submit"), "emit-event"),
-    ];
-
-    for (name, matcher, command, marker) in entries {
-        let existing = hooks.get(*name).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let mut cleaned: Vec<serde_json::Value> = existing
-            .into_iter()
-            .filter(|entry| {
-                !entry
-                    .get("hooks")
-                    .and_then(|h| h.as_array())
-                    .map(|arr| {
-                        arr.iter().any(|h| {
-                            h.get("command")
-                                .and_then(|c| c.as_str())
-                                .map(|c| c.contains(marker))
-                                .unwrap_or(false)
-                        })
-                    })
-                    .unwrap_or(false)
-            })
-            .collect();
-        let mut entry = serde_json::json!({
-            "hooks": [ { "type": "command", "command": command } ]
-        });
-        if let Some(m) = matcher {
-            entry.as_object_mut().unwrap().insert("matcher".into(), (*m).into());
-        }
-        cleaned.push(entry);
-        hooks.insert((*name).into(), serde_json::Value::Array(cleaned));
-    }
-
-    let our_status = format!("\"{exe}\" statusline");
-    let current = json
-        .get("statusLine")
-        .and_then(|s| s.get("command"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
-    if current.as_deref() != Some(our_status.as_str()) {
-        if let Some(prev) = current {
-            let trimmed = prev.trim();
-            if !trimmed.is_empty() && !trimmed.ends_with(" statusline") {
-                if let Some(path) = statusline_chain_path() {
-                    let _ = write_atomic(path, serde_json::json!({ "command": prev }).to_string().as_bytes());
-                }
-            }
-        }
-        json.as_object_mut().unwrap().insert(
-            "statusLine".into(),
-            serde_json::json!({ "type": "command", "command": our_status }),
-        );
-    }
-
     if let Ok(text) = serde_json::to_string_pretty(&json) {
         let _ = write_atomic(&file, text.as_bytes());
     }
@@ -2447,6 +2386,9 @@ fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// above any context window, so idle compaction never triggers
+const IDLE_COMPACT_OFF_TOKENS: &str = "1000000000";
+
 #[derive(Clone)]
 struct Params {
     tile_id: String,
@@ -2456,6 +2398,7 @@ struct Params {
     shell: Option<String>,
     target: Option<String>,
     elevated: bool,
+    idle_compact: bool,
     spawn_cmd: Option<String>,
     run_kind: String,
     attach_only: bool,
@@ -2702,6 +2645,9 @@ fn spawn_session(
     if let Some(dirs) = claude_plugin_dirs() {
         env.push(("CLAUDE_CODE_PLUGIN_DIRS".into(), dirs));
     }
+    if !p.idle_compact {
+        env.push(("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS".into(), IDLE_COMPACT_OFF_TOKENS.into()));
+    }
     if p.spawn_cmd.is_some() {
         if let Some(path) = fresh_path() {
             env.push(("PATH".into(), path));
@@ -2854,7 +2800,11 @@ fn run_consumer_loop(
                         }
                     }
                     let mut outgoing: Vec<String> = Vec::new();
+                    let mod_owned = s.mod_session.lock().unwrap_or_else(|e| e.into_inner()).is_some();
                     for body in p.callbacks_mut().take_agent_events() {
+                        if mod_owned && is_claude_event(&body) {
+                            continue;
+                        }
                         if let Some(msg) = agent_event_ws_msg(&body) {
                             outgoing.push(msg);
                         }
@@ -3673,6 +3623,7 @@ async fn handle_conn(mut stream: TcpStream) {
             shell: q.get("shell").cloned(),
             target: q.get("target").cloned(),
             elevated: q.get("elevated").map(|v| v == "1").unwrap_or(false),
+            idle_compact: q.get("idleCompact").map(|v| v != "0").unwrap_or(true),
             spawn_cmd: None,
             run_kind: "run".into(),
             attach_only: watch_only || q.get("attach").map(|v| v == "1").unwrap_or(false),
@@ -3697,6 +3648,31 @@ async fn handle_conn(mut stream: TcpStream) {
         let _ = stream
             .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
             .await;
+        return;
+    }
+
+    if path_only == "/agent-hook" {
+        let q = parse_query(query);
+        let tile_id = q.get("tileId").cloned().unwrap_or_default();
+        let event = q.get("event").cloned().unwrap_or_default();
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = vec![0u8; len.min(STATUS_POST_MAX)];
+        let text = if !tile_id.is_empty() && len > 0 && len <= STATUS_POST_MAX && stream.read_exact(&mut body).await.is_ok() {
+            tokio::task::spawn_blocking(move || handle_agent_hook(&tile_id, &event, &body))
+                .await
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            text.len(),
+            text
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
         return;
     }
 
@@ -3823,6 +3799,7 @@ async fn handle_conn(mut stream: TcpStream) {
                         shell: None,
                         target: None,
                         elevated: false,
+                        idle_compact: true,
                         spawn_cmd: Some(cmd),
                         run_kind: kind.clone(),
                         attach_only: false,
@@ -3957,13 +3934,8 @@ async fn main() {
         host::run_host_server(host_port());
         return;
     }
-    if std::env::args().nth(1).as_deref() == Some("record-agent") {
-        record_agent();
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("emit-event") {
-        let event = std::env::args().nth(2).unwrap_or_default();
-        emit_event(&event);
+    // settings.json hooks written by older builds may still call these until the next brain start removes them
+    if matches!(std::env::args().nth(1).as_deref(), Some("record-agent" | "emit-event")) {
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("statusline") {
@@ -3978,7 +3950,7 @@ async fn main() {
         std::env::set_var("PATH", path);
     }
     tokio::task::block_in_place(|| reconnect_sessions());
-    install_claude_hook();
+    uninstall_claude_hook();
     install_claude_mod();
     install_pi_extension();
     install_kimi_statusline();
@@ -4012,10 +3984,67 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, merge_agent_state,
-        merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path,
-        RunLog, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
+        merge_agent_state, merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_claude_hooks, strip_mod_owned, utf8_valid_len,
+        Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
+
+    #[test]
+    fn strip_claude_hooks_removes_only_this_binary() {
+        let mut json = serde_json::json!({
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "\"C:\\dev\\sidecar.exe\" emit-event stop" }] },
+                    { "hooks": [{ "type": "command", "command": "\"C:\\rel\\sidecar.exe\" emit-event stop" }] },
+                    { "hooks": [{ "type": "command", "command": "notify-send done" }] }
+                ],
+                "SessionStart": [
+                    { "hooks": [{ "type": "command", "command": "\"C:\\dev\\sidecar.exe\" record-agent" }] }
+                ]
+            },
+            "statusLine": { "type": "command", "command": "\"C:\\dev\\sidecar.exe\" statusline" }
+        });
+        assert!(strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", Some("hud".into())));
+        let stop = json["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert!(json["hooks"].get("SessionStart").is_none());
+        assert_eq!(json["statusLine"]["command"], "hud");
+        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None));
+    }
+
+    #[test]
+    fn strip_claude_hooks_leaves_other_build_statusline() {
+        let mut json = serde_json::json!({
+            "statusLine": { "type": "command", "command": "\"C:\\rel\\sidecar.exe\" statusline" }
+        });
+        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None));
+        assert_eq!(json["statusLine"]["command"], "\"C:\\rel\\sidecar.exe\" statusline");
+    }
+
+    #[test]
+    fn agent_event_body_prefers_last_assistant_message() {
+        let evt = serde_json::json!({
+            "session_id": "s1",
+            "cwd": "D:\\work\\proj",
+            "transcript_path": "",
+            "stop_hook_active": false,
+            "last_assistant_message": "all\ndone"
+        });
+        let body = agent_event_body("stop", &evt).unwrap();
+        assert_eq!(body["response"], "all done");
+        assert_eq!(body["project"], "proj");
+        let active = serde_json::json!({ "stop_hook_active": true });
+        assert!(agent_event_body("stop", &active).is_none());
+        let start = serde_json::json!({ "source": "startup" });
+        assert!(agent_event_body("compact", &start).is_none());
+    }
+
+    #[test]
+    fn is_claude_event_reads_agent_field() {
+        assert!(is_claude_event(r#"{"agent":"claude","event":"stop"}"#));
+        assert!(!is_claude_event(r#"{"agent":"pi","event":"stop"}"#));
+        assert!(!is_claude_event("not json"));
+    }
 
     #[test]
     fn agent_state_cache_keeps_catalog_across_updates() {

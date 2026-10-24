@@ -32,6 +32,7 @@ export const FRAME_MIN_HEIGHT = 80;
 export const FRAME_COLOR = '#6b7280';
 export const FRAME_PAD_KEY = 'framePad';
 export const STATUS_BAR_USAGE_KEY = 'statusBarUsage';
+export const IDLE_COMPACTION_KEY = 'claudeIdleCompaction';
 export const USAGE_PROVIDERS: UsageProvider[] = ['claude', 'codex'];
 
 export const CULL_MARGIN = 400;

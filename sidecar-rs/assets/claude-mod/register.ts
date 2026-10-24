@@ -5,6 +5,14 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 let waiting = false
 
+async function sidecarUrl($: EngineInterface, path: string) {
+  const tileId = await $.env.get('PANORAMA_TILE_ID')
+  if (!tileId) return undefined
+  const port = (await $.env.get('PANORAMA_SIDECAR_PORT')) ?? '9777'
+  const sep = path.includes('?') ? '&' : '?'
+  return `http://127.0.0.1:${port}${path}${sep}tileId=${encodeURIComponent(tileId)}`
+}
+
 async function post($: EngineInterface, state: Record<string, unknown>) {
   const tileId = await $.env.get('PANORAMA_TILE_ID')
   if (!tileId) return
@@ -20,7 +28,23 @@ async function post($: EngineInterface, state: Record<string, unknown>) {
   }
 }
 
-async function reportStatus($: EngineInterface) {
+async function forwardHook($: EngineInterface, event: string, input: unknown) {
+  const url = await sidecarUrl($, `/agent-hook?event=${event}`)
+  if (!url) return ''
+  try {
+    const res = await $.http.fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+    return res.ok ? res.text : ''
+  } catch (err) {
+    $.ui.log(`panorama: ${event} hook failed: ${String(err)}`, { to: 'debug' })
+    return ''
+  }
+}
+
+async function reportStatus($: EngineInterface, extra: Record<string, unknown> = {}) {
   const { context, cost, rateLimits } = await $.session.usage()
   const rate = (kind: string) => rateLimits.find(r => r.kind === kind)?.percentUsed
   await post($, {
@@ -31,7 +55,17 @@ async function reportStatus($: EngineInterface) {
     costUsd: cost?.usd,
     rateFiveHour: rate('five_hour'),
     rateSevenDay: rate('seven_day'),
+    ...extra,
   })
+}
+
+type CatalogEntry = {
+  id: string
+  name: string
+  section?: string
+  fast_mode?: unknown
+  notice?: { text?: string | null }
+  runtime?: { max_input_tokens?: number; effort_levels?: string[]; default_effort?: string }
 }
 
 async function readModelCatalog($: EngineInterface) {
@@ -43,8 +77,17 @@ async function readModelCatalog($: EngineInterface) {
       .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
     if (!newest) return undefined
     const doc = JSON.parse(String(await $.fs.read(`${dir}/${newest.name}`)))
-    const models: { id: string; name: string; section?: string }[] = doc?.catalog?.config?.models ?? []
-    return models.map(m => ({ id: m.id, name: m.name, section: m.section === 'main' ? 'main' : 'more' }))
+    const models: CatalogEntry[] = doc?.catalog?.config?.models ?? []
+    return models.map(m => ({
+      id: m.id,
+      name: m.name,
+      section: m.section === 'main' ? 'main' : 'more',
+      contextWindow: m.runtime?.max_input_tokens,
+      efforts: m.runtime?.effort_levels ?? [],
+      defaultEffort: m.runtime?.default_effort,
+      fast: Boolean(m.fast_mode),
+      notice: m.notice?.text ?? undefined,
+    }))
   } catch (err) {
     $.ui.log(`panorama: model catalog unreadable: ${String(err)}`, { to: 'debug' })
     return undefined
@@ -87,9 +130,16 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     waiting = false
     await post($, { status: 'busy' })
     return next(e)
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    if (e.agentId === undefined) await reportStatus($, typeof e.effort === 'string' ? { effort: e.effort } : {})
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -101,9 +151,20 @@ export const register: Register = (on) => {
     return done
   })
 
+  on('classic.SessionStart', async ($, e, next) => {
+    await forwardHook($, 'session-start', e)
+    return next(e)
+  })
+
   on('classic.PermissionRequest', async ($, e, next) => {
     waiting = true
     await post($, { status: 'waiting' })
+    await forwardHook($, 'permission', e)
+    return next(e)
+  })
+
+  on('classic.Notification', async ($, e, next) => {
+    if (e.notification_type === 'idle_prompt') await forwardHook($, 'notification', e)
     return next(e)
   })
 
@@ -124,11 +185,15 @@ export const register: Register = (on) => {
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await post($, { permissionMode: e.permission_mode })
-    return next(e)
+    const context = await forwardHook($, 'prompt-submit', e)
+    const result = await next(e)
+    if (!context) return result
+    return { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
   })
 
   on('classic.Stop', async ($, e, next) => {
     await post($, { permissionMode: e.permission_mode, effort: e.effort?.level })
+    if (!e.stop_hook_active) await forwardHook($, 'stop', e)
     return next(e)
   })
 }

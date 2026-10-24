@@ -39,10 +39,12 @@ export const MODEL_CONTEXT_VARIANTS = [
   { suffix: '[1m]', title: '1M context' }
 ] as const;
 
+export const OPTIONAL_1M_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6'];
+
 export const EFFORT_LEVELS = [
   { id: 'low', desc: 'Fastest, shallow reasoning', color: '#4ade80' },
   { id: 'medium', desc: 'Balanced', color: '#a3e635' },
-  { id: 'high', desc: 'Default', color: '#38bdf8' },
+  { id: 'high', desc: 'Thorough', color: '#38bdf8' },
   { id: 'xhigh', desc: 'Deeper reasoning', color: '#fb923c' },
   { id: 'max', desc: 'Smartest, slowest', color: '#f87171' },
   { id: 'ultracode', desc: 'xhigh + workflows', color: '#a855f7' }

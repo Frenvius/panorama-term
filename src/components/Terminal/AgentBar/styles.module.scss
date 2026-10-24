@@ -244,6 +244,20 @@ $accent: #d97757;
   color: var(--text-muted);
 }
 
+.menuInfo {
+  color: var(--text-muted);
+  cursor: default;
+
+  &:hover {
+    background: transparent;
+  }
+}
+
+.menuNotice {
+  margin-left: 8px;
+  color: #f59e0b;
+}
+
 .menuSub {
   margin-left: auto;
   padding-left: 8px;

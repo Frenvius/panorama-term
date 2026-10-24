@@ -4,7 +4,7 @@ import { X, Bot, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHor
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
-import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY } from '~/usecase/util/constants';
+import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
@@ -173,6 +173,7 @@ const Settings = ({ onClose }: SettingsProps) => {
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
+  const [idleCompact, setIdleCompact] = React.useState(() => getSetting(IDLE_COMPACTION_KEY, true));
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
   const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
   const [minimapCorner, setCorner] = React.useState(getMinimapCorner);
@@ -202,6 +203,11 @@ const Settings = ({ onClose }: SettingsProps) => {
   const selectTarget = (id: string) => {
     setTarget(id);
     void setSetting(TERMINAL_TARGET_KEY, id);
+  };
+
+  const toggleIdleCompact = () => {
+    setIdleCompact(!idleCompact);
+    void setSetting(IDLE_COMPACTION_KEY, !idleCompact);
   };
 
   const selectTheme = (pref: ThemePref) => {
@@ -392,6 +398,17 @@ const Settings = ({ onClose }: SettingsProps) => {
                       onSelect={() => selectTarget(id)}
                     />
                   ))}
+                </div>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Claude Code</p>
+                <div className={styles.options}>
+                  <ToggleOption
+                    checked={idleCompact}
+                    label="Idle compaction"
+                    onToggle={toggleIdleCompact}
+                    description="Compact conversations over 200K tokens after about an hour idle, before the prompt cache expires."
+                  />
                 </div>
               </div>
             </div>

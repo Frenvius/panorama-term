@@ -11,6 +11,7 @@ import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgen
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
+import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
 import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
@@ -67,19 +68,13 @@ const formatCost = (v: number): string => {
   return `$${v.toFixed(2)}`;
 };
 
-const baseModelId = (id: string): string => id.replace(/\[[^\]]*\]/, '');
+const matchCatalogId = (catalog: CatalogModel[], raw: string | undefined): string =>
+  raw ? (findModel(catalog, raw.toLowerCase())?.id ?? '') : '';
 
-const matchCatalogId = (catalog: CatalogModel[], raw: string | undefined): string => {
-  if (!raw) return '';
-  const m = baseModelId(raw.toLowerCase());
-  return catalog.find((s) => s.id === m)?.id ?? '';
-};
-
-const modelLabel = (catalog: CatalogModel[], id: string): string => {
-  const base = baseModelId(id);
-  const entry = catalog.find((m) => m.id === base);
+const modelLabel = (entry: CatalogModel | undefined, is1M: boolean): string => {
   if (!entry) return 'Model';
-  return base === id ? entry.name : `${entry.name} · 1M`;
+  const context = contextLabel(entry, is1M);
+  return context ? `${entry.name} · ${context}` : entry.name;
 };
 
 type UndoSnap = { text: string; images: string[]; caret: number };
@@ -734,6 +729,26 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     ).map((m) => ({ id: m.name, display: m.name, subtext: m.desc, icon: 'model' }));
   }, [agentType, piModels, structured?.modelOptions]);
 
+  const modelCatalog = structured?.modelCatalog?.length ? structured.modelCatalog : FALLBACK_MODEL_CATALOG;
+
+  const is1M = React.useMemo(() => {
+    if (structured?.contextWindow) return structured.contextWindow >= 1_000_000;
+    if (scraped && /1m/i.test(scraped.contextInfo ?? '')) return true;
+    return Boolean(structured && /\[1m\]/i.test(`${structured.model ?? ''} ${structured.defaultModel ?? ''}`));
+  }, [scraped, structured]);
+
+  const currentModelId = React.useMemo(() => {
+    let base = matchCatalogId(modelCatalog, structured?.model);
+    if (scraped) {
+      const sm = scraped.model.toLowerCase().match(/(sonnet|fable|opus|haiku)\s*(\d+)(?:[.\s-](\d+))?/);
+      base = !sm ? '' : sm[3] ? `claude-${sm[1]}-${sm[2]}-${sm[3]}` : `claude-${sm[1]}-${sm[2]}`;
+    }
+    return base && is1M && hasOptional1M(base) ? `${base}[1m]` : base;
+  }, [scraped, structured, is1M, modelCatalog]);
+
+  const currentEntry = findModel(modelCatalog, currentModelId);
+  const efforts = modelEfforts(currentEntry);
+
   const fetchEfforts = React.useCallback((query: string): PromptSuggestion[] => {
     const q = query.toLowerCase();
     if (agentType === 'kimi') {
@@ -746,14 +761,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             : { id: level, display: level, icon: 'effort' as const };
         });
     }
-    return EFFORT_LEVELS.filter((l) => l.id.includes(q) || l.desc.toLowerCase().includes(q)).map((l) => ({
-      id: l.id,
-      color: l.color,
-      display: l.id,
-      subtext: l.desc,
-      icon: 'effort'
-    }));
-  }, [agentType, catalogEfforts]);
+    return efforts
+      .map((l) => ({ ...l, desc: effortDesc(l, currentEntry) }))
+      .filter((l) => l.id.includes(q) || l.desc.toLowerCase().includes(q))
+      .map((l) => ({ id: l.id, color: l.color, display: l.id, subtext: l.desc, icon: 'effort' as const }));
+  }, [agentType, catalogEfforts, efforts, currentEntry]);
 
   const argCommand = suggest?.kind === 'arg' ? suggest.command : '';
 
@@ -911,29 +923,6 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     }
   };
 
-  const modelCatalog = structured?.modelCatalog?.length ? structured.modelCatalog : FALLBACK_MODEL_CATALOG;
-
-  const is1M = React.useMemo(() => {
-    if (structured?.contextWindow) return structured.contextWindow >= 1_000_000;
-    if (scraped && /1m/i.test(scraped.contextInfo ?? '')) return true;
-    return Boolean(structured && /\[1m\]/i.test(`${structured.model ?? ''} ${structured.defaultModel ?? ''}`));
-  }, [scraped, structured]);
-
-  const currentModelId = React.useMemo(() => {
-    if (scraped) {
-      const t = scraped.model.toLowerCase();
-      const oneM = /1m/i.test(scraped.contextInfo ?? '');
-      const sm = t.match(/(sonnet|fable|opus|haiku)\s*(\d+)(?:[.\s-](\d+))?/);
-      if (sm) {
-        const id = sm[3] ? `claude-${sm[1]}-${sm[2]}-${sm[3]}` : `claude-${sm[1]}-${sm[2]}`;
-        return `${id}${oneM ? '[1m]' : ''}`;
-      }
-      return '';
-    }
-    const base = matchCatalogId(modelCatalog, structured?.model);
-    return base && is1M ? `${base}[1m]` : base;
-  }, [scraped, structured, is1M, modelCatalog]);
-
   const parsed = React.useMemo<ParsedStatus>(() => {
     const base: ParsedStatus = { ...status };
     if (scraped) {
@@ -987,6 +976,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
 
   const pickModel = (id: string) => {
     void sendDraft({ text: `/model ${id}`, images: [] });
+    setModelMenu(false);
+  };
+
+  const toggleFast = () => {
+    void sendDraft({ text: '/fast', images: [] });
     setModelMenu(false);
   };
 
@@ -1108,39 +1102,43 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
           )}
           {agentType === 'claude' && (
             <div className={styles.actions}>
-              <div className={styles.action} ref={effortRef}>
-                <button
-                  type="button"
-                  title={effort ? `Effort: ${effort}` : 'Set effort'}
-                  className={styles.effort}
-                  style={effortColor ? { color: effortColor } : undefined}
-                  onClick={toggleEffortMenu}
-                >
-                  <Brain size={14} />
-                </button>
-                {effortMenu && (
-                  <div className={styles.menu}>
-                    {EFFORT_LEVELS.map((l) => (
-                      <button
-                        key={l.id}
-                        type="button"
-                        style={{ color: l.color }}
-                        onClick={pickEffort(l.id)}
-                        className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                      >
-                        {l.id}
-                        <span className={styles.menuSub}>{l.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {efforts.length > 0 && (
+                <div className={styles.action} ref={effortRef}>
+                  <button
+                    type="button"
+                    title={effort ? `Effort: ${effort}` : 'Set effort'}
+                    className={styles.effort}
+                    style={effortColor ? { color: effortColor } : undefined}
+                    onClick={toggleEffortMenu}
+                  >
+                    <Brain size={14} />
+                  </button>
+                  {effortMenu && (
+                    <div className={styles.menu}>
+                      {efforts.map((l) => (
+                        <button
+                          key={l.id}
+                          type="button"
+                          style={{ color: l.color }}
+                          onClick={pickEffort(l.id)}
+                          className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                        >
+                          {l.id}
+                          <span className={styles.menuSub}>{effortDesc(l, currentEntry)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className={styles.action} ref={modelRef}>
                 <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
-                  {modelLabel(modelCatalog, currentModelId)}
+                  {modelLabel(currentEntry, is1M)}
                   <ChevronDown size={11} />
                 </button>
-                {modelMenu && <ModelMenu catalog={modelCatalog} current={currentModelId} onPick={pickModel} />}
+                {modelMenu && (
+                  <ModelMenu catalog={modelCatalog} current={currentModelId} onFast={toggleFast} onPick={pickModel} />
+                )}
               </div>
             </div>
           )}

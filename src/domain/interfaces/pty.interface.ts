@@ -38,7 +38,12 @@ export interface AgentCommand {
 export interface CatalogModel {
   id: string;
   name: string;
+  fast?: boolean;
+  notice?: string;
+  efforts?: string[];
   section: 'main' | 'more';
+  defaultEffort?: string;
+  contextWindow?: number;
 }
 
 export interface ClaudeState {
