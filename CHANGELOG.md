@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.7]
+
+### Added
+- macOS and Linux builds (macOS is not notarized: right-click > Open on first launch).
+- Native macOS titlebar with compact traffic lights.
+- Claude Code integration now lives entirely in the Panorama mod; Panorama no longer writes hooks or a statusline into ~/.claude/settings.json and restores your previous statusline.
+- Claude model picker shows the 200k / 1M toggle only for models where it applies (Opus 4.6, Sonnet 4.6), lists only the effort levels each model supports, marks its default effort, offers fast mode where available and warns about Fable usage.
+- Idle compaction setting for Claude Code terminals (Settings > Terminal).
+- Run button restarts a command that is already running.
+- Dev and release builds run side by side, and updates keep running terminal sessions.
+
+### Fixed
+- "More models" submenu closing while moving the mouse diagonally toward it.
+- Subagents marking a Claude terminal as busy.
+- Fullscreen from a maximized window leaving a taskbar gap on Windows.
+- Tile resize selecting page text on macOS.
+- Markdown html images ignoring width and height.
+
 ## [0.2.6]
 
 ### Added
