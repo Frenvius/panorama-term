@@ -1,7 +1,23 @@
 {
-  "version": "0.2.6",
-  "notes": "### Added\n- Claude agent bar fed by a Claude Code mod: live model, context, effort, permission mode, busy/waiting/idle status and the session's real slash commands.\n- Claude model picker loaded from the Claude Code model catalog: main models up front, older ones under \"More models\", plus a 200k / 1M context selector.\n- Argument choices for slash commands such as /output-style.\n- Agent usage status bar.\n- Kimi Code support in the agent bar.\n- Pi agent: resume sessions, notifications, context window selector and shared linked context.\n- Tabs in notes.\n- Create files and folders from the file tree.\n- Markdown preview in the file editor, with tables, headings and inline marks.\n- Image previews in the diff viewer and file editor.\n- Nested repository changes in the git tab.\n- Notifications from background tabs, opening the notified tab on click.\n- App state stored in SQLite with atomic, durable writes.\n\n### Fixed\n- Workspace writes racing each other and state saving to the wrong tab.\n- Agent bar disappearing after a Pi compaction.\n- Kimi transcript not scrolling with the mouse wheel on Windows.\n- Toolbox tools without a product code breaking IDE detection.\n- Image paste into terminal tiles.",
-  "pub_date": "2026-10-09T01:28:19Z",
-  "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.6/Panorama_0.2.6_x64-setup.exe",
-  "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHVPMWxzL21MSDBiOFV5c3M3WUxnaFBjS3hTb3RMS0pGQlplaGlGSzBIb080QndmenFGaXh6U3FqUCtlZzFuUXh4Rzl4TmZvWUx5OCtzZHFsS2E3eGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNTA5Mjk0CWZpbGU6UGFub3JhbWFfMC4yLjZfeDY0LXNldHVwLmV4ZQplSHpwOUY1ams1MHcxNnlBR2F5SzRNZTE5U0FBTkErakxrZXplTW43c2RtejNiVHZsNy95bWpmc2cweCt0bUQrbDUvU1dKUS9tQWdhQlZQUFErRDFBdz09Cg=="
+  "version": "0.2.7",
+  "notes": "### Added\n- macOS and Linux builds (macOS is not notarized: right-click > Open on first launch).\n- Native macOS titlebar with compact traffic lights.\n- Claude Code integration now lives entirely in the Panorama mod; Panorama no longer writes hooks or a statusline into ~/.claude/settings.json and restores your previous statusline.\n- Claude model picker shows the 200k / 1M toggle only for models where it applies (Opus 4.6, Sonnet 4.6), lists only the effort levels each model supports, marks its default effort, offers fast mode where available and warns about Fable usage.\n- Idle compaction setting for Claude Code terminals (Settings > Terminal).\n- Run button restarts a command that is already running.\n- Dev and release builds run side by side, and updates keep running terminal sessions.\n\n### Fixed\n- \"More models\" submenu closing while moving the mouse diagonally toward it.\n- Subagents marking a Claude terminal as busy.\n- Fullscreen from a maximized window leaving a taskbar gap on Windows.\n- Tile resize selecting page text on macOS.\n- Markdown html images ignoring width and height.",
+  "pub_date": "2026-10-24T18:51:12Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.7/Panorama_0.2.7_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHRjK0E3TElVQXJzS0xObVg2RDRobnFOQjNQOUNjMlpNcEUvV3BuVXpEajd2b25mR3RUZUl4QnUycFJLR1hVbElzTWZNVVc2VEJtaFRueDBMejVta3dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyODY3NjYzCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negplRXd2QllreTJkNE9xb1hrRnpWUHl0eW5Nb1N3UDZuYkZiV1RkdlhHcWhrQmNkNkR1cEN0Qlovd3RObVkwQzk2Q1pXbFM1eHlIbmh1bEhKMjFhZEdBZz09Cg=="
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.7/Panorama_0.2.7_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNxblBXVUJrMlIrNXM2QjhIbUFXVnRVM2E5WkVrQUN1ODY4WmppRlVYY0VzMnQ4V0pRT1NmSGxzZlpkc1Boa2tsZGV6TmMrR1M1RC8wU0QrUStESndvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyODY3NTI2CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negozcEtIR2Z3c3lNQThzR1dCQTBsc1dRdng1V1BSY0tvVWxhdnkyVzlMcGI1a3F6UXVTRHB5cGJoQ3pqMkN4em1vYWJhU2RWdFM3QVNyM1YzM1ViMWpDdz09Cg=="
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.7/Panorama_0.2.7_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9pb3NCb2cyRndyaW1NL2VKMnBwM01oNTRyYXNhNjkxRVRBSXB0VWcvVUVFZlBaQ0NjZTBqd3BXUm5vclJDVWdtRlRQUnpBQmNkeWpqYjZMeWlxK3dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyODY3NjgzCWZpbGU6UGFub3JhbWFfMC4yLjdfYW1kNjQuQXBwSW1hZ2UKYm5iemJFQVl4cG9FM1NVQ25RNm5yMmJJQy9LaDl6N0Q3ZUQzZFJacS9Ub1pIYklYelFVN1VQR1lpOUlXS2FHTXB5VktmUk9IbHcrZC9tRFRBREhUQkE9PQo="
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.7/Panorama_0.2.7_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHEyZVNWeDNCOExDeEhBVElMZFRzNzJmZCtVWWxwMFF2dFdtVlY2Yk84R2JtdGNZdGJVazBYRGtPODNYM2FjMkZYenZGcms5ampwRzUzZ1BzZXNIN1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyODY3ODA4CWZpbGU6UGFub3JhbWFfMC4yLjdfeDY0LXNldHVwLmV4ZQpqT1Q3T0dZVThIemk3S2ZqWEtQdHdtUHBYYm9YS21INGIzaXVWRnZaVHRjZXdSQmNjbjgyeVM4U2F5OWV5ZU44SmVJN25kZnNTNFB2MW53KzVtdjhDQT09Cg=="
+    }
+  }
 }
