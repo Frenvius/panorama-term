@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, Play, Code2, Minus, Check, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
+import { X, Pin, Play, Code2, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { TabMeta } from '~/domain/interfaces/workspace.interface';
@@ -215,6 +215,34 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const closeRunMenu = () => setRunMenu(null);
   const closeBuildMenu = () => setBuildMenu(null);
   const closeKillMenu = () => setKillMenu(null);
+  const [runStopping, setRunStopping] = React.useState(false);
+  const [buildStopping, setBuildStopping] = React.useState(false);
+  const runCmd = run.status.cmd ?? run.defaultCmd;
+  const buildCmd = build.status.cmd ?? build.defaultCmd;
+  const runTip = running
+    ? `Rerun '${runCmd}'`
+    : runFailed
+      ? `'${runCmd}' exited with code ${run.status.exitCode}`
+      : run.defaultCmd
+        ? `Run '${run.defaultCmd}'`
+        : 'Run';
+  const buildTip = building
+    ? `Rebuild '${buildCmd}'`
+    : buildFailed
+      ? `'${buildCmd}' failed with code ${build.status.exitCode}`
+      : buildOk
+        ? `'${buildCmd}' finished`
+        : build.defaultCmd
+          ? `Build '${build.defaultCmd}'`
+          : 'Build';
+
+  React.useEffect(() => {
+    if (!running) setRunStopping(false);
+  }, [running]);
+
+  React.useEffect(() => {
+    if (!building) setBuildStopping(false);
+  }, [building]);
 
   React.useEffect(() => {
     if (!run.crashed) return;
@@ -257,10 +285,30 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     setRunMenu(menuAtButton(e));
   };
 
+  const stopRunning = () => {
+    setRunStopping(true);
+    run.stop();
+  };
+
+  const stopBuilding = () => {
+    setBuildStopping(true);
+    build.stop(true);
+  };
+
+  const onRunStop = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    stopRunning();
+  };
+
   const onBuildClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (building) build.stop(true);
+    if (building) build.restart();
     else build.start();
+  };
+
+  const onBuildStop = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    stopBuilding();
   };
 
   const onBuildCaret = (e: React.MouseEvent) => {
@@ -277,7 +325,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ? [
         { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openBuildOutput },
         'separator',
-        { label: 'Stop build', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: () => build.stop(true) }
+        { label: 'Stop build', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: stopBuilding }
       ]
     : [
         ...(build.status.sessionId
@@ -313,13 +361,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
             { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openRunOutput },
             { label: 'Restart', icon: <RotateCw size={15} strokeWidth={1.75} />, onSelect: run.restart },
             'separator',
-            { label: 'Stop', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: () => run.stop() }
+            { label: 'Stop', icon: <X size={15} strokeWidth={1.75} />, danger: true, onSelect: stopRunning }
           ]
         : [
             { label: 'Open output', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: openRunOutput },
             { label: 'Run again', icon: <Play size={15} strokeWidth={1.75} />, onSelect: () => run.start(run.status.cmd) },
             'separator',
-            { label: 'Dismiss', icon: <Trash2 size={15} strokeWidth={1.75} />, onSelect: () => run.stop() }
+            { label: 'Clear status', icon: <X size={15} strokeWidth={1.75} />, onSelect: () => run.stop() }
           ];
   const tint = note ? noteTheme(tile.color) : null;
   const noteTint = tint ? { background: tint.body, color: tint.text } : null;
@@ -691,22 +739,29 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               <>
                 <span className={styles.actionDivider} />
                 <button
-                  className={`${styles.action} ${styles.runBtn}`}
+                  className={building ? `${styles.action} ${styles.runBtn} ${styles.busyFill}` : `${styles.action} ${styles.runBtn}`}
                   onClick={onBuildClick}
                   onPointerDown={stopDrag}
-                  aria-label="Build project"
-                  data-tooltip={building ? `building: ${build.status.cmd}` : buildFailed ? `build failed (${build.status.exitCode})` : buildOk ? 'build ok' : build.defaultCmd ?? 'Build'}
+                  disabled={buildStopping}
+                  aria-label={building ? 'Rebuild project' : 'Build project'}
+                  data-tooltip={buildTip}
                 >
-                  {building ? (
-                    <Square size={13} strokeWidth={2} className={styles.stopIcon} />
-                  ) : buildFailed ? (
-                    <X size={14} strokeWidth={2.5} className={styles.buildFail} />
-                  ) : buildOk ? (
-                    <Check size={14} strokeWidth={2.5} className={styles.buildOk} />
-                  ) : (
-                    <Hammer size={13} strokeWidth={2} />
-                  )}
+                  <Hammer size={13} strokeWidth={2} />
+                  {buildOk && <span className={`${styles.statusBadge} ${styles.badgeOk}`} />}
+                  {buildFailed && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
                 </button>
+                {building && (
+                  <button
+                    className={`${styles.action} ${styles.runBtn} ${styles.stopFill}`}
+                    onClick={onBuildStop}
+                    onPointerDown={stopDrag}
+                    disabled={buildStopping}
+                    aria-label="Stop build"
+                    data-tooltip={buildStopping ? 'Stopping...' : `Stop '${buildCmd}'`}
+                  >
+                    <Square size={13} strokeWidth={2} fill="currentColor" />
+                  </button>
+                )}
                 {(building || buildFailed || build.commands.length > 1) && (
                   <button className={styles.action} onClick={onBuildCaret} onPointerDown={stopDrag} aria-label="Build menu">
                     <ChevronDown size={11} strokeWidth={2} />
@@ -719,20 +774,28 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               <>
                 {!showBuildBtn && <span className={styles.actionDivider} />}
                 <button
-                  className={`${styles.action} ${styles.runBtn}`}
+                  className={running ? `${styles.action} ${styles.runBtn} ${styles.busyFill}` : `${styles.action} ${styles.runBtn} ${styles.runIdle}`}
                   onClick={onRunClick}
                   onPointerDown={stopDrag}
-                  aria-label="Run project"
-                  data-tooltip={running ? run.status.cmd : runFailed ? `exited (${run.status.exitCode})` : run.defaultCmd ?? 'Run'}
+                  disabled={runStopping}
+                  aria-label={running ? 'Rerun project' : 'Run project'}
+                  data-tooltip={runTip}
                 >
-                  {running ? (
-                    <RotateCw size={13} strokeWidth={2} />
-                  ) : runFailed ? (
-                    <span className={`${styles.runDot} ${styles.runDotErr}`} />
-                  ) : (
-                    <Play size={13} strokeWidth={2} />
-                  )}
+                  {running ? <RotateCw size={13} strokeWidth={2} /> : <Play size={13} strokeWidth={2} />}
+                  {runFailed && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
                 </button>
+                {running && (
+                  <button
+                    className={`${styles.action} ${styles.runBtn} ${styles.stopFill}`}
+                    onClick={onRunStop}
+                    onPointerDown={stopDrag}
+                    disabled={runStopping}
+                    aria-label="Stop run"
+                    data-tooltip={runStopping ? 'Stopping...' : `Stop '${runCmd}'`}
+                  >
+                    <Square size={13} strokeWidth={2} fill="currentColor" />
+                  </button>
+                )}
                 {(run.status.state !== 'none' || run.commands.length > 1) && (
                   <button className={styles.action} onClick={onRunCaret} onPointerDown={stopDrag} aria-label="Run menu">
                     <ChevronDown size={11} strokeWidth={2} />

@@ -249,38 +249,65 @@
   background: var(--border-2);
 }
 
-.runDot {
-  width: 8px;
-  height: 8px;
-  margin: 2px;
+.action.runBtn {
+  position: relative;
+
+  &:active {
+    transform: none;
+  }
+}
+
+.action.runIdle,
+.action.runIdle:hover {
+  color: var(--run-glyph);
+}
+
+.action.busyFill,
+.action.stopFill {
+  &:hover {
+    background-image: linear-gradient(var(--fill-hover), var(--fill-hover));
+  }
+
+  &:active {
+    background-image: linear-gradient(var(--fill-press), var(--fill-press));
+  }
+}
+
+.action.busyFill,
+.action.busyFill:hover {
+  color: var(--run-on-fill);
+  background-color: var(--run-fill);
+}
+
+.action.stopFill,
+.action.stopFill:hover {
+  margin-left: 2px;
+  color: var(--stop-on-fill);
+  background-color: var(--stop-fill);
+}
+
+.action.runBtn:disabled {
+  cursor: default;
+  opacity: 0.5;
+  background-image: none;
+}
+
+.statusBadge {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #4cc38a;
+  box-shadow: 0 0 0 1.5px var(--surface-3);
 }
 
-.runDotErr {
-  background: #e5534b;
+.badgeOk {
+  background: var(--run-glyph);
 }
 
-.stopIcon {
-  color: #e5534b;
-}
-
-.buildOk {
-  color: #4cc38a;
-}
-
-.buildFail {
-  color: #e5534b;
-}
-
-.runBtn svg,
-.runBtn .runDot {
-  transition: transform 80ms ease;
-}
-
-.runBtn:active svg,
-.runBtn:active .runDot {
-  transform: scale(0.75);
+.badgeErr {
+  background: var(--danger);
 }
 
 .runState {
