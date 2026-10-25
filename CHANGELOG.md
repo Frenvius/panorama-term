@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.9]
+
+### Added
+- Minimap tiles are colored by agent status.
+- Run button shows progress phases, and stopping it kills the running process.
+
+### Fixed
+- Switching tabs no longer shows the "Resume session" panel over a Claude session that is still running.
+- Sending from the agent bar no longer fails when Claude's input cannot be cleared.
+
+### Performance
+- Tab switching is instant: terminals reappear with their last screen instead of blank while they reconnect.
+- Opening a notification from another tab lands directly on the tile instead of panning after the switch.
+
 ## [0.2.8]
 
 ### Added
