@@ -5,6 +5,7 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const COMMAND_DIALOG_MS = 500
 
 let lastTurns = 0
+let contextStale = false
 const askedTools = new Set<string>()
 let toolDialog = false
 let commandDialog = false
@@ -74,16 +75,34 @@ async function closeCommandDialog($: EngineInterface) {
 async function reportStatus($: EngineInterface, extra: Record<string, unknown> = {}) {
   const { context, cost, rateLimits } = await $.session.usage()
   const rate = (kind: string) => rateLimits.find(r => r.kind === kind)?.percentUsed
+  const fill = contextStale ? {} : { contextTokens: context.tokens, contextPercent: context.percent }
   await post($, {
     model: await $.session.model(),
-    contextTokens: context.tokens,
-    contextPercent: context.percent,
+    ...fill,
     contextWindow: context.window,
     costUsd: cost?.usd,
     rateFiveHour: rate('five_hour'),
     rateSevenDay: rate('seven_day'),
     ...extra,
   })
+}
+
+async function configuredEffort($: EngineInterface) {
+  const model = await $.session.model()
+  const perModel = (await $.settings.read({ key: 'modelSettings' })) as Record<string, { effortLevel?: string }> | undefined
+  const level = perModel?.[model]?.effortLevel ?? ((await $.settings.read({ key: 'effortLevel' })) as string | undefined)
+  return level && EFFORT_LEVELS.includes(level) ? level : undefined
+}
+
+async function reportSessionReset($: EngineInterface, source: string, resumedTokens: number | undefined) {
+  contextStale = true
+  const tokens = source === 'resume' || source === 'fork' ? resumedTokens : 0
+  const { context } = await $.session.usage()
+  const fill =
+    tokens === undefined
+      ? {}
+      : { contextTokens: tokens, contextPercent: context.window ? Math.round((tokens / context.window) * 100) : 0 }
+  await post($, { sessionReset: source, ...fill })
 }
 
 type CatalogEntry = {
@@ -144,7 +163,7 @@ export const register: Register = (on) => {
     const started = await next(e)
     await syncTurns($)
     await reportCatalog($)
-    await reportStatus($, { dialog: false })
+    await reportStatus($, { dialog: false, effort: await configuredEffort($) })
     return started
   })
 
@@ -210,7 +229,9 @@ export const register: Register = (on) => {
 
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
-    if (e.agentId === undefined) await reportStatus($, typeof e.effort === 'string' ? { effort: e.effort } : {})
+    if (e.agentId !== undefined) return result
+    contextStale = false
+    await reportStatus($, typeof e.effort === 'string' ? { effort: e.effort } : {})
     return result
   })
 
@@ -228,6 +249,12 @@ export const register: Register = (on) => {
 
   on('classic.SessionStart', async ($, e, next) => {
     await forwardHook($, 'session-start', e)
+    await reportSessionReset($, e.source, e.context_tokens)
+    return next(e)
+  })
+
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    await reportStatus($, { model: e.to_model, effort: await configuredEffort($) })
     return next(e)
   })
 

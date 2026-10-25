@@ -11,6 +11,7 @@ import { IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
 import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
+import { mergeClaudeState } from '~/usecase/util/claudeState';
 import { markTerminalLive } from '~/usecase/util/liveTerminals';
 import { emitPromptRestore } from '~/usecase/util/promptRestore';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
@@ -410,9 +411,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             exited = true;
           },
           onClaude: (state) => {
-            const { reset, ...rest } = state;
-            if (reset) statusRef.current = undefined;
-            claudeRef.current = reset ? rest : { ...claudeRef.current, ...rest };
+            if (state.reset) statusRef.current = undefined;
+            claudeRef.current = mergeClaudeState(claudeRef.current ?? {}, state);
             onClaudeDiffRef.current?.(claudeRef.current.linesAdded ?? 0, claudeRef.current.linesRemoved ?? 0);
             const prev = statusRef.current;
             const next = state.status;

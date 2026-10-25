@@ -74,6 +74,7 @@ export interface ClaudeState {
   linesAdded?: number;
   linesRemoved?: number;
   reset?: boolean;
+  sessionReset?: string;
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

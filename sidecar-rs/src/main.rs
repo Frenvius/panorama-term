@@ -1504,6 +1504,7 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "modelCatalog",
     "suggestion",
     "dialog",
+    "sessionReset",
 ];
 
 fn agent_state_ws_msg(body: &str) -> Option<String> {
@@ -1523,12 +1524,19 @@ fn agent_state_ws_msg(body: &str) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
-const AGENT_STATE_VOLATILE: &[&str] = &["t", "status", "reset", "linesAdded", "linesRemoved", "suggestion"];
+const AGENT_STATE_VOLATILE: &[&str] = &["t", "status", "reset", "sessionReset", "linesAdded", "linesRemoved", "suggestion"];
+
+const AGENT_SESSION_KEYS: &[&str] = &["contextTokens", "contextPercent", "costUsd", "dialog"];
 
 fn merge_agent_state(cache: &mut serde_json::Map<String, serde_json::Value>, msg: &str) {
     let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(msg) else {
         return;
     };
+    if obj.contains_key("sessionReset") {
+        for key in AGENT_SESSION_KEYS {
+            cache.remove(*key);
+        }
+    }
     for (key, val) in obj {
         if AGENT_STATE_VOLATILE.contains(&key.as_str()) {
             continue;
@@ -3461,10 +3469,7 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
         tokio::select! {
             _ = claude_tick.tick() => {
                 let polled = claude.poll(&params.tile_id);
-                let mod_owns = {
-                    let owner = session.mod_session.lock().unwrap_or_else(|e| e.into_inner());
-                    owner.is_some() && *owner == claude.agent_id
-                };
+                let mod_owns = session.mod_session.lock().unwrap_or_else(|e| e.into_inner()).is_some();
                 let polled = if mod_owns { polled.and_then(|m| strip_mod_owned(&m)) } else { polled };
                 if let Some(msg) = polled {
                     if tx.send(Message::Text(msg)).await.is_err() {
@@ -4094,6 +4099,20 @@ mod tests {
         assert_eq!(cache["model"], "b");
         assert!(!cache.contains_key("status"));
         assert!(!cache.contains_key("t"));
+    }
+
+    #[test]
+    fn session_reset_drops_session_state_and_keeps_the_rest() {
+        let mut cache = serde_json::Map::new();
+        merge_agent_state(&mut cache, r#"{"t":"claude","model":"a","effort":"high","contextTokens":900,"contextPercent":90,"costUsd":2}"#);
+        merge_agent_state(&mut cache, r#"{"t":"claude","sessionReset":"resume"}"#);
+        assert_eq!(cache["model"], "a");
+        assert_eq!(cache["effort"], "high");
+        assert!(!cache.contains_key("contextTokens"));
+        assert!(!cache.contains_key("costUsd"));
+        assert!(!cache.contains_key("sessionReset"));
+        merge_agent_state(&mut cache, r#"{"t":"claude","sessionReset":"clear","contextTokens":0,"contextPercent":0}"#);
+        assert_eq!(cache["contextPercent"], 0);
     }
 
     #[test]
