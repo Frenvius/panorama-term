@@ -169,6 +169,7 @@ impl Host {
 
 // bump when host-side code outside this file changes (RawRing, respawn_detached, port helpers)
 const REV: u32 = 1;
+const KILL_WAIT_TRIES: u32 = 100;
 
 pub fn id() -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -564,9 +565,22 @@ fn dispatch_rpc(
             s.alive.store(false, Ordering::Relaxed);
             s.exit_once.store(true, Ordering::SeqCst);
             s.state.lock().unwrap_or_else(|e| e.into_inner()).subs.clear();
+            let inner = inner.clone();
             std::thread::spawn(move || {
                 kill_tree(s.pid);
-                let _ = s.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+                let mut child = s.child.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = child.kill();
+                for _ in 0..KILL_WAIT_TRIES {
+                    if !matches!(child.try_wait(), Ok(None)) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                drop(child);
+                let event = serde_json::json!({ "kind": "killed", "key": s.key, "pid": s.pid }).to_string();
+                if let Some(tx) = inner.brain_out.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    let _ = tx.send(encode(KIND_EVENT, event.as_bytes()));
+                }
             });
             Ok(serde_json::json!({}))
         }
@@ -1124,5 +1138,48 @@ mod tests {
                 "replay bytes mismatch from offset {rs}"
             );
         }
+    }
+
+    #[test]
+    fn kill_reports_killed_with_pid() {
+        let (in_tx, in_rx) = channel::<Vec<u8>>();
+        let (out_tx, out_rx) = channel::<Vec<u8>>();
+        let host = Host::new();
+        let _handle = host.start(in_rx, out_tx);
+
+        let (exe, args): (&str, &[&str]) = if cfg!(windows) {
+            ("cmd.exe", &["/c", "ping -n 60 127.0.0.1 > nul"])
+        } else {
+            ("/bin/sh", &["-c", "sleep 60"])
+        };
+        in_tx.send(make_spawn_rpc("victim", exe, args, 1)).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut pid: Option<u64> = None;
+        while Instant::now() < deadline && pid.is_none() {
+            if let Some((KIND_RPC_REPLY, payload)) = poll_frame(&out_rx) {
+                let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                if v["id"] == 1u64 {
+                    assert!(v["ok"].as_bool().unwrap_or(false), "spawn failed: {v}");
+                    pid = v["pid"].as_u64();
+                }
+            }
+        }
+        let pid = pid.expect("spawn reply with pid");
+
+        let started = Instant::now();
+        let kill = serde_json::json!({ "id": 2u64, "op": "kill", "key": "victim" });
+        in_tx.send(encode(KIND_RPC, kill.to_string().as_bytes())).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut killed = false;
+        while Instant::now() < deadline && !killed {
+            if let Some((KIND_EVENT, payload)) = poll_frame(&out_rx) {
+                let ev: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                killed = ev["kind"] == "killed" && ev["key"] == "victim" && ev["pid"].as_u64() == Some(pid);
+            }
+        }
+        assert!(killed, "no killed event for pid {pid}");
+        eprintln!("killed confirmed after {:?}", started.elapsed());
     }
 }

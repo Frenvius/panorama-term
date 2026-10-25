@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel as mpsc_channel, Receiver as MpscReceiver, Sender as MpscSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -196,6 +196,13 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                     if let Some(tx) = consumers.get(&key) {
                                         let _ = tx.send(ConsumerMsg::Exit { code });
                                     }
+                                } else if ev["kind"] == "killed" {
+                                    let key = ev["key"].as_str().unwrap_or("");
+                                    let pid = ev["pid"].as_u64().unwrap_or(0);
+                                    let target = sessions().lock().unwrap().get(key).cloned();
+                                    if let Some(s) = target.filter(|s| u64::from(s.pid) == pid) {
+                                        mark_killed(&s);
+                                    }
                                 }
                             }
                         }
@@ -311,14 +318,12 @@ fn reconnect_sessions() {
                     log.feed(text);
                 }
             }
-            Some(RunState {
-                cmd: meta["cmd"].as_str().unwrap_or(&key).to_string(),
-                cwd: meta["cwd"].as_str().unwrap_or("").to_string(),
-                kind: run_kind.to_string(),
-                started: Instant::now(),
-                log: Mutex::new(log),
-                exit: Mutex::new(None),
-            })
+            Some(RunState::new(
+                meta["cmd"].as_str().unwrap_or(&key).to_string(),
+                meta["cwd"].as_str().unwrap_or("").to_string(),
+                run_kind.to_string(),
+                log,
+            ))
         } else {
             None
         };
@@ -703,6 +708,50 @@ const SCROLLBACK_LINES: usize = 5000;
 const RAW_CAP: usize = 256 * 1024;
 const RUN_LINE_CAP: usize = 10_000;
 const RUN_REQ_MAX: usize = 500;
+const RUN_LAST_LINE_MAX: usize = 100;
+const RUN_READY_QUIET: Duration = Duration::from_secs(15);
+const RUN_READY_CAP: Duration = Duration::from_secs(120);
+const RUN_KILL_CONFIRM: Duration = Duration::from_secs(8);
+const RUN_PHASE_NONE: u8 = 0;
+const RUN_PHASE_STOPPING: u8 = 1;
+const RUN_PHASE_KILLING: u8 = 2;
+const RUN_READY_MARKERS: [&str; 10] = [
+    "listening",
+    "compiled successfully",
+    "server running",
+    "running at",
+    "local:",
+    "http://localhost",
+    "https://localhost",
+    "http://127.0.0.1",
+    "http://0.0.0.0",
+    "running `",
+];
+
+fn has_word(hay: &str, word: &str) -> bool {
+    hay.match_indices(word).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + word.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
+fn is_ready_line(lower: &str) -> bool {
+    RUN_READY_MARKERS.iter().any(|m| lower.contains(m)) || has_word(lower, "ready")
+}
+
+fn is_rebuild_line(trimmed: &str) -> bool {
+    trimmed.starts_with("Compiling ") || trimmed.starts_with("Building [")
+}
+
+fn clip_line(line: &str) -> String {
+    let flat = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= RUN_LAST_LINE_MAX {
+        return flat;
+    }
+    let cut: String = flat.chars().take(RUN_LAST_LINE_MAX - 3).collect();
+    format!("{cut}...")
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum EscState {
@@ -720,6 +769,9 @@ struct RunLog {
     partial: String,
     esc: EscState,
     cr: bool,
+    ready: Option<String>,
+    last_line: String,
+    last_output: Option<Instant>,
 }
 
 impl RunLog {
@@ -730,18 +782,45 @@ impl RunLog {
             partial: String::new(),
             esc: EscState::Ground,
             cr: false,
+            ready: None,
+            last_line: String::new(),
+            last_output: None,
         }
     }
 
     fn push_line(&mut self) {
+        let line = std::mem::take(&mut self.partial);
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            self.last_line = clip_line(trimmed);
+            if is_rebuild_line(trimmed) {
+                self.ready = None;
+            } else if self.ready.is_none() && is_ready_line(&trimmed.to_ascii_lowercase()) {
+                self.ready = Some(self.last_line.clone());
+            }
+        }
         self.total += 1;
-        self.buf.push_back(std::mem::take(&mut self.partial));
+        self.buf.push_back(line);
         if self.buf.len() > RUN_LINE_CAP {
             self.buf.pop_front();
         }
     }
 
+    fn ready_reason(&self, started: Instant) -> Option<String> {
+        if let Some(line) = &self.ready {
+            return Some(line.clone());
+        }
+        let quiet = self.total > 0 && self.last_output.is_some_and(|t| t.elapsed() >= RUN_READY_QUIET);
+        if quiet {
+            return Some("output quiet".into());
+        }
+        (started.elapsed() >= RUN_READY_CAP).then(|| "no ready signal".into())
+    }
+
     fn feed(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.last_output = Some(Instant::now());
+        }
         for c in text.chars() {
             match self.esc {
                 EscState::Ground => {
@@ -800,6 +879,31 @@ struct RunState {
     started: Instant,
     log: Mutex<RunLog>,
     exit: Mutex<Option<u32>>,
+    phase: AtomicU8,
+    stopped_by_user: AtomicBool,
+}
+
+impl RunState {
+    fn new(cmd: String, cwd: String, kind: String, log: RunLog) -> Self {
+        RunState {
+            cmd,
+            cwd,
+            kind,
+            started: Instant::now(),
+            log: Mutex::new(log),
+            exit: Mutex::new(None),
+            phase: AtomicU8::new(RUN_PHASE_NONE),
+            stopped_by_user: AtomicBool::new(false),
+        }
+    }
+
+    fn phase_name(&self) -> Option<&'static str> {
+        match self.phase.load(Ordering::Relaxed) {
+            RUN_PHASE_STOPPING => Some("stopping"),
+            RUN_PHASE_KILLING => Some("killing"),
+            _ => None,
+        }
+    }
 }
 
 fn expand_win_env(s: &str) -> String {
@@ -2736,14 +2840,10 @@ fn spawn_session(
     host_handle().register_consumer(&p.tile_id, consumer_tx);
     host_handle().subscribe(&p.tile_id, seed.len() as u64)?;
 
-    let run = p.spawn_cmd.as_ref().map(|run_cmd| RunState {
-        cmd: run_cmd.clone(),
-        cwd: norm_cwd(&cwd),
-        kind: p.run_kind.clone(),
-        started: Instant::now(),
-        log: Mutex::new(RunLog::new()),
-        exit: Mutex::new(None),
-    });
+    let run = p
+        .spawn_cmd
+        .as_ref()
+        .map(|run_cmd| RunState::new(run_cmd.clone(), norm_cwd(&cwd), p.run_kind.clone(), RunLog::new()));
     let session = Arc::new(Session {
         tile_id: p.tile_id.clone(),
         shell: p.spawn_cmd.clone().unwrap_or_else(|| shell.clone()),
@@ -3104,7 +3204,7 @@ fn forget_session(s: &Arc<Session>) {
     }
 }
 
-fn kill_session(s: &Arc<Session>) {
+fn mark_killed(s: &Arc<Session>) {
     s.exited.store(true, Ordering::Relaxed);
     s.dirty.store(true, Ordering::Relaxed);
     if let Some(run) = &s.run {
@@ -3113,10 +3213,39 @@ fn kill_session(s: &Arc<Session>) {
             *exit = Some(1);
         }
     }
+}
+
+fn kill_session(s: &Arc<Session>) {
+    let Some(run) = &s.run else {
+        mark_killed(s);
+        host_handle().kill(&s.tile_id);
+        return;
+    };
+    if s.exited.load(Ordering::Relaxed) {
+        return;
+    }
+    run.phase.store(RUN_PHASE_KILLING, Ordering::Relaxed);
+    run.stopped_by_user.store(true, Ordering::Relaxed);
+    s.dirty.store(true, Ordering::Relaxed);
     host_handle().kill(&s.tile_id);
+    let s = s.clone();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + RUN_KILL_CONFIRM;
+        while Instant::now() < deadline {
+            if s.exited.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        mark_killed(&s);
+    });
 }
 
 fn run_stop(s: &Arc<Session>) {
+    if let Some(run) = &s.run {
+        run.phase.store(RUN_PHASE_STOPPING, Ordering::Relaxed);
+        run.stopped_by_user.store(true, Ordering::Relaxed);
+    }
     host_handle().write(&s.tile_id, b"\x03");
     let s = s.clone();
     std::thread::spawn(move || {
@@ -3137,27 +3266,81 @@ fn run_status_json(target: Option<Arc<Session>>) -> String {
     let Some(run) = &s.run else {
         return serde_json::json!({ "state": "none" }).to_string();
     };
-    let total = run.log.lock().unwrap_or_else(|e| e.into_inner()).total;
+    let (total, last_line, ready) = {
+        let log = run.log.lock().unwrap_or_else(|e| e.into_inner());
+        (log.total, log.last_line.clone(), log.ready_reason(run.started))
+    };
     if s.exited.load(Ordering::Relaxed) {
         let code = *run.exit.lock().unwrap_or_else(|e| e.into_inner());
         serde_json::json!({
             "state": "exited",
             "exitCode": code,
+            "stoppedByUser": run.stopped_by_user.load(Ordering::Relaxed),
             "cmd": run.cmd,
             "totalLines": total,
+            "lastLine": last_line,
             "sessionId": s.tile_id,
         })
         .to_string()
     } else {
         serde_json::json!({
             "state": "running",
+            "phase": run.phase_name(),
+            "ready": ready.is_some(),
+            "readyReason": ready,
             "cmd": run.cmd,
             "pid": s.pid,
             "totalLines": total,
+            "lastLine": last_line,
             "sessionId": s.tile_id,
         })
         .to_string()
     }
+}
+
+async fn run_start_json(kind: &str, tile: &str, cwd: &str, cmd: &str) -> String {
+    if cwd.is_empty() || cmd.is_empty() || tile.is_empty() {
+        return serde_json::json!({ "error": "cwd, cmd and tile required" }).to_string();
+    }
+    let key = run_key(kind, tile);
+    if run_lookup_tile(kind, tile).is_some_and(|s| !s.exited.load(Ordering::Relaxed)) {
+        return serde_json::json!({ "error": "already running" }).to_string();
+    }
+    sessions().lock().unwrap().remove(&key);
+    let params = Params {
+        tile_id: key,
+        cols: 120,
+        rows: 30,
+        cwd: Some(cwd.to_string()),
+        shell: None,
+        target: None,
+        elevated: false,
+        idle_compact: true,
+        spawn_cmd: Some(cmd.to_string()),
+        run_kind: kind.to_string(),
+        attach_only: false,
+        watch_only: false,
+    };
+    match get_or_create(&params).await {
+        Ok(_) => run_status_json(run_lookup_tile(kind, tile)),
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
+async fn run_restart_json(kind: &str, tile: &str) -> String {
+    let Some(old) = run_lookup_tile(kind, tile) else {
+        return serde_json::json!({ "error": "no run session" }).to_string();
+    };
+    let Some(run) = &old.run else {
+        return serde_json::json!({ "error": "no run session" }).to_string();
+    };
+    let (cmd, cwd) = (run.cmd.clone(), run.cwd.clone());
+    kill_session(&old);
+    let deadline = Instant::now() + RUN_KILL_CONFIRM + Duration::from_secs(1);
+    while !old.exited.load(Ordering::Relaxed) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    run_start_json(kind, tile, &cwd, &cmd).await
 }
 
 fn run_logs_text(target: Option<Arc<Session>>, q: &HashMap<String, String>) -> String {
@@ -3824,38 +4007,24 @@ async fn handle_conn(mut stream: TcpStream) {
             Some("build") => "build".to_string(),
             _ => "run".to_string(),
         };
-        let body = if cwd.is_empty() || cmd.is_empty() || tile.is_empty() {
-            serde_json::json!({ "error": "cwd, cmd and tile required" }).to_string()
-        } else {
-            let key = run_key(&kind, &tile);
-            let existing = run_lookup_tile(&kind, &tile);
-            match existing {
-                Some(s) if !s.exited.load(Ordering::Relaxed) => {
-                    serde_json::json!({ "error": "already running" }).to_string()
-                }
-                _ => {
-                    sessions().lock().unwrap().remove(&key);
-                    let params = Params {
-                        tile_id: key,
-                        cols: 120,
-                        rows: 30,
-                        cwd: Some(cwd.clone()),
-                        shell: None,
-                        target: None,
-                        elevated: false,
-                        idle_compact: true,
-                        spawn_cmd: Some(cmd),
-                        run_kind: kind.clone(),
-                        attach_only: false,
-                        watch_only: false,
-                    };
-                    match get_or_create(&params).await {
-                        Ok(_) => run_status_json(run_lookup_tile(&kind, &tile)),
-                        Err(e) => serde_json::json!({ "error": e }).to_string(),
-                    }
-                }
-            }
+        let body = run_start_json(&kind, &tile, &cwd, &cmd).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/restart" {
+        let q = parse_query(query);
+        let tile = q.get("tile").cloned().unwrap_or_default();
+        let kind = match q.get("kind").map(String::as_str) {
+            Some("build") => "build",
+            _ => "run",
         };
+        let body = run_restart_json(kind, &tile).await;
         let resp = format!(
             "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
