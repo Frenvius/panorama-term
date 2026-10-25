@@ -31,6 +31,7 @@ const MIN_TILE_H = 3;
 const MIN_EXTENT_FACTOR = 3;
 const AGENT_MIN_W = 16;
 const AGENT_MIN_H = 12;
+const TILE_GAP = 1;
 const TILE_OPACITY = 0.55;
 const VP_BORDER_OPACITY = 0.55;
 const SCRIM_OPACITY = 0.35;
@@ -207,8 +208,11 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
       const h = Math.max(tile.height * scale, AGENT_MIN_H);
       const cx = clamp(pos.x + (tile.width * scale) / 2, w / 2, MINIMAP_W - w / 2);
       const cy = clamp(pos.y + (tile.height * scale) / 2, h / 2, MINIMAP_H - h / 2);
+      const x = cx - w / 2;
+      const y = cy - h / 2;
+      ctx.clearRect(x - TILE_GAP, y - TILE_GAP, w + TILE_GAP * 2, h + TILE_GAP * 2);
       ctx.fillStyle = STATUS_COLOR[status];
-      ctx.fillRect(cx - w / 2 + 0.5, cy - h / 2 + 0.5, w - 1, h - 1);
+      ctx.fillRect(x + 0.5, y + 0.5, w - 1, h - 1);
     }
   }, [computeBounds, viewportRect, worldToMinimap]);
 
