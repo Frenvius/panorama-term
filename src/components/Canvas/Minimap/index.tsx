@@ -29,15 +29,19 @@ const PADDING_RATIO = 0.1;
 const MIN_TILE_W = 4;
 const MIN_TILE_H = 3;
 const MIN_EXTENT_FACTOR = 3;
-const TILE_OPACITY = 0.6;
-const FLAG_OPACITY = 1;
+const AGENT_MIN_W = 16;
+const AGENT_MIN_H = 12;
+const TILE_OPACITY = 0.55;
 const VP_BORDER_OPACITY = 0.55;
 const SCRIM_OPACITY = 0.35;
 const IDLE_MS = 1500;
 
-const TILE_COLOR = '#4144e3';
-const BUSY_COLOR = '#23d18b';
-const ALERT_COLOR = '#f5a623';
+const TILE_COLOR = '#5b6478';
+const STATUS_COLOR = { busy: '#23d18b', idle: '#5865f2', alert: '#f5a623' };
+
+type TileStatus = keyof typeof STATUS_COLOR;
+
+const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 
 const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapProps) => {
   const wrapperRef = React.useRef<HTMLDivElement>(null);
@@ -151,16 +155,21 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
       bounds
     };
 
+    const flagged: { tile: Tile; status: TileStatus }[] = [];
+    ctx.globalAlpha = TILE_OPACITY;
+    ctx.fillStyle = TILE_COLOR;
     for (const tile of items) {
+      const status = alertsRef.current.has(tile.id) ? 'alert' : agentsRef.current.get(tile.id);
+      if (status) {
+        flagged.push({ tile, status });
+        continue;
+      }
       const pos = worldToMinimap(tile.x, tile.y);
       const w = Math.max(tile.width * scale, MIN_TILE_W);
       const h = Math.max(tile.height * scale, MIN_TILE_H);
-      const alerted = alertsRef.current.has(tile.id);
-      const busy = agentsRef.current.get(tile.id) === 'busy';
-      ctx.globalAlpha = alerted || busy ? FLAG_OPACITY : TILE_OPACITY;
-      ctx.fillStyle = alerted ? ALERT_COLOR : busy ? BUSY_COLOR : TILE_COLOR;
       ctx.fillRect(pos.x + 0.5, pos.y + 0.5, w - 1, h - 1);
     }
+    ctx.globalAlpha = 1;
 
     const rect = viewportRect();
     if (!rect) return;
@@ -191,6 +200,16 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
       ctx.strokeRect(vx, vy, vw, vh);
     }
     ctx.globalAlpha = 1;
+
+    for (const { tile, status } of flagged) {
+      const pos = worldToMinimap(tile.x, tile.y);
+      const w = Math.max(tile.width * scale, AGENT_MIN_W);
+      const h = Math.max(tile.height * scale, AGENT_MIN_H);
+      const cx = clamp(pos.x + (tile.width * scale) / 2, w / 2, MINIMAP_W - w / 2);
+      const cy = clamp(pos.y + (tile.height * scale) / 2, h / 2, MINIMAP_H - h / 2);
+      ctx.fillStyle = STATUS_COLOR[status];
+      ctx.fillRect(cx - w / 2 + 0.5, cy - h / 2 + 0.5, w - 1, h - 1);
+    }
   }, [computeBounds, viewportRect, worldToMinimap]);
 
   const scheduleRedraw = React.useCallback(() => {
