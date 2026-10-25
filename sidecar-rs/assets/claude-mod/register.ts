@@ -4,6 +4,11 @@ const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 let waiting = false
+let lastTurns = 0
+
+async function syncTurns($: EngineInterface) {
+  lastTurns = await $.session.turns()
+}
 
 async function sidecarUrl($: EngineInterface, path: string) {
   const tileId = await $.env.get('PANORAMA_TILE_ID')
@@ -115,6 +120,7 @@ async function reportCatalog($: EngineInterface) {
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    await syncTurns($)
     await reportCatalog($)
     await reportStatus($)
     return started
@@ -122,6 +128,7 @@ export const register: Register = (on) => {
 
   on('command.run', async ($, e, next) => {
     const result = await next(e)
+    await syncTurns($)
     const level = e.args.trim().toLowerCase()
     if (e.command === 'effort' && EFFORT_LEVELS.includes(level)) await post($, { effort: level })
     await reportCatalog($)
@@ -144,6 +151,7 @@ export const register: Register = (on) => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    await syncTurns($)
     if (e.agentId !== undefined) return done
     waiting = false
     await post($, { status: 'idle' })
@@ -189,6 +197,16 @@ export const register: Register = (on) => {
     const result = await next(e)
     if (!context) return result
     return { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
+  })
+
+  on('prompt.change', async ($, e, next) => {
+    const turns = await $.session.turns()
+    const rewound = turns < lastTurns
+    lastTurns = turns
+    if (e.origin.kind !== 'engine' || !rewound || !e.text.trim()) return next(e)
+    const delivered = await forwardHook($, 'prompt-restore', { text: e.text })
+    if (delivered === 'restored') void $.prompt.fill({ text: '', mode: 'replace' })
+    return next(e)
   })
 
   on('classic.Stop', async ($, e, next) => {

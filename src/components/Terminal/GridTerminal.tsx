@@ -12,6 +12,7 @@ import { keyToBytes } from '~/usecase/util/terminalKeys';
 import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
 import { markTerminalLive } from '~/usecase/util/liveTerminals';
+import { emitPromptRestore } from '~/usecase/util/promptRestore';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
@@ -427,6 +428,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           onNotify: (title, body) => notifier.onNotify(title, body),
           onProgress: (state, pct) => onProgressRef.current?.(state, pct),
           onAgentEvent: (evt) => notifier.onAgentEvent(evt),
+          onPromptRestore: (text) => emitPromptRestore(tileId, text),
           onReady: (info) => {
             const w = wsRef.current;
             if (w) {

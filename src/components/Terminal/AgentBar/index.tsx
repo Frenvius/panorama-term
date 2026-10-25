@@ -7,6 +7,7 @@ import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
+import { subscribePromptRestore } from '~/usecase/util/promptRestore';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
@@ -129,6 +130,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const imgSeqRef = React.useRef(0);
   const sendChainRef = React.useRef<Promise<void>>(Promise.resolve());
   const hydratedDraftTileRef = React.useRef<string | null>(null);
+  const pendingRewoundRef = React.useRef<string | null>(null);
   const seenRef = React.useRef(false);
   const lastSeenRef = React.useRef(0);
   const lastLinesRef = React.useRef<string[] | null>(null);
@@ -332,6 +334,41 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   React.useEffect(() => {
     if (catalog) rememberProviders(catalog.map((entry) => entry.provider));
   }, [catalog]);
+
+  const applyRewoundPrompt = (text: string) => {
+    const next = { text, images: [] };
+    histIdxRef.current = null;
+    setSuggest(null);
+    setDraft(next);
+    commitDraft(next);
+  };
+
+  const receiveRewoundPrompt = (text: string) => {
+    if (!editorRef.current || manualHide) {
+      send(`${BPM_START}${text}${BPM_END}`);
+      return;
+    }
+    if (questionMode) {
+      pendingRewoundRef.current = text;
+      return;
+    }
+    applyRewoundPrompt(text);
+  };
+
+  const receiveRewoundPromptRef = React.useRef(receiveRewoundPrompt);
+  receiveRewoundPromptRef.current = receiveRewoundPrompt;
+
+  React.useEffect(
+    () => subscribePromptRestore(tileId, (text) => receiveRewoundPromptRef.current(text)),
+    [tileId]
+  );
+
+  React.useEffect(() => {
+    const text = pendingRewoundRef.current;
+    if (questionMode || text === null) return;
+    pendingRewoundRef.current = null;
+    applyRewoundPrompt(text);
+  }, [questionMode]);
 
   const piModels = React.useMemo(
     () => visibleModels(catalog ?? [], hiddenProviders),

@@ -1947,11 +1947,26 @@ fn push_tile_event(tile_id: &str, msg: String) {
     }
 }
 
+fn restore_prompt(tile_id: &str, text: &str) -> String {
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    let Some(s) = sessions().lock().unwrap().get(tile_id).cloned() else {
+        return String::new();
+    };
+    let msg = serde_json::json!({ "t": "promptRestore", "text": text }).to_string();
+    s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
+    "restored".into()
+}
+
 fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     let Ok(evt) = serde_json::from_slice::<serde_json::Value>(body) else {
         return String::new();
     };
     let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    if event == "prompt-restore" {
+        return restore_prompt(tile_id, &field("text"));
+    }
     let event = if event == "session-start" {
         let binding = serde_json::json!({ "agent": "claude", "sessionId": field("session_id"), "cwd": evt.get("cwd") });
         bind_agent_session(tile_id, &binding.to_string());

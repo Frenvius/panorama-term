@@ -59,6 +59,7 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
       onTitle: () => {},
       onProgress: () => {},
       onClipboard: () => {},
+      onPromptRestore: () => {},
       onReady: () => {
         ready = true;
       },

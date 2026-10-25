@@ -109,6 +109,11 @@ export interface PtyAgentEventMessage extends AgentEvent {
   t: 'agentEvent';
 }
 
+export interface PtyPromptRestoreMessage {
+  t: 'promptRestore';
+  text: string;
+}
+
 export interface PtyProgressMessage {
   t: 'progress';
   state: number;
@@ -125,7 +130,8 @@ export type PtyServerMessage =
   | PtyTitleMessage
   | PtyNotifyMessage
   | PtyAgentEventMessage
-  | PtyProgressMessage;
+  | PtyProgressMessage
+  | PtyPromptRestoreMessage;
 
 export interface GridFrame {
   rows: number;

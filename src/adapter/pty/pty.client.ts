@@ -38,6 +38,7 @@ export interface PtyHandlers {
   onNotify: (title: string, body: string) => void;
   onAgentEvent: (event: AgentEvent) => void;
   onProgress: (state: number, pct: number) => void;
+  onPromptRestore: (text: string) => void;
 }
 
 const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
@@ -96,6 +97,7 @@ export const openPtyConnection = (params: PtyConnectionParams, handlers: PtyHand
       else if (msg.t === 'notify') handlers.onNotify(msg.title, msg.body);
       else if (msg.t === 'agentEvent') handlers.onAgentEvent(msg);
       else if (msg.t === 'progress') handlers.onProgress(msg.state, msg.pct);
+      else if (msg.t === 'promptRestore') handlers.onPromptRestore(msg.text);
       return;
     }
     if (!handlers.acceptGrid()) return;
