@@ -70,6 +70,7 @@ const migrate = (raw: unknown): WorkspaceFile | null => {
 
 class Service {
   private cachedIndex: WorkspaceIndex | null = null;
+  private cachedFiles = new Map<string, WorkspaceFile>();
   private loadedTabs = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -85,6 +86,7 @@ class Service {
 
   private async writeWorkspace(file: WorkspaceFile): Promise<void> {
     await storeWrite(wsFile(file.meta.id), file);
+    this.cachedFiles.set(file.meta.id, structuredClone(file));
   }
 
   private async writeWorkspaceAndIndex(file: WorkspaceFile, idx: WorkspaceIndex): Promise<void> {
@@ -93,13 +95,17 @@ class Service {
       { name: wsFile(file.meta.id), value: file },
       { name: INDEX_FILE, value: idx }
     ]);
+    this.cachedFiles.set(file.meta.id, structuredClone(file));
   }
 
   private async readWorkspace(id: string): Promise<WorkspaceFile | null> {
+    const cached = this.cachedFiles.get(id);
+    if (cached) return structuredClone(cached);
     const raw = await storeRead<unknown>(wsFile(id));
     const file = migrate(raw);
     if (!file) return null;
     if (raw && typeof raw === 'object' && !('tabs' in raw)) await this.writeWorkspace(file);
+    if (!this.cachedFiles.has(id)) this.cachedFiles.set(id, structuredClone(file));
     return file;
   }
 
@@ -207,6 +213,7 @@ class Service {
     idx.order.splice(removedAt, 1);
     if (idx.activeId === id) idx.activeId = idx.order[Math.max(0, removedAt - 1)] ?? idx.order[0]!;
     await this.saveIndex(idx);
+    this.cachedFiles.delete(id);
     await storeDelete(wsFile(id));
     return { activeId: idx.activeId, deleted: true };
   }

@@ -1,6 +1,17 @@
 .root {
   position: fixed;
   inset: 0;
+  animation: canvasEnter 140ms ease-out;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes canvasEnter {
+  from {
+    opacity: 0.5;
+  }
 }
 
 .rootFs {

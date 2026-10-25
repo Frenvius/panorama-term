@@ -9,6 +9,7 @@ import { scheduleConnect } from '~/usecase/util/connectScheduler';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { keyToBytes } from '~/usecase/util/terminalKeys';
+import { forgetFrame, recallFrame, rememberFrame } from '~/usecase/util/frameCache';
 import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
 import { mergeClaudeState } from '~/usecase/util/claudeState';
@@ -345,6 +346,15 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     }
   }, []);
 
+  const sessionKey = sessionId ?? tileId;
+
+  React.useLayoutEffect(() => {
+    const cached = recallFrame(sessionKey);
+    if (!cached) return;
+    frameRef.current = cached;
+    draw();
+  }, [sessionKey, draw]);
+
   React.useEffect(() => {
     const applyTheme = () => {
       const term = termRef.current;
@@ -437,7 +447,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             }
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
-            if (!info.resumeId) return;
+            if (!info.resumeId || info.reused) return;
             resumeCandidateRef.current = { id: info.resumeId, agent: info.resumeAgent ?? 'claude' };
           }
         }
@@ -458,6 +468,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       clearTimeout(retry);
       wsRef.current?.close();
       wsRef.current = null;
+      if (frameRef.current) rememberFrame(sessionKey, frameRef.current);
       frameRef.current = null;
     };
   }, [tileId, sessionId, readOnly, cwd, draw]);
@@ -483,6 +494,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     const ws = wsRef.current;
     if (!ws) return;
     setResume(null);
+    forgetFrame(sessionKey);
     frameRef.current = null;
     rowCacheRef.current = [];
     if (rowsRefEl.current) rowsRefEl.current.innerHTML = '';

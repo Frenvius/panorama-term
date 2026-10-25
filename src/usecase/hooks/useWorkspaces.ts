@@ -82,8 +82,7 @@ export const useWorkspaces = () => {
   const switchTab = React.useCallback(
     async (tabId: string) => {
       if (!activeId) return;
-      await workspaceService.setActiveTab(activeId, tabId);
-      await loadTabs(activeId, tabId);
+      await Promise.all([workspaceService.setActiveTab(activeId, tabId), loadTabs(activeId, tabId)]);
     },
     [activeId, loadTabs]
   );

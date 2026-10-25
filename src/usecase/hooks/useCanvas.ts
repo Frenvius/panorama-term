@@ -842,6 +842,21 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     [glide]
   );
 
+  const centerTile = React.useCallback((id: string): boolean => {
+    const bg = bgRef.current;
+    const tile = tilesRef.current.find((t) => t.id === id);
+    if (!tile || !bg || pending()) return false;
+    const k = viewRef.current.k;
+    const next = {
+      k,
+      x: bg.clientWidth / 2 - (tile.x + tile.width / 2) * k,
+      y: bg.clientHeight / 2 - (tile.y + tile.height / 2) * k
+    };
+    viewRef.current = next;
+    setView(next);
+    return true;
+  }, []);
+
   const focusFrame = React.useCallback(
     function run(id: string) {
       const bg = bgRef.current;
@@ -871,6 +886,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     addNote,
     noteRenderDefault,
     focusTile,
+    centerTile,
     focusFrame,
     gridRef,
     onWheel,

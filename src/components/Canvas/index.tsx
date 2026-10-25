@@ -81,6 +81,7 @@ const Canvas = () => {
     gridRef,
     duplicateTile,
     focusTile,
+    centerTile,
     focusFrame,
     onWheel,
     moveTile,
@@ -126,19 +127,13 @@ const Canvas = () => {
     setPref('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
 
-  React.useEffect(() => {
-    if (pendingFocusTileId) {
-      const id = pendingFocusTileId;
-      const tile = tiles.find((t) => t.id === id);
-      if (tile) {
-        pendingFocusTileId = null;
-        setTimeout(() => {
-          activateTile(id);
-          focusTile(id, false);
-        }, 150);
-      }
-    }
-  }, [tiles, activeTabId, focusTile, activateTile]);
+  React.useLayoutEffect(() => {
+    const id = pendingFocusTileId;
+    if (!id || !tiles.some((t) => t.id === id)) return;
+    pendingFocusTileId = null;
+    activateTile(id);
+    if (!centerTile(id)) focusTile(id, false);
+  }, [tiles, activeTabId, focusTile, centerTile, activateTile]);
 
   const [editorTabs, setEditorTabs] = React.useState<EditorTab[]>([]);
   const [activeEditorTab, setActiveEditorTab] = React.useState<string | null>(null);
