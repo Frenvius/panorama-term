@@ -407,7 +407,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           idleCompact
         },
         {
-          acceptGrid: () => visibleRef.current && !document.hidden,
+          acceptGrid: () => !frameRef.current || (visibleRef.current && !document.hidden),
           onGrid: (frame) => {
             frameRef.current = frame;
             dirtyRef.current = true;
