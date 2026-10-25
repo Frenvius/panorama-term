@@ -13,7 +13,7 @@ import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
-import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -568,7 +568,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       emptyFrames = 0;
       const amount = Math.min(512, Math.max(64, chars + 32));
       if (!(await sendWhenReady('\x1b[3~'.repeat(amount) + '\x7f'.repeat(amount)))) return false;
-      await pause(20);
+      // whatever survives a full delete round is not typed text (ghost suggestion, misread row)
+      if (!(await waitUntil(() => inputChars() < chars, 500))) return true;
     }
     return false;
   };
@@ -634,7 +635,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     setPending((n) => n + 1);
     sendChainRef.current = sendChainRef.current
       .then(() => sendDraft(submission))
-      .catch(() => {
+      .catch((err) => {
+        console.error('[agentbar] send failed', err, readInputText(getLines()));
         if (!isDraftEmpty(draftRef.current)) return;
         const restored = cloneDraft(submission);
         setDraft(restored);
