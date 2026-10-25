@@ -274,6 +274,12 @@
 }
 
 .action.busyFill,
+.action.stopFill {
+  padding: 0 1px;
+  background-clip: content-box;
+}
+
+.action.busyFill,
 .action.busyFill:hover {
   color: var(--run-on-fill);
   background-color: var(--run-fill);
@@ -281,15 +287,27 @@
 
 .action.stopFill,
 .action.stopFill:hover {
-  margin-left: 2px;
   color: var(--stop-on-fill);
   background-color: var(--stop-fill);
 }
 
 .action.runBtn:disabled {
   cursor: default;
-  opacity: 0.5;
   background-image: none;
+}
+
+.action.stopFill:disabled {
+  opacity: 0.5;
+}
+
+.action.pending {
+  opacity: 0.72;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
 }
 
 .statusBadge {

@@ -18,6 +18,12 @@ export const fetchRunStatus = (tile: string, kind: RunKind = 'run'): Promise<Run
     .then((r) => r.json() as Promise<RunStatus>)
     .catch(() => NONE);
 
+export const fetchRunTail = (tile: string, kind: RunKind, count: number): Promise<string[]> =>
+  fetch(`${SIDECAR_HTTP}/run/logs?kind=${kind}&tile=${encodeURIComponent(tile)}&tail=${count}`)
+    .then((r) => r.text())
+    .then((text) => text.split('\n').filter((line) => !line.startsWith('# ')))
+    .catch(() => [] as string[]);
+
 export const startRun = (cwd: string, cmd: string, tile: string, kind: RunKind = 'run'): Promise<RunStatus> =>
   fetch(
     `${SIDECAR_HTTP}/run/start?kind=${kind}&cwd=${encodeURIComponent(cwd)}&cmd=${encodeURIComponent(cmd)}&tile=${encodeURIComponent(tile)}`

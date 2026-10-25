@@ -3,6 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import { X, Pin, Play, Code2, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { RunPhase } from '~/domain/interfaces/run.interface';
 import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
@@ -93,6 +94,8 @@ const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 const FS_PAD = 28;
 
 const DRAG_THRESHOLD = 4;
+
+const PHASE_LABEL: Record<RunPhase, string> = { starting: 'Starting', restarting: 'Restarting', stopping: 'Stopping', killing: 'Killing' };
 
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
@@ -215,34 +218,49 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const closeRunMenu = () => setRunMenu(null);
   const closeBuildMenu = () => setBuildMenu(null);
   const closeKillMenu = () => setKillMenu(null);
-  const [runStopping, setRunStopping] = React.useState(false);
-  const [buildStopping, setBuildStopping] = React.useState(false);
+  const runBusy = running || run.phase !== null;
+  const buildBusy = building || build.phase !== null;
+  const runKillable = run.phase === 'stopping' || run.phase === 'killing';
   const runCmd = run.status.cmd ?? run.defaultCmd;
   const buildCmd = build.status.cmd ?? build.defaultCmd;
-  const runTip = running
-    ? `Rerun '${runCmd}'`
-    : runFailed
-      ? `'${runCmd}' exited with code ${run.status.exitCode}`
-      : run.defaultCmd
-        ? `Run '${run.defaultCmd}'`
-        : 'Run';
-  const buildTip = building
-    ? `Rebuild '${buildCmd}'`
-    : buildFailed
-      ? `'${buildCmd}' failed with code ${build.status.exitCode}`
-      : buildOk
-        ? `'${buildCmd}' finished`
-        : build.defaultCmd
-          ? `Build '${build.defaultCmd}'`
-          : 'Build';
-
-  React.useEffect(() => {
-    if (!running) setRunStopping(false);
-  }, [running]);
-
-  React.useEffect(() => {
-    if (!building) setBuildStopping(false);
-  }, [building]);
+  const runLine = run.lastLine ? ` - ${run.lastLine}` : '';
+  const runTip = run.phase
+    ? `${PHASE_LABEL[run.phase]} '${runCmd}'${runLine}`
+    : running
+      ? `Rerun '${runCmd}'${runLine}`
+      : runFailed
+        ? `'${runCmd}' exited with code ${run.status.exitCode}`
+        : run.defaultCmd
+          ? `Run '${run.defaultCmd}'`
+          : 'Run';
+  const runBtnClass = runBusy
+    ? `${styles.action} ${styles.runBtn} ${styles.busyFill}${run.phase ? ` ${styles.pending}` : ''}`
+    : `${styles.action} ${styles.runBtn} ${styles.runIdle}`;
+  const buildBtnClass = buildBusy
+    ? `${styles.action} ${styles.runBtn} ${styles.busyFill}${build.phase ? ` ${styles.pending}` : ''}`
+    : `${styles.action} ${styles.runBtn}`;
+  const runIcon =
+    run.phase === 'restarting' ? (
+      <RotateCw size={13} strokeWidth={2} className={styles.spin} />
+    ) : run.phase ? (
+      <Loader2 size={13} strokeWidth={2} className={styles.spin} />
+    ) : running ? (
+      <RotateCw size={13} strokeWidth={2} />
+    ) : (
+      <Play size={13} strokeWidth={2} />
+    );
+  const runStopTip = run.phase === 'stopping' ? 'Kill process now' : run.phase === 'killing' ? 'Killing process tree' : `Stop '${runCmd}'`;
+  const buildTip = build.phase
+    ? `${PHASE_LABEL[build.phase]} '${buildCmd}'`
+    : building
+      ? `Rebuild '${buildCmd}'`
+      : buildFailed
+        ? `'${buildCmd}' failed with code ${build.status.exitCode}`
+        : buildOk
+          ? `'${buildCmd}' finished`
+          : build.defaultCmd
+            ? `Build '${build.defaultCmd}'`
+            : 'Build';
 
   React.useEffect(() => {
     if (!run.crashed) return;
@@ -285,19 +303,12 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     setRunMenu(menuAtButton(e));
   };
 
-  const stopRunning = () => {
-    setRunStopping(true);
-    run.stop();
-  };
-
-  const stopBuilding = () => {
-    setBuildStopping(true);
-    build.stop(true);
-  };
+  const stopRunning = () => run.stop();
+  const stopBuilding = () => build.stop(true);
 
   const onRunStop = (e: React.MouseEvent) => {
     e.stopPropagation();
-    stopRunning();
+    run.stop(runKillable);
   };
 
   const onBuildClick = (e: React.MouseEvent) => {
@@ -739,25 +750,25 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               <>
                 <span className={styles.actionDivider} />
                 <button
-                  className={building ? `${styles.action} ${styles.runBtn} ${styles.busyFill}` : `${styles.action} ${styles.runBtn}`}
+                  className={buildBtnClass}
                   onClick={onBuildClick}
                   onPointerDown={stopDrag}
-                  disabled={buildStopping}
+                  disabled={build.phase !== null}
                   aria-label={building ? 'Rebuild project' : 'Build project'}
                   data-tooltip={buildTip}
                 >
-                  <Hammer size={13} strokeWidth={2} />
+                  {build.phase ? <Loader2 size={13} strokeWidth={2} className={styles.spin} /> : <Hammer size={13} strokeWidth={2} />}
                   {buildOk && <span className={`${styles.statusBadge} ${styles.badgeOk}`} />}
                   {buildFailed && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
                 </button>
-                {building && (
+                {buildBusy && (
                   <button
                     className={`${styles.action} ${styles.runBtn} ${styles.stopFill}`}
                     onClick={onBuildStop}
                     onPointerDown={stopDrag}
-                    disabled={buildStopping}
+                    disabled={build.phase === 'killing'}
                     aria-label="Stop build"
-                    data-tooltip={buildStopping ? 'Stopping...' : `Stop '${buildCmd}'`}
+                    data-tooltip={build.phase === 'killing' ? 'Killing process tree' : `Stop '${buildCmd}'`}
                   >
                     <Square size={13} strokeWidth={2} fill="currentColor" />
                   </button>
@@ -774,26 +785,26 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               <>
                 {!showBuildBtn && <span className={styles.actionDivider} />}
                 <button
-                  className={running ? `${styles.action} ${styles.runBtn} ${styles.busyFill}` : `${styles.action} ${styles.runBtn} ${styles.runIdle}`}
+                  className={runBtnClass}
                   onClick={onRunClick}
                   onPointerDown={stopDrag}
-                  disabled={runStopping}
+                  disabled={run.phase !== null}
                   aria-label={running ? 'Rerun project' : 'Run project'}
                   data-tooltip={runTip}
                 >
-                  {running ? <RotateCw size={13} strokeWidth={2} /> : <Play size={13} strokeWidth={2} />}
-                  {runFailed && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
+                  {runIcon}
+                  {runFailed && !run.phase && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
                 </button>
-                {running && (
+                {runBusy && (
                   <button
                     className={`${styles.action} ${styles.runBtn} ${styles.stopFill}`}
                     onClick={onRunStop}
                     onPointerDown={stopDrag}
-                    disabled={runStopping}
-                    aria-label="Stop run"
-                    data-tooltip={runStopping ? 'Stopping...' : `Stop '${runCmd}'`}
+                    disabled={run.phase === 'killing'}
+                    aria-label={runKillable ? 'Kill process' : 'Stop run'}
+                    data-tooltip={runStopTip}
                   >
-                    <Square size={13} strokeWidth={2} fill="currentColor" />
+                    {runKillable ? <X size={13} strokeWidth={2.5} /> : <Square size={13} strokeWidth={2} fill="currentColor" />}
                   </button>
                 )}
                 {(run.status.state !== 'none' || run.commands.length > 1) && (
