@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.8]
+
+### Added
+- Version badge in the status bar with a "Check for updates" menu.
+- Run and Build buttons are filled, with an inline stop and status badges.
+- Agents can see the build session and its failures in the run context.
+- Rewinding a Claude prompt (/rewind or Esc Esc) puts it back in the agent bar.
+- The agent bar hides while Claude shows a dialog (permissions, questions, /model) and shows Claude's next-prompt suggestion; Tab accepts it.
+
+### Fixed
+- Claude agent bar losing the model, effort and context after /clear, /compact or a resumed session; context now drops to 0% right after a compact or clear.
+- Agent bar draft lost when the bar remounted after picking an agent.
+
 ## [0.2.7]
 
 ### Added
