@@ -16,6 +16,7 @@ export interface AgentModel {
 export const HISTORY_KEY = 'agent:prompthistory';
 export const BPM_START = '\x1b[200~';
 export const BPM_END = '\x1b[201~';
+export const DOUBLE_ESC_MS = 800;
 
 export const draftKey = (tileId: string): string => `agent:draft:${tileId}`;
 

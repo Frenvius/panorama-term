@@ -2,9 +2,19 @@ import type { EngineInterface, Register } from 'claude-code'
 
 const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+const COMMAND_DIALOG_MS = 500
 
-let waiting = false
 let lastTurns = 0
+const askedTools = new Set<string>()
+let toolDialog = false
+let commandDialog = false
+let elicitDialog = false
+
+const dialogOpen = () => toolDialog || commandDialog || elicitDialog
+
+type ToolRow = { tool_use_id?: string; isRunning: boolean; isErrored: boolean; isInterrupted: boolean; output?: unknown }
+
+const isSettled = (row: ToolRow) => row.isRunning || row.isErrored || row.isInterrupted || row.output !== undefined
 
 async function syncTurns($: EngineInterface) {
   lastTurns = await $.session.turns()
@@ -47,6 +57,18 @@ async function forwardHook($: EngineInterface, event: string, input: unknown) {
     $.ui.log(`panorama: ${event} hook failed: ${String(err)}`, { to: 'debug' })
     return ''
   }
+}
+
+async function settleTool($: EngineInterface, id: string | undefined) {
+  if (!id || !askedTools.delete(id) || !toolDialog || askedTools.size) return
+  toolDialog = false
+  await post($, { status: 'busy', dialog: dialogOpen() })
+}
+
+async function closeCommandDialog($: EngineInterface) {
+  if (!commandDialog) return
+  commandDialog = false
+  await post($, { dialog: dialogOpen() })
 }
 
 async function reportStatus($: EngineInterface, extra: Record<string, unknown> = {}) {
@@ -122,11 +144,22 @@ export const register: Register = (on) => {
     const started = await next(e)
     await syncTurns($)
     await reportCatalog($)
-    await reportStatus($)
+    await reportStatus($, { dialog: false })
     return started
   })
 
+  on('command.run', { command: 'tui' }, async ($, e, next) => {
+    if (!(await $.env.get('PANORAMA_TILE_ID'))) return next(e)
+    return { text: 'Panorama keeps Claude Code on the fullscreen renderer.' }
+  })
+
   on('command.run', async ($, e, next) => {
+    if (e.origin.kind !== 'plugin') {
+      commandDialog = true
+      void $.clock.after(COMMAND_DIALOG_MS, () => {
+        if (commandDialog) void post($, { dialog: true })
+      })
+    }
     const result = await next(e)
     await syncTurns($)
     const level = e.args.trim().toLowerCase()
@@ -138,9 +171,41 @@ export const register: Register = (on) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    waiting = false
-    await post($, { status: 'busy' })
+    commandDialog = false
+    await post($, { status: 'busy', suggestion: '', dialog: dialogOpen() })
     return next(e)
+  })
+
+  on('session.compact', async ($, e, next) => {
+    await closeCommandDialog($)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
+    if (commandDialog && !e.props.isWorking) void closeCommandDialog($)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
+    if (askedTools.size && isSettled(e.props)) void settleTool($, e.props.tool_use_id)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'ToolGroup' }, ($, e, next) => {
+    if (askedTools.size) for (const call of e.props.calls) if (isSettled(call)) void settleTool($, call.tool_use_id)
+    return next(e)
+  })
+
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision === 'ask' && e.tool_use_id) askedTools.add(e.tool_use_id)
+    return verdict
+  })
+
+  on('prompt.suggest', async ($, e, next) => {
+    const result = await next(e)
+    if (result.isShown) await post($, { suggestion: e.text })
+    return result
   })
 
   on('turn.step', async function* ($, e, next) {
@@ -153,8 +218,10 @@ export const register: Register = (on) => {
     const done = await next(e)
     await syncTurns($)
     if (e.agentId !== undefined) return done
-    waiting = false
-    await post($, { status: 'idle' })
+    askedTools.clear()
+    toolDialog = false
+    commandDialog = false
+    await post($, { status: 'idle', dialog: dialogOpen() })
     await reportStatus($)
     return done
   })
@@ -165,9 +232,21 @@ export const register: Register = (on) => {
   })
 
   on('classic.PermissionRequest', async ($, e, next) => {
-    waiting = true
-    await post($, { status: 'waiting' })
+    toolDialog = true
+    await post($, { status: 'waiting', dialog: true })
     await forwardHook($, 'permission', e)
+    return next(e)
+  })
+
+  on('classic.Elicitation', async ($, e, next) => {
+    elicitDialog = true
+    await post($, { status: 'waiting', dialog: true })
+    return next(e)
+  })
+
+  on('classic.ElicitationResult', async ($, e, next) => {
+    elicitDialog = false
+    await post($, { status: 'busy', dialog: dialogOpen() })
     return next(e)
   })
 
@@ -176,18 +255,9 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    waiting = true
-    await post($, { status: 'waiting' })
-    return next(e)
-  })
-
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
-    if (waiting) {
-      waiting = false
-      await post($, { status: 'busy' })
-    }
+    await settleTool($, e.tool_use_id)
     return result
   })
 

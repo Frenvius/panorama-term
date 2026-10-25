@@ -14,7 +14,7 @@ import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_E
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
 import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
-import { BPM_END, draftKey, BPM_START, HISTORY_KEY, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
+import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { AgentSlashCommand } from './constants';
@@ -112,6 +112,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const [modelMenu, setModelMenu] = React.useState(false);
   const [effortMenu, setEffortMenu] = React.useState(false);
   const [preview, setPreview] = React.useState<string | null>(null);
+  const [spentSuggestion, setSpentSuggestion] = React.useState('');
 
   const editorRef = React.useRef<HTMLDivElement>(null);
   const modelRef = React.useRef<HTMLDivElement>(null);
@@ -131,6 +132,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const sendChainRef = React.useRef<Promise<void>>(Promise.resolve());
   const hydratedDraftTileRef = React.useRef<string | null>(null);
   const pendingRewoundRef = React.useRef<string | null>(null);
+  const lastEscAtRef = React.useRef(0);
   const seenRef = React.useRef(false);
   const lastSeenRef = React.useRef(0);
   const lastLinesRef = React.useRef<string[] | null>(null);
@@ -146,6 +148,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const agentPresent = agentType !== null;
   const isEmpty = isDraftEmpty(draft);
   const hidden = questionMode || manualHide;
+  const liveSuggestion = agentType === 'claude' ? structured?.suggestion ?? '' : '';
+  const ghost = isEmpty && liveSuggestion !== spentSuggestion ? liveSuggestion : '';
 
   const liveSnap = (): UndoSnap => {
     const el = editorRef.current;
@@ -246,6 +250,26 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       setLiveMode(modes.value);
     };
 
+    const syncQuestion = (qm: boolean) => {
+      if (qm === qMode) {
+        if (qTimer) {
+          clearTimeout(qTimer);
+          qTimer = undefined;
+          qTarget = null;
+        }
+        return;
+      }
+      if (qTarget === qm) return;
+      if (qTimer) clearTimeout(qTimer);
+      qTarget = qm;
+      qTimer = setTimeout(() => {
+        qMode = qm;
+        qTimer = undefined;
+        qTarget = null;
+        setQuestionMode(qm);
+      }, 150);
+    };
+
     const scan = () => {
       const lines = getLines();
       const bufferText = lines.slice(-25).join('\n');
@@ -262,6 +286,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             if (declared && currentType === 'generic') setAgentType(declared);
             setStructured(live);
             syncMode(null, live);
+            if (typeof live?.dialog === 'boolean') syncQuestion(live.dialog);
           }
         }
         return;
@@ -293,24 +318,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       const live = getStructured();
       setStructured(live);
       syncMode(footer.boxed && footer.status.length ? nextStatus.mode ?? 'default' : null, live);
-
-      const qm = footer.questionMode;
-      if (qm === qMode) {
-        if (qTimer) {
-          clearTimeout(qTimer);
-          qTimer = undefined;
-          qTarget = null;
-        }
-      } else if (qTarget !== qm) {
-        if (qTimer) clearTimeout(qTimer);
-        qTarget = qm;
-        qTimer = setTimeout(() => {
-          qMode = qm;
-          qTimer = undefined;
-          qTarget = null;
-          setQuestionMode(qm);
-        }, 150);
-      }
+      syncQuestion(typeof live?.dialog === 'boolean' ? live.dialog : footer.questionMode);
     };
 
     scan();
@@ -334,6 +342,13 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   React.useEffect(() => {
     if (catalog) rememberProviders(catalog.map((entry) => entry.provider));
   }, [catalog]);
+
+  const acceptGhost = () => {
+    const next = { text: ghost, images: [] };
+    setSpentSuggestion(ghost);
+    setDraft(next);
+    commitDraft(next);
+  };
 
   const applyRewoundPrompt = (text: string) => {
     const next = { text, images: [] };
@@ -608,6 +623,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     histIdxRef.current = null;
     histDraftRef.current = cloneDraft(EMPTY_DRAFT);
     setSuggest(null);
+    setSpentSuggestion(liveSuggestion);
     try {
       removePref(draftKey(tileId));
     } catch {
@@ -908,6 +924,26 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     return true;
   };
 
+  const handleEscape = () => {
+    const now = Date.now();
+    const doubleEsc = now - lastEscAtRef.current < DOUBLE_ESC_MS;
+    lastEscAtRef.current = doubleEsc ? 0 : now;
+    if (doubleEsc && typeof structured?.dialog === 'boolean' && structured.status === 'idle') {
+      sendChainRef.current = sendChainRef.current
+        .then(() => sendDraft({ text: '/rewind', images: [] }))
+        .catch(() => undefined);
+      return;
+    }
+    send('\x1b');
+    if (isDraftEmpty(draftRef.current) && !isDraftEmpty(lastSentRef.current)) {
+      const restored = cloneDraft(lastSentRef.current);
+      setDraft(restored);
+      histIdxRef.current = null;
+      setSuggest(null);
+      commitDraft(restored);
+    }
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const key = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
@@ -930,6 +966,12 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       return;
     }
     if (suggest && suggestRef.current?.handleKeyDown(e)) return;
+    if (ghost && (e.key === 'Tab' || e.key === 'ArrowRight') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      acceptGhost();
+      return;
+    }
     if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       e.stopPropagation();
@@ -939,14 +981,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      send('\x1b');
-      if (isDraftEmpty(draftRef.current) && !isDraftEmpty(lastSentRef.current)) {
-        const restored = cloneDraft(lastSentRef.current);
-        setDraft(restored);
-        histIdxRef.current = null;
-        setSuggest(null);
-        commitDraft(restored);
-      }
+      handleEscape();
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
@@ -1123,7 +1158,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
             aria-label="Prompt input"
             className={styles.editor}
             suppressContentEditableWarning
-            data-placeholder={meta.placeholder}
+            data-placeholder={ghost || meta.placeholder}
             data-empty={isEmpty ? 'true' : undefined}
             onInput={handleInput}
             onPaste={handlePaste}
@@ -1190,7 +1225,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
               : 'Sending prompt...'
             : suggest
               ? 'Enter select & send - Tab complete - Esc close'
-              : 'Enter send - Shift+Enter newline - Tab terminal'}
+              : ghost
+                ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
+                : 'Enter send - Shift+Enter newline - Tab terminal'}
         </div>
         {hasStatus && (
           <div className={styles.footer} aria-hidden="true">

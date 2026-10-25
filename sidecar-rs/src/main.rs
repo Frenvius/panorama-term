@@ -1502,6 +1502,8 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "commandArgs",
     "modelOptions",
     "modelCatalog",
+    "suggestion",
+    "dialog",
 ];
 
 fn agent_state_ws_msg(body: &str) -> Option<String> {
@@ -1521,7 +1523,7 @@ fn agent_state_ws_msg(body: &str) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
-const AGENT_STATE_VOLATILE: &[&str] = &["t", "status", "reset", "linesAdded", "linesRemoved"];
+const AGENT_STATE_VOLATILE: &[&str] = &["t", "status", "reset", "linesAdded", "linesRemoved", "suggestion"];
 
 fn merge_agent_state(cache: &mut serde_json::Map<String, serde_json::Value>, msg: &str) {
     let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(msg) else {
@@ -2681,6 +2683,7 @@ fn spawn_session(
     if let Some(dirs) = claude_plugin_dirs() {
         env.push(("CLAUDE_CODE_PLUGIN_DIRS".into(), dirs));
     }
+    env.push(("CLAUDE_CODE_NO_FLICKER".into(), "1".into()));
     if !p.idle_compact {
         env.push(("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS".into(), IDLE_COMPACT_OFF_TOKENS.into()));
     }
