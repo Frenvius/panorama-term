@@ -206,10 +206,10 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const run = useRun(runCwd, runTile, viewKind);
   const build = useRun(runView ? undefined : runCwd, runView ? undefined : tile.id, 'build');
   const running = run.status.state === 'running';
-  const runFailed = run.status.state === 'exited' && (run.status.exitCode ?? 0) !== 0;
+  const runFailed = run.status.state === 'exited' && (run.status.exitCode ?? 0) !== 0 && !run.status.stoppedByUser;
   const building = build.status.state === 'running';
   const buildOk = build.status.state === 'exited' && (build.status.exitCode ?? 0) === 0;
-  const buildFailed = build.status.state === 'exited' && (build.status.exitCode ?? 0) !== 0;
+  const buildFailed = build.status.state === 'exited' && (build.status.exitCode ?? 0) !== 0 && !build.status.stoppedByUser;
   const showRunBtn = parts.run && tile.type === 'term' && !runView && Boolean(tile.cwd) && (run.commands.length > 0 || run.status.state !== 'none');
   const showBuildBtn = parts.build && tile.type === 'term' && !runView && Boolean(tile.cwd) && (build.commands.length > 0 || build.status.state !== 'none');
   const [runMenu, setRunMenu] = React.useState<{ x: number; y: number } | null>(null);

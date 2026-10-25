@@ -3,19 +3,15 @@ import React from 'react';
 import type { RunPhase, RunStatus } from '~/domain/interfaces/run.interface';
 import type { RunKind } from '~/adapter/run/run.client';
 import { storeRead, storeWrite } from '~/adapter/store/store.client';
-import { watchRun, startRun, stopRun, refreshRun, fetchRunTail, detectRunCommands, watchRunManifests } from '~/adapter/run/run.client';
+import { watchRun, startRun, stopRun, refreshRun, restartRun, fetchRunStatus, detectRunCommands, watchRunManifests } from '~/adapter/run/run.client';
 
 const DEFAULTS_STORE = 'run-defaults';
-const PHASE_POLL_MS = 400;
-const READY_POLL_MS = 500;
-const READY_TIMEOUT_MS = 30000;
-const GRACEFUL_STOP_MS = 3000;
-const LAST_LINE_MAX = 80;
-const READY_RE = /\b(ready|listening|compiled successfully|server running|running at)\b|local:\s+https?:\/\/|https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]/i;
+const PHASE_POLL_MS = 500;
 
-const clipLine = (line: string): string => {
-  const flat = line.replace(/\s+/g, ' ').trim();
-  return flat.length > LAST_LINE_MAX ? `${flat.slice(0, LAST_LINE_MAX - 3)}...` : flat;
+const serverPhase = (status: RunStatus, kind: RunKind): RunPhase | null => {
+  if (status.state !== 'running') return null;
+  if (status.phase) return status.phase;
+  return kind === 'run' && !status.ready ? 'starting' : null;
 };
 
 type Defaults = Record<string, string>;
@@ -58,12 +54,28 @@ export const useRun = (cwd: string | undefined, tile: string | undefined, kind: 
   const [allCommands, setAllCommands] = React.useState<string[]>([]);
   const [stored, setStored] = React.useState<string | undefined>(undefined);
   const [crashed, setCrashed] = React.useState<RunStatus | null>(null);
-  const [phase, setPhase] = React.useState<RunPhase | null>(null);
-  const [lastLine, setLastLine] = React.useState('');
-  const [spawnedAt, setSpawnedAt] = React.useState<number | null>(null);
+  const [pending, setPending] = React.useState<RunPhase | null>(null);
+  const [restartedPid, setRestartedPid] = React.useState<number | null>(null);
   const prevRef = React.useRef<RunStatus>({ state: 'none' });
-  const phaseRef = React.useRef<RunPhase | null>(null);
   const storeKey = cwd ? `${kind}:${cwd}` : '';
+  const fromServer = serverPhase(status, kind);
+  const restarting = fromServer === 'starting' && restartedPid !== null && status.pid === restartedPid;
+  const phase = pending ?? (restarting ? 'restarting' : fromServer);
+
+  const apply = React.useCallback((s: RunStatus) => {
+    const prev = prevRef.current;
+    prevRef.current = s;
+    setStatus(s);
+    if (prev.state === 'running' && s.state === 'exited' && (s.exitCode ?? 0) !== 0 && !s.stoppedByUser) setCrashed(s);
+  }, []);
+
+  const settle = React.useCallback(() => {
+    if (!tile) return;
+    void fetchRunStatus(tile, kind).then((s) => {
+      apply(s);
+      setPending(null);
+    });
+  }, [tile, kind, apply]);
 
   React.useEffect(() => {
     if (!cwd) return;
@@ -92,29 +104,8 @@ export const useRun = (cwd: string | undefined, tile: string | undefined, kind: 
   React.useEffect(() => {
     if (!tile) return;
     prevRef.current = { state: 'none' };
-    return watchRun(
-      tile,
-      (s) => {
-        const prev = prevRef.current;
-        prevRef.current = s;
-        setStatus(s);
-        if (prev.state === 'running' && s.state === 'exited' && (s.exitCode ?? 0) !== 0 && !phaseRef.current) setCrashed(s);
-      },
-      kind
-    );
-  }, [tile, kind]);
-
-  React.useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
-
-  React.useEffect(() => {
-    if ((phase === 'stopping' || phase === 'killing') && status.state !== 'running') setPhase(null);
-    if (spawnedAt !== null && status.state === 'exited') {
-      setPhase(null);
-      setSpawnedAt(null);
-    }
-  }, [phase, status.state, spawnedAt]);
+    return watchRun(tile, apply, kind);
+  }, [tile, kind, apply]);
 
   React.useEffect(() => {
     if (!phase || !tile) return;
@@ -123,45 +114,12 @@ export const useRun = (cwd: string | undefined, tile: string | undefined, kind: 
   }, [phase, tile, kind]);
 
   React.useEffect(() => {
-    if (phase !== 'stopping') return;
-    const t = setTimeout(() => setPhase('killing'), GRACEFUL_STOP_MS);
-    return () => clearTimeout(t);
-  }, [phase]);
-
-  React.useEffect(() => {
-    if (spawnedAt === null || !tile) return;
-    let alive = true;
-    const check = () => {
-      void fetchRunTail(tile, kind, 50).then((lines) => {
-        if (!alive) return;
-        const last = [...lines].reverse().find((line) => line.trim());
-        if (last) setLastLine(clipLine(last));
-        if (!lines.some((line) => READY_RE.test(line)) && Date.now() - spawnedAt < READY_TIMEOUT_MS) return;
-        setPhase(null);
-        setSpawnedAt(null);
-      });
-    };
-    check();
-    const t = setInterval(check, READY_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [spawnedAt, tile, kind]);
+    if (restartedPid === null) return;
+    if (status.state === 'exited' || (status.pid === restartedPid && fromServer !== 'starting')) setRestartedPid(null);
+  }, [restartedPid, status.state, status.pid, fromServer]);
 
   const commands = React.useMemo(() => filterKind(allCommands, kind), [allCommands, kind]);
   const defaultCmd = pickDefault(commands, kind, stored);
-
-  const onSpawned = React.useCallback(
-    (r: RunStatus) => {
-      if (!tile) return;
-      refreshRun(tile, kind);
-      if (r.error) setPhase(null);
-      else if (kind === 'build') setPhase(null);
-      else setSpawnedAt(Date.now());
-    },
-    [tile, kind]
-  );
 
   const start = React.useCallback(
     (cmd?: string) => {
@@ -172,42 +130,35 @@ export const useRun = (cwd: string | undefined, tile: string | undefined, kind: 
         setStored(cmd);
         void saveDefault(storeKey, cmd);
       }
-      setPhase('starting');
-      setLastLine('');
-      void startRun(cwd, chosen, tile, kind).then(onSpawned);
+      setPending('starting');
+      void startRun(cwd, chosen, tile, kind).then(settle);
     },
-    [cwd, tile, kind, allCommands, stored, storeKey, onSpawned]
+    [cwd, tile, kind, allCommands, stored, storeKey, settle]
   );
 
   const stop = React.useCallback(
     (hard = false) => {
       if (!tile) return;
-      setPhase(hard ? 'killing' : 'stopping');
-      setSpawnedAt(null);
-      void stopRun(tile, hard, kind).then(() => refreshRun(tile, kind));
+      setPending(hard ? 'killing' : 'stopping');
+      void stopRun(tile, hard, kind).then(settle);
     },
-    [tile, kind]
+    [tile, kind, settle]
   );
 
   const restart = React.useCallback(() => {
-    if (!cwd || !tile) return;
-    const cmd = status.cmd ?? pickDefault(filterKind(allCommands, kind), kind, stored);
-    if (!cmd) return;
-    setPhase('restarting');
-    setLastLine('');
-    setSpawnedAt(null);
-    void stopRun(tile, true, kind).then(() => {
-      const tryStart = (left: number) => {
-        void startRun(cwd, cmd, tile, kind).then((r) => {
-          if (r.error && left > 0) setTimeout(() => tryStart(left - 1), 300);
-          else onSpawned(r);
-        });
-      };
-      tryStart(10);
+    if (!tile) return;
+    if (status.state === 'none') {
+      start();
+      return;
+    }
+    setPending('restarting');
+    void restartRun(tile, kind).then((r) => {
+      if (!r.error && r.pid) setRestartedPid(r.pid);
+      settle();
     });
-  }, [cwd, tile, kind, status.cmd, allCommands, stored, onSpawned]);
+  }, [tile, kind, status.state, start, settle]);
 
   const clearCrashed = React.useCallback(() => setCrashed(null), []);
 
-  return { status, phase, lastLine, commands, defaultCmd, crashed, clearCrashed, start, stop, restart };
+  return { status, phase, lastLine: status.lastLine ?? '', commands, defaultCmd, crashed, clearCrashed, start, stop, restart };
 };
