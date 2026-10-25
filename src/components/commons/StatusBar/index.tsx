@@ -6,6 +6,7 @@ import { Plus, Check, RefreshCw } from 'lucide-react';
 
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useAgentUsage } from '~/usecase/hooks/useAgentUsage';
+import VersionMenu from '~/components/commons/StatusBar/VersionMenu';
 import UsageSegment from '~/components/commons/StatusBar/UsageSegment';
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
@@ -55,6 +56,7 @@ const StatusBar = () => {
         </button>
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={items} onClose={closeMenu} />}
+      <VersionMenu />
     </footer>
   );
 };

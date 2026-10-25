@@ -24,84 +24,103 @@ const INITIAL_STATE: UpdaterState = {
   currentVersion: null,
 };
 
-const canUpdate = () => !import.meta.env.DEV && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export const canUpdate = () => !import.meta.env.DEV && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+let state = INITIAL_STATE;
+let pendingUpdate: Update | null = null;
+let checking = false;
+let bootCheckScheduled = false;
+const listeners = new Set<() => void>();
+
+const setState = (patch: Partial<UpdaterState>) => {
+  state = { ...state, ...patch };
+  listeners.forEach((fn) => fn());
+};
+
+const subscribe = (fn: () => void) => {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+};
+
+const getState = () => state;
+
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+const checkForUpdate = async () => {
+  if (!canUpdate() || checking) return;
+  checking = true;
+  setState({ error: null, status: 'checking' });
+
+  try {
+    const result = await check();
+    if (!result) {
+      pendingUpdate = null;
+      setState({ status: 'up-to-date' });
+      return;
+    }
+    pendingUpdate = result;
+    setState({
+      status: 'available',
+      version: result.version,
+      notes: result.body ?? null,
+      currentVersion: result.currentVersion,
+    });
+  } catch (err) {
+    setState({ status: 'error', error: errorMessage(err) });
+  } finally {
+    checking = false;
+  }
+};
+
+const downloadAndInstall = async () => {
+  const update = pendingUpdate;
+  if (!update) return;
+  setState({ error: null, downloaded: 0, contentLength: 0, status: 'downloading' });
+
+  try {
+    let downloaded = 0;
+    await update.downloadAndInstall((event) => {
+      switch (event.event) {
+        case 'Started':
+          setState({ contentLength: event.data.contentLength ?? 0, downloaded: 0 });
+          break;
+        case 'Progress':
+          downloaded += event.data.chunkLength;
+          setState({ downloaded });
+          break;
+        case 'Finished':
+          setState({ status: 'ready' });
+          break;
+      }
+    });
+  } catch (err) {
+    setState({ status: 'error', error: errorMessage(err) });
+  }
+};
+
+const restart = async () => {
+  try {
+    await relaunch();
+  } catch (err) {
+    setState({ status: 'error', error: errorMessage(err) });
+  }
+};
+
+const dismiss = () => {
+  pendingUpdate = null;
+  setState(INITIAL_STATE);
+};
+
+const scheduleBootCheck = () => {
+  if (bootCheckScheduled || !canUpdate()) return;
+  bootCheckScheduled = true;
+  window.setTimeout(() => void checkForUpdate(), 3000);
+};
 
 export const useUpdater = () => {
-  const [state, setState] = React.useState<UpdaterState>(INITIAL_STATE);
-  const updateRef = React.useRef<Update | null>(null);
-  const checkingRef = React.useRef(false);
+  const current = React.useSyncExternalStore(subscribe, getState);
 
-  const checkForUpdate = React.useCallback(async () => {
-    if (!canUpdate() || checkingRef.current) return;
-    checkingRef.current = true;
-    setState((prev) => ({ ...prev, error: null, status: 'checking' }));
+  React.useEffect(scheduleBootCheck, []);
 
-    try {
-      const result = await check();
-      if (!result) {
-        updateRef.current = null;
-        setState((prev) => ({ ...prev, status: 'up-to-date' }));
-        return;
-      }
-      updateRef.current = result;
-      setState((prev) => ({
-        ...prev,
-        status: 'available',
-        version: result.version,
-        notes: result.body ?? null,
-        currentVersion: result.currentVersion,
-      }));
-    } catch (err) {
-      setState((prev) => ({ ...prev, status: 'error', error: err instanceof Error ? err.message : String(err) }));
-    } finally {
-      checkingRef.current = false;
-    }
-  }, []);
-
-  const downloadAndInstall = React.useCallback(async () => {
-    const update = updateRef.current;
-    if (!update) return;
-    setState((prev) => ({ ...prev, error: null, downloaded: 0, contentLength: 0, status: 'downloading' }));
-
-    try {
-      let downloaded = 0;
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case 'Started':
-            setState((prev) => ({ ...prev, contentLength: event.data.contentLength ?? 0, downloaded: 0 }));
-            break;
-          case 'Progress':
-            downloaded += event.data.chunkLength;
-            setState((prev) => ({ ...prev, downloaded }));
-            break;
-          case 'Finished':
-            setState((prev) => ({ ...prev, status: 'ready' }));
-            break;
-        }
-      });
-    } catch (err) {
-      setState((prev) => ({ ...prev, status: 'error', error: err instanceof Error ? err.message : String(err) }));
-    }
-  }, []);
-
-  const restart = React.useCallback(async () => {
-    try {
-      await relaunch();
-    } catch (err) {
-      setState((prev) => ({ ...prev, status: 'error', error: err instanceof Error ? err.message : String(err) }));
-    }
-  }, []);
-
-  const dismiss = React.useCallback(() => {
-    updateRef.current = null;
-    setState(INITIAL_STATE);
-  }, []);
-
-  React.useEffect(() => {
-    if (!canUpdate()) return;
-    const timer = window.setTimeout(() => void checkForUpdate(), 3000);
-    return () => window.clearTimeout(timer);
-  }, [checkForUpdate]);
-
-  return { state, restart, dismiss, checkForUpdate, downloadAndInstall };
+  return { state: current, restart, dismiss, checkForUpdate, downloadAndInstall };
 };

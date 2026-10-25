@@ -21,11 +21,12 @@ interface ContextMenuProps {
   y: number;
   onClose: () => void;
   items: ContextMenuEntry[];
+  placement?: 'below' | 'above';
 }
 
 const EDGE = 8;
 
-const ContextMenu = ({ x, y, items, onClose }: ContextMenuProps) => {
+const ContextMenu = ({ x, y, items, onClose, placement = 'below' }: ContextMenuProps) => {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [pos, setPos] = React.useState({ x, y });
 
@@ -33,10 +34,11 @@ const ContextMenu = ({ x, y, items, onClose }: ContextMenuProps) => {
     const el = rootRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
+    const top = placement === 'above' ? y - height : y;
     const nx = Math.min(x, window.innerWidth - width - EDGE);
-    const ny = Math.min(y, window.innerHeight - height - EDGE);
+    const ny = Math.min(top, window.innerHeight - height - EDGE);
     setPos({ x: Math.max(EDGE, nx), y: Math.max(EDGE, ny) });
-  }, [x, y]);
+  }, [x, y, placement]);
 
   React.useEffect(() => {
     const onOutside = (e: PointerEvent) => {

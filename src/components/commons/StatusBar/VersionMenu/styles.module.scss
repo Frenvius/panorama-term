@@ -1,0 +1,29 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-dim);
+  border-radius: 4px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
