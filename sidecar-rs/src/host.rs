@@ -170,6 +170,19 @@ impl Host {
 // bump when host-side code outside this file changes (RawRing, respawn_detached, port helpers)
 const REV: u32 = 1;
 const KILL_WAIT_TRIES: u32 = 100;
+const INHERITED_CLAUDE_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+];
 
 pub fn id() -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -655,6 +668,9 @@ fn host_spawn(
     let mut cmd = CommandBuilder::new(&exe);
     for arg in &args {
         cmd.arg(arg);
+    }
+    for key in INHERITED_CLAUDE_SESSION_VARS {
+        cmd.env_remove(key);
     }
     for (k, val) in &env {
         cmd.env(k, val);

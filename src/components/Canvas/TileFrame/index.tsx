@@ -95,6 +95,8 @@ const FS_PAD = 28;
 
 const DRAG_THRESHOLD = 4;
 
+const RUN_ICON = 14;
+
 const PHASE_LABEL: Record<RunPhase, string> = { starting: 'Starting', restarting: 'Restarting', stopping: 'Stopping', killing: 'Killing' };
 
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
@@ -241,13 +243,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     : `${styles.action} ${styles.runBtn}`;
   const runIcon =
     run.phase === 'restarting' ? (
-      <RotateCw size={13} strokeWidth={2} className={styles.spin} />
+      <RotateCw size={RUN_ICON} strokeWidth={2} className={styles.spin} />
     ) : run.phase ? (
-      <Loader2 size={13} strokeWidth={2} className={styles.spin} />
+      <Loader2 size={RUN_ICON} strokeWidth={2} className={styles.spin} />
     ) : running ? (
-      <RotateCw size={13} strokeWidth={2} />
+      <RotateCw size={RUN_ICON} strokeWidth={2} />
     ) : (
-      <Play size={13} strokeWidth={2} />
+      <Play size={RUN_ICON} strokeWidth={2} />
     );
   const runStopTip = run.phase === 'stopping' ? 'Kill process now' : run.phase === 'killing' ? 'Killing process tree' : `Stop '${runCmd}'`;
   const buildTip = build.phase
@@ -757,7 +759,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   aria-label={building ? 'Rebuild project' : 'Build project'}
                   data-tooltip={buildTip}
                 >
-                  {build.phase ? <Loader2 size={13} strokeWidth={2} className={styles.spin} /> : <Hammer size={13} strokeWidth={2} />}
+                  {build.phase ? <Loader2 size={RUN_ICON} strokeWidth={2} className={styles.spin} /> : <Hammer size={RUN_ICON} strokeWidth={2} />}
                   {buildOk && <span className={`${styles.statusBadge} ${styles.badgeOk}`} />}
                   {buildFailed && <span className={`${styles.statusBadge} ${styles.badgeErr}`} />}
                 </button>
@@ -770,7 +772,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                     aria-label="Stop build"
                     data-tooltip={build.phase === 'killing' ? 'Killing process tree' : `Stop '${buildCmd}'`}
                   >
-                    <Square size={13} strokeWidth={2} fill="currentColor" />
+                    <Square size={RUN_ICON} strokeWidth={2} fill="currentColor" />
                   </button>
                 )}
                 {(building || buildFailed || build.commands.length > 1) && (
@@ -804,7 +806,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                     aria-label={runKillable ? 'Kill process' : 'Stop run'}
                     data-tooltip={runStopTip}
                   >
-                    {runKillable ? <X size={13} strokeWidth={2.5} /> : <Square size={13} strokeWidth={2} fill="currentColor" />}
+                    {runKillable ? <X size={RUN_ICON} strokeWidth={2.5} /> : <Square size={RUN_ICON} strokeWidth={2} fill="currentColor" />}
                   </button>
                 )}
                 {(run.status.state !== 'none' || run.commands.length > 1) && (
