@@ -82,14 +82,17 @@ export const useBranchActions = (cwd: string, snapshot: BranchSnapshot | null, s
       done: () => ({ kind: 'success', message: 'Fetched all remotes' })
     });
 
-  const update = () => {
+  const pull = (rebase: boolean) => {
     const before = head(snapshot);
-    return track({ op: 'update' }, gitUpdateBranch(cwd, false), {
-      pending: 'Pulling...',
+    return track({ op: 'update' }, gitUpdateBranch(cwd, rebase), {
+      pending: rebase ? 'Pulling with rebase...' : 'Pulling...',
       failed: 'Pull failed',
       done: (snap) => ({ kind: 'success', message: summarize('update', before, head(snap)) })
     });
   };
+
+  const update = () => pull(false);
+  const pullRebase = () => pull(true);
 
   const push = () => {
     const before = head(snapshot);
@@ -133,6 +136,17 @@ export const useBranchActions = (cwd: string, snapshot: BranchSnapshot | null, s
   };
 
   const checkout = (branch: string) => switchTo(branch, gitCheckout, current);
+
+  const checkoutAndRebase = (branch: string) => {
+    const base = current;
+    if (!base) return Promise.resolve(null);
+    const task = gitCheckout(cwd, branch).then(() => gitRebaseOnto(cwd, base));
+    return track({ op: 'rebase', branch }, task, {
+      pending: `Rebasing ${branch} onto ${base}...`,
+      failed: `Rebase of ${branch} onto ${base} failed`,
+      done: () => ({ kind: 'success', message: `Checked out ${branch} and rebased it onto ${base}` })
+    });
+  };
 
   const operation = (action: RepoOperationAction) =>
     track({ op: 'operation' }, gitOperation(cwd, action), {
@@ -224,6 +238,8 @@ export const useBranchActions = (cwd: string, snapshot: BranchSnapshot | null, s
     checkout,
     fetchAll,
     operation,
+    pullRebase,
+    checkoutAndRebase,
     setUpstream,
     toggleFavorite
   };

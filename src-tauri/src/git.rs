@@ -136,12 +136,18 @@ fn paths_equal(a: &str, b: &str) -> bool {
     }
 }
 
+const DEFAULT_FAVORITES: [&str; 2] = ["main", "master"];
+
+fn default_favorites() -> Vec<String> {
+    DEFAULT_FAVORITES.iter().map(|name| name.to_string()).collect()
+}
+
 fn favorites_for(repo: &str) -> Vec<String> {
     read_favorites()
         .into_iter()
         .find(|(k, _)| paths_equal(k, repo))
         .map(|(_, v)| v)
-        .unwrap_or_default()
+        .unwrap_or_else(default_favorites)
 }
 
 fn remote_names(repo: &str) -> Vec<String> {
@@ -974,7 +980,7 @@ pub async fn git_toggle_branch_favorite(
             .find(|k| paths_equal(k, &path))
             .cloned()
             .unwrap_or_else(|| path.clone());
-        let entry = map.entry(key).or_default();
+        let entry = map.entry(key).or_insert_with(default_favorites);
         match entry.iter().position(|b| b == &full_name) {
             Some(pos) => {
                 entry.remove(pos);

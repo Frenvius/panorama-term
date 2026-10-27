@@ -1,0 +1,99 @@
+.row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-right: 8px;
+  cursor: pointer;
+  color: var(--text-1);
+  border-radius: 5px;
+  font-size: 12.5px;
+
+  &:hover {
+    background: var(--hover-2);
+  }
+
+  &[data-current='true'] {
+    color: var(--text-strong);
+    font-weight: 600;
+    background: var(--hover-1);
+  }
+
+  &[data-selected='true'] {
+    background: var(--hover-3);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  &[data-dimmed='true'] {
+    opacity: 0.5;
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+    }
+  }
+}
+
+.star {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  border-radius: 3px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+  }
+
+  &[data-on='true'] {
+    color: #e0a33e;
+  }
+}
+
+.name {
+  overflow: hidden;
+  flex: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  mark {
+    color: var(--accent);
+    font-weight: 600;
+    background: transparent;
+  }
+}
+
+.track {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.upstream {
+  overflow: hidden;
+  max-width: 90px;
+  flex: none;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.spinning {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

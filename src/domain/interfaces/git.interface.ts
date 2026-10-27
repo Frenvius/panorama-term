@@ -110,6 +110,8 @@ export type BranchAction =
   | { type: 'checkout'; branch: string }
   | { type: 'new-from'; branch: string }
   | { type: 'update' }
+  | { type: 'update-rebase' }
+  | { type: 'checkout-rebase'; branch: string }
   | { type: 'push' }
   | { type: 'compare'; branch: string }
   | { type: 'merge'; branch: string }

@@ -100,6 +100,8 @@ const RUN_ICON = 14;
 
 const PHASE_LABEL: Record<RunPhase, string> = { starting: 'Starting', restarting: 'Restarting', stopping: 'Stopping', killing: 'Killing' };
 
+const commitCount = (n: number): string => (n > 99 ? '99+' : String(n));
+
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
   const parts = useHeaderParts();
@@ -736,11 +738,13 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   {repo && repo.ahead > 0 && (
                     <span className={styles.ahead} data-tooltip={`${repo.ahead} to push`}>
                       <ArrowUp size={9} strokeWidth={2.5} />
+                      {commitCount(repo.ahead)}
                     </span>
                   )}
                   {repo && repo.behind > 0 && (
                     <span className={styles.behind} data-tooltip={`${repo.behind} to pull`}>
                       <ArrowDown size={9} strokeWidth={2.5} />
+                      {commitCount(repo.behind)}
                     </span>
                   )}
                   <ChevronDown size={10} strokeWidth={2} />

@@ -1,15 +1,16 @@
 import React from 'react';
-import { X, Star, Plus, Search, Loader2, GitBranch, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
+import { X, Plus, Search, Loader2, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot, RepoOperationAction } from '~/domain/interfaces/git.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchDialog, { type DialogState } from '~/components/Canvas/TileFrame/BranchMenu/BranchDialog';
+import BranchRow, { type BranchRowHandlers } from '~/components/Canvas/TileFrame/BranchMenu/BranchRow';
 import OperationBanner from '~/components/Canvas/TileFrame/BranchMenu/OperationBanner';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { gitCompareWithCurrent } from '~/adapter/git/git.client';
-import { buildTrees, filterTree } from '~/usecase/util/branchTree';
 import { useBranchActions } from '~/usecase/hooks/useBranchActions';
+import { EMPTY_TREES, buildTrees, filterTrees, labelMatches, visibleLeaves } from '~/usecase/util/branchTree';
 
 import styles from './styles.module.scss';
 
@@ -37,7 +38,9 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const bodyRef = React.useRef<HTMLDivElement>(null);
   const actions = useBranchActions(cwd, snapshot, { onSnapshot, onError });
   const repo = useRepoState(cwd);
   const busy = actions.busy;
@@ -60,13 +63,37 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
     };
   }, [onClose, menu, dialog]);
 
-  const trees = React.useMemo(
-    () => (snapshot ? buildTrees(snapshot) : { local: [], remote: [], favorites: [] }),
-    [snapshot]
-  );
+  const trees = React.useMemo(() => (snapshot ? buildTrees(snapshot) : EMPTY_TREES), [snapshot]);
+  const filtered = React.useMemo(() => filterTrees(trees, query), [trees, query]);
 
   const current = snapshot?.current ?? '';
   const filtering = query.trim().length > 0;
+
+  const isOpen = (folderKey: string) => filtering || !collapsed.has(folderKey);
+  const leaves = visibleLeaves(
+    [
+      ['favorites', filtered.favorites],
+      ['recent', filtered.recent],
+      ['local', filtered.local],
+      ['remote', filtered.remote]
+    ],
+    isOpen
+  );
+  const selected =
+    leaves.find((l) => l.id === selectedId) ?? (filtering && selectedId === null ? leaves[0] : undefined);
+  const selectedKey = selected?.id;
+
+  const rowElement = (id: string) => bodyRef.current?.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(id)}"]`);
+
+  React.useEffect(() => {
+    const body = bodyRef.current;
+    const row = selectedKey ? rowElement(selectedKey) : null;
+    if (!body || !row) return;
+    if (row.offsetTop < body.scrollTop) body.scrollTop = row.offsetTop;
+    else if (row.offsetTop + row.offsetHeight > body.scrollTop + body.clientHeight) {
+      body.scrollTop = row.offsetTop + row.offsetHeight - body.clientHeight;
+    }
+  }, [selectedKey]);
 
   const fetchAll = () => void actions.fetchAll();
   const updateProject = () => void actions.update();
@@ -83,6 +110,12 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
         return;
       case 'update':
         void actions.update();
+        return;
+      case 'update-rebase':
+        void actions.pullRebase();
+        return;
+      case 'checkout-rebase':
+        void actions.checkoutAndRebase(action.branch);
         return;
       case 'push':
         void actions.push();
@@ -143,6 +176,12 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
     const items: ContextMenuEntry[] = [];
 
     if (!leaf.isCurrent) items.push({ label: 'Checkout', onSelect: () => dispatch({ type: 'checkout', branch: name }) });
+    if (!leaf.isCurrent && !isRemote && current) {
+      items.push({
+        label: `Checkout and rebase onto '${current}'`,
+        onSelect: () => dispatch({ type: 'checkout-rebase', branch: name })
+      });
+    }
     items.push({ label: `New branch from '${short}'...`, onSelect: () => dispatch({ type: 'new-from', branch: name }) });
 
     if (!leaf.isCurrent) {
@@ -159,7 +198,8 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
       });
     } else {
       items.push('separator');
-      items.push({ label: 'Update', onSelect: () => dispatch({ type: 'update' }) });
+      items.push({ label: 'Pull (merge)', onSelect: () => dispatch({ type: 'update' }) });
+      items.push({ label: 'Pull with rebase', onSelect: () => dispatch({ type: 'update-rebase' }) });
       items.push({ label: 'Push', onSelect: () => dispatch({ type: 'push' }) });
     }
 
@@ -215,7 +255,52 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const closeMenu = () => setMenu(null);
   const closeDialog = () => setDialog(null);
   const clearError = () => onError(null);
-  const onQuery = (e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value);
+  const onQuery = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setQuery(e.target.value);
+    setSelectedId(null);
+  };
+
+  const openMenu = (leaf: BranchLeaf, rect: DOMRect) => {
+    if (busy) return;
+    setMenu({ leaf, x: rect.right - 4, y: rect.top });
+  };
+
+  const rowHandlers: BranchRowHandlers = {
+    onOpen: openMenu,
+    onFavorite: (leaf) => dispatch({ type: 'toggle-favorite', branch: leaf.fullName })
+  };
+
+  const moveSelection = (step: number) => {
+    if (leaves.length === 0) return;
+    const index = selected ? leaves.indexOf(selected) : -1;
+    const next = index === -1 ? (step > 0 ? 0 : leaves.length - 1) : (index + step + leaves.length) % leaves.length;
+    setSelectedId(leaves[next].id);
+  };
+
+  const openSelectedMenu = () => {
+    const rect = selected && rowElement(selected.id)?.getBoundingClientRect();
+    if (selected && rect) openMenu(selected.leaf, rect);
+  };
+
+  const activateSelected = () => {
+    if (!selected || busy) return;
+    if (selected.leaf.isCurrent) openSelectedMenu();
+    else dispatch({ type: 'checkout', branch: selected.leaf.fullName });
+  };
+
+  const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const keys: Record<string, () => void> = {
+      ArrowDown: () => moveSelection(1),
+      ArrowUp: () => moveSelection(-1),
+      ArrowRight: openSelectedMenu,
+      Enter: activateSelected
+    };
+    const run = keys[e.key];
+    const caretAtEnd = e.currentTarget.selectionStart === e.currentTarget.value.length;
+    if (!run || (e.key === 'ArrowRight' && (!selected || !caretAtEnd))) return;
+    e.preventDefault();
+    run();
+  };
   const newBranch = () => setDialog({ kind: 'create' });
 
   const stopEvent = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -224,9 +309,9 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
     e.stopPropagation();
   };
 
-  const renderNode = (node: BranchNode, depth: number): React.ReactNode => {
+  const renderNode = (section: string, node: BranchNode, depth: number): React.ReactNode => {
     if (node.kind === 'folder') {
-      const shut = !filtering && collapsed.has(node.key);
+      const shut = !isOpen(node.key);
       const toggle = () => toggleFolder(node.key);
 
       return (
@@ -236,69 +321,36 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
             <FolderClosed size={13} strokeWidth={1.75} className={styles.folder} />
             <span className={styles.name}>{node.label}</span>
           </button>
-          {!shut && node.children.map((child) => renderNode(child, depth + 1))}
+          {!shut && node.children.map((child) => renderNode(section, child, depth + 1))}
         </div>
       );
     }
 
-    const leaf = node.data;
-    const track = [leaf.ahead > 0 && `+${leaf.ahead}`, leaf.behind > 0 && `-${leaf.behind}`]
-      .filter(Boolean)
-      .join(' ');
-
-    const working = busy?.branch === leaf.fullName;
-
-    const open = (e: React.MouseEvent) => {
-      e.preventDefault();
-      if (busy) return;
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      setMenu({ leaf, x: rect.right - 4, y: rect.top });
-    };
-    const favorite = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      dispatch({ type: 'toggle-favorite', branch: leaf.fullName });
-    };
+    const id = `${section}:${node.key}`;
+    const working = busy?.branch === node.data.fullName;
 
     return (
-      <div
+      <BranchRow
+        id={id}
         key={node.key}
-        className={styles.row}
-        style={{ paddingLeft: 8 + depth * 12 }}
-        onClick={open}
-        onContextMenu={open}
-        data-current={leaf.isCurrent || undefined}
-        data-busy={(busy && !working) || undefined}
-      >
-        {working ? (
-          <span className={styles.star}>
-            <Loader2 size={12} strokeWidth={2} className={styles.spinning} />
-          </span>
-        ) : (
-          <button className={styles.star} onClick={favorite} aria-label="Toggle favorite" data-on={leaf.isFavorite || undefined}>
-            {leaf.isFavorite ? <Star size={12} fill="currentColor" /> : <GitBranch size={12} strokeWidth={1.75} />}
-          </button>
-        )}
-        <span className={styles.name}>{node.label}</span>
-        {track && <span className={styles.track}>{track}</span>}
-        {leaf.upstream && <span className={styles.upstream}>{leaf.upstream}</span>}
-      </div>
+        depth={depth}
+        leaf={node.data}
+        label={node.label}
+        handlers={rowHandlers}
+        matches={filtering ? labelMatches(query, node.data.fullName, node.label) : []}
+        state={{ working, dimmed: Boolean(busy) && !working, selected: id === selectedKey }}
+      />
     );
   };
 
-  const section = (label: string, nodes: BranchNode[], hint?: string) => {
+  const section = (id: string, label: string, nodes: BranchNode[], hint?: string) => {
     if (nodes.length === 0 && !hint) return null;
     return (
       <div className={styles.section}>
         <div className={styles.sectionLabel}>{label}</div>
-        {nodes.length > 0 ? nodes.map((node) => renderNode(node, 0)) : <div className={styles.hint}>{hint}</div>}
+        {nodes.length > 0 ? nodes.map((node) => renderNode(id, node, 0)) : <div className={styles.hint}>{hint}</div>}
       </div>
     );
-  };
-
-  const filtered = {
-    favorites: filterTree(trees.favorites, query),
-    local: filterTree(trees.local, query),
-    remote: filterTree(trees.remote, query)
   };
 
   return (
@@ -314,7 +366,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
       >
         <div className={styles.search}>
           <Search size={12} strokeWidth={2} />
-          <input value={query} onChange={onQuery} placeholder="Search branches" autoFocus />
+          <input value={query} onChange={onQuery} onKeyDown={onSearchKey} placeholder="Search branches" autoFocus />
           <button
             className={styles.action}
             onClick={updateProject}
@@ -368,14 +420,15 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
           </div>
         )}
 
-        <div className={styles.body}>
+        <div ref={bodyRef} className={styles.body}>
           {loading && !snapshot ? (
             <div className={styles.hint}>Loading branches...</div>
           ) : (
             <>
-              {section('Favorites', filtered.favorites)}
-              {section('Local', filtered.local, filtering ? 'No local branches match.' : 'No local branches.')}
-              {section('Remote', filtered.remote, filtering ? 'No remote branches match.' : 'No remote branches.')}
+              {section('favorites', 'Favorites', filtered.favorites)}
+              {section('recent', 'Recent', filtered.recent)}
+              {section('local', 'Local', filtered.local, filtering ? 'No local branches match.' : 'No local branches.')}
+              {section('remote', 'Remote', filtered.remote, filtering ? 'No remote branches match.' : 'No remote branches.')}
             </>
           )}
         </div>
