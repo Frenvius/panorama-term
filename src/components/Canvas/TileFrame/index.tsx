@@ -31,6 +31,7 @@ import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client'
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
+import { operationTag } from '~/usecase/util/repoOperation';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
@@ -723,9 +724,15 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 </span>
               )}
               {!note && parts.branch && branchLabel && (
-                <button className={styles.branch} onClick={openBranches} onPointerDown={stopDrag}>
+                <button
+                  className={styles.branch}
+                  onClick={openBranches}
+                  onPointerDown={stopDrag}
+                  data-operation={Boolean(repo?.state) || undefined}
+                >
                   <GitBranch size={10} strokeWidth={2} />
                   {branchLabel}
+                  {repo?.state && <span className={styles.operation}>{operationTag(repo)}</span>}
                   {repo && repo.ahead > 0 && (
                     <span className={styles.ahead} data-tooltip={`${repo.ahead} to push`}>
                       <ArrowUp size={9} strokeWidth={2.5} />

@@ -1,11 +1,13 @@
 import React from 'react';
 
 import type { ToastTask } from '~/usecase/util/toasts';
-import type { LocalBranch, BranchSnapshot } from '~/domain/interfaces/git.interface';
-import { showToast, toastTask } from '~/usecase/util/toasts';
+import type { LocalBranch, BranchSnapshot, RepoOperationAction } from '~/domain/interfaces/git.interface';
+import { errorText, showToast, toastTask } from '~/usecase/util/toasts';
 import {
   gitFetch,
   gitCheckout,
+  gitOperation,
+  gitStashCheckout,
   gitResolveRef,
   gitRebaseOnto,
   gitMergeBranch,
@@ -18,7 +20,17 @@ import {
   gitToggleBranchFavorite
 } from '~/adapter/git/git.client';
 
-export type BranchOp = 'fetch' | 'update' | 'push' | 'checkout' | 'merge' | 'rebase' | 'delete' | 'upstream';
+export type BranchOp = 'fetch' | 'update' | 'push' | 'checkout' | 'merge' | 'rebase' | 'delete' | 'upstream' | 'operation';
+
+type CheckoutRunner = (path: string, branch: string) => Promise<BranchSnapshot>;
+
+const BLOCKED_BY_CHANGES = 'would be overwritten by checkout';
+
+const OPERATION_TEXT: Record<RepoOperationAction, { pending: string; done: string }> = {
+  skip: { pending: 'Skipping commit...', done: 'Skipped commit' },
+  abort: { pending: 'Aborting...', done: 'Aborted' },
+  continue: { pending: 'Continuing...', done: 'Continued' }
+};
 
 export interface BranchBusy {
   op: BranchOp;
@@ -88,21 +100,46 @@ export const useBranchActions = (cwd: string, snapshot: BranchSnapshot | null, s
     });
   };
 
-  const checkout = (branch: string, previous = current) => {
+  const switchTo = (branch: string, runner: CheckoutRunner, previous: string | null): Promise<BranchSnapshot | null> => {
     const name = shortName(snapshot, branch);
-    return track({ op: 'checkout', branch }, gitCheckout(cwd, branch), {
-      pending: `Checking out ${name}...`,
-      failed: `Checkout of ${name} failed`,
+    const stashing = runner === gitStashCheckout;
+    const failed = `Checkout of ${name} failed`;
+
+    return track({ op: 'checkout', branch }, runner(cwd, branch), {
+      failed,
+      pending: stashing ? `Stashing changes and checking out ${name}...` : `Checking out ${name}...`,
+      failure: (err) => {
+        const detail = errorText(err);
+        if (stashing && detail.startsWith('Checked out')) {
+          return { kind: 'error', message: `Checked out ${name}, but local changes conflict`, detail };
+        }
+        if (stashing || !detail.includes(BLOCKED_BY_CHANGES)) return { kind: 'error', message: failed, detail };
+        return {
+          detail,
+          kind: 'error',
+          message: `Local changes block checkout of ${name}`,
+          action: { label: 'Stash & checkout', run: () => void switchTo(branch, gitStashCheckout, previous) }
+        };
+      },
       done: (snap) => ({
         kind: 'success',
         message: `Checked out ${snap.current ?? name}`,
         action:
           previous && previous !== snap.current
-            ? { label: 'Rollback', run: () => void checkout(previous, snap.current) }
+            ? { label: 'Rollback', run: () => void switchTo(previous, gitCheckout, snap.current) }
             : undefined
       })
     });
   };
+
+  const checkout = (branch: string) => switchTo(branch, gitCheckout, current);
+
+  const operation = (action: RepoOperationAction) =>
+    track({ op: 'operation' }, gitOperation(cwd, action), {
+      pending: OPERATION_TEXT[action].pending,
+      failed: `Could not ${action}`,
+      done: () => ({ kind: 'success', message: OPERATION_TEXT[action].done })
+    });
 
   const merge = (branch: string) => {
     const name = shortName(snapshot, branch);
@@ -186,6 +223,7 @@ export const useBranchActions = (cwd: string, snapshot: BranchSnapshot | null, s
     remove,
     checkout,
     fetchAll,
+    operation,
     setUpstream,
     toggleFavorite
   };

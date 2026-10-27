@@ -87,17 +87,30 @@ pub struct CommitMessageEntry {
     date: String,
 }
 
-fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
-    let out = crate::hidden_command("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git: {}", e))?;
+fn git_output(command: &mut std::process::Command) -> Result<String, String> {
+    let out = command.output().map_err(|e| format!("git: {}", e))?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            return Err(stderr);
+        }
+        return Err(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
+    git_output(crate::hidden_command("git").arg("-C").arg(repo).args(args))
+}
+
+fn run_git_without_editor(repo: &str, args: &[&str]) -> Result<String, String> {
+    git_output(
+        crate::hidden_command("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_EDITOR", "true"),
+    )
 }
 
 const FAVORITES_KEY: &str = "branch-favorites.json";
@@ -677,7 +690,11 @@ pub async fn git_branches(path: String) -> Result<BranchSnapshot, String> {
 }
 
 #[tauri::command]
-pub async fn git_checkout(path: String, branch: String) -> Result<BranchSnapshot, String> {
+pub async fn git_checkout(
+    path: String,
+    branch: String,
+    stash: bool,
+) -> Result<BranchSnapshot, String> {
     crate::blocking(move || {
         let target = match branch.split_once('/') {
             Some((remote, rest)) if remote_names(&path).iter().any(|r| r == remote) => {
@@ -691,10 +708,45 @@ pub async fn git_checkout(path: String, branch: String) -> Result<BranchSnapshot
             return Ok(snap);
         }
 
-        run_git(&path, &["switch", &target])?;
+        if stash {
+            stash_checkout(&path, &target)?;
+        } else {
+            run_git(&path, &["switch", &target])?;
+        }
         snapshot(&path)
     })
     .await
+}
+
+fn stash_tip(repo: &str) -> Option<String> {
+    run_git(repo, &["rev-parse", "--quiet", "--verify", "refs/stash"])
+        .ok()
+        .map(|out| out.trim().to_string())
+}
+
+fn stash_checkout(repo: &str, target: &str) -> Result<(), String> {
+    let before = stash_tip(repo);
+    run_git(
+        repo,
+        &["stash", "push", "--include-untracked", "-m", "panorama: smart checkout"],
+    )?;
+    let stashed = stash_tip(repo) != before;
+
+    if let Err(e) = run_git(repo, &["switch", target]) {
+        if stashed {
+            let _ = run_git(repo, &["stash", "pop"]);
+        }
+        return Err(e);
+    }
+    if stashed {
+        run_git(repo, &["stash", "pop"]).map_err(|e| {
+            format!(
+                "Checked out {}, but restoring local changes conflicted. They are kept in stash@{{0}}.\n\n{}",
+                target, e
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -885,7 +937,7 @@ pub async fn git_compare_with_current(
             &path,
             &[
                 "log",
-                "--format=%H%00%h%00%s%00%an%00%ad",
+                "--format=%H%x00%h%x00%s%x00%an%x00%ad",
                 "--date=short",
                 &range,
             ],
@@ -1196,6 +1248,8 @@ pub struct RepoState {
     branch: Option<String>,
     head: Option<String>,
     state: Option<&'static str>,
+    step: Option<u32>,
+    total: Option<u32>,
     ahead: u32,
     behind: u32,
 }
@@ -1279,9 +1333,23 @@ fn rebase_branch(git_dir: &Path) -> Option<String> {
         .filter(|name| !name.is_empty() && name != "detached HEAD")
 }
 
+fn rebase_progress(git_dir: &Path) -> Option<(u32, u32)> {
+    let read = |dir: &str, file: &str| -> Option<u32> {
+        fs::read_to_string(git_dir.join(dir).join(file))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    read("rebase-merge", "msgnum")
+        .zip(read("rebase-merge", "end"))
+        .or_else(|| read("rebase-apply", "next").zip(read("rebase-apply", "last")))
+}
+
 fn read_repo_state(dirs: &GitDirs) -> RepoState {
     let root = dirs.root.as_str();
     let (ahead, behind) = track_counts(root);
+    let progress = rebase_progress(&dirs.git_dir);
     RepoState {
         root: dirs.root.clone(),
         branch: head_name(root).or_else(|| rebase_branch(&dirs.git_dir)),
@@ -1290,9 +1358,34 @@ fn read_repo_state(dirs: &GitDirs) -> RepoState {
             .map(|out| out.trim().to_string())
             .filter(|h| !h.is_empty()),
         state: operation_state(&dirs.git_dir),
+        step: progress.map(|(step, _)| step),
+        total: progress.map(|(_, total)| total),
         ahead,
         behind,
     }
+}
+
+#[tauri::command]
+pub async fn git_operation(path: String, action: String) -> Result<BranchSnapshot, String> {
+    crate::blocking(move || {
+        let dirs = git_dirs(&path)?;
+        let command = match operation_state(&dirs.git_dir) {
+            Some("merging") => "merge",
+            Some("rebasing") => "rebase",
+            Some("cherry-picking") => "cherry-pick",
+            Some("reverting") => "revert",
+            _ => return Err("No merge, rebase, cherry-pick or revert in progress".into()),
+        };
+        let flag = match action.as_str() {
+            "continue" => "--continue",
+            "abort" => "--abort",
+            "skip" if command != "merge" => "--skip",
+            _ => return Err(format!("Cannot {} a {}", action, command)),
+        };
+        run_git_without_editor(&path, &[command, flag])?;
+        snapshot(&path)
+    })
+    .await
 }
 
 fn is_repo_event(path: &Path, dirs: &[PathBuf; 2]) -> bool {

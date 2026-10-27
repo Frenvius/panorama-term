@@ -138,6 +138,19 @@
     color: var(--text-1);
     background: var(--hover-2);
   }
+
+  &[data-operation='true'] {
+    max-width: 220px;
+    color: #e0a33e;
+  }
+}
+
+.operation {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: color-mix(in srgb, #e0a33e 16%, transparent);
 }
 
 .ahead,

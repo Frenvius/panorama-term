@@ -2,9 +2,12 @@ import React from 'react';
 import { X, Star, Plus, Search, Loader2, GitBranch, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot } from '~/domain/interfaces/git.interface';
+import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot, RepoOperationAction } from '~/domain/interfaces/git.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchDialog, { type DialogState } from '~/components/Canvas/TileFrame/BranchMenu/BranchDialog';
+import OperationBanner from '~/components/Canvas/TileFrame/BranchMenu/OperationBanner';
+import { useRepoState } from '~/usecase/hooks/useRepoState';
+import { gitCompareWithCurrent } from '~/adapter/git/git.client';
 import { buildTrees, filterTree } from '~/usecase/util/branchTree';
 import { useBranchActions } from '~/usecase/hooks/useBranchActions';
 
@@ -36,6 +39,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const actions = useBranchActions(cwd, snapshot, { onSnapshot, onError });
+  const repo = useRepoState(cwd);
   const busy = actions.busy;
 
   React.useEffect(() => {
@@ -67,6 +71,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const fetchAll = () => void actions.fetchAll();
   const updateProject = () => void actions.update();
   const pushCurrent = () => void actions.push();
+  const runOperation = (action: RepoOperationAction) => void actions.operation(action);
 
   const dispatch = (action: BranchAction) => {
     switch (action.type) {
@@ -101,16 +106,34 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
         setDialog({ kind: 'rename', branch: action.branch });
         return;
       case 'delete':
-        setDialog({
-          kind: 'confirm',
-          title: action.isRemote ? 'Delete remote branch' : 'Delete branch',
-          message: action.isRemote
-            ? `Delete remote branch '${action.branch}'? This pushes a delete to the remote.`
-            : `Delete branch '${action.branch}'? Unmerged commits may be lost.`,
-          confirmLabel: 'Delete',
-          run: () => actions.remove(action.branch, action.isRemote)
-        });
+        void confirmDelete(action.branch, action.isRemote);
     }
+  };
+
+  const confirmDelete = async (branch: string, isRemote: boolean) => {
+    const run = () => actions.remove(branch, isRemote);
+    if (isRemote) {
+      setDialog({
+        run,
+        kind: 'confirm',
+        confirmLabel: 'Delete',
+        title: 'Delete remote branch',
+        message: `Delete remote branch '${branch}'? This pushes a delete to the remote.`
+      });
+      return;
+    }
+    const unmerged = await gitCompareWithCurrent(cwd, branch).catch(() => []);
+    setDialog({
+      run,
+      kind: 'confirm',
+      title: 'Delete branch',
+      confirmLabel: 'Delete',
+      commits: unmerged.length > 0 ? unmerged : undefined,
+      message:
+        unmerged.length > 0
+          ? `'${branch}' has ${unmerged.length} commit${unmerged.length === 1 ? '' : 's'} not in '${current}'. They will be lost unless another branch contains them. You can still restore the branch right after deleting it.`
+          : `Delete branch '${branch}'? It is fully merged into '${current}'.`
+    });
   };
 
   const menuItems = (leaf: BranchLeaf): ContextMenuEntry[] => {
@@ -333,6 +356,8 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
           <Plus size={13} strokeWidth={2} />
           New branch...
         </button>
+
+        {repo?.state && <OperationBanner repo={repo} busy={busy !== null} onAction={runOperation} />}
 
         {error && (
           <div className={styles.error}>

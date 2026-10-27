@@ -20,6 +20,7 @@ export interface ToastTask<T> {
   failed: string;
   pending: string;
   done: (result: T) => ToastInput | null;
+  failure?: (err: unknown) => ToastInput;
 }
 
 const MAX_TOASTS = 3;
@@ -79,7 +80,7 @@ export const updateToast = (id: number, input: ToastInput): void => {
 
 export const errorText = (err: unknown): string => (typeof err === 'string' ? err : String(err));
 
-export const toastTask = <T>(task: Promise<T>, { pending, failed, done }: ToastTask<T>): Promise<T> => {
+export const toastTask = <T>(task: Promise<T>, { pending, failed, done, failure }: ToastTask<T>): Promise<T> => {
   let id: number | null = null;
   const timer = window.setTimeout(() => {
     id = showToast({ kind: 'progress', message: pending });
@@ -101,7 +102,7 @@ export const toastTask = <T>(task: Promise<T>, { pending, failed, done }: ToastT
       return result;
     },
     (err: unknown) => {
-      settle({ kind: 'error', message: failed, detail: errorText(err) });
+      settle(failure ? failure(err) : { kind: 'error', message: failed, detail: errorText(err) });
       throw err;
     }
   );

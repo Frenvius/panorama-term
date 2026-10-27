@@ -15,11 +15,15 @@ export interface RemoteBranch {
 
 export type RepoOperation = 'merging' | 'rebasing' | 'reverting' | 'cherry-picking';
 
+export type RepoOperationAction = 'skip' | 'abort' | 'continue';
+
 export interface RepoState {
   root: string;
   ahead: number;
   behind: number;
   head: string | null;
+  step: number | null;
+  total: number | null;
   branch: string | null;
   state: RepoOperation | null;
 }

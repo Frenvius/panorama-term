@@ -10,7 +10,14 @@ import styles from './styles.module.scss';
 export type DialogState =
   | { kind: 'create'; startPoint?: string }
   | { kind: 'rename'; branch: string }
-  | { kind: 'confirm'; title: string; message: string; confirmLabel: string; run: () => Promise<unknown> }
+  | {
+      kind: 'confirm';
+      title: string;
+      message: string;
+      confirmLabel: string;
+      commits?: CommitInfo[];
+      run: () => Promise<unknown>;
+    }
   | { kind: 'compare'; branch: string };
 
 interface BranchDialogProps {
@@ -48,6 +55,8 @@ const BranchDialog = ({ state, cwd, current, onClose, onCreate, onRename }: Bran
     };
   }, [state, cwd]);
 
+  const listed = state.kind === 'confirm' ? state.commits : undefined;
+  const shown = listed ?? commits;
   const trimmed = name.trim();
   const naming = state.kind === 'create' || state.kind === 'rename';
   const canSubmit = !busy && (!naming || trimmed.length > 0);
@@ -141,11 +150,11 @@ const BranchDialog = ({ state, cwd, current, onClose, onCreate, onRename }: Bran
 
       {state.kind === 'confirm' && <p className={styles.message}>{state.message}</p>}
 
-      {state.kind === 'compare' && (
+      {(state.kind === 'compare' || listed) && (
         <div className={styles.commits}>
-          {!commits && !error && <span className={styles.hint}>Loading...</span>}
-          {commits?.length === 0 && <span className={styles.hint}>No commits unique to this branch.</span>}
-          {commits?.map((commit) => (
+          {!shown && !error && <span className={styles.hint}>Loading...</span>}
+          {shown?.length === 0 && <span className={styles.hint}>No commits unique to this branch.</span>}
+          {shown?.map((commit) => (
             <div key={commit.hash} className={styles.commit}>
               <GitBranch size={12} strokeWidth={2} className={styles.commitIcon} />
               <span className={styles.hash}>{commit.short}</span>

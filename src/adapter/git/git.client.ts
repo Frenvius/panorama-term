@@ -10,7 +10,8 @@ import type {
   CommitInfo,
   BranchSnapshot,
   StatusSnapshot,
-  CommitMessageEntry
+  CommitMessageEntry,
+  RepoOperationAction
 } from '~/domain/interfaces/git.interface';
 
 export const gitBranches = (path: string): Promise<BranchSnapshot> =>
@@ -40,7 +41,13 @@ export const watchRepo = (path: string, onState: (state: RepoState | null) => vo
 };
 
 export const gitCheckout = (path: string, branch: string): Promise<BranchSnapshot> =>
-  invoke<BranchSnapshot>('git_checkout', { path, branch });
+  invoke<BranchSnapshot>('git_checkout', { path, branch, stash: false });
+
+export const gitStashCheckout = (path: string, branch: string): Promise<BranchSnapshot> =>
+  invoke<BranchSnapshot>('git_checkout', { path, branch, stash: true });
+
+export const gitOperation = (path: string, action: RepoOperationAction): Promise<BranchSnapshot> =>
+  invoke<BranchSnapshot>('git_operation', { path, action });
 
 export const gitFetch = (path: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_fetch', { path });

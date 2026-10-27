@@ -961,6 +961,7 @@ pub fn run() {
             git::git_rename_branch,
             git::git_delete_branch,
             git::git_resolve_ref,
+            git::git_operation,
             git::git_merge_branch,
             git::git_rebase_onto,
             git::git_update_branch,
