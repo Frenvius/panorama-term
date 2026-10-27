@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.10]
+
+### Added
+- Branch chip and branch popup update live when the repository changes (checkout, commit, fetch, rebase), with background fetch while the window is focused.
+- Toast feedback for branch operations, with Rollback after checkout and Restore after deleting a branch.
+- Merge, rebase, cherry-pick and revert in progress show a banner with Continue, Skip and Abort, and the branch chip shows the state.
+- Checkout with conflicting local changes offers "Stash & checkout".
+- Deleting an unmerged branch lists the commits that would be lost.
+- Fuzzy branch search with highlighted matches, a Recent section, keyboard navigation, pull with rebase and checkout-and-rebase.
+- "Show diff with working tree" on any branch lists the differing files and opens them in the diff viewer.
+- Run button phases come from the actual run status, with confirmed stop and ready detection.
+
+### Fixed
+- Branches with slashes in the name (feature/x) are shown in full on the tile chip.
+- "Compare with current" always showed an empty list.
+- Agents in terminals outside the view are detected again after switching tabs.
+- Overlapping agent tiles keep a gap in the minimap.
+- Terminals no longer inherit the Claude session environment of the app; run icons are larger.
+
 ## [0.2.9]
 
 ### Added
