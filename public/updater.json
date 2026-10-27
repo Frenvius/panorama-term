@@ -1,23 +1,23 @@
 {
-  "version": "0.2.9",
-  "notes": "### Added\n- Minimap tiles are colored by agent status.\n- Run button shows progress phases, and stopping it kills the running process.\n\n### Fixed\n- Switching tabs no longer shows the \"Resume session\" panel over a Claude session that is still running.\n- Sending from the agent bar no longer fails when Claude's input cannot be cleared.\n\n### Performance\n- Tab switching is instant: terminals reappear with their last screen instead of blank while they reconnect.\n- Opening a notification from another tab lands directly on the tile instead of panning after the switch.",
-  "pub_date": "2026-10-25T18:11:20Z",
+  "version": "0.2.10",
+  "notes": "### Added\n- Branch chip and branch popup update live when the repository changes (checkout, commit, fetch, rebase), with background fetch while the window is focused.\n- Toast feedback for branch operations, with Rollback after checkout and Restore after deleting a branch.\n- Merge, rebase, cherry-pick and revert in progress show a banner with Continue, Skip and Abort, and the branch chip shows the state.\n- Checkout with conflicting local changes offers \"Stash & checkout\".\n- Deleting an unmerged branch lists the commits that would be lost.\n- Fuzzy branch search with highlighted matches, a Recent section, keyboard navigation, pull with rebase and checkout-and-rebase.\n- \"Show diff with working tree\" on any branch lists the differing files and opens them in the diff viewer.\n- Run button phases come from the actual run status, with confirmed stop and ready detection.\n\n### Fixed\n- Branches with slashes in the name (feature/x) are shown in full on the tile chip.\n- \"Compare with current\" always showed an empty list.\n- Agents in terminals outside the view are detected again after switching tabs.\n- Overlapping agent tiles keep a gap in the minimap.\n- Terminals no longer inherit the Claude session environment of the app; run icons are larger.",
+  "pub_date": "2026-10-27T17:39:48Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.9/Panorama_0.2.9_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG02bnM0MUpSd1d2TUJGaU1NbXhMU1BDQ3BYM01zcmRKb3BKMkRldS9EUEUyVDE2clZ2dy9SaG1LbVZHUzh5QitUZCtLRkpLL0JJTWp6SXp1WHV1VGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyOTUxNzAwCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpUWC9aLzJHSWxBZXZRelJmUFRDYUFvektTZEFwampSb2Q3eHhMS0hLMkczQXhHTmNnY1lJYWpZRzRUT2F3a0cxbVJrb0M2ajVKSTdkYUpFSjJQa29Edz09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHQwdFB1VzBGNndMMUVTSVdyZUVHZXNaMGlKYlZrZmU5OW1VUjFjc0kzUnZUdHMyZ205SFk4ZCt5UFZ1QWN4V3czbGtPQW5JS3FtTW1vOVVFQ2QwQXdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxNzg4CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpLNUxKMmlwOEVXNkF6Nk5pSFJHQ1BMaXU4NkliaDlLeklIYldFYWNURUs4OXNLYUpWeGVadTRiSGRzc1owajgxTGpyYW5FVFVKOWZIYmFvdE1saEdDQT09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.9/Panorama_0.2.9_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFhVmErVjVFWFJjV2syMkZBdHpVRTJHWGhyOWFEbHVKS1pBL2hISkRvTVhuSUJ3NHpmb0RsRjl4b250YW0xdndtRWJnM2d2ODYrVDZudDR5RmVMM1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyOTUxNjk0CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpkeC9JTkk2NXBUZFhzeVFGbzJoeFZld01QRFpZQStYOFFJTWVnUFk3bXVEZlNENnU3dTVsRlRENWl6ekFYWm9jU2lUVHdPU0IzRTN0a0VCZzBNRGlBQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHB0TXVnWWtRS1d5NUtIaXYvakFKZmFaNzg1bXJqcURhTDYxTmZvcjh4aENtL29JVEdSUUk2M0VwZGlHcXZxWHRKUHFXcldUdHNxRmFuUjhvY3kwR2dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxNTQ2CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpBK1Jrek9zWTUrZ3l1cDQxS2FZR2F5c081UkxIS0s4ZHMvVGN2QUhHdlhhNFRiTk9vQ1FqdkZ0cm5tc0xiNEhyR0NUQUt6QU4vQ0NkaHJXdVZacTJDQT09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.9/Panorama_0.2.9_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFYWSt4eWtzSy9FTTg3dmZnU1ZsL3UraElSQ21Ea3hDa1hWamhxNXdHZVU2cGZJRzhxQkZtQ2RFN2YxU2tUZGRTcDB0S3JDOTZGN3pJMGJ4M1ZsWFFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyOTUxNzgzCWZpbGU6UGFub3JhbWFfMC4yLjlfYW1kNjQuQXBwSW1hZ2UKdk4zS2VRWDVzZG5KeldoZlY5K1Z6Mlc5eWJnSEE0YWZYM2hncWNLaGRBUjBlV3FSU3dqM0FHT3RHNmNmaStGdnk1bCtlUzd3emcxOU5NSHVWSTMzQ2c9PQo="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG1RR3c1L2MwK3M3VXhROXVBWDYrZnVucGFaMHpFUlRyMFAxOWVxL1NQY3ZiVi9zNUEyN1FsN3BDdG5KRHo5ZURnMWdKYnRJakI1L1NZNUlmY2ltekFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIyNzQ0CWZpbGU6UGFub3JhbWFfMC4yLjEwX2FtZDY0LkFwcEltYWdlCkFlTWVQQ1BMdjlLSDljU3NXdVJhNFVUTVp0R3NUcVZuR2FYTmM0QmNNVkdXVWF4S2xOM2lqZGRiRGRzcyt0ZjNkeGVvVldrd2ordDUramlldlFFOERRPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.9/Panorama_0.2.9_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtQa0V6L29DZnA3RWs5TGZKeDlTTjFKeW80TVNLSGh6RTcxSzNub3RRMGREV0pWMGlwMTZSaXY5YWllWjJSSWR1RHpXL1JYTEFPaTlTMURWWVZqVXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyOTUxODI4CWZpbGU6UGFub3JhbWFfMC4yLjlfeDY0LXNldHVwLmV4ZQp0VnFWNlEwYUtFYmxSeFVLZXVGNTE2Zklqa2tLTHFLbGovZGQ3VDFjRVV3MFRVeEhXeDJId0tHTnhFT0QvVUZEYW8vZFMrZmtNY1RBdVpibEY5VjREQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHQyc29mYm1nTjVNenBBK2VBKzBpT1YrZmpOK0RoM2YvNlA3NGpaZUJxR3RacThMTUJLekFCVmcwd2JsR0I4SUxYWldIWDFIQ0tHaXd6ZU1PT0VqaGdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxOTE5CWZpbGU6UGFub3JhbWFfMC4yLjEwX3g2NC1zZXR1cC5leGUKY2R5eGY4ejUxdVFEdUt6SmNYcWZMQWVnNVJ5aXovOEtRRVJGNy9GaXFVRitJWk9YUlp4WDdSRGJWYWk3V0lNK01FeVlJMllZbSs5T0ZRRVVjYXRJQkE9PQo="
     }
   }
 }
