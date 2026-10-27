@@ -8,6 +8,7 @@ import type {
   RepoEntry,
   FileChange,
   CommitInfo,
+  DiffRevision,
   BranchSnapshot,
   StatusSnapshot,
   CommitMessageEntry,
@@ -96,8 +97,8 @@ export const gitToggleBranchFavorite = (path: string, fullName: string): Promise
 
 export const gitRepos = (path: string): Promise<RepoEntry[]> => invoke<RepoEntry[]>('git_repos', { path });
 
-export const gitBlob = (path: string, file: string, old: boolean, commit?: string): Promise<ArrayBuffer> =>
-  invoke<ArrayBuffer>('git_blob', { path, file, old, commit: commit ?? null });
+export const gitBlob = (path: string, file: string, old: boolean, revision: DiffRevision = {}): Promise<ArrayBuffer> =>
+  invoke<ArrayBuffer>('git_blob', { path, file, old, commit: revision.commit ?? null, base: revision.base ?? null });
 
 export const gitStatus = (path: string): Promise<StatusSnapshot> => invoke<StatusSnapshot>('git_status', { path });
 
@@ -115,11 +116,14 @@ export const gitRemoteUrl = (path: string): Promise<string> => invoke<string>('g
 export const gitUnpushedCommits = (path: string): Promise<CommitMessageEntry[]> =>
   invoke<CommitMessageEntry[]>('git_unpushed_commits', { path });
 
-export const gitDiffFile = (path: string, file: string): Promise<FileDiff> =>
-  invoke<FileDiff>('git_diff_file', { path, file });
+export const gitDiffFile = (path: string, file: string, base?: string): Promise<FileDiff> =>
+  invoke<FileDiff>('git_diff_file', { path, file, base: base ?? null });
 
 export const gitCommitFiles = (path: string, commit: string): Promise<FileChange[]> =>
   invoke<FileChange[]>('git_commit_files', { path, commit });
+
+export const gitDiffWithRef = (path: string, reference: string): Promise<FileChange[]> =>
+  invoke<FileChange[]>('git_diff_with_ref', { path, reference });
 
 export const gitCommitDiffFile = (path: string, commit: string, file: string): Promise<FileDiff> =>
   invoke<FileDiff>('git_commit_diff_file', { path, commit, file });

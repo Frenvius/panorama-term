@@ -4,6 +4,7 @@ import { X, Plus, Search, Loader2, RefreshCw, ArrowUpRight, ChevronRight, Chevro
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot, RepoOperationAction } from '~/domain/interfaces/git.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
+import BranchDiff from '~/components/Canvas/TileFrame/BranchMenu/BranchDiff';
 import BranchDialog, { type DialogState } from '~/components/Canvas/TileFrame/BranchMenu/BranchDialog';
 import BranchRow, { type BranchRowHandlers } from '~/components/Canvas/TileFrame/BranchMenu/BranchRow';
 import OperationBanner from '~/components/Canvas/TileFrame/BranchMenu/OperationBanner';
@@ -38,6 +39,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
+  const [diffBranch, setDiffBranch] = React.useState<string | null>(null);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -53,7 +55,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !menu && !dialog) onClose();
+      if (e.key === 'Escape' && !menu && !dialog && !diffBranch) onClose();
     };
     document.addEventListener('pointerdown', onOutside, true);
     document.addEventListener('keydown', onKey, true);
@@ -132,6 +134,9 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
       case 'compare':
         setDialog({ kind: 'compare', branch: action.branch });
         return;
+      case 'show-diff':
+        setDiffBranch(action.branch);
+        return;
       case 'new-from':
         setDialog({ kind: 'create', startPoint: action.branch });
         return;
@@ -187,6 +192,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
     if (!leaf.isCurrent) {
       items.push('separator');
       items.push({ label: 'Compare with current', onSelect: () => dispatch({ type: 'compare', branch: name }) });
+      items.push({ label: 'Show diff with working tree', onSelect: () => dispatch({ type: 'show-diff', branch: name }) });
       items.push('separator');
       items.push({
         label: current ? `Merge '${short}' into '${current}'` : `Merge '${short}' into current`,
@@ -254,6 +260,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
 
   const closeMenu = () => setMenu(null);
   const closeDialog = () => setDialog(null);
+  const closeDiff = () => setDiffBranch(null);
   const clearError = () => onError(null);
   const onQuery = (e: React.ChangeEvent<HTMLInputElement>) => {
     setQuery(e.target.value);
@@ -450,6 +457,12 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
             onCreate={actions.create}
             onRename={actions.rename}
           />
+        </div>
+      )}
+
+      {diffBranch && (
+        <div data-branch-overlay onPointerDown={stopEvent} onContextMenu={stopContext}>
+          <BranchDiff root={repo?.root ?? cwd} branch={diffBranch} onOpened={onClose} onClose={closeDiff} />
         </div>
       )}
     </>

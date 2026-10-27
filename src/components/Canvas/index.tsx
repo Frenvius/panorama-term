@@ -28,8 +28,9 @@ import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants'
 import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
-import { tabKey, openTab, pinTab } from '~/usecase/util/editorTabs';
-import type { EditorTab, EditorTabKind } from '~/domain/interfaces/editor.interface';
+import { onRefDiff } from '~/usecase/util/refDiff';
+import { tabKey, openTab, pinTab, type OpenRequest } from '~/usecase/util/editorTabs';
+import type { EditorTab } from '~/domain/interfaces/editor.interface';
 import type { NotifyKind, NotifyTarget } from '~/domain/interfaces/notify.interface';
 
 import styles from './styles.module.scss';
@@ -141,6 +142,7 @@ const Canvas = () => {
   const [tileToClose, setTileToClose] = React.useState<{ id: string; path: string } | null>(null);
   const closeTileRef = React.useRef<(id: string) => void>(() => {});
   const [diffFiles, setDiffFiles] = React.useState<string[]>([]);
+  const [refDiffFiles, setRefDiffFiles] = React.useState<string[]>([]);
   const [tabsExit, setTabsExit] = React.useState(false);
   const tabsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const fsIdRef = React.useRef<string | null>(fsId);
@@ -559,16 +561,26 @@ const Canvas = () => {
     [exitFs, navFocus]
   );
 
-  const openEditorTab = (kind: EditorTabKind, root: string, path: string, preview?: boolean, commit?: string) => {
+  const openEditorTab = (request: OpenRequest) => {
     clearTimeout(tabsTimer.current);
     setTabsExit(false);
-    setEditorTabs((prev) => openTab(prev, { kind, root, path, preview, commit }));
-    setActiveEditorTab(tabKey(kind, path));
+    setEditorTabs((prev) => openTab(prev, request));
+    setActiveEditorTab(tabKey(request.kind, request.path));
   };
 
-  const openEditorFile = (root: string, path: string, preview?: boolean) => openEditorTab('file', root, path, preview);
-  const openDiff = (root: string, path: string, commit?: string) =>
-    openEditorTab('diff', root, path, undefined, commit);
+  const openEditorFile = (root: string, path: string, preview?: boolean) =>
+    openEditorTab({ kind: 'file', root, path, preview });
+  const openDiff = (root: string, path: string, commit?: string) => openEditorTab({ kind: 'diff', root, path, commit });
+
+  React.useEffect(
+    () =>
+      onRefDiff(({ root, base, path, files }) => {
+        setRefDiffFiles(files.map((file) => fileKey(root, file)));
+        openEditorTab({ kind: 'diff', root, path, base });
+      }),
+    []
+  );
+
   const pinEditorTab = (key: string) => setEditorTabs((prev) => pinTab(prev, key));
 
   React.useEffect(
@@ -609,12 +621,13 @@ const Canvas = () => {
   const stepDiffFile = (step: number) => {
     const current = editorTabs.find((t) => t.key === activeEditorTab);
     if (current?.kind !== 'diff') return;
-    const at = diffFiles.indexOf(fileKey(current.root, current.path));
+    const files = current.base ? refDiffFiles : diffFiles;
+    const at = files.indexOf(fileKey(current.root, current.path));
     if (at < 0) return;
-    const next = diffFiles[at + step];
+    const next = files[at + step];
     if (next) {
       const { repo, path } = splitKey(next);
-      openDiff(repo, path, current.commit);
+      openEditorTab({ kind: 'diff', root: repo, path, base: current.base, commit: current.commit });
     }
   };
 
@@ -875,7 +888,7 @@ const Canvas = () => {
           tabs={editorTabs}
           active={activeEditorTab}
           exiting={tabsExit}
-          diffFiles={diffFiles}
+          diffFiles={activeDiffTab?.base ? refDiffFiles : diffFiles}
           handlers={workbenchHandlers}
         />
       )}

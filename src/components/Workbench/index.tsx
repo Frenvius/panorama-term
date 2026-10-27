@@ -204,7 +204,7 @@ const Workbench = ({ tabs, active, exiting, diffFiles, handlers }: WorkbenchProp
               <DiffViewer
                 root={tab.root}
                 file={tab.path}
-                commit={tab.commit}
+                revision={{ base: tab.base, commit: tab.commit }}
                 mode={{ embedded: true, keys: true }}
                 handlers={{ onPrevFile: prevFile, onNextFile: nextFile, onEditFile: editFile }}
               />

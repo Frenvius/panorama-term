@@ -1,4 +1,4 @@
-import type { FileDiff } from '~/domain/interfaces/git.interface';
+import type { FileDiff, DiffRevision } from '~/domain/interfaces/git.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { DiffViewMode, HighlightMode } from '~/domain/interfaces/diff.interface';
 
@@ -49,7 +49,7 @@ export interface DiffViewerHandlers {
 interface DiffViewerProps {
   root: string;
   file: string;
-  commit?: string;
+  revision?: DiffRevision;
   mode?: DiffViewerMode;
   handlers?: DiffViewerHandlers;
 }
@@ -75,7 +75,8 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 const eolLabel = (crlf: boolean): string => (crlf ? 'CRLF' : 'LF');
 
 
-const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => {
+const DiffViewer = ({ root, file, revision, mode, handlers }: DiffViewerProps) => {
+  const { base, commit } = revision ?? {};
   const { embedded, exiting, keys = !mode?.embedded } = mode ?? {};
   const { onClose, onPrevFile, onNextFile, onEditFile, onAddToCanvas } = handlers ?? {};
   const shellRef = React.useRef<HTMLDivElement>(null);
@@ -98,7 +99,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
     setChunkIndex(-1);
 
     const load = (quiet: boolean) =>
-      (commit ? gitCommitDiffFile(root, commit, file) : gitDiffFile(root, file))
+      (commit ? gitCommitDiffFile(root, commit, file) : gitDiffFile(root, file, base))
         .then((result) => {
           if (!alive) return;
           setDiff((prev) =>
@@ -137,7 +138,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
       if (watchId !== null) void gitUnwatchFile(watchId);
       void off.then((un) => un());
     };
-  }, [root, file, commit]);
+  }, [root, file, base, commit]);
 
   const chunks = React.useMemo(() => (diff ? computeDiff(diff.old, diff.new, ignoreWs) : []), [diff, ignoreWs]);
 
@@ -209,7 +210,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
   const revert = () => {
     const chunk = chunks[chunkIndex];
     if (!diff || !chunk) return;
-    gitDiffFile(root, file)
+    gitDiffFile(root, file, base)
       .then((fresh) => {
         if (fresh.old !== diff.old || fresh.new !== diff.new) {
           setDiff(fresh);
@@ -217,7 +218,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
         }
         return gitRevertHunk(root, file, revertChunk(diff.old, diff.new, chunk), diff.crlf);
       })
-      .then(() => gitDiffFile(root, file))
+      .then(() => gitDiffFile(root, file, base))
       .then((result) => {
         setDiff(result);
         setError(null);
@@ -265,7 +266,7 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
     }
     if (diff.binary) {
       if (!isImageFile(name)) return <div className={styles.notice}>Binary file</div>;
-      return <Images root={root} file={file} commit={commit} />;
+      return <Images root={root} file={file} revision={{ base, commit }} />;
     }
 
     if (view === 'unified') {
@@ -296,6 +297,11 @@ const DiffViewer = ({ root, file, commit, mode, handlers }: DiffViewerProps) => 
           <span className={styles.dir}>{dir}</span>
           {name}
         </span>
+        {base && (
+          <span className={styles.base} title={`${base} vs working tree`}>
+            {base} vs working tree
+          </span>
+        )}
         <span className={styles.spacer} />
         {onAddToCanvas && (
           <button className={styles.action} onClick={onAddToCanvas} data-tooltip="Add to canvas" aria-label="Add to canvas">

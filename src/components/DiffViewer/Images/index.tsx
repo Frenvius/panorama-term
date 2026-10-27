@@ -1,3 +1,5 @@
+import type { DiffRevision } from '~/domain/interfaces/git.interface';
+
 import React from 'react';
 import { LoaderCircle } from 'lucide-react';
 
@@ -9,7 +11,7 @@ import styles from './styles.module.scss';
 interface ImagesProps {
   root: string;
   file: string;
-  commit?: string;
+  revision: DiffRevision;
 }
 
 interface Side {
@@ -19,7 +21,8 @@ interface Side {
 
 const EMPTY: Side = { url: null, size: 0 };
 
-const Images = ({ root, file, commit }: ImagesProps) => {
+const Images = ({ root, file, revision }: ImagesProps) => {
+  const { base, commit } = revision;
   const [sides, setSides] = React.useState<[Side, Side] | null>(null);
   const [dims, setDims] = React.useState<Record<string, string>>({});
 
@@ -29,7 +32,7 @@ const Images = ({ root, file, commit }: ImagesProps) => {
     setSides(null);
     setDims({});
 
-    Promise.all([gitBlob(root, file, true, commit), gitBlob(root, file, false, commit)])
+    Promise.all([gitBlob(root, file, true, { base, commit }), gitBlob(root, file, false, { base, commit })])
       .then(([oldBuf, newBuf]) => {
         if (!alive) return;
         const make = (buf: ArrayBuffer): Side => {
@@ -47,7 +50,7 @@ const Images = ({ root, file, commit }: ImagesProps) => {
       for (const url of urls) URL.revokeObjectURL(url);
       urls = [];
     };
-  }, [root, file, commit]);
+  }, [root, file, base, commit]);
 
   if (!sides) {
     return (

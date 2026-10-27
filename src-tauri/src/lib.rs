@@ -979,6 +979,7 @@ pub fn run() {
             git::git_unpushed_commits,
             git::git_diff_file,
             git::git_commit_files,
+            git::git_diff_with_ref,
             git::git_commit_diff_file,
             git::git_add_ignore,
             git::git_rollback_file,

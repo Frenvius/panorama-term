@@ -65,6 +65,11 @@ export interface StatusSnapshot {
   unversioned: FileChange[];
 }
 
+export interface DiffRevision {
+  base?: string;
+  commit?: string;
+}
+
 export interface FileDiff {
   old: string;
   new: string;
@@ -114,6 +119,7 @@ export type BranchAction =
   | { type: 'checkout-rebase'; branch: string }
   | { type: 'push' }
   | { type: 'compare'; branch: string }
+  | { type: 'show-diff'; branch: string }
   | { type: 'merge'; branch: string }
   | { type: 'rebase'; branch: string }
   | { type: 'rename'; branch: string }

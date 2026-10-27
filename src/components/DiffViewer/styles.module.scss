@@ -75,6 +75,20 @@
   color: var(--text-dim);
 }
 
+.base {
+  flex: none;
+  max-width: 360px;
+  padding: 1px 6px;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
 .spacer {
   flex: 1;
 }

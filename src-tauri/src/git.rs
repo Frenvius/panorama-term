@@ -1028,6 +1028,7 @@ pub async fn git_blob(
     file: String,
     old: bool,
     commit: Option<String>,
+    base: Option<String>,
 ) -> Result<tauri::ipc::Response, String> {
     let bytes = crate::blocking(move || match (commit, old) {
         (Some(commit), true) => {
@@ -1041,12 +1042,13 @@ pub async fn git_blob(
         }
         (Some(commit), false) => show_bytes(&path, &format!("{}:{}", commit, file)),
         (None, true) => {
-            let head = show_bytes(&path, &format!("HEAD:{}", file));
+            let base = base.as_deref().unwrap_or("HEAD");
+            let head = show_bytes(&path, &format!("{}:{}", base, file));
             if !head.is_empty() {
                 return head;
             }
-            match rename_source(&path, &file) {
-                Some(from) => show_bytes(&path, &format!("HEAD:{}", from)),
+            match rename_source(&path, base, &file) {
+                Some(from) => show_bytes(&path, &format!("{}:{}", base, from)),
                 None => Vec::new(),
             }
         }
@@ -1056,18 +1058,12 @@ pub async fn git_blob(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-fn rename_source(repo: &str, file: &str) -> Option<String> {
-    let out = run_git(repo, &["diff", "-M", "--name-status", "HEAD", "--", file]).ok()?;
-    out.lines().find_map(|line| {
-        let mut cols = line.split('\t');
-        let status = cols.next()?;
-        if !status.starts_with('R') {
-            return None;
-        }
-        let from = cols.next()?;
-        let to = cols.next()?;
-        (to == file).then(|| from.to_string())
-    })
+fn rename_source(repo: &str, base: &str, file: &str) -> Option<String> {
+    let out = run_git(repo, &["diff", "-M", "--name-status", base, "--"]).ok()?;
+    name_status_rows(&out)
+        .into_iter()
+        .find(|(status, _, to)| status.starts_with('R') && to == file)
+        .map(|(_, from, _)| from)
 }
 
 fn commit_changes(repo: &str, commit: &str) -> Result<Vec<(String, String, String)>, String> {
@@ -1085,7 +1081,10 @@ fn commit_changes(repo: &str, commit: &str) -> Result<Vec<(String, String, Strin
             commit,
         ],
     )?;
+    Ok(name_status_rows(&out))
+}
 
+fn name_status_rows(out: &str) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
     for line in out.lines().filter(|l| !l.is_empty()) {
         let mut cols = line.split('\t');
@@ -1099,17 +1098,16 @@ fn commit_changes(repo: &str, commit: &str) -> Result<Vec<(String, String, Strin
         };
         rows.push((status.to_string(), first.to_string(), to.to_string()));
     }
-    Ok(rows)
+    rows
 }
 
-#[tauri::command]
-pub async fn git_commit_files(path: String, commit: String) -> Result<Vec<FileChange>, String> {
+fn change_entries(repo: &str, rows: Vec<(String, String, String)>) -> Vec<FileChange> {
     let mut entries = Vec::new();
-    for (status, from, to) in commit_changes(&path, &commit)? {
+    for (status, from, to) in rows {
         let (name, dir) = split_name_dir(&to);
         let renamed = status.starts_with('R') || status.starts_with('C');
         entries.push(FileChange {
-            repo: path.clone(),
+            repo: repo.to_string(),
             path: to,
             name,
             dir,
@@ -1121,7 +1119,21 @@ pub async fn git_commit_files(path: String, commit: String) -> Result<Vec<FileCh
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     entries.dedup_by(|a, b| a.path == b.path);
-    Ok(entries)
+    entries
+}
+
+#[tauri::command]
+pub async fn git_commit_files(path: String, commit: String) -> Result<Vec<FileChange>, String> {
+    Ok(change_entries(&path, commit_changes(&path, &commit)?))
+}
+
+#[tauri::command]
+pub async fn git_diff_with_ref(path: String, reference: String) -> Result<Vec<FileChange>, String> {
+    crate::blocking(move || {
+        let out = run_git(&path, &["diff", "-M", "--name-status", reference.trim(), "--"])?;
+        Ok(change_entries(&path, name_status_rows(&out)))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1160,12 +1172,17 @@ pub async fn git_commit_diff_file(
 }
 
 #[tauri::command]
-pub async fn git_diff_file(path: String, file: String) -> Result<FileDiff, String> {
-    let mut old = run_git(&path, &["show", &format!("HEAD:{}", file)]).unwrap_or_default();
+pub async fn git_diff_file(
+    path: String,
+    file: String,
+    base: Option<String>,
+) -> Result<FileDiff, String> {
+    let base = base.unwrap_or_else(|| "HEAD".into());
+    let mut old = run_git(&path, &["show", &format!("{}:{}", base, file)]).unwrap_or_default();
 
     if old.is_empty() {
-        if let Some(from) = rename_source(&path, &file) {
-            old = run_git(&path, &["show", &format!("HEAD:{}", from)]).unwrap_or_default();
+        if let Some(from) = rename_source(&path, &base, &file) {
+            old = run_git(&path, &["show", &format!("{}:{}", base, from)]).unwrap_or_default();
         }
     }
 
