@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
@@ -139,6 +140,22 @@ fn remote_names(repo: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn push_remote(repo: &str) -> Option<String> {
+    let configured = run_git(repo, &["config", "--get", "remote.pushDefault"])
+        .ok()
+        .map(|out| out.trim().to_string())
+        .filter(|r| !r.is_empty());
+    if configured.is_some() {
+        return configured;
+    }
+    let remotes = remote_names(repo);
+    remotes
+        .iter()
+        .find(|r| r.as_str() == "origin")
+        .or_else(|| remotes.first())
+        .cloned()
 }
 
 fn head_name(repo: &str) -> Option<String> {
@@ -639,16 +656,9 @@ pub async fn git_unpushed_commits(path: String) -> Result<Vec<CommitMessageEntry
     Ok(parse_commit_entries(&out))
 }
 
-#[derive(Serialize)]
-pub struct TrackCounts {
-    ahead: u32,
-    behind: u32,
-}
-
-#[tauri::command]
-pub async fn git_ahead_behind(path: String) -> TrackCounts {
-    let (ahead, behind) = run_git(
-        &path,
+fn track_counts(path: &str) -> (u32, u32) {
+    run_git(
+        path,
         &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
     )
     .ok()
@@ -658,29 +668,33 @@ pub async fn git_ahead_behind(path: String) -> TrackCounts {
         let ahead = it.next()?.parse().ok()?;
         Some((ahead, behind))
     })
-    .unwrap_or((0, 0));
-    TrackCounts { ahead, behind }
+    .unwrap_or((0, 0))
 }
 
 #[tauri::command]
 pub async fn git_branches(path: String) -> Result<BranchSnapshot, String> {
-    snapshot(&path)
+    crate::blocking(move || snapshot(&path)).await
 }
 
 #[tauri::command]
 pub async fn git_checkout(path: String, branch: String) -> Result<BranchSnapshot, String> {
-    let target = match branch.split_once('/') {
-        Some((remote, rest)) if remote_names(&path).iter().any(|r| r == remote) => rest.to_string(),
-        _ => branch.clone(),
-    };
+    crate::blocking(move || {
+        let target = match branch.split_once('/') {
+            Some((remote, rest)) if remote_names(&path).iter().any(|r| r == remote) => {
+                rest.to_string()
+            }
+            _ => branch.clone(),
+        };
 
-    let snap = snapshot(&path)?;
-    if snap.current.as_deref() == Some(target.as_str()) {
-        return Ok(snap);
-    }
+        let snap = snapshot(&path)?;
+        if snap.current.as_deref() == Some(target.as_str()) {
+            return Ok(snap);
+        }
 
-    run_git(&path, &["switch", &target])?;
-    snapshot(&path)
+        run_git(&path, &["switch", &target])?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -700,27 +714,30 @@ pub async fn git_create_branch(
     overwrite: bool,
     start_point: Option<String>,
 ) -> Result<BranchSnapshot, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("Branch name is empty".into());
-    }
+    crate::blocking(move || {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Branch name is empty".into());
+        }
 
-    let start = start_point
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+        let start = start_point
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
-    let mut args: Vec<&str> = match (checkout, overwrite) {
-        (true, true) => vec!["checkout", "-B", name],
-        (true, false) => vec!["switch", "-c", name],
-        (false, true) => vec!["branch", "-f", name],
-        (false, false) => vec!["branch", name],
-    };
-    if let Some(s) = start {
-        args.push(s);
-    }
-    run_git(&path, &args)?;
-    snapshot(&path)
+        let mut args: Vec<&str> = match (checkout, overwrite) {
+            (true, true) => vec!["checkout", "-B", name],
+            (true, false) => vec!["switch", "-c", name],
+            (false, true) => vec!["branch", "-f", name],
+            (false, false) => vec!["branch", name],
+        };
+        if let Some(s) = start {
+            args.push(s);
+        }
+        run_git(&path, &args)?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -729,20 +746,23 @@ pub async fn git_rename_branch(
     old_name: String,
     new_name: String,
 ) -> Result<BranchSnapshot, String> {
-    let new_name = new_name.trim();
-    if new_name.is_empty() {
-        return Err("Branch name is empty".into());
-    }
-    run_git(&path, &["branch", "-m", old_name.trim(), new_name])?;
-
-    let mut map = read_favorites();
-    if let Some((_, list)) = map.iter_mut().find(|(k, _)| paths_equal(k, &path)) {
-        if let Some(slot) = list.iter_mut().find(|b| b.as_str() == old_name.trim()) {
-            *slot = new_name.to_string();
-            let _ = write_favorites(&map);
+    crate::blocking(move || {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("Branch name is empty".into());
         }
-    }
-    snapshot(&path)
+        run_git(&path, &["branch", "-m", old_name.trim(), new_name])?;
+
+        let mut map = read_favorites();
+        if let Some((_, list)) = map.iter_mut().find(|(k, _)| paths_equal(k, &path)) {
+            if let Some(slot) = list.iter_mut().find(|b| b.as_str() == old_name.trim()) {
+                *slot = new_name.to_string();
+                let _ = write_favorites(&map);
+            }
+        }
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -751,33 +771,52 @@ pub async fn git_delete_branch(
     full_name: String,
     is_remote: bool,
 ) -> Result<BranchSnapshot, String> {
-    if is_remote {
-        let Some((remote, branch)) = full_name.split_once('/') else {
-            return Err(format!("Invalid remote branch: {}", full_name));
-        };
-        run_git(&path, &["push", remote, "--delete", branch])?;
-    } else {
-        run_git(&path, &["branch", "-D", full_name.trim()])?;
-    }
+    crate::blocking(move || {
+        if is_remote {
+            let Some((remote, branch)) = full_name.split_once('/') else {
+                return Err(format!("Invalid remote branch: {}", full_name));
+            };
+            run_git(&path, &["push", remote, "--delete", branch])?;
+        } else {
+            run_git(&path, &["branch", "-D", full_name.trim()])?;
+        }
 
-    let mut map = read_favorites();
-    if let Some((_, list)) = map.iter_mut().find(|(k, _)| paths_equal(k, &path)) {
-        list.retain(|b| b.as_str() != full_name.as_str());
-        let _ = write_favorites(&map);
-    }
-    snapshot(&path)
+        let mut map = read_favorites();
+        if let Some((_, list)) = map.iter_mut().find(|(k, _)| paths_equal(k, &path)) {
+            list.retain(|b| b.as_str() != full_name.as_str());
+            let _ = write_favorites(&map);
+        }
+        snapshot(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_resolve_ref(path: String, reference: String) -> Result<String, String> {
+    crate::blocking(move || {
+        run_git(&path, &["rev-parse", "--verify", "--quiet", reference.trim()])
+            .map(|out| out.trim().to_string())
+            .map_err(|_| format!("Cannot resolve '{}'", reference.trim()))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_merge_branch(path: String, branch: String) -> Result<BranchSnapshot, String> {
-    run_git(&path, &["merge", branch.trim()])?;
-    snapshot(&path)
+    crate::blocking(move || {
+        run_git(&path, &["merge", branch.trim()])?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_rebase_onto(path: String, branch: String) -> Result<BranchSnapshot, String> {
-    run_git(&path, &["rebase", branch.trim()])?;
-    snapshot(&path)
+    crate::blocking(move || {
+        run_git(&path, &["rebase", branch.trim()])?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -801,7 +840,10 @@ pub async fn git_push_current(path: String) -> Result<BranchSnapshot, String> {
             let Some(current) = head_name(&path).filter(|_| needs_upstream) else {
                 return Err(e);
             };
-            run_git(&path, &["push", "--set-upstream", "origin", &current])?;
+            let Some(remote) = push_remote(&path) else {
+                return Err(e);
+            };
+            run_git(&path, &["push", "--set-upstream", &remote, &current])?;
         }
         snapshot(&path)
     })
@@ -814,18 +856,21 @@ pub async fn git_set_upstream(
     branch: String,
     upstream: Option<String>,
 ) -> Result<BranchSnapshot, String> {
-    match upstream.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(up) => run_git(
-            &path,
-            &[
-                "branch",
-                &format!("--set-upstream-to={}", up),
-                branch.trim(),
-            ],
-        )?,
-        None => run_git(&path, &["branch", "--unset-upstream", branch.trim()])?,
-    };
-    snapshot(&path)
+    crate::blocking(move || {
+        match upstream.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(up) => run_git(
+                &path,
+                &[
+                    "branch",
+                    &format!("--set-upstream-to={}", up),
+                    branch.trim(),
+                ],
+            )?,
+            None => run_git(&path, &["branch", "--unset-upstream", branch.trim()])?,
+        };
+        snapshot(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -833,33 +878,36 @@ pub async fn git_compare_with_current(
     path: String,
     branch: String,
 ) -> Result<Vec<CommitInfo>, String> {
-    let current = head_name(&path).unwrap_or_else(|| "HEAD".into());
-    let range = format!("{}..{}", current, branch.trim());
-    let out = run_git(
-        &path,
-        &[
-            "log",
-            "--format=%H%00%h%00%s%00%an%00%ad",
-            "--date=short",
-            &range,
-        ],
-    )?;
+    crate::blocking(move || {
+        let current = head_name(&path).unwrap_or_else(|| "HEAD".into());
+        let range = format!("{}..{}", current, branch.trim());
+        let out = run_git(
+            &path,
+            &[
+                "log",
+                "--format=%H%00%h%00%s%00%an%00%ad",
+                "--date=short",
+                &range,
+            ],
+        )?;
 
-    let mut commits = Vec::new();
-    for line in out.lines() {
-        let parts: Vec<&str> = line.splitn(5, '\u{0}').collect();
-        if parts.len() < 5 {
-            continue;
+        let mut commits = Vec::new();
+        for line in out.lines() {
+            let parts: Vec<&str> = line.splitn(5, '\u{0}').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            commits.push(CommitInfo {
+                hash: parts[0].to_string(),
+                short: parts[1].to_string(),
+                subject: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+            });
         }
-        commits.push(CommitInfo {
-            hash: parts[0].to_string(),
-            short: parts[1].to_string(),
-            subject: parts[2].to_string(),
-            author: parts[3].to_string(),
-            date: parts[4].to_string(),
-        });
-    }
-    Ok(commits)
+        Ok(commits)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -867,21 +915,24 @@ pub async fn git_toggle_branch_favorite(
     path: String,
     full_name: String,
 ) -> Result<BranchSnapshot, String> {
-    let mut map = read_favorites();
-    let key = map
-        .keys()
-        .find(|k| paths_equal(k, &path))
-        .cloned()
-        .unwrap_or_else(|| path.clone());
-    let entry = map.entry(key).or_default();
-    match entry.iter().position(|b| b == &full_name) {
-        Some(pos) => {
-            entry.remove(pos);
+    crate::blocking(move || {
+        let mut map = read_favorites();
+        let key = map
+            .keys()
+            .find(|k| paths_equal(k, &path))
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+        let entry = map.entry(key).or_default();
+        match entry.iter().position(|b| b == &full_name) {
+            Some(pos) => {
+                entry.remove(pos);
+            }
+            None => entry.push(full_name),
         }
-        None => entry.push(full_name),
-    }
-    write_favorites(&map)?;
-    snapshot(&path)
+        write_favorites(&map)?;
+        snapshot(&path)
+    })
+    .await
 }
 
 #[derive(Serialize)]
@@ -1137,6 +1188,191 @@ pub async fn git_watch_file(
 #[tauri::command]
 pub async fn git_unwatch_file(id: u32) {
     watchers().lock().unwrap().remove(&id);
+}
+
+#[derive(Serialize, Clone)]
+pub struct RepoState {
+    root: String,
+    branch: Option<String>,
+    head: Option<String>,
+    state: Option<&'static str>,
+    ahead: u32,
+    behind: u32,
+}
+
+struct GitDirs {
+    root: String,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+}
+
+struct RepoWatch {
+    refs: usize,
+    _watcher: RecommendedWatcher,
+}
+
+const REPO_DEBOUNCE: Duration = Duration::from_millis(300);
+const REPO_MAX_WAIT: Duration = Duration::from_millis(1500);
+const REPO_ENTRIES: [&str; 11] = [
+    "HEAD",
+    "ORIG_HEAD",
+    "FETCH_HEAD",
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "packed-refs",
+    "config",
+    "refs",
+    "rebase-merge",
+    "rebase-apply",
+];
+
+fn repo_watches() -> &'static Mutex<HashMap<String, RepoWatch>> {
+    static REPO_WATCHES: OnceLock<Mutex<HashMap<String, RepoWatch>>> = OnceLock::new();
+    REPO_WATCHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn git_dirs(path: &str) -> Result<GitDirs, String> {
+    let out = run_git(
+        path,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+    )?;
+    let mut lines = out.lines().map(str::trim);
+    let (Some(root), Some(git_dir), Some(common_dir)) = (lines.next(), lines.next(), lines.next())
+    else {
+        return Err(format!("Not a git work tree: {}", path));
+    };
+    Ok(GitDirs {
+        root: root.to_string(),
+        git_dir: PathBuf::from(git_dir),
+        common_dir: PathBuf::from(common_dir),
+    })
+}
+
+fn operation_state(git_dir: &Path) -> Option<&'static str> {
+    if git_dir.join("MERGE_HEAD").exists() {
+        return Some("merging");
+    }
+    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
+        return Some("rebasing");
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return Some("cherry-picking");
+    }
+    if git_dir.join("REVERT_HEAD").exists() {
+        return Some("reverting");
+    }
+    None
+}
+
+fn rebase_branch(git_dir: &Path) -> Option<String> {
+    ["rebase-merge", "rebase-apply"]
+        .iter()
+        .find_map(|dir| fs::read_to_string(git_dir.join(dir).join("head-name")).ok())
+        .map(|raw| raw.trim().trim_start_matches("refs/heads/").to_string())
+        .filter(|name| !name.is_empty() && name != "detached HEAD")
+}
+
+fn read_repo_state(dirs: &GitDirs) -> RepoState {
+    let root = dirs.root.as_str();
+    let (ahead, behind) = track_counts(root);
+    RepoState {
+        root: dirs.root.clone(),
+        branch: head_name(root).or_else(|| rebase_branch(&dirs.git_dir)),
+        head: run_git(root, &["rev-parse", "--short=7", "HEAD"])
+            .ok()
+            .map(|out| out.trim().to_string())
+            .filter(|h| !h.is_empty()),
+        state: operation_state(&dirs.git_dir),
+        ahead,
+        behind,
+    }
+}
+
+fn is_repo_event(path: &Path, dirs: &[PathBuf; 2]) -> bool {
+    if path.extension().is_some_and(|ext| ext == "lock") {
+        return false;
+    }
+    dirs.iter().any(|dir| {
+        path.strip_prefix(dir)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .is_some_and(|first| REPO_ENTRIES.iter().any(|name| first.as_os_str() == *name))
+    })
+}
+
+fn spawn_repo_watcher(app: tauri::AppHandle, dirs: GitDirs) -> Result<RecommendedWatcher, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let roots = [dirs.git_dir.clone(), dirs.common_dir.clone()];
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            let Ok(event) = res else { return };
+            if event.kind.is_access() {
+                return;
+            }
+            if event.paths.iter().any(|p| is_repo_event(p, &roots)) {
+                let _ = tx.send(());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&dirs.git_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+    if dirs.common_dir != dirs.git_dir {
+        watcher
+            .watch(&dirs.common_dir, RecursiveMode::NonRecursive)
+            .map_err(|e| e.to_string())?;
+    }
+    let refs = dirs.common_dir.join("refs");
+    if refs.is_dir() {
+        watcher
+            .watch(&refs, RecursiveMode::Recursive)
+            .map_err(|e| e.to_string())?;
+    }
+
+    std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            let first = Instant::now();
+            while first.elapsed() < REPO_MAX_WAIT && rx.recv_timeout(REPO_DEBOUNCE).is_ok() {}
+            let _ = app.emit("git:repo", read_repo_state(&dirs));
+        }
+    });
+    Ok(watcher)
+}
+
+#[tauri::command]
+pub async fn git_watch_repo(app: tauri::AppHandle, path: String) -> Result<RepoState, String> {
+    crate::blocking(move || {
+        let dirs = git_dirs(&path)?;
+        let state = read_repo_state(&dirs);
+        let mut map = repo_watches().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(watch) = map.get_mut(&dirs.root) {
+            watch.refs += 1;
+            return Ok(state);
+        }
+        let root = dirs.root.clone();
+        let watcher = spawn_repo_watcher(app, dirs)?;
+        map.insert(root, RepoWatch { refs: 1, _watcher: watcher });
+        Ok(state)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_unwatch_repo(root: String) {
+    let mut map = repo_watches().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(watch) = map.get_mut(&root) else { return };
+    watch.refs = watch.refs.saturating_sub(1);
+    if watch.refs == 0 {
+        map.remove(&root);
+    }
 }
 
 #[tauri::command]

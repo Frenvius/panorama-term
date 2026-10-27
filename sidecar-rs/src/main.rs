@@ -687,7 +687,7 @@ fn branch_from_head(head: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(head).ok()?;
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("ref: ") {
-        return Some(rest.rsplit('/').next().unwrap_or(rest).to_string());
+        return Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
     }
     Some(raw.chars().take(7).collect())
 }

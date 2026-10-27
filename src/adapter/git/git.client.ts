@@ -1,12 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 import type {
   LogRow,
   FileDiff,
+  RepoState,
   RepoEntry,
   FileChange,
   CommitInfo,
-  TrackCounts,
   BranchSnapshot,
   StatusSnapshot,
   CommitMessageEntry
@@ -15,8 +16,28 @@ import type {
 export const gitBranches = (path: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_branches', { path });
 
-export const gitAheadBehind = (path: string): Promise<TrackCounts> =>
-  invoke<TrackCounts>('git_ahead_behind', { path });
+export const watchRepo = (path: string, onState: (state: RepoState | null) => void): (() => void) => {
+  let alive = true;
+  let root: string | null = null;
+  void invoke<RepoState>('git_watch_repo', { path })
+    .then((state) => {
+      if (!alive) {
+        void invoke('git_unwatch_repo', { root: state.root });
+        return;
+      }
+      root = state.root;
+      onState(state);
+    })
+    .catch(() => alive && onState(null));
+  const off = listen<RepoState>('git:repo', (e) => {
+    if (alive && e.payload.root === root) onState(e.payload);
+  });
+  return () => {
+    alive = false;
+    if (root !== null) void invoke('git_unwatch_repo', { root });
+    void off.then((un) => un());
+  };
+};
 
 export const gitCheckout = (path: string, branch: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_checkout', { path, branch });
@@ -38,6 +59,9 @@ export const gitRenameBranch = (path: string, oldName: string, newName: string):
 
 export const gitDeleteBranch = (path: string, fullName: string, isRemote: boolean): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_delete_branch', { path, fullName, isRemote });
+
+export const gitResolveRef = (path: string, reference: string): Promise<string> =>
+  invoke<string>('git_resolve_ref', { path, reference });
 
 export const gitMergeBranch = (path: string, branch: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_merge_branch', { path, branch });

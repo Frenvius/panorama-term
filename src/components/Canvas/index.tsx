@@ -6,6 +6,7 @@ import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
+import Toasts from '~/components/commons/Toasts';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import Palette from '~/components/Canvas/Palette';
@@ -856,6 +857,7 @@ const Canvas = () => {
           <Minimap view={view} tiles={tiles} agents={agents} alerts={alertKinds} viewportRef={bgRef} onPan={panTo} />
         )}
       </div>
+      <Toasts />
       {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
       {!fsId && navOpen && (
         <Navigator

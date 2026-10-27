@@ -10,7 +10,7 @@ import styles from './styles.module.scss';
 export type DialogState =
   | { kind: 'create'; startPoint?: string }
   | { kind: 'rename'; branch: string }
-  | { kind: 'confirm'; title: string; message: string; confirmLabel: string; run: () => Promise<BranchSnapshot> }
+  | { kind: 'confirm'; title: string; message: string; confirmLabel: string; run: () => Promise<unknown> }
   | { kind: 'compare'; branch: string };
 
 interface BranchDialogProps {
@@ -52,7 +52,7 @@ const BranchDialog = ({ state, cwd, current, onClose, onCreate, onRename }: Bran
   const naming = state.kind === 'create' || state.kind === 'rename';
   const canSubmit = !busy && (!naming || trimmed.length > 0);
 
-  const run = (): Promise<BranchSnapshot> | null => {
+  const run = (): Promise<unknown> | null => {
     if (state.kind === 'create') return onCreate(trimmed, checkout, overwrite, state.startPoint);
     if (state.kind === 'rename') return onRename(state.branch, trimmed);
     if (state.kind === 'confirm') return state.run();

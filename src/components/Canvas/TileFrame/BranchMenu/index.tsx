@@ -1,24 +1,12 @@
 import React from 'react';
-import { Star, Plus, Search, GitBranch, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
+import { X, Star, Plus, Search, Loader2, GitBranch, RefreshCw, ArrowUpRight, ChevronRight, ChevronDown, FolderClosed, ArrowDownLeft } from 'lucide-react';
 
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { BranchLeaf, BranchNode, LocalBranch, BranchAction, BranchSnapshot } from '~/domain/interfaces/git.interface';
+import type { BranchLeaf, BranchNode, BranchAction, BranchSnapshot } from '~/domain/interfaces/git.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchDialog, { type DialogState } from '~/components/Canvas/TileFrame/BranchMenu/BranchDialog';
 import { buildTrees, filterTree } from '~/usecase/util/branchTree';
-import {
-  gitFetch,
-  gitCheckout,
-  gitMergeBranch,
-  gitRebaseOnto,
-  gitSetUpstream,
-  gitPushCurrent,
-  gitDeleteBranch,
-  gitCreateBranch,
-  gitRenameBranch,
-  gitUpdateBranch,
-  gitToggleBranchFavorite
-} from '~/adapter/git/git.client';
+import { useBranchActions } from '~/usecase/hooks/useBranchActions';
 
 import styles from './styles.module.scss';
 
@@ -41,28 +29,14 @@ interface MenuState {
   y: number;
 }
 
-const message = (err: unknown): string => (typeof err === 'string' ? err : String(err));
-
-const head = (snap: BranchSnapshot | null): LocalBranch | undefined => snap?.local.find((b) => b.is_current);
-
-const commits = (n: number): string => `${n} commit${n === 1 ? '' : 's'}`;
-
-const summarize = (kind: 'update' | 'push', before?: LocalBranch, after?: LocalBranch): string => {
-  const moved = kind === 'update' ? (before?.behind ?? 0) - (after?.behind ?? 0) : (before?.ahead ?? 0) - (after?.ahead ?? 0);
-  const target = after?.upstream ?? before?.upstream ?? 'remote';
-  if (moved <= 0) return 'Already up to date.';
-  return kind === 'update' ? `Pulled ${commits(moved)} from ${target}.` : `Pushed ${commits(moved)} to ${target}.`;
-};
-
 const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose, onSnapshot, onError }: BranchMenuProps) => {
   const [query, setQuery] = React.useState('');
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
-  const [fetching, setFetching] = React.useState(false);
-  const [notice, setNotice] = React.useState<string | null>(null);
-  const [pending, setPending] = React.useState<'update' | 'push' | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const actions = useBranchActions(cwd, snapshot, { onSnapshot, onError });
+  const busy = actions.busy;
 
   React.useEffect(() => {
     const onOutside = (e: PointerEvent) => {
@@ -90,65 +64,32 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const current = snapshot?.current ?? '';
   const filtering = query.trim().length > 0;
 
-  const run = (task: Promise<BranchSnapshot>): Promise<BranchSnapshot> =>
-    task
-      .then((snap) => {
-        onSnapshot(snap);
-        onError(null);
-        return snap;
-      })
-      .catch((err: unknown) => {
-        onError(message(err));
-        throw err;
-      });
-
-  const fetchAll = () => {
-    setFetching(true);
-    void run(gitFetch(cwd))
-      .catch(() => {})
-      .finally(() => setFetching(false));
-  };
-
-  const runPending = (kind: 'update' | 'push', task: Promise<BranchSnapshot>) => {
-    const before = head(snapshot);
-    setPending(kind);
-    setNotice(null);
-    void run(task)
-      .then((snap) => setNotice(summarize(kind, before, head(snap))))
-      .catch(() => {})
-      .finally(() => setPending(null));
-  };
-
-  const updateProject = () => runPending('update', gitUpdateBranch(cwd, false));
-  const pushCurrent = () => runPending('push', gitPushCurrent(cwd));
-
-  const create = (name: string, checkout: boolean, overwrite: boolean, startPoint?: string) =>
-    run(gitCreateBranch(cwd, name, checkout, overwrite, startPoint));
-
-  const rename = (oldName: string, newName: string) => run(gitRenameBranch(cwd, oldName, newName));
+  const fetchAll = () => void actions.fetchAll();
+  const updateProject = () => void actions.update();
+  const pushCurrent = () => void actions.push();
 
   const dispatch = (action: BranchAction) => {
     switch (action.type) {
       case 'checkout':
-        void run(gitCheckout(cwd, action.branch)).catch(() => {});
+        void actions.checkout(action.branch);
         return;
       case 'toggle-favorite':
-        void run(gitToggleBranchFavorite(cwd, action.branch)).catch(() => {});
+        void actions.toggleFavorite(action.branch);
         return;
       case 'update':
-        void run(gitUpdateBranch(cwd, false)).catch(() => {});
+        void actions.update();
         return;
       case 'push':
-        void run(gitPushCurrent(cwd)).catch(() => {});
+        void actions.push();
         return;
       case 'merge':
-        void run(gitMergeBranch(cwd, action.branch)).catch(() => {});
+        void actions.merge(action.branch);
         return;
       case 'rebase':
-        void run(gitRebaseOnto(cwd, action.branch)).catch(() => {});
+        void actions.rebase(action.branch);
         return;
       case 'set-upstream':
-        void run(gitSetUpstream(cwd, action.branch, action.upstream)).catch(() => {});
+        void actions.setUpstream(action.branch, action.upstream);
         return;
       case 'compare':
         setDialog({ kind: 'compare', branch: action.branch });
@@ -167,7 +108,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
             ? `Delete remote branch '${action.branch}'? This pushes a delete to the remote.`
             : `Delete branch '${action.branch}'? Unmerged commits may be lost.`,
           confirmLabel: 'Delete',
-          run: () => run(gitDeleteBranch(cwd, action.branch, action.isRemote))
+          run: () => actions.remove(action.branch, action.isRemote)
         });
     }
   };
@@ -250,6 +191,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
 
   const closeMenu = () => setMenu(null);
   const closeDialog = () => setDialog(null);
+  const clearError = () => onError(null);
   const onQuery = (e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value);
   const newBranch = () => setDialog({ kind: 'create' });
 
@@ -281,8 +223,11 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
       .filter(Boolean)
       .join(' ');
 
+    const working = busy?.branch === leaf.fullName;
+
     const open = (e: React.MouseEvent) => {
       e.preventDefault();
+      if (busy) return;
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       setMenu({ leaf, x: rect.right - 4, y: rect.top });
     };
@@ -299,10 +244,17 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
         onClick={open}
         onContextMenu={open}
         data-current={leaf.isCurrent || undefined}
+        data-busy={(busy && !working) || undefined}
       >
-        <button className={styles.star} onClick={favorite} aria-label="Toggle favorite" data-on={leaf.isFavorite || undefined}>
-          {leaf.isFavorite ? <Star size={12} fill="currentColor" /> : <GitBranch size={12} strokeWidth={1.75} />}
-        </button>
+        {working ? (
+          <span className={styles.star}>
+            <Loader2 size={12} strokeWidth={2} className={styles.spinning} />
+          </span>
+        ) : (
+          <button className={styles.star} onClick={favorite} aria-label="Toggle favorite" data-on={leaf.isFavorite || undefined}>
+            {leaf.isFavorite ? <Star size={12} fill="currentColor" /> : <GitBranch size={12} strokeWidth={1.75} />}
+          </button>
+        )}
         <span className={styles.name}>{node.label}</span>
         {track && <span className={styles.track}>{track}</span>}
         {leaf.upstream && <span className={styles.upstream}>{leaf.upstream}</span>}
@@ -343,33 +295,53 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
           <button
             className={styles.action}
             onClick={updateProject}
-            disabled={pending !== null}
-            data-tooltip={pending === 'update' ? 'Pulling...' : 'Pull'}
+            disabled={busy !== null}
+            data-tooltip={busy?.op === 'update' ? 'Pulling...' : 'Pull'}
             aria-label="Pull"
           >
-            <ArrowDownLeft size={12} strokeWidth={2} />
+            {busy?.op === 'update' ? (
+              <Loader2 size={12} strokeWidth={2} className={styles.spinning} />
+            ) : (
+              <ArrowDownLeft size={12} strokeWidth={2} />
+            )}
           </button>
           <button
             className={styles.action}
             onClick={pushCurrent}
-            disabled={pending !== null}
-            data-tooltip={pending === 'push' ? 'Pushing...' : 'Push'}
+            disabled={busy !== null}
+            data-tooltip={busy?.op === 'push' ? 'Pushing...' : 'Push'}
             aria-label="Push"
           >
-            <ArrowUpRight size={12} strokeWidth={2} />
+            {busy?.op === 'push' ? (
+              <Loader2 size={12} strokeWidth={2} className={styles.spinning} />
+            ) : (
+              <ArrowUpRight size={12} strokeWidth={2} />
+            )}
           </button>
-          <button className={styles.action} onClick={fetchAll} disabled={fetching} data-tooltip="Fetch" aria-label="Fetch">
-            <RefreshCw size={12} strokeWidth={2} className={fetching ? styles.spinning : undefined} />
+          <button
+            className={styles.action}
+            onClick={fetchAll}
+            disabled={busy !== null}
+            data-tooltip={busy?.op === 'fetch' ? 'Fetching...' : 'Fetch'}
+            aria-label="Fetch"
+          >
+            <RefreshCw size={12} strokeWidth={2} className={busy?.op === 'fetch' ? styles.spinning : undefined} />
           </button>
         </div>
 
-        <button className={styles.new} onClick={newBranch}>
+        <button className={styles.new} onClick={newBranch} disabled={busy !== null}>
           <Plus size={13} strokeWidth={2} />
           New branch...
         </button>
 
-        {error && <div className={styles.error}>{error}</div>}
-        {!error && notice && <div className={styles.notice}>{notice}</div>}
+        {error && (
+          <div className={styles.error}>
+            <span className={styles.errorText}>{error}</span>
+            <button type="button" className={styles.dismiss} onClick={clearError} aria-label="Dismiss error">
+              <X size={12} strokeWidth={2} />
+            </button>
+          </div>
+        )}
 
         <div className={styles.body}>
           {loading && !snapshot ? (
@@ -397,8 +369,8 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
             cwd={cwd}
             current={current}
             onClose={closeDialog}
-            onCreate={create}
-            onRename={rename}
+            onCreate={actions.create}
+            onRename={actions.rename}
           />
         </div>
       )}

@@ -30,7 +30,7 @@ import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client';
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
-import { useAheadBehind } from '~/usecase/hooks/useAheadBehind';
+import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
 import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
@@ -483,14 +483,15 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const reveal = () => onReveal(tile.id);
 
   const [branchLocal, setBranchLocal] = React.useState<{ x: number; y: number } | null>(null);
-  const branches = useBranches(tile.cwd, branchLocal !== null);
-  const track = useAheadBehind(tile.cwd, tile.branch);
-  const snapCurrent = branches.snapshot?.current ?? null;
+  const repo = useRepoState(tile.cwd);
+  const branches = useBranches(tile.cwd, branchLocal !== null, repo);
+  const repoLabel = repo ? (repo.branch ?? repo.head ?? undefined) : undefined;
+  const branchLabel = repo ? repoLabel : tile.branch;
 
   React.useEffect(() => {
-    if (!snapCurrent || !tile.cwd || snapCurrent === tile.branch) return;
-    onCwd(tile.id, tile.cwd, snapCurrent);
-  }, [snapCurrent, tile.id, tile.cwd, tile.branch, onCwd]);
+    if (!repo || !tile.cwd || repoLabel === tile.branch) return;
+    onCwd(tile.id, tile.cwd, repoLabel);
+  }, [repo, repoLabel, tile.id, tile.cwd, tile.branch, onCwd]);
 
   const closeBranches = () => setBranchLocal(null);
 
@@ -721,17 +722,17 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                   {folder}
                 </span>
               )}
-              {!note && parts.branch && tile.branch && (
+              {!note && parts.branch && branchLabel && (
                 <button className={styles.branch} onClick={openBranches} onPointerDown={stopDrag}>
                   <GitBranch size={10} strokeWidth={2} />
-                  {tile.branch}
-                  {track.ahead > 0 && (
-                    <span className={styles.ahead} data-tooltip={`${track.ahead} to push`}>
+                  {branchLabel}
+                  {repo && repo.ahead > 0 && (
+                    <span className={styles.ahead} data-tooltip={`${repo.ahead} to push`}>
                       <ArrowUp size={9} strokeWidth={2.5} />
                     </span>
                   )}
-                  {track.behind > 0 && (
-                    <span className={styles.behind} data-tooltip={`${track.behind} to pull`}>
+                  {repo && repo.behind > 0 && (
+                    <span className={styles.behind} data-tooltip={`${repo.behind} to pull`}>
                       <ArrowDown size={9} strokeWidth={2.5} />
                     </span>
                   )}

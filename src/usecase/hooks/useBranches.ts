@@ -1,9 +1,9 @@
 import React from 'react';
 
-import type { BranchSnapshot } from '~/domain/interfaces/git.interface';
+import type { RepoState, BranchSnapshot } from '~/domain/interfaces/git.interface';
 import { gitBranches } from '~/adapter/git/git.client';
 
-export const useBranches = (cwd: string | undefined, open: boolean) => {
+export const useBranches = (cwd: string | undefined, open: boolean, repo: RepoState | null) => {
   const [snapshot, setSnapshot] = React.useState<BranchSnapshot | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -19,7 +19,7 @@ export const useBranches = (cwd: string | undefined, open: boolean) => {
     return () => {
       alive = false;
     };
-  }, [open, cwd]);
+  }, [open, cwd, repo]);
 
   return { snapshot, loading, error, setSnapshot, setError };
 };

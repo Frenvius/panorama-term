@@ -13,9 +13,15 @@ export interface RemoteBranch {
   is_favorite: boolean;
 }
 
-export interface TrackCounts {
+export type RepoOperation = 'merging' | 'rebasing' | 'reverting' | 'cherry-picking';
+
+export interface RepoState {
+  root: string;
   ahead: number;
   behind: number;
+  head: string | null;
+  branch: string | null;
+  state: RepoOperation | null;
 }
 
 export interface BranchSnapshot {
