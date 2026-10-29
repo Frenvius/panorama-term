@@ -29,9 +29,6 @@ const PADDING_RATIO = 0.1;
 const MIN_TILE_W = 4;
 const MIN_TILE_H = 3;
 const MIN_EXTENT_FACTOR = 3;
-const AGENT_MIN_W = 16;
-const AGENT_MIN_H = 12;
-const TILE_GAP = 1;
 const TILE_OPACITY = 0.55;
 const VP_BORDER_OPACITY = 0.55;
 const SCRIM_OPACITY = 0.35;
@@ -41,8 +38,6 @@ const TILE_COLOR = '#5b6478';
 const STATUS_COLOR = { busy: '#23d18b', idle: '#5865f2', alert: '#f5a623' };
 
 type TileStatus = keyof typeof STATUS_COLOR;
-
-const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 
 const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapProps) => {
   const wrapperRef = React.useRef<HTMLDivElement>(null);
@@ -204,15 +199,10 @@ const Minimap = ({ view, tiles, agents, alerts, viewportRef, onPan }: MinimapPro
 
     for (const { tile, status } of flagged) {
       const pos = worldToMinimap(tile.x, tile.y);
-      const w = Math.max(tile.width * scale, AGENT_MIN_W);
-      const h = Math.max(tile.height * scale, AGENT_MIN_H);
-      const cx = clamp(pos.x + (tile.width * scale) / 2, w / 2, MINIMAP_W - w / 2);
-      const cy = clamp(pos.y + (tile.height * scale) / 2, h / 2, MINIMAP_H - h / 2);
-      const x = cx - w / 2;
-      const y = cy - h / 2;
-      ctx.clearRect(x - TILE_GAP, y - TILE_GAP, w + TILE_GAP * 2, h + TILE_GAP * 2);
+      const w = Math.max(tile.width * scale, MIN_TILE_W);
+      const h = Math.max(tile.height * scale, MIN_TILE_H);
       ctx.fillStyle = STATUS_COLOR[status];
-      ctx.fillRect(x + 0.5, y + 0.5, w - 1, h - 1);
+      ctx.fillRect(pos.x + 0.5, pos.y + 0.5, w - 1, h - 1);
     }
   }, [computeBounds, viewportRect, worldToMinimap]);
 
