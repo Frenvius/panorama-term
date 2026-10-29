@@ -7,7 +7,7 @@ use crate::claude::{
     Turn,
 };
 
-fn sessions_root() -> Option<PathBuf> {
+pub fn sessions_root() -> Option<PathBuf> {
     let home = std::env::var("USERPROFILE")
         .ok()
         .or_else(|| std::env::var("HOME").ok())?;
@@ -51,7 +51,7 @@ fn blocks_text(content: &Value, kind: &str) -> String {
         .join("\n")
 }
 
-fn user_text(content: &Value) -> Option<String> {
+pub fn user_text(content: &Value) -> Option<String> {
     let stripped = strip_wrappers(&blocks_text(content, "text"));
     if stripped.is_empty() || is_slash_command(&stripped) || is_interrupt_notice(&stripped) {
         None

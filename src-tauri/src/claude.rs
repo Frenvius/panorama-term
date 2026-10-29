@@ -48,14 +48,14 @@ pub fn read_tail(path: &Path) -> Option<(String, bool)> {
     Some((text[start..].to_string(), true))
 }
 
-fn claude_home() -> Option<PathBuf> {
+pub fn claude_home() -> Option<PathBuf> {
     let home = std::env::var("USERPROFILE")
         .ok()
         .or_else(|| std::env::var("HOME").ok())?;
     Some(Path::new(&home).join(".claude"))
 }
 
-fn cwd_slug(cwd: &str) -> String {
+pub fn cwd_slug(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
         .collect()
@@ -159,7 +159,7 @@ pub fn is_slash_command(text: &str) -> bool {
     trimmed.split_whitespace().count() <= 2
 }
 
-fn user_text(row: &Value) -> Option<String> {
+pub fn user_text(row: &Value) -> Option<String> {
     if flag(row, "isMeta")
         || flag(row, "isSidechain")
         || flag(row, "isCompactSummary")

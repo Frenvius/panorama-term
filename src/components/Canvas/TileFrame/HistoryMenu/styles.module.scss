@@ -1,0 +1,131 @@
+.menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  width: 320px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-pop);
+  animation: menu-in 0.11s ease-out both;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  padding: 0 7px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 7px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+
+.spin {
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.list {
+  display: flex;
+  max-height: 360px;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--border-3);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: 8px;
+
+    &:hover {
+      background-color: var(--text-dim);
+    }
+  }
+
+  &::-webkit-scrollbar-button {
+    display: none;
+  }
+}
+
+.item {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 7px;
+  border: none;
+  cursor: pointer;
+  color: var(--text-1);
+  border-radius: 5px;
+  font-size: 11.5px;
+  text-align: left;
+  font-family: var(--font-mono);
+  background: transparent;
+  transition: background 0.12s ease;
+
+  &:hover,
+  &:focus-visible {
+    outline: none;
+    background: var(--hover-2);
+  }
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.when {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}

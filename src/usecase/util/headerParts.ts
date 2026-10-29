@@ -8,6 +8,7 @@ export type HeaderPart =
   | 'build'
   | 'run'
   | 'link'
+  | 'history'
   | 'fullscreen'
   | 'restart';
 
@@ -24,6 +25,7 @@ export const HEADER_PART_OPTIONS: { id: HeaderPart; label: string; description: 
   { id: 'build', label: 'Build button', description: 'Hammer button and its command menu.' },
   { id: 'run', label: 'Run button', description: 'Play button and its command menu.' },
   { id: 'link', label: 'Link button', description: 'Drag handle to link tiles together.' },
+  { id: 'history', label: 'History button', description: 'Past conversations of the agent in this folder.' },
   { id: 'fullscreen', label: 'Fullscreen button', description: 'Expand the tile to the whole canvas.' },
   { id: 'restart', label: 'Restart button', description: 'Restart the shell running in the tile.' }
 ];

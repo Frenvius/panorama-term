@@ -3,6 +3,7 @@ import { Play, Wrench, Terminal, LoaderCircle } from 'lucide-react';
 
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { PiLogo } from '~/components/commons/AgentIcons';
+import { timeAgo } from '~/usecase/util/agentHistory';
 import { miniMarkdown } from '~/usecase/util/miniMarkdown';
 import { prettyModel } from '~/components/Terminal/AgentBar/parse';
 import { agentSessionSummary } from '~/adapter/claude/claude.client';
@@ -19,18 +20,6 @@ interface ResumePanelProps {
   onResume: () => void;
   onSkip: () => void;
 }
-
-const ago = (iso: string | null): string => {
-  if (!iso) return '';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-};
 
 const countLabel = (n: number, partial: boolean): string => {
   const suffix = n === 1 && !partial ? 'prompt' : 'prompts';
@@ -135,7 +124,7 @@ const ResumePanel = ({ agent, sessionId, cwd, active, onResume, onSkip }: Resume
   const meta = React.useMemo(() => {
     if (!summary) return [];
     const model = prettyModel(summary.model ?? undefined).model;
-    return [summary.branch, ago(summary.endedAt), countLabel(summary.promptCount, summary.partial), model].filter(Boolean);
+    return [summary.branch, timeAgo(summary.endedAt), countLabel(summary.promptCount, summary.partial), model].filter(Boolean);
   }, [summary]);
 
   if (loading) {

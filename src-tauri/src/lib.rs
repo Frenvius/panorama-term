@@ -11,6 +11,7 @@ mod docker;
 mod notes;
 mod claude;
 mod pi;
+mod history;
 mod ide;
 mod usage;
 
@@ -1001,6 +1002,7 @@ pub fn run() {
             notes::delete_note,
             claude::claude_session_summary,
             pi::pi_session_summary,
+            history::agent_history,
             ide::detect_ides,
             ide::open_in_ide
         ])

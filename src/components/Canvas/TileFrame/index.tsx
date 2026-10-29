@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { X, Pin, Play, Code2, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
+import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { RunPhase } from '~/domain/interfaces/run.interface';
@@ -23,6 +23,9 @@ import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgen
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ContextMenu from '~/components/commons/ContextMenu';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
+import HistoryMenu from '~/components/Canvas/TileFrame/HistoryMenu';
+import { hasHistory, resumeCommand } from '~/usecase/util/agentHistory';
+import type { TerminalRestart } from '~/domain/interfaces/pty.interface';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { useRun } from '~/usecase/hooks/useRun';
 import { stopRun } from '~/adapter/run/run.client';
@@ -169,23 +172,24 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     onSnap(tile.id);
   };
 
-  const [restartKey, setRestartKey] = React.useState(0);
+  const [restart, setRestart] = React.useState<TerminalRestart>({ key: 0 });
   const [restarting, setRestarting] = React.useState(false);
   const [elevated, setElevated] = React.useState(false);
-  const restartTile = () => {
-    setRestartKey((n) => n + 1);
+  const restartWith = (command?: string) => {
+    setRestart((r) => ({ key: r.key + 1, command }));
     setRestarting(true);
   };
+  const restartTile = () => restartWith();
 
   React.useEffect(() => {
     if (!restarting) return;
     const t = setTimeout(() => setRestarting(false), 700);
     return () => clearTimeout(t);
-  }, [restarting, restartKey]);
+  }, [restarting, restart]);
 
   const toggleElevated = () => {
     setElevated((v) => !v);
-    setRestartKey((n) => n + 1);
+    setRestart((r) => ({ key: r.key + 1 }));
   };
   const closeTile = () => onClose(tile.id);
   const focusTile = () => onFocusTile(tile.id, true);
@@ -223,6 +227,17 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const closeRunMenu = () => setRunMenu(null);
   const closeBuildMenu = () => setBuildMenu(null);
   const closeKillMenu = () => setKillMenu(null);
+  const [historyMenu, setHistoryMenu] = React.useState<{ x: number; y: number } | null>(null);
+  const historyAgent = hasHistory(agentType) && tile.cwd ? agentType : null;
+  const closeHistory = () => setHistoryMenu(null);
+  const openHistory = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setHistoryMenu(menuAtButton(e));
+  };
+  const resumeConversation = (id: string) => {
+    const command = historyAgent && resumeCommand(historyAgent, id);
+    if (command) restartWith(command);
+  };
   const runBusy = running || run.phase !== null;
   const buildBusy = building || build.phase !== null;
   const runKillable = run.phase === 'stopping' || run.phase === 'killing';
@@ -862,6 +877,17 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 <Copy size={13} strokeWidth={2} />
               </button>
             )}
+            {!note && !runView && !fullscreen && parts.history && historyAgent && (
+              <button
+                className={historyMenu ? `${styles.action} ${styles.linked}` : styles.action}
+                onClick={openHistory}
+                onPointerDown={stopDrag}
+                aria-label="Conversation history"
+                data-tooltip="Conversations"
+              >
+                <History size={13} strokeWidth={2} />
+              </button>
+            )}
             {!note && !runView && !fullscreen && parts.link && (
               <button
                 className={linkedTerms.length ? `${styles.action} ${styles.linked}` : styles.action}
@@ -929,7 +955,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
               onClaudeStatus={onClaudeStatus}
               onClaudeDiff={onClaudeDiff}
               onProgress={onProgress}
-              restartKey={restartKey}
+              restart={restart}
               elevated={elevated}
               active={active}
               visible={visible && !hidden}
@@ -969,6 +995,16 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
       {runMenu && <ContextMenu x={runMenu.x} y={runMenu.y} items={runMenuItems} onClose={closeRunMenu} />}
       {buildMenu && <ContextMenu x={buildMenu.x} y={buildMenu.y} items={buildMenuItems} onClose={closeBuildMenu} />}
+      {historyMenu && historyAgent && tile.cwd && (
+        <HistoryMenu
+          x={historyMenu.x}
+          y={historyMenu.y}
+          cwd={tile.cwd}
+          agent={historyAgent}
+          onPick={resumeConversation}
+          onClose={closeHistory}
+        />
+      )}
       {killMenu && (
         <ContextMenu
           x={killMenu.x}

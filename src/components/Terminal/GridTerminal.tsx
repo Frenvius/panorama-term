@@ -14,6 +14,7 @@ import { hasAgentUi } from '~/components/Terminal/AgentBar/parse';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
 import { mergeClaudeState } from '~/usecase/util/claudeState';
 import { markTerminalLive } from '~/usecase/util/liveTerminals';
+import { resumeCommand } from '~/usecase/util/agentHistory';
 import { emitPromptRestore } from '~/usecase/util/promptRestore';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
@@ -21,7 +22,7 @@ import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
 import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, sendPtyVisible, openPtyConnection, sendPtyDismissAgent } from '~/adapter/pty/pty.client';
 
-import type { GridFrame, ClaudeState } from '~/domain/interfaces/pty.interface';
+import type { GridFrame, ClaudeState, TerminalRestart } from '~/domain/interfaces/pty.interface';
 import type { Cell, Selection, UrlSpan } from '~/usecase/util/terminalSelection';
 
 import styles from './styles.module.scss';
@@ -36,7 +37,7 @@ interface GridTerminalProps {
   active: boolean;
   visible: boolean;
   elevated: boolean;
-  restartKey: number;
+  restart: TerminalRestart;
   onCwd: (id: string, cwd: string, branch?: string) => void;
   onOscTitle: (id: string, title: string) => void;
   onAgentActive?: (type: AgentType | null) => void;
@@ -212,7 +213,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
   return html;
 };
 
-const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, visible, elevated, restartKey, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, visible, elevated, restart, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const [resume, setResume] = React.useState<ResumeTarget | null>(null);
   const termRef = React.useRef<HTMLDivElement>(null);
   const rowsRefEl = React.useRef<HTMLDivElement>(null);
@@ -236,6 +237,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const pendingResumeRef = React.useRef(true);
   const restartingRef = React.useRef(false);
   const resumeCandidateRef = React.useRef<ResumeTarget | null>(null);
+  const queuedCommandRef = React.useRef<string | null>(null);
+  const armedCommandRef = React.useRef<string | null>(null);
   const activeRef = React.useRef(active);
   const visibleRef = React.useRef(visible);
   const elevatedRef = React.useRef(elevated);
@@ -412,6 +415,13 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             frameRef.current = frame;
             dirtyRef.current = true;
             if (readOnly) return;
+            const command = armedCommandRef.current;
+            if (command && frame.lines.some((line) => line.trim())) {
+              armedCommandRef.current = null;
+              const w = wsRef.current;
+              if (w) sendPtyInput(w, ` ${command}\r`);
+              return;
+            }
             const candidate = resumeCandidateRef.current;
             if (!candidate) return;
             resumeCandidateRef.current = null;
@@ -445,9 +455,11 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
               sendPtyFocus(w, activeRef.current && document.hasFocus());
               sendPtyVisible(w, visibleRef.current && !document.hidden);
             }
+            armedCommandRef.current = queuedCommandRef.current;
+            queuedCommandRef.current = null;
             if (!pendingResumeRef.current) return;
             pendingResumeRef.current = false;
-            if (!info.resumeId || info.reused) return;
+            if (armedCommandRef.current || !info.resumeId || info.reused) return;
             resumeCandidateRef.current = { id: info.resumeId, agent: info.resumeAgent ?? 'claude' };
           }
         }
@@ -487,12 +499,14 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     if (ws) sendPtyVisible(ws, visible && !document.hidden);
   }, [visible]);
 
-  const lastRestartRef = React.useRef(restartKey);
+  const lastRestartRef = React.useRef(restart.key);
   React.useEffect(() => {
-    if (lastRestartRef.current === restartKey) return;
-    lastRestartRef.current = restartKey;
+    if (lastRestartRef.current === restart.key) return;
+    lastRestartRef.current = restart.key;
     const ws = wsRef.current;
     if (!ws) return;
+    queuedCommandRef.current = restart.command ?? null;
+    armedCommandRef.current = null;
     setResume(null);
     forgetFrame(sessionKey);
     frameRef.current = null;
@@ -504,7 +518,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     sendPtyKill(ws);
     const bail = setTimeout(() => ws.close(), 1500);
     return () => clearTimeout(bail);
-  }, [restartKey]);
+  }, [restart]);
 
   React.useEffect(() => {
     dirtyRef.current = true;
@@ -822,8 +836,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
 
   const startResume = () => {
     const ws = wsRef.current;
-    const command = resume?.agent === 'pi' ? `pi --session ${resume?.id}` : `claude --resume ${resume?.id}`;
-    if (ws) sendPtyInput(ws, ` ${command}\r`);
+    const command = resume && resumeCommand(resume.agent, resume.id);
+    if (ws && command) sendPtyInput(ws, ` ${command}\r`);
     closeResume();
   };
 

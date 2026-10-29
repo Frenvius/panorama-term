@@ -15,3 +15,9 @@ export interface SessionSummary {
   partial: boolean;
   turns: SessionTurn[];
 }
+
+export interface ConversationEntry {
+  id: string;
+  title: string;
+  updatedAt: number;
+}

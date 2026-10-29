@@ -7,6 +7,11 @@ export interface PtyReadyMessage {
   resumeAgent: string | null;
 }
 
+export interface TerminalRestart {
+  key: number;
+  command?: string;
+}
+
 export interface PtyExitMessage {
   t: 'exit';
 }
