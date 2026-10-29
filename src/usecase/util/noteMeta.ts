@@ -5,6 +5,14 @@ export const stripFrontmatter = (raw: string): string => {
   return m ? raw.slice(m[0].length) : raw;
 };
 
+export const notePreview = (raw?: string): string =>
+  stripFrontmatter(raw ?? '')
+    .split('\n')
+    .map((l) => l.replace(/^\s*(#+|[-*]\s+\[[ xX]\]|[-*>])\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(' · ');
+
 export const withBody = (raw: string, body: string): string => {
   const m = FM.exec(raw);
   if (!m) return body;

@@ -16,6 +16,7 @@ import { mergeClaudeState } from '~/usecase/util/claudeState';
 import { markTerminalLive } from '~/usecase/util/liveTerminals';
 import { resumeCommand } from '~/usecase/util/agentHistory';
 import { emitPromptRestore } from '~/usecase/util/promptRestore';
+import { reportAgentEvent, reportShellLines } from '~/usecase/util/tileActivity';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
 import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
@@ -56,6 +57,7 @@ const CELL_H = 15;
 const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
+const SUMMARY_MS = 1000;
 const DEFAULT_FG = 0xc7d0e0;
 const NO_LINES: string[] = [];
 const isLinux = /linux/i.test(navigator.userAgent);
@@ -388,6 +390,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     let disposed = false;
     let exited = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let summary: ReturnType<typeof setTimeout> | undefined;
     const target = getSetting(TERMINAL_TARGET_KEY, 'auto');
     const idleCompact = getSetting(IDLE_COMPACTION_KEY, true);
     const paint = setInterval(() => {
@@ -415,6 +418,10 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             frameRef.current = frame;
             dirtyRef.current = true;
             if (readOnly) return;
+            summary ??= setTimeout(() => {
+              summary = undefined;
+              if (frameRef.current) reportShellLines(tileId, frameRef.current.lines);
+            }, SUMMARY_MS);
             const command = armedCommandRef.current;
             if (command && frame.lines.some((line) => line.trim())) {
               armedCommandRef.current = null;
@@ -447,7 +454,10 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           onTitle: (title) => onOscTitleRef.current(tileId, title),
           onNotify: (title, body) => notifier.onNotify(title, body),
           onProgress: (state, pct) => onProgressRef.current?.(state, pct),
-          onAgentEvent: (evt) => notifier.onAgentEvent(evt),
+          onAgentEvent: (evt) => {
+            notifier.onAgentEvent(evt);
+            reportAgentEvent(tileId, evt);
+          },
           onPromptRestore: (text) => emitPromptRestore(tileId, text),
           onReady: (info) => {
             const w = wsRef.current;
@@ -478,6 +488,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       disposed = true;
       clearInterval(paint);
       clearTimeout(retry);
+      clearTimeout(summary);
       wsRef.current?.close();
       wsRef.current = null;
       if (frameRef.current) rememberFrame(sessionKey, frameRef.current);

@@ -25,6 +25,7 @@ import ContextMenu from '~/components/commons/ContextMenu';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import HistoryMenu from '~/components/Canvas/TileFrame/HistoryMenu';
 import { hasHistory, resumeCommand } from '~/usecase/util/agentHistory';
+import { reportAgent } from '~/usecase/util/tileActivity';
 import type { TerminalRestart } from '~/domain/interfaces/pty.interface';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { useRun } from '~/usecase/hooks/useRun';
@@ -120,6 +121,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     onAgentState(tile.id, agentLive, agentBusy);
   }, [tile.id, agentLive, agentBusy, onAgentState]);
   React.useEffect(() => () => onAgentState(tile.id, false, false), [tile.id, onAgentState]);
+  React.useEffect(() => reportAgent(tile.id, agentType, agentBusy), [tile.id, agentType, agentBusy]);
   const onClaudeDiff = (a: number, r: number) => setDiff(a || r ? { a, r } : null);
   const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });
 

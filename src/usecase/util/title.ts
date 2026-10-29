@@ -23,6 +23,11 @@ export const stripSpinner = (title: string): string => {
 };
 
 const FALLBACK: Record<string, string> = { term: 'Terminal', note: 'Note' };
+const PATH_TITLE = /^(?:[A-Za-z]:[\\/]|\/)/;
+
+const notPath = (title?: string): string => (title && !PATH_TITLE.test(title) ? title : '');
+
+export const folderName = (path?: string): string => (path ? (path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '') : '');
 
 export const tileLabel = (tile: Tile): string => {
   if (tile.type === 'note') {
@@ -30,5 +35,5 @@ export const tileLabel = (tile: Tile): string => {
     return t ? `Note - ${t}` : 'Note';
   }
   const osc = tile.oscTitle ? stripSpinner(stripStarPrefix(tile.oscTitle).trim()) : '';
-  return tile.userTitle || osc || tile.autoTitle || FALLBACK[tile.type] || tile.type;
+  return tile.userTitle || notPath(osc) || notPath(tile.autoTitle) || folderName(tile.cwd) || FALLBACK[tile.type] || tile.type;
 };

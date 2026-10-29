@@ -1,43 +1,29 @@
 import React from 'react';
-import type { LucideIcon } from 'lucide-react';
 import {
   Plus,
-  Code,
-  Globe,
-  Image,
   Layers,
   Search,
-  Trash2,
   Pencil,
-  Network,
   FilePlus,
-  FileCode,
   Container,
   GitBranch,
-  Crosshair,
   FolderTree,
-  StickyNote,
   FolderOpen,
   FolderPlus,
-  ChevronRight,
   ClipboardCopy,
-  PanelLeftClose,
-  SquareTerminal
+  PanelLeftClose
 } from 'lucide-react';
 
 import type { Tile, Frame } from '~/domain/interfaces/canvas.interface';
-import type { TileType } from '~/domain/interfaces/workspace.interface';
 import type { DirEntry } from '~/adapter/fs/fs.client';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import type { Creating } from '~/components/Canvas/Navigator/FileTree';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import GitTab from '~/components/Canvas/Navigator/GitTab';
+import TilesTab from '~/components/Canvas/Navigator/TilesTab';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
 import DockerTab from '~/components/Canvas/Navigator/DockerTab';
-import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import ContextMenu from '~/components/commons/ContextMenu';
-import { tileLabel } from '~/usecase/util/title';
-import { groupByFrame } from '~/usecase/util/frame';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { dockerAvailable } from '~/adapter/docker/docker.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
@@ -45,21 +31,10 @@ import { getBinding, formatCombo } from '~/usecase/util/keybindings';
 
 import styles from './styles.module.scss';
 
-const TYPE_ICON: Record<TileType, { Icon: LucideIcon; color: string }> = {
-  term: { Icon: SquareTerminal, color: '#7aab6e' },
-  note: { Icon: StickyNote, color: '#8a7aab' },
-  code: { Icon: Code, color: '#7a8aab' },
-  editor: { Icon: FileCode, color: '#6ea8ab' },
-  image: { Icon: Image, color: '#c07a6e' },
-  graph: { Icon: Network, color: '#c8a35a' },
-  browser: { Icon: Globe, color: '#5c9bcf' }
-};
-
 interface Menu {
   x: number;
   y: number;
-  tile?: Tile;
-  entry?: DirEntry;
+  entry: DirEntry;
 }
 
 export interface NavigatorHandlers {
@@ -85,7 +60,6 @@ interface NavigatorProps {
 }
 
 const WIDTH_KEY = 'panorama:navWidth';
-const COLLAPSED_KEY = 'panorama:navCollapsed';
 const TAB_KEY = 'panorama:navTab';
 const TABS = ['files', 'tiles', 'git', 'docker'] as const;
 type Tab = (typeof TABS)[number];
@@ -100,14 +74,6 @@ const MAX_WIDTH = 800;
 const savedWidth = (): number => {
   const raw = Number(getPref(WIDTH_KEY));
   return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : 248;
-};
-
-const savedCollapsed = (): Set<string> => {
-  try {
-    return new Set(JSON.parse(getPref(COLLAPSED_KEY) ?? '[]'));
-  } catch {
-    return new Set();
-  }
 };
 
 const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, handlers }: NavigatorProps) => {
@@ -130,9 +96,6 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
       .catch(() => setHasDocker(false));
   }, []);
   const [query, setQuery] = React.useState('');
-  const [collapsed, setCollapsed] = React.useState<Set<string>>(savedCollapsed);
-  const [renaming, setRenaming] = React.useState<string | null>(null);
-  const [draft, setDraft] = React.useState('');
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const [creating, setCreating] = React.useState<Creating | null>(null);
 
@@ -143,14 +106,11 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
   }, [width]);
 
   const needle = query.trim().toLowerCase();
-  const { members, loose } = React.useMemo(() => groupByFrame(frames, tiles), [frames, tiles]);
 
   const cwd = tiles.find((t) => t.id === activeTile)?.cwd ?? null;
   const lastCwd = React.useRef<string | null>(null);
   if (cwd) lastCwd.current = cwd;
   const root = cwd ?? lastCwd.current;
-
-  const matches = (tile: Tile): boolean => !needle || tileLabel(tile).toLowerCase().includes(needle);
 
   const onQuery = (e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value);
 
@@ -161,35 +121,8 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
   const showGit = () => setTab('git');
   const showDocker = () => setTab('docker');
 
-  const toggleFrame = (id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      setPref(COLLAPSED_KEY, JSON.stringify([...next]));
-      return next;
-    });
-  };
-
-  const startRename = (tile: Tile) => {
-    setDraft(tile.userTitle || tileLabel(tile));
-    setRenaming(tile.id);
-  };
-
-  const commitRename = () => {
-    if (renaming) onRenameTile(renaming, draft.trim());
-    setRenaming(null);
-  };
-
-  const onRenameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') commitRename();
-    if (e.key === 'Escape') setRenaming(null);
-  };
-
-  const openTileMenu = (e: React.MouseEvent, tile: Tile) => {
-    e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, tile });
-  };
+  const tileSignals = React.useMemo(() => ({ alerts, agents }), [alerts, agents]);
+  const tilesHandlers = { onCloseTile, onFocusTile, onFocusFrame, onRenameTile };
 
   const openFile = (path: string, preview = false) => {
     if (root) onOpenFile(root, path, preview);
@@ -241,91 +174,22 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
     el.addEventListener('pointerup', up);
   };
 
-  const menuItems = () => {
-    if (menu?.tile) {
-      const tile = menu.tile;
-      return [
-        { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: () => startRename(tile) },
-        { label: 'Focus', icon: <Crosshair size={15} strokeWidth={1.75} />, onSelect: () => onFocusTile(tile.id, true) },
-        {
-          label: 'Reveal in explorer',
-          icon: <FolderOpen size={15} strokeWidth={1.75} />,
-          onSelect: () => tile.cwd && revealPath(tile.cwd),
-          disabled: !tile.cwd
-        },
-        { label: 'Close', icon: <Trash2 size={15} strokeWidth={1.75} />, danger: true, onSelect: () => onCloseTile(tile.id) }
-      ];
+  const menuItems = (entry: DirEntry) => [
+    { label: 'New file', icon: <FilePlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, false) },
+    { label: 'New folder', icon: <FolderPlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, true) },
+    {
+      label: 'Edit',
+      icon: <Pencil size={15} strokeWidth={1.75} />,
+      onSelect: () => openFile(entry.path),
+      disabled: entry.dir
+    },
+    { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
+    {
+      label: 'Copy path',
+      icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
+      onSelect: () => writeClipboard(entry.path)
     }
-    if (menu?.entry) {
-      const entry = menu.entry;
-      return [
-        { label: 'New file', icon: <FilePlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, false) },
-        { label: 'New folder', icon: <FolderPlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, true) },
-        {
-          label: 'Edit',
-          icon: <Pencil size={15} strokeWidth={1.75} />,
-          onSelect: () => openFile(entry.path),
-          disabled: entry.dir
-        },
-        { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
-        {
-          label: 'Copy path',
-          icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
-          onSelect: () => writeClipboard(entry.path)
-        }
-      ];
-    }
-    return [];
-  };
-
-  const row = (tile: Tile, nested: boolean) => {
-    const { Icon, color } = TYPE_ICON[tile.type] ?? TYPE_ICON.term;
-    const agent = agents.get(tile.id);
-    const select = () => onFocusTile(tile.id);
-    const zoom = () => onFocusTile(tile.id, true);
-    const contextMenu = (e: React.MouseEvent) => openTileMenu(e, tile);
-
-    return (
-      <div
-        key={tile.id}
-        className={styles.tile}
-        onClick={select}
-        onDoubleClick={zoom}
-        onContextMenu={contextMenu}
-        data-nested={nested || undefined}
-        data-active={tile.id === activeTile || undefined}
-      >
-        <Icon size={13} strokeWidth={1.75} style={{ color }} className={styles.icon} />
-        {renaming === tile.id ? (
-          <input
-            autoFocus
-            className={styles.rename}
-            value={draft}
-            onBlur={commitRename}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onRenameKey}
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <span className={styles.name}>{tileLabel(tile)}</span>
-        )}
-        {alerts.has(tile.id) && <span className={styles.dot} />}
-        {agent && (
-          <span className={styles.agent} data-tooltip={agent === 'busy' ? 'Agent working' : 'Agent idle'}>
-            {agent === 'busy' ? (
-              <span className={styles.dots}>
-                <span />
-                <span />
-                <span />
-              </span>
-            ) : (
-              <ClaudeLogo size={11} />
-            )}
-          </span>
-        )}
-      </div>
-    );
-  };
+  ];
 
   return (
     <div className={styles.panel} style={{ width }}>
@@ -422,62 +286,22 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
 
       {tab === 'docker' && <DockerTab query={needle} />}
 
+      {tab === 'tiles' && (
+        <TilesTab
+          tiles={tiles}
+          frames={frames}
+          query={needle}
+          signals={tileSignals}
+          activeTile={activeTile}
+          handlers={tilesHandlers}
+        />
+      )}
+
       <div
         className={styles.body}
         onContextMenu={openBlankMenu}
-        style={{ display: tab === 'git' || tab === 'docker' ? 'none' : undefined }}
+        style={{ display: tab === 'files' ? undefined : 'none' }}
       >
-        {tab === 'tiles' && (
-          <>
-            {frames.map((frame) => {
-              const children = (members.get(frame.id) ?? []).filter(matches);
-              const shut = collapsed.has(frame.id);
-              const alerted = children.some((c) => alerts.has(c.id));
-              const frameAgent = children.some((c) => agents.get(c.id) === 'busy')
-                ? 'busy'
-                : children.some((c) => agents.get(c.id))
-                  ? 'idle'
-                  : null;
-              const toggle = () => toggleFrame(frame.id);
-              const goto = (e: React.MouseEvent) => {
-                e.stopPropagation();
-                onFocusFrame(frame.id);
-              };
-
-              return (
-                <div key={frame.id}>
-                  <div className={styles.group} onClick={toggle}>
-                    <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} data-open={!shut || undefined} />
-                    <span className={styles.swatch} style={{ background: frame.color }} />
-                    <span className={styles.name}>{frame.title}</span>
-                    {alerted && <span className={styles.dot} />}
-                    {frameAgent && (
-                      <span className={styles.agent} data-tooltip={frameAgent === 'busy' ? 'Agent working' : 'Agent idle'}>
-                        {frameAgent === 'busy' ? (
-                          <span className={styles.dots}>
-                            <span />
-                            <span />
-                            <span />
-                          </span>
-                        ) : (
-                          <ClaudeLogo size={11} />
-                        )}
-                      </span>
-                    )}
-                    <span className={styles.count}>{children.length}</span>
-                    <button className={styles.goto} onClick={goto} aria-label="Go to frame">
-                      <Crosshair size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                  {!shut && children.map((tile) => row(tile, true))}
-                </div>
-              );
-            })}
-            {loose.filter(matches).map((tile) => row(tile, false))}
-            {tiles.length === 0 && <div className={styles.empty}>No tiles on canvas</div>}
-          </>
-        )}
-
         {tab === 'files' &&
           (root ? (
             <FileTree key={root} root={root} query={needle} creating={creating} handlers={fileTreeHandlers} />
@@ -497,7 +321,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
         />
       </div>
 
-      {menu && <ContextMenu x={menu.x} y={menu.y} onClose={closeMenu} items={menuItems()} />}
+      {menu && <ContextMenu x={menu.x} y={menu.y} onClose={closeMenu} items={menuItems(menu.entry)} />}
     </div>
   );
 };
