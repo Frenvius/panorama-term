@@ -1,23 +1,23 @@
 {
-  "version": "0.2.10",
-  "notes": "### Added\n- Branch chip and branch popup update live when the repository changes (checkout, commit, fetch, rebase), with background fetch while the window is focused.\n- Toast feedback for branch operations, with Rollback after checkout and Restore after deleting a branch.\n- Merge, rebase, cherry-pick and revert in progress show a banner with Continue, Skip and Abort, and the branch chip shows the state.\n- Checkout with conflicting local changes offers \"Stash & checkout\".\n- Deleting an unmerged branch lists the commits that would be lost.\n- Fuzzy branch search with highlighted matches, a Recent section, keyboard navigation, pull with rebase and checkout-and-rebase.\n- \"Show diff with working tree\" on any branch lists the differing files and opens them in the diff viewer.\n- Run button phases come from the actual run status, with confirmed stop and ready detection.\n\n### Fixed\n- Branches with slashes in the name (feature/x) are shown in full on the tile chip.\n- \"Compare with current\" always showed an empty list.\n- Agents in terminals outside the view are detected again after switching tabs.\n- Overlapping agent tiles keep a gap in the minimap.\n- Terminals no longer inherit the Claude session environment of the app; run icons are larger.",
-  "pub_date": "2026-10-27T17:39:48Z",
+  "version": "0.2.11",
+  "notes": "### Added\n- Phone companion: pair a phone with Panorama from Settings > Mobile, then reach your terminals over the local network or, when away, through a relay.\n- Answer Claude permission prompts, questions and plan approvals from the phone, including Allow, Always allow and Deny right from the notification.\n- Agent tiles show the conversation history in the tile header.\n- Navigator tile cards show a snippet of each tile's latest activity.\n\n### Fixed\n- Minimap status tiles are drawn at their real size.",
+  "pub_date": "2026-10-30T20:03:54Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHQwdFB1VzBGNndMMUVTSVdyZUVHZXNaMGlKYlZrZmU5OW1VUjFjc0kzUnZUdHMyZ205SFk4ZCt5UFZ1QWN4V3czbGtPQW5JS3FtTW1vOVVFQ2QwQXdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxNzg4CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpLNUxKMmlwOEVXNkF6Nk5pSFJHQ1BMaXU4NkliaDlLeklIYldFYWNURUs4OXNLYUpWeGVadTRiSGRzc1owajgxTGpyYW5FVFVKOWZIYmFvdE1saEdDQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.11/Panorama_0.2.11_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHYyWlEzM0gvVGYxVGI1YmtEanpkWUp6bVpMZUY1dFFlN0IzdzY5cTd0QU95dnk1WmE3M0tqZFB5MXdyeWx6OTFGZjlJV252SzlnRVhMSmcreFlWTmdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzkwMzk2CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpUYnlYNVZFMEZsTUUrU0JEaVMxR3EwM0RKNklvbGhyclBDMUR2ZTVOVDBxR3gyYmRnN3krV0tpSm1oR25XMHc5RnFMbUtxaXgrT3M5b2p1S2FWaXVCQT09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHB0TXVnWWtRS1d5NUtIaXYvakFKZmFaNzg1bXJqcURhTDYxTmZvcjh4aENtL29JVEdSUUk2M0VwZGlHcXZxWHRKUHFXcldUdHNxRmFuUjhvY3kwR2dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxNTQ2CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpBK1Jrek9zWTUrZ3l1cDQxS2FZR2F5c081UkxIS0s4ZHMvVGN2QUhHdlhhNFRiTk9vQ1FqdkZ0cm5tc0xiNEhyR0NUQUt6QU4vQ0NkaHJXdVZacTJDQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.11/Panorama_0.2.11_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtLeWgwbmNTN0UrWnVQM1dKM3luMit6dkN6MVhuR3JubUFSdmxsOGducG1DSUFMRHF5Z3JvMXNpalFqWjJQTDdEUk5JVUFWZkFCTnkzVUdUcFZDK1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzkwNDM1CWZpbGU6UGFub3JhbWEuYXBwLnRhci5nego3YWhPdnhFMU1qbW5GbXB2emNyWTR6OHJhUXY2a0VLcHBzeVdmQnpMeGdDa2pxaEFPcXNpRC9hM3ZNR2hRQi9iQ243WTRwUGxEaFNDaDQ1YVdRMWVCdz09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG1RR3c1L2MwK3M3VXhROXVBWDYrZnVucGFaMHpFUlRyMFAxOWVxL1NQY3ZiVi9zNUEyN1FsN3BDdG5KRHo5ZURnMWdKYnRJakI1L1NZNUlmY2ltekFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIyNzQ0CWZpbGU6UGFub3JhbWFfMC4yLjEwX2FtZDY0LkFwcEltYWdlCkFlTWVQQ1BMdjlLSDljU3NXdVJhNFVUTVp0R3NUcVZuR2FYTmM0QmNNVkdXVWF4S2xOM2lqZGRiRGRzcyt0ZjNkeGVvVldrd2ordDUramlldlFFOERRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.11/Panorama_0.2.11_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG5ua2dUbnBTcU8wUzdLRjhSZkdJUUZlQ1hJanZBMW5DTnh3S1NMakNQbTEyek4rdStwSUtia0V4QkxLb1Q0MnNUeEd4d1IwT0hRNjRHRitNcmI0cmdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzkwNDg0CWZpbGU6UGFub3JhbWFfMC4yLjExX2FtZDY0LkFwcEltYWdlCmsrMERJR1hZMVBDMFAyNWxHZE1FT3pBeGJkVHg5QVhZNFFaYkFUU05uMmNYOVJSa0hXYWxoVUVGYTkwcGQ2a0VPWmx1V0kxVzBDVHhKS0RSYzVVVkN3PT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.10/Panorama_0.2.10_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHQyc29mYm1nTjVNenBBK2VBKzBpT1YrZmpOK0RoM2YvNlA3NGpaZUJxR3RacThMTUJLekFCVmcwd2JsR0I4SUxYWldIWDFIQ0tHaXd6ZU1PT0VqaGdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTIxOTE5CWZpbGU6UGFub3JhbWFfMC4yLjEwX3g2NC1zZXR1cC5leGUKY2R5eGY4ejUxdVFEdUt6SmNYcWZMQWVnNVJ5aXovOEtRRVJGNy9GaXFVRitJWk9YUlp4WDdSRGJWYWk3V0lNK01FeVlJMllZbSs5T0ZRRVVjYXRJQkE9PQo="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.11/Panorama_0.2.11_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHBDdkc1emVuNE1kRU9pSENyWDdmTHI1RXY4Mkx0eTV3U3F2dW5uNTdCSkFhbGJIZ0RNaTFnSkZrSzZWY1JYZ1FKSFBpcHd6ZGVlNkRuQnlqejVPVXdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzkwNTcxCWZpbGU6UGFub3JhbWFfMC4yLjExX3g2NC1zZXR1cC5leGUKUGI0QjZEWi9STDU3SkJoZDZPU2puY29FYXFGeTVxUEFTV2c2L2FnZ1FYSkVKOWQxaVlXS2xSUmV3ekNIb2UyVjByR0lscTl6aHMrMW9DMTdvR2pPQVE9PQo="
     }
   }
 }
