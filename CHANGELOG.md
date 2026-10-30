@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.11]
+
+### Added
+- Phone companion: pair a phone with Panorama from Settings > Mobile, then reach your terminals over the local network or, when away, through a relay.
+- Answer Claude permission prompts, questions and plan approvals from the phone, including Allow, Always allow and Deny right from the notification.
+- Agent tiles show the conversation history in the tile header.
+- Navigator tile cards show a snippet of each tile's latest activity.
+
+### Fixed
+- Minimap status tiles are drawn at their real size.
+
 ## [0.2.10]
 
 ### Added
