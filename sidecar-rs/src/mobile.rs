@@ -18,7 +18,10 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+mod prompt;
 mod relay;
+
+pub use prompt::{wait as wait_prompt, Wait as PromptWait};
 
 use super::{
     activity, attach, build_frame, chat, files, hidden_command, find_transcript, forget_session, git_glance, panorama_dir, read_binding_rec, reflow,
@@ -669,7 +672,7 @@ pub fn record_status(tile_id: &str, status: &Value) {
         return;
     }
     if status != "waiting" {
-        pending_prompts().remove(tile_id);
+        prompt::clear(tile_id);
     }
     agent_statuses().insert(tile_id.to_string(), status.clone());
 }
@@ -678,28 +681,40 @@ fn agent_status(tile_id: &str) -> Value {
     agent_statuses().get(tile_id).cloned().unwrap_or(Value::Null)
 }
 
-fn pending_prompts() -> MutexGuard<'static, HashMap<String, Value>> {
-    static PROMPTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    PROMPTS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+fn has_devices() -> bool {
+    let st = state();
+    st.enabled && !st.devices.is_empty()
 }
 
-fn pending_prompt(tile_id: &str) -> Value {
-    pending_prompts().get(tile_id).cloned().unwrap_or(Value::Null)
+fn prompt_title(view: &Value) -> String {
+    match view["kind"].as_str() {
+        Some("question") => "Claude has a question".into(),
+        Some("plan") => "Claude has a plan ready".into(),
+        _ => format!("Claude wants to use {}", view["tool"].as_str().unwrap_or("a tool")),
+    }
 }
 
-pub fn agent_event(tile_id: &str, event: &str, evt: &Value) {
+fn prompt_push(view: &Value) -> Value {
+    let category = match (view["kind"].as_str(), view["always"].is_string()) {
+        (Some("tool"), true) => Value::from("permission-always"),
+        (Some("tool"), false) => Value::from("permission"),
+        _ => Value::Null,
+    };
+    json!({ "promptId": view["id"], "kind": view["kind"], "categoryId": category })
+}
+
+pub fn agent_event(tile_id: &str, event: &str, evt: &Value) -> Option<String> {
     match event {
-        "permission" => {
-            let tool = evt["tool_name"].as_str().unwrap_or("a tool").to_string();
-            let prompt = json!({ "tool": tool, "summary": chat::tool_summary(&evt["tool_input"]) });
-            pending_prompts().insert(tile_id.to_string(), prompt);
-            notify(tile_id, &format!("Claude wants to use {tool}"));
+        "permission" if has_devices() => {
+            let view = prompt::open(tile_id, evt);
+            notify(tile_id, &prompt_title(&view), Some(&view));
+            view["id"].as_str().map(str::to_string)
         }
-        "stop" => notify(tile_id, "Claude finished"),
-        _ => {}
+        "stop" => {
+            notify(tile_id, "Claude finished", None);
+            None
+        }
+        _ => None,
     }
 }
 
@@ -749,7 +764,7 @@ fn tile_project(tile_id: &str) -> String {
         .to_string()
 }
 
-fn notify(tile_id: &str, title: &str) {
+fn notify(tile_id: &str, title: &str, prompt: Option<&Value>) {
     let (tokens, host_key) = {
         let st = state();
         if !st.enabled {
@@ -763,18 +778,30 @@ fn notify(tile_id: &str, title: &str) {
     }
     let project = tile_project(tile_id);
     let body = format!("{project} · {}", host_name());
+    let extra = prompt.map(prompt_push).unwrap_or(Value::Null);
     let messages: Vec<Value> = tokens
         .iter()
         .map(|to| {
-            json!({
+            let mut msg = json!({
                 "to": to,
                 "title": title,
                 "body": body,
                 "sound": "default",
                 "priority": "high",
                 "channelId": PUSH_CHANNEL,
-                "data": { "hostKey": host_key, "tileId": tile_id, "title": project, "agent": "claude" },
-            })
+                "data": {
+                    "hostKey": host_key,
+                    "tileId": tile_id,
+                    "title": project,
+                    "agent": "claude",
+                    "promptId": extra["promptId"],
+                    "kind": extra["kind"],
+                },
+            });
+            if extra["categoryId"].is_string() {
+                msg["categoryId"] = extra["categoryId"].clone();
+            }
+            msg
         })
         .collect();
     std::thread::spawn(move || send_push(&messages));
@@ -894,7 +921,7 @@ fn chat_update(tile_id: &str, cursor: Option<&ChatCursor>) -> Result<(ChatCursor
         session_id: session_id.clone(),
         offset: chunk.offset,
         status: agent_status(tile_id),
-        prompt: pending_prompt(tile_id),
+        prompt: prompt::current(tile_id),
     };
     let body = json!({
         "sessionId": session_id,
@@ -917,7 +944,7 @@ fn chat_changed(tile_id: &str, cursor: &ChatCursor) -> bool {
     session_id != cursor.session_id
         || grown
         || agent_status(tile_id) != cursor.status
-        || pending_prompt(tile_id) != cursor.prompt
+        || prompt::current(tile_id) != cursor.prompt
 }
 
 fn subscribe_chat(p: &Value, subs: &mut Subs) -> Result<Value, String> {
@@ -1038,6 +1065,10 @@ async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, Str
                 return Err("tile has exited".into());
             }
             write_input(&session, str_param(p, "data")?);
+            Ok(json!({}))
+        }
+        "agent.answer" => {
+            prompt::answer(str_param(p, "tileId")?, str_param(p, "promptId")?, &p["answer"])?;
             Ok(json!({}))
         }
         "agent.attach" => {

@@ -1,4 +1,4 @@
-import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
+import type { EngineInterface, PermissionRequestDecision, Register, TurnStepChunk } from 'claude-code'
 
 const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -66,6 +66,21 @@ async function forwardHook($: EngineInterface, event: string, input: unknown) {
   } catch (err) {
     $.ui.log(`panorama: ${event} hook failed: ${String(err)}`, { to: 'debug' })
     return ''
+  }
+}
+
+async function remoteDecision($: EngineInterface, promptId: string) {
+  const url = await sidecarUrl($, `/agent-answer?promptId=${encodeURIComponent(promptId)}`)
+  if (!url) return undefined
+  try {
+    for (;;) {
+      const res = await $.http.fetch(url)
+      if (!res.ok || !res.text) return undefined
+      if (res.text !== 'pending') return JSON.parse(res.text) as PermissionRequestDecision
+    }
+  } catch (err) {
+    $.ui.log(`panorama: remote answer failed: ${String(err)}`, { to: 'debug' })
+    return undefined
   }
 }
 
@@ -321,8 +336,11 @@ export const register: Register = (on) => {
   on('classic.PermissionRequest', async ($, e, next) => {
     toolDialog = true
     await post($, { status: 'waiting', dialog: true })
-    await forwardHook($, 'permission', e)
-    return next(e)
+    const result = await next(e)
+    if (result.decision) return result
+    const promptId = await forwardHook($, 'permission', e)
+    const decision = promptId ? await remoteDecision($, promptId) : undefined
+    return decision ? { ...result, decision } : result
   })
 
   on('classic.Elicitation', async ($, e, next) => {

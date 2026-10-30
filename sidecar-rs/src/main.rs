@@ -2100,8 +2100,9 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     } else {
         event
     };
+    let mut prompt_id = None;
     if let Some(payload) = agent_event_body(event, &evt) {
-        mobile::agent_event(tile_id, event, &evt);
+        prompt_id = mobile::agent_event(tile_id, event, &evt);
         activity::record_agent_event(tile_id, &payload);
         if let Some(msg) = agent_event_ws_msg(&payload.to_string()) {
             push_tile_event(tile_id, msg);
@@ -2110,7 +2111,7 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     if event == "prompt-submit" {
         return prompt_context(tile_id, &field("cwd"));
     }
-    String::new()
+    prompt_id.unwrap_or_default()
 }
 
 fn urlenc(s: &str) -> String {
@@ -3970,6 +3971,28 @@ async fn handle_conn(mut stream: TcpStream) {
                 .unwrap_or_default()
         } else {
             String::new()
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            text.len(),
+            text
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/agent-answer" {
+        let q = parse_query(query);
+        let tile_id = q.get("tileId").cloned().unwrap_or_default();
+        let prompt_id = q.get("promptId").cloned().unwrap_or_default();
+        let text = if origin.is_some() || tile_id.is_empty() || prompt_id.is_empty() {
+            String::new()
+        } else {
+            match mobile::wait_prompt(&tile_id, &prompt_id).await {
+                mobile::PromptWait::Answer(decision) => decision.to_string(),
+                mobile::PromptWait::Pending => "pending".into(),
+                mobile::PromptWait::Gone => String::new(),
+            }
         };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

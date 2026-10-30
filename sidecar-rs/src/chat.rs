@@ -14,7 +14,7 @@ pub struct ChatChunk {
     pub offset: u64,
 }
 
-fn clip(text: &str, cap: usize) -> String {
+pub fn clip(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {
         return text.to_string();
     }
