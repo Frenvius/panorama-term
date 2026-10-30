@@ -1,17 +1,17 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import type { RunStatus } from '~/domain/interfaces/run.interface';
+import type { RunKind, RunStatus, RunCommand } from '~/domain/interfaces/run.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
 const POLL_MS = 3000;
 const NONE: RunStatus = { state: 'none' };
 
-export type RunKind = 'run' | 'build';
-
-export const detectRunCommands = (path: string): Promise<string[]> =>
-  invoke<string[]>('run_commands', { path }).catch(() => [] as string[]);
+export const detectRunCommands = (cwd: string): Promise<RunCommand[]> =>
+  fetch(`${SIDECAR_HTTP}/run/commands?cwd=${encodeURIComponent(cwd)}`)
+    .then((r) => r.json() as Promise<RunCommand[]>)
+    .catch(() => [] as RunCommand[]);
 
 export const fetchRunStatus = (tile: string, kind: RunKind = 'run'): Promise<RunStatus> =>
   fetch(`${SIDECAR_HTTP}/run/status?kind=${kind}&tile=${encodeURIComponent(tile)}`)

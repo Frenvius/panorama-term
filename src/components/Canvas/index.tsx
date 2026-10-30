@@ -17,6 +17,7 @@ import Navigator, { type NavigatorHandlers } from '~/components/Canvas/Navigator
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
+import { useRemoteTiles } from '~/usecase/hooks/useRemoteTiles';
 import { writeNote } from '~/adapter/notes/notes.client';
 import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
@@ -75,6 +76,7 @@ const Canvas = () => {
     addNote,
     noteRenderDefault,
     addTile,
+    openRemoteTile,
     addCode,
     addEditor,
     addRunView,
@@ -153,6 +155,12 @@ const Canvas = () => {
   tabsOpenRef.current = editorTabs.length > 0;
   const fsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activated = React.useRef<Set<string>>(new Set());
+
+  const openPhoneTile = (id: string, cwd: string) => {
+    activated.current.add(id);
+    openRemoteTile(id, cwd);
+  };
+  useRemoteTiles(openPhoneTile);
 
   const [linkDrag, setLinkDrag] = React.useState<{ srcId: string; x: number; y: number; over: string | null } | null>(null);
   const viewR = React.useRef(view);

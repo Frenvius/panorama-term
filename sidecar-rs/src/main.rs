@@ -15,7 +15,16 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod ui;
 mod host;
+mod chat;
+mod mobile;
+mod reflow;
+mod files;
+mod attach;
+mod activity;
+mod git_glance;
+mod run_commands;
 
 enum ConsumerMsg {
     Data(Vec<u8>),
@@ -1768,6 +1777,9 @@ fn handle_agent_status(body: &[u8]) {
         }
     };
     let from_mod = v.get("source").and_then(|s| s.as_str()) == Some("mod");
+    if from_mod {
+        mobile::record_status(&tile_id, &v["status"]);
+    }
     let msg = if from_mod {
         agent_state_ws_msg(&v.to_string())
     } else if kimi {
@@ -2088,8 +2100,12 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     } else {
         event
     };
-    if let Some(msg) = agent_event_body(event, &evt).and_then(|p| agent_event_ws_msg(&p.to_string())) {
-        push_tile_event(tile_id, msg);
+    if let Some(payload) = agent_event_body(event, &evt) {
+        mobile::agent_event(tile_id, event, &evt);
+        activity::record_agent_event(tile_id, &payload);
+        if let Some(msg) = agent_event_ws_msg(&payload.to_string()) {
+            push_tile_event(tile_id, msg);
+        }
     }
     if event == "prompt-submit" {
         return prompt_context(tile_id, &field("cwd"));
@@ -2291,9 +2307,20 @@ fn claude_plugin_dirs() -> Option<String> {
     merge_plugin_dirs(std::env::var_os("CLAUDE_CODE_PLUGIN_DIRS"), dir)
 }
 
+fn is_panorama_mod_dir(path: &Path) -> bool {
+    let named = |p: Option<&Path>, pred: &dyn Fn(&str) -> bool| {
+        p.and_then(|p| p.file_name()).and_then(|n| n.to_str()).map_or(false, pred)
+    };
+    named(Some(path), &|n| n == "claude-mod") && named(path.parent(), &|n| n.starts_with(".panorama"))
+}
+
 fn merge_plugin_dirs(existing: Option<std::ffi::OsString>, dir: &Path) -> Option<String> {
     let mut dirs: Vec<PathBuf> = existing
-        .map(|v| std::env::split_paths(&v).filter(|p| p != dir && !p.as_os_str().is_empty()).collect())
+        .map(|v| {
+            std::env::split_paths(&v)
+                .filter(|p| !p.as_os_str().is_empty() && !is_panorama_mod_dir(p) && p != dir)
+                .collect()
+        })
         .unwrap_or_default();
     dirs.push(dir.to_path_buf());
     std::env::join_paths(dirs).ok()?.into_string().ok()
@@ -3378,6 +3405,35 @@ fn run_logs_text(target: Option<Arc<Session>>, q: &HashMap<String, String>) -> S
     out
 }
 
+fn cell_words(cell: &vt100::Cell) -> (u32, u32) {
+    let mut fg = color_rgb(cell.fgcolor()).unwrap_or(DEFAULT_FG);
+    let mut bg = color_rgb(cell.bgcolor());
+    let mut flags = 0u32;
+    if cell.bold() {
+        flags |= 1;
+    }
+    if cell.italic() {
+        flags |= 2;
+    }
+    if cell.underline() {
+        flags |= 4;
+    }
+    if cell.inverse() {
+        let real_bg = bg.unwrap_or(DEFAULT_BG);
+        bg = Some(fg);
+        fg = real_bg;
+    }
+    if cell.dim() {
+        flags |= 8;
+        fg = blend(fg, bg.unwrap_or(DEFAULT_BG), DIM_MIX);
+    }
+    let bg_word = match bg {
+        Some(rgb) => (rgb & 0x00FF_FFFF) | 0x8000_0000,
+        None => 0,
+    };
+    ((fg & 0x00FF_FFFF) | (flags << 24), bg_word)
+}
+
 fn build_frame(s: &Session) -> Vec<u8> {
     let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
     parser
@@ -3396,34 +3452,9 @@ fn build_frame(s: &Session) -> Vec<u8> {
                 Some(cell) if !cell.contents().is_empty() => text.push_str(cell.contents()),
                 _ => text.push(' '),
             }
-            let (mut fg, mut bg, mut flags) = (DEFAULT_FG, None::<u32>, 0u32);
-            if let Some(cell) = cell {
-                fg = color_rgb(cell.fgcolor()).unwrap_or(DEFAULT_FG);
-                bg = color_rgb(cell.bgcolor());
-                if cell.bold() {
-                    flags |= 1;
-                }
-                if cell.italic() {
-                    flags |= 2;
-                }
-                if cell.underline() {
-                    flags |= 4;
-                }
-                if cell.inverse() {
-                    let real_bg = bg.unwrap_or(DEFAULT_BG);
-                    bg = Some(fg);
-                    fg = real_bg;
-                }
-                if cell.dim() {
-                    flags |= 8;
-                    fg = blend(fg, bg.unwrap_or(DEFAULT_BG), DIM_MIX);
-                }
-            }
-            attrs.push((fg & 0x00FF_FFFF) | (flags << 24));
-            attrs.push(match bg {
-                Some(rgb) => (rgb & 0x00FF_FFFF) | 0x8000_0000,
-                None => 0,
-            });
+            let (fg_word, bg_word) = cell.map_or((DEFAULT_FG, 0), cell_words);
+            attrs.push(fg_word);
+            attrs.push(bg_word);
         }
         if r + 1 < rows {
             text.push('\n');
@@ -3534,6 +3565,17 @@ fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn write_input(s: &Arc<Session>, d: &str) {
+    s.scrollback.store(0, Ordering::Relaxed);
+    s.dirty.store(true, Ordering::Relaxed);
+    if d.contains('\r') || d.contains('\n') {
+        let line = current_command_line(s);
+        let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
+        *cmd = line.map(|l| (Instant::now(), l));
+    }
+    host_handle().write(&s.tile_id, d.as_bytes());
+}
+
 fn handle_client_msg(s: &Arc<Session>, text: &str) {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -3542,14 +3584,7 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
     match v.get("t").and_then(|t| t.as_str()) {
         Some("in") => {
             if let Some(d) = v.get("d").and_then(|d| d.as_str()) {
-                s.scrollback.store(0, Ordering::Relaxed);
-                s.dirty.store(true, Ordering::Relaxed);
-                if d.contains('\r') || d.contains('\n') {
-                    let line = current_command_line(s);
-                    let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
-                    *cmd = line.map(|l| (Instant::now(), l));
-                }
-                host_handle().write(&s.tile_id, d.as_bytes());
+                write_input(s, d);
             }
         }
         Some("scroll") => {
@@ -3809,6 +3844,16 @@ fn parse_query(query: &str) -> HashMap<String, String> {
     map
 }
 
+async fn accept_ws(mut stream: TcpStream, headers: &HashMap<String, String>) -> Option<WebSocketStream<TcpStream>> {
+    let key = headers.get("sec-websocket-key")?;
+    let accept = derive_accept_key(key.as_bytes());
+    let resp = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    );
+    stream.write_all(resp.as_bytes()).await.ok()?;
+    Some(WebSocketStream::from_raw_socket(stream, Role::Server, None).await)
+}
+
 async fn handle_conn(mut stream: TcpStream) {
     let head = match read_head(&mut stream).await {
         Some(h) => h,
@@ -3824,18 +3869,22 @@ async fn handle_conn(mut stream: TcpStream) {
         .map(|v| v.eq_ignore_ascii_case("websocket"))
         .unwrap_or(false);
 
-    if is_ws && path_only == "/pty" {
-        let key = match headers.get("sec-websocket-key") {
-            Some(k) => k.clone(),
-            None => return,
-        };
-        let accept = derive_accept_key(key.as_bytes());
-        let resp = format!(
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
-        );
-        if stream.write_all(resp.as_bytes()).await.is_err() {
+    let origin = headers.get("origin").map(String::as_str);
+
+    if is_ws && path_only == "/ui" {
+        if !mobile::origin_allowed(origin) {
             return;
         }
+        if let Some(ws) = accept_ws(stream, &headers).await {
+            ui::serve(ws).await;
+        }
+        return;
+    }
+
+    if is_ws && path_only == "/pty" {
+        let Some(ws) = accept_ws(stream, &headers).await else {
+            return;
+        };
         let q = parse_query(query);
         let tile_id = match q.get("tileId") {
             Some(t) if !t.is_empty() => t.clone(),
@@ -3856,8 +3905,19 @@ async fn handle_conn(mut stream: TcpStream) {
             attach_only: watch_only || q.get("attach").map(|v| v == "1").unwrap_or(false),
             watch_only,
         };
-        let ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
         handle_ws(ws, params).await;
+        return;
+    }
+
+    if let Some((status, body)) = mobile::local_route(path_only, &parse_query(query), origin) {
+        let resp = format!(
+            "HTTP/1.1 {status} {}\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            if status == 200 { "OK" } else { "Error" },
+            mobile::cors_origin(origin),
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
         return;
     }
 
@@ -3870,6 +3930,23 @@ async fn handle_conn(mut stream: TcpStream) {
             let mut body = vec![0u8; len];
             if stream.read_exact(&mut body).await.is_ok() {
                 handle_agent_status(&body);
+            }
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await;
+        return;
+    }
+
+    if path_only == "/agent-live" {
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if origin.is_none() && len > 0 && len <= STATUS_POST_MAX {
+            let mut body = vec![0u8; len];
+            if stream.read_exact(&mut body).await.is_ok() {
+                mobile::record_live(&body);
             }
         }
         let _ = stream
@@ -4008,6 +4085,20 @@ async fn handle_conn(mut stream: TcpStream) {
             _ => "run".to_string(),
         };
         let body = run_start_json(&kind, &tile, &cwd, &cmd).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/run/commands" {
+        let cwd = parse_query(query).get("cwd").cloned().unwrap_or_default();
+        let body = tokio::task::spawn_blocking(move || run_commands::detect_json(&cwd).to_string())
+            .await
+            .unwrap_or_else(|_| "[]".into());
         let resp = format!(
             "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
@@ -4170,6 +4261,7 @@ async fn main() {
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
+    mobile::boot();
     tokio::spawn(async {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -4457,6 +4549,16 @@ mod tests {
         let existing = format!("a{sep}mod{sep}{sep}b");
         let merged = merge_plugin_dirs(Some(existing.into()), dir).unwrap();
         assert_eq!(merged, format!("a{sep}b{sep}mod"));
+    }
+
+    #[test]
+    fn plugin_dirs_drop_the_other_builds_mod() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let dev = Path::new("home").join(".panorama-dev").join("claude-mod");
+        let release = Path::new("home").join(".panorama").join("claude-mod");
+        let existing = format!("{}{sep}user", release.display());
+        let merged = merge_plugin_dirs(Some(existing.into()), &dev).unwrap();
+        assert_eq!(merged, format!("user{sep}{}", dev.display()));
     }
 
     #[test]

@@ -1,7 +1,6 @@
 import React from 'react';
 
-import type { RunPhase, RunStatus } from '~/domain/interfaces/run.interface';
-import type { RunKind } from '~/adapter/run/run.client';
+import type { RunKind, RunPhase, RunStatus, RunCommand } from '~/domain/interfaces/run.interface';
 import { storeRead, storeWrite } from '~/adapter/store/store.client';
 import { watchRun, startRun, stopRun, refreshRun, restartRun, fetchRunStatus, detectRunCommands, watchRunManifests } from '~/adapter/run/run.client';
 
@@ -29,12 +28,8 @@ const saveDefault = async (key: string, cmd: string): Promise<void> => {
   await storeWrite(DEFAULTS_STORE, all);
 };
 
-const BUILD_RE = /\b(build|compile|bundle|dist|tsc)\b/i;
-
-const isBuild = (cmd: string): boolean => cmd === 'cargo build' || BUILD_RE.test(cmd);
-
-const filterKind = (commands: string[], kind: RunKind): string[] =>
-  commands.filter((c) => (kind === 'build' ? isBuild(c) : !isBuild(c)));
+const filterKind = (commands: RunCommand[], kind: RunKind): string[] =>
+  commands.filter((c) => c.kind === kind).map((c) => c.cmd);
 
 const pickDefault = (commands: string[], kind: RunKind, stored?: string): string | null => {
   if (stored && commands.includes(stored)) return stored;
@@ -51,7 +46,7 @@ const pickDefault = (commands: string[], kind: RunKind, stored?: string): string
 
 export const useRun = (cwd: string | undefined, tile: string | undefined, kind: RunKind = 'run') => {
   const [status, setStatus] = React.useState<RunStatus>({ state: 'none' });
-  const [allCommands, setAllCommands] = React.useState<string[]>([]);
+  const [allCommands, setAllCommands] = React.useState<RunCommand[]>([]);
   const [stored, setStored] = React.useState<string | undefined>(undefined);
   const [crashed, setCrashed] = React.useState<RunStatus | null>(null);
   const [pending, setPending] = React.useState<RunPhase | null>(null);

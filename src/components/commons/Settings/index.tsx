@@ -1,6 +1,6 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { X, Bot, Check, Palette, Keyboard, RotateCcw, SquareTerminal, SlidersHorizontal } from 'lucide-react';
+import { X, Bot, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
@@ -35,6 +35,8 @@ import {
   type CommandId
 } from '~/usecase/util/keybindings';
 
+import ToggleOption from './ToggleOption';
+import MobileSection from './MobileSection';
 import styles from './styles.module.scss';
 
 interface SettingsProps {
@@ -45,13 +47,6 @@ interface ShortcutRowProps {
   id: CommandId;
   label: string;
   defaultCombo: string;
-}
-
-interface ToggleOptionProps {
-  label: string;
-  checked: boolean;
-  description: string;
-  onToggle: () => void;
 }
 
 interface RadioOptionProps {
@@ -68,20 +63,6 @@ const RadioOption = ({ label, description, selected, onSelect }: RadioOptionProp
     className={`${styles.option} ${selected ? styles.selected : ''}`}
   >
     <span className={styles.radio}>{selected && <span className={styles.dot} />}</span>
-    <span className={styles.optionText}>
-      <span className={styles.optionLabel}>{label}</span>
-      <span className={styles.optionDesc}>{description}</span>
-    </span>
-  </button>
-);
-
-const ToggleOption = ({ label, description, checked, onToggle }: ToggleOptionProps) => (
-  <button
-    type="button"
-    onClick={onToggle}
-    className={`${styles.option} ${checked ? styles.selected : ''}`}
-  >
-    <span className={styles.check}>{checked && <Check size={11} strokeWidth={3} />}</span>
     <span className={styles.optionText}>
       <span className={styles.optionLabel}>{label}</span>
       <span className={styles.optionDesc}>{description}</span>
@@ -143,13 +124,14 @@ const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
   );
 };
 
-type Section = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'shortcuts';
+type Section = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'mobile' | 'shortcuts';
 
 const SECTIONS: { id: Section; label: string; Icon: LucideIcon }[] = [
   { id: 'general', label: 'General', Icon: SlidersHorizontal },
   { id: 'appearance', label: 'Appearance', Icon: Palette },
   { id: 'terminal', label: 'Terminal', Icon: SquareTerminal },
   { id: 'agentBar', label: 'Agent bar', Icon: Bot },
+  { id: 'mobile', label: 'Mobile', Icon: Smartphone },
   { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard }
 ];
 
@@ -441,6 +423,7 @@ const Settings = ({ onClose }: SettingsProps) => {
               </div>
             </div>
           )}
+          {section === 'mobile' && <MobileSection />}
           {section === 'appearance' && (
             <div className={styles.pane}>
               <div className={styles.paneHead}>

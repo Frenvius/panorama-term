@@ -1,8 +1,17 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
 const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const COMMAND_DIALOG_MS = 500
+const LIVE_FLUSH_MS = 100
+const LIVE_TEXT_MAX = 16000
+
+type LivePhase = 'idle' | 'thinking' | 'text' | 'tool'
+type LiveState = { seq: number; turnId: string; phase: LivePhase; text: string; tool?: string }
+
+let live: LiveState = { seq: 0, turnId: '', phase: 'idle', text: '' }
+let liveBlock = -1
+let liveFlushPending = false
 
 let lastTurns = 0
 let contextStale = false
@@ -58,6 +67,47 @@ async function forwardHook($: EngineInterface, event: string, input: unknown) {
     $.ui.log(`panorama: ${event} hook failed: ${String(err)}`, { to: 'debug' })
     return ''
   }
+}
+
+async function sendLive($: EngineInterface) {
+  const tileId = await $.env.get('PANORAMA_TILE_ID')
+  if (!tileId) return
+  const port = (await $.env.get('PANORAMA_SIDECAR_PORT')) ?? '9777'
+  const text = live.text.length > LIVE_TEXT_MAX ? live.text.slice(-LIVE_TEXT_MAX) : live.text
+  try {
+    await $.http.fetch(`http://127.0.0.1:${port}/agent-live`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tileId, ...live, text }),
+    })
+  } catch (err) {
+    $.ui.log(`panorama: live post failed: ${String(err)}`, { to: 'debug' })
+  }
+}
+
+function scheduleLive($: EngineInterface) {
+  if (liveFlushPending) return
+  liveFlushPending = true
+  void $.clock.after(LIVE_FLUSH_MS, () => {
+    liveFlushPending = false
+    void sendLive($)
+  })
+}
+
+function setLivePhase($: EngineInterface, turnId: string, phase: LivePhase, tool?: string) {
+  live = { seq: live.seq + 1, turnId, phase, text: '', tool }
+  void sendLive($)
+}
+
+function trackLive($: EngineInterface, turnId: string, chunk: TurnStepChunk) {
+  if (chunk.kind !== 'text' && chunk.kind !== 'thinking' && chunk.kind !== 'tool') return
+  if (chunk.index !== liveBlock || chunk.kind !== live.phase) {
+    liveBlock = chunk.index
+    setLivePhase($, turnId, chunk.kind, chunk.kind === 'tool' ? chunk.name : undefined)
+  }
+  if (chunk.kind === 'tool' || !chunk.text) return
+  live = { ...live, seq: live.seq + 1, text: live.text + chunk.text }
+  scheduleLive($)
 }
 
 async function settleTool($: EngineInterface, id: string | undefined) {
@@ -228,8 +278,18 @@ export const register: Register = (on) => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    const result = yield* next(e)
-    if (e.agentId !== undefined) return result
+    if (e.agentId !== undefined) return yield* next(e)
+    const stream = next(e)
+    try {
+      for await (const chunk of stream) {
+        trackLive($, e.turnId, chunk)
+        yield chunk
+      }
+    } finally {
+      liveBlock = -1
+      setLivePhase($, e.turnId, 'idle')
+    }
+    const result = await stream.result
     contextStale = false
     await reportStatus($, typeof e.effort === 'string' ? { effort: e.effort } : {})
     return result

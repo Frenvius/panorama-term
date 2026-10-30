@@ -216,7 +216,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     []
   );
 
-  const addTile = React.useCallback((at?: { x: number; y: number }) => {
+  const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd'>, at?: { x: number; y: number }) => {
     setView((v) => {
       const p = at ?? mouseRef.current;
       const cx = p ? p.x : (window.innerWidth / 2 - v.x) / v.k;
@@ -228,7 +228,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
         return [
           ...prev,
           {
-            id: createId(),
+            ...seed,
             type: 'term',
             x: cx,
             y: cy,
@@ -241,6 +241,10 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
       return v;
     });
   }, []);
+
+  const addTile = React.useCallback((at?: { x: number; y: number }) => placeTerm({ id: createId() }, at), [placeTerm]);
+
+  const openRemoteTile = React.useCallback((id: string, cwd: string) => placeTerm({ id, cwd }), [placeTerm]);
 
   const addRunView = React.useCallback((srcId: string, cwd: string, sessionId: string, cmd: string) => {
     setTiles((prev) => {
@@ -891,6 +895,7 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     gridRef,
     onWheel,
     addTile,
+    openRemoteTile,
     addCode,
     addEditor,
     addRunView,

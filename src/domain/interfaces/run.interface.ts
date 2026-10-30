@@ -2,6 +2,13 @@ export type RunSessionState = 'none' | 'running' | 'exited';
 
 export type RunPhase = 'starting' | 'restarting' | 'stopping' | 'killing';
 
+export type RunKind = 'run' | 'build';
+
+export interface RunCommand {
+  cmd: string;
+  kind: RunKind;
+}
+
 export interface RunStatus {
   state: RunSessionState;
   cmd?: string;

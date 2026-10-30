@@ -1,0 +1,99 @@
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.pairing {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.pairingInfo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.code {
+  color: var(--text-strong);
+  font-size: 16px;
+  font-family: Hack, monospace;
+  letter-spacing: 2px;
+}
+
+.addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: Hack, monospace;
+}
+
+.button {
+  align-self: flex-start;
+  padding: 6px 16px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  transition: border-color 0.12s ease, color 0.12s ease;
+
+  &:hover {
+    color: var(--text-strong);
+    border-color: var(--border-3);
+  }
+}
+
+.devices {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+.device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+
+  & + & {
+    border-top: 1px solid var(--border-1);
+  }
+}
+
+.deviceText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.revoke {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 6px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-2);
+  }
+}
