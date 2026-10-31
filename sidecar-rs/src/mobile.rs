@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+mod presence;
 mod prompt;
 mod relay;
 
@@ -773,7 +774,7 @@ fn notify(tile_id: &str, title: &str, prompt: Option<&Value>) {
         let tokens: Vec<String> = st.devices.iter().filter_map(|d| d.push_token.clone()).collect();
         (tokens, b64().encode(server_public_key(&st)))
     };
-    if tokens.is_empty() {
+    if tokens.is_empty() || presence::desktop_in_use() {
         return;
     }
     let project = tile_project(tile_id);
@@ -1010,6 +1011,7 @@ fn stop_run(tile_id: &str, kind: &str) {
 
 async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, String> {
     match method {
+        "ping" => Ok(json!({})),
         "tiles.list" => Ok(tiles_json()),
         "tile.open" => ui::open_tile(str_param(p, "cwd")?, p["agent"].as_str()),
         "run.list" => run_overview(str_param(p, "tileId")?).await,

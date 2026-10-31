@@ -15,8 +15,9 @@ use super::{b64, decode_fixed, serve_session, MAX_MESSAGE};
 const DEFAULT_URL: &str = "wss://relay.usepanorama.dev";
 const PROOF_TAG: &[u8] = b"panorama-relay/v1/proof";
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(15);
-const PING_EVERY: Duration = Duration::from_secs(25);
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
+const PING_EVERY: Duration = Duration::from_secs(15);
+const DEAD_AFTER: Duration = Duration::from_secs(40);
+const MAX_BACKOFF: Duration = Duration::from_secs(15);
 const OFF: u8 = 0;
 const CONNECTING: u8 = 1;
 const ONLINE: u8 = 2;
@@ -103,8 +104,9 @@ where
 
 async fn control(secret: &StaticSecret) -> Result<(), String> {
     let base = base_url();
-    let (ws, _) = tokio_tungstenite::connect_async(format!("{base}/v1/host"))
+    let (ws, _) = tokio::time::timeout(REGISTER_TIMEOUT, tokio_tungstenite::connect_async(format!("{base}/v1/host")))
         .await
+        .map_err(|_| "connect timed out")?
         .map_err(|e| format!("connect: {e}"))?;
     let (mut tx, mut rx) = ws.split();
     let challenge = tokio::time::timeout(REGISTER_TIMEOUT, next_json(&mut rx))
@@ -124,21 +126,26 @@ async fn control(secret: &StaticSecret) -> Result<(), String> {
     STATUS.store(ONLINE, Ordering::Relaxed);
 
     let mut ping = tokio::time::interval(PING_EVERY);
+    let mut last_heard = Instant::now();
     loop {
         tokio::select! {
             msg = rx.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
+                    last_heard = Instant::now();
                     let open: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
                     if let (Some("open"), Some(id)) = (open["t"].as_str(), open["id"].as_str()) {
                         tokio::spawn(accept(format!("{base}/v1/accept/{room}/{id}")));
                     }
                 }
                 Some(Ok(Message::Close(frame))) => return Err(format!("closed: {frame:?}")),
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => last_heard = Instant::now(),
                 Some(Err(e)) => return Err(e.to_string()),
                 None => return Err("closed".into()),
             },
             _ = ping.tick() => {
+                if last_heard.elapsed() > DEAD_AFTER {
+                    return Err("relay went silent".into());
+                }
                 tx.send(Message::Ping(Vec::new())).await.map_err(|e| e.to_string())?;
             }
         }
