@@ -790,6 +790,7 @@ fn notify(tile_id: &str, title: &str, prompt: Option<&Value>) {
                 "sound": "default",
                 "priority": "high",
                 "channelId": PUSH_CHANNEL,
+                "tag": tile_id,
                 "data": {
                     "hostKey": host_key,
                     "tileId": tile_id,
