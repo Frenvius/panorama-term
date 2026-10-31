@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.12]
+
+### Fixed
+- Phone notifications for the same tile replace each other instead of stacking up.
+- No phone notifications while you are using the desktop.
+- The phone reconnects faster after waking up or switching networks.
+
 ## [0.2.11]
 
 ### Added
