@@ -69,7 +69,7 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
         if (!ready || !next || next === status) return;
         const prev = status;
         status = next;
-        notifier.onStatus(prev, next);
+        notifier.onStatus(prev, next, state.agent);
       },
       onNotify: (label, body) => {
         if (ready) notifier.onNotify(label, body);

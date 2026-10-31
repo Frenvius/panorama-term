@@ -42,6 +42,19 @@ test('pi stop identifies pi in the notification', () => {
   expect(sent).toEqual(['finished:Pi finished']);
 });
 
+test('codex stop identifies Codex in the notification', () => {
+  const { sent, notifier } = setup();
+  notifier.onAgentEvent({ agent: 'codex', event: 'stop' });
+  expect(sent).toEqual(['finished:Codex finished']);
+});
+
+test('Codex permission hooks do not alert before an actual approval prompt is known', () => {
+  const { sent, notifier } = setup();
+  notifier.onStatus('busy', 'waiting', 'codex');
+  notifier.onAgentEvent({ agent: 'codex', event: 'permission', toolName: 'Bash', message: '{"command":"pwd"}' });
+  expect(sent).toEqual([]);
+});
+
 test('prompt-submit clears and generic notify is muted right after an agent event', () => {
   const { sent, notifier } = setup();
   notifier.onAgentEvent({ event: 'prompt-submit' });

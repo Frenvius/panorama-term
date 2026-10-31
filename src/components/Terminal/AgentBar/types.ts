@@ -29,6 +29,7 @@ export interface DraftState {
 export interface ParsedStatus {
   mode?: string;
   model?: string;
+  effort?: string;
   focused?: boolean;
   progress?: number;
   contextInfo?: string;

@@ -17,10 +17,10 @@ export const createAgentNotifier = ({ suppressed, notify, clear, focused }: Noti
   let lastAgentEvent = 0;
   let lastNotify = 0;
 
-  const onStatus = (prev: string | undefined, next: string): void => {
+  const onStatus = (prev: string | undefined, next: string, agent?: string): void => {
     if (suppressed() || sawAgentEvents) return;
     if (prev === 'busy' && next === 'idle') notify('finished');
-    else if (next === 'waiting') notify('attention');
+    else if (next === 'waiting' && agent !== 'codex') notify('attention');
   };
 
   const onNotify = (title: string, body: string): void => {
@@ -38,11 +38,12 @@ export const createAgentNotifier = ({ suppressed, notify, clear, focused }: Noti
     if (suppressed()) return;
     if (evt.event === 'stop') {
       lastNotify = Date.now();
-      const agent = evt.agent === 'pi' ? 'Pi' : 'Claude';
+      const agent = evt.agent === 'pi' ? 'Pi' : evt.agent === 'codex' ? 'Codex' : 'Claude';
       notify('finished', evt.response || `${agent} finished`);
       return;
     }
     if (evt.event === 'permission') {
+      if (evt.agent === 'codex') return;
       lastNotify = Date.now();
       notify('permission', [evt.toolName, evt.message].filter(Boolean).join(': ') || undefined);
       return;

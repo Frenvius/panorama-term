@@ -102,6 +102,20 @@ export const CLAUDE_SLASH_COMMANDS: AgentSlashCommand[] = [
   { name: '/security-review', desc: 'Security review of pending changes' }
 ];
 
+export const CODEX_SLASH_COMMANDS: AgentSlashCommand[] = [
+  { name: '/model', desc: 'Choose model and reasoning effort' },
+  { name: '/permissions', desc: 'Change permissions' },
+  { name: '/status', desc: 'Show session and context usage' },
+  { name: '/compact', desc: 'Summarize the conversation' },
+  { name: '/new', desc: 'Start a new chat' },
+  { name: '/resume', desc: 'Resume a saved chat' },
+  { name: '/review', desc: 'Review changes' },
+  { name: '/diff', desc: 'Show Git changes' },
+  { name: '/hooks', desc: 'Review and trust hooks' },
+  { name: '/plugins', desc: 'Browse plugins' },
+  { name: '/help', desc: 'Show commands' }
+];
+
 export const KIMI_SLASH_COMMANDS: AgentSlashCommand[] = [
   { name: '/new', desc: 'Start a fresh session in the current workspace', aliases: ['/clear'] },
   { name: '/sessions', desc: 'Browse and resume sessions', aliases: ['/resume'] },

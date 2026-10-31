@@ -166,6 +166,16 @@ export const parseStatusLines = (lines: string[]): ParsedStatus => {
   return result;
 };
 
+export const parseCodexFooter = (lines: string[]): ParsedStatus => {
+  const footer = lines.filter((line) => line.trim()).slice(-3).join(' ');
+  const model = footer.match(/\b((?:gpt|GPT)[\w.-]+|o\d+[\w.-]*)\s+(minimal|low|medium|high|xhigh|extra high)\b/i);
+  if (!model) return {};
+  const result: ParsedStatus = { model: model[1], effort: model[2].toLowerCase(), mode: /\bPlan mode\b/i.test(footer) ? 'plan' : 'default' };
+  const remaining = footer.match(/\b(?:context\s+)?(\d{1,3})%\s+(?:context\s+)?(?:left|remaining)\b/i);
+  if (remaining) result.progress = Math.max(0, Math.min(100, 100 - Number(remaining[1])));
+  return result;
+};
+
 const scrapeModel = (rows: string[]): { model: string; contextInfo?: string } | undefined => {
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i]?.match(/Set model to (.+?)\s+and saved/i);

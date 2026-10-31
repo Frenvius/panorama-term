@@ -446,7 +446,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             if (next && next !== prev) {
               statusRef.current = next;
               onClaudeStatusRef.current?.(next);
-              notifier.onStatus(prev, next);
+              notifier.onStatus(prev, next, state.agent ?? claudeRef.current?.agent);
             }
           },
           onCwd: (dir, branch) => onCwdRef.current(tileId, dir, branch),

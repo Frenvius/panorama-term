@@ -12,3 +12,6 @@ sidecar-rs/**/target
 
 .idea
 .vscode
+!/docs/
+/docs/*
+!/docs/CODEX_INTEGRATION.md

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 
-import { NO_MATCH, trackMode, slashScore, aliasLabel, detectSuggestTrigger, readFooter, parseStatusLines, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { NO_MATCH, trackMode, slashScore, aliasLabel, detectSuggestTrigger, readFooter, parseStatusLines, parseCodexFooter, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+
+it('reads Codex model, effort, Plan mode and measured context from the TUI footer', () => {
+  const base = ['› Ask Codex to do anything', '  GPT-6-Sol medium · D:\\workspace\\repo', '  ? for shortcuts'];
+  expect(parseCodexFooter(base)).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'default' });
+  expect(parseCodexFooter([base[0], '  GPT-6-Sol medium · 72% context left · Plan mode', base[2]])).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'plan', progress: 28 });
+  expect(parseCodexFooter([base[0], '  GPT-6-Sol medium · Context 97% left · D:\\workspace\\repo', base[2]])).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'default', progress: 3 });
+  expect(parseCodexFooter(['› Ask Codex', '  ? for shortcuts'])).toEqual({});
+});
 
 import type { GridFrame } from '~/domain/interfaces/pty.interface';
 
@@ -191,6 +199,7 @@ describe('aliasLabel', () => {
 describe('declaredAgent', () => {
   it('trusts the agent the sidecar reports', () => {
     expect(declaredAgent({ agent: 'pi', model: 'gpt-5.6-sol' })).toBe('pi');
+    expect(declaredAgent({ agent: 'codex', model: 'gpt-5.6-sol' })).toBe('codex');
   });
 
   it('falls back to claude for the statusline, and to nothing without state', () => {

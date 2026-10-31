@@ -13,8 +13,8 @@ import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
-import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, detectAgentIdentity, detectSuggestTrigger } from './parse';
-import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
+import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, parseCodexFooter, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, CODEX_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
 import type { AgentSlashCommand } from './constants';
@@ -56,7 +56,7 @@ const claudeModels = (options?: string[]) =>
     : CLAUDE_MODELS;
 
 const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
-  a.mode === b.mode && a.model === b.model && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
+  a.mode === b.mode && a.model === b.model && a.effort === b.effort && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
 
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -275,7 +275,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       const bufferText = lines.slice(-25).join('\n');
       const now = Date.now();
       const currentType = agentTypeRef.current;
-      if (lines === lastLinesRef.current) {
+      if (lines === lastLinesRef.current && currentType !== 'codex' && declaredAgent(getStructured()) !== 'codex') {
         if (seenRef.current) {
           if (!lastPresentRef.current && now - lastSeenRef.current > GONE_MS) {
             seenRef.current = false;
@@ -292,7 +292,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         return;
       }
       lastLinesRef.current = lines;
-      const present = hasAgentUi(bufferText);
+      const liveState = getStructured();
+      const present = liveState?.agent === 'codex' && liveState.status === 'exited'
+        ? false
+        : hasAgentUi(bufferText) || (declaredAgent(liveState) === 'codex');
       lastPresentRef.current = present;
 
       if (present) {
@@ -309,7 +312,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       if (!seenRef.current) return;
 
       const footer = readFooter(lines);
-      const nextStatus = parseStatusLines(footer.status);
+      const nextStatus = currentType === 'codex' || liveState?.agent === 'codex' || detectAgentIdentity(bufferText) === 'codex'
+        ? parseCodexFooter(lines)
+        : parseStatusLines(footer.status);
       setStatus((prev) => (sameStatus(prev, nextStatus) ? prev : nextStatus));
       const model = footer.model;
       if (model) {
@@ -746,6 +751,8 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
     const q = query.toLowerCase();
     const source = agentType === 'claude'
       ? claudeCommands(structured?.commands)
+      : agentType === 'codex'
+        ? CODEX_SLASH_COMMANDS
       : agentType === 'antigravity'
         ? ANTIGRAVITY_SLASH_COMMANDS
         : agentType === 'kimi'
@@ -776,6 +783,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   );
 
   const fetchModels = React.useCallback((query: string): PromptSuggestion[] => {
+    if (agentType === 'codex') return [];
     const q = query.toLowerCase();
     if (agentType === 'kimi') {
       return piModels
@@ -797,7 +805,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
 
   const currentModelId = React.useMemo(() => {
     let base = matchCatalogId(modelCatalog, structured?.model);
-    if (scraped) {
+    if (scraped && agentType === 'claude') {
       const sm = scraped.model.toLowerCase().match(/(sonnet|fable|opus|haiku)\s*(\d+)(?:[.\s-](\d+))?/);
       base = !sm ? '' : sm[3] ? `claude-${sm[1]}-${sm[2]}-${sm[3]}` : `claude-${sm[1]}-${sm[2]}`;
     }
@@ -808,6 +816,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const efforts = modelEfforts(currentEntry);
 
   const fetchEfforts = React.useCallback((query: string): PromptSuggestion[] => {
+    if (agentType === 'codex') return [];
     const q = query.toLowerCase();
     if (agentType === 'kimi') {
       return catalogEfforts
@@ -1009,11 +1018,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       base.model = aliasLabel(structured.model, currentModel?.provider);
     } else if (structured?.model) {
       const pm = prettyModel(structured.model);
-      if (pm.model) base.model = pm.model;
+      if (pm.model && (agentType !== 'codex' || !base.model)) base.model = pm.model;
       if (!base.contextInfo && pm.contextInfo) base.contextInfo = pm.contextInfo;
     }
     if (agentType === 'claude') base.mode = liveMode;
-    else if (!base.mode && structured) base.mode = prettyMode(structured.permissionMode ?? structured.mode);
+    else if (agentType !== 'codex' && !base.mode && structured) base.mode = prettyMode(structured.permissionMode ?? structured.mode);
     if (structured?.contextPercent != null) {
       base.progress = Math.min(100, Math.round(structured.contextPercent));
       base.contextInfo = structured.contextWindow
@@ -1021,15 +1030,15 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
           ? '1M'
           : `${Math.round(structured.contextWindow / 1000)}k`
         : base.contextInfo;
-    } else if (base.progress == null && structured?.contextTokens != null) {
-      const win = is1M ? 1_000_000 : 200_000;
+    } else if (base.progress == null && structured?.contextTokens != null && (agentType !== 'codex' || structured.contextWindow)) {
+      const win = structured.contextWindow ?? (is1M ? 1_000_000 : 200_000);
       base.progress = Math.min(100, Math.round((structured.contextTokens / win) * 100));
-      if (!base.contextInfo) base.contextInfo = is1M ? '1M' : '200k';
+      if (!base.contextInfo) base.contextInfo = win >= 1_000_000 ? '1M' : `${Math.round(win / 1000)}k`;
     }
     return base;
   }, [status, scraped, structured, is1M, agentType, currentModel, liveMode]);
 
-  const effort = structured?.effort ?? '';
+  const effort = status.effort ?? structured?.effort ?? '';
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
 
   const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null);
@@ -1098,7 +1107,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         };
       case 'codex':
         return {
-          placeholder: 'Tell Codex what to do... (up-arrow history)',
+          placeholder: 'Tell Codex what to do... (/ commands, up-arrow history)',
           logo: <CodexLogo size={18} className={styles.agentIcon} />
         };
       case 'opencode':

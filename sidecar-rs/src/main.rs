@@ -1760,7 +1760,7 @@ fn strip_mod_owned(msg: &str) -> Option<String> {
 }
 
 fn handle_agent_status(body: &[u8]) {
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return;
     };
     let kimi = is_kimi_status(&v);
@@ -1777,10 +1777,14 @@ fn handle_agent_status(body: &[u8]) {
         }
     };
     let from_mod = v.get("source").and_then(|s| s.as_str()) == Some("mod");
+    let from_codex = v.get("source").and_then(|s| s.as_str()) == Some("codex-hook");
+    if from_codex && v["status"] == "waiting" {
+        v.as_object_mut().map(|obj| obj.remove("status"));
+    }
     if from_mod {
         mobile::record_status(&tile_id, &v["status"]);
     }
-    let msg = if from_mod {
+    let msg = if from_mod || from_codex {
         agent_state_ws_msg(&v.to_string())
     } else if kimi {
         kimi_status_ws_msg(&v)
@@ -1795,6 +1799,11 @@ fn handle_agent_status(body: &[u8]) {
         s.kimi.store(kimi, Ordering::Relaxed);
         if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()).filter(|_| from_mod) {
             *s.mod_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
+        }
+        if from_codex {
+            if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()) {
+                bind_agent_session(&tile_id, &serde_json::json!({"agent":"codex","sessionId":id,"cwd":v.get("cwd")}).to_string());
+            }
         }
         remember_agent_state(&s, &msg);
         s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
@@ -1818,6 +1827,109 @@ fn post_agent_status(input: &str) {
         input
     );
     let _ = stream.write_all(req.as_bytes());
+}
+
+fn codex_hook_state(input: &serde_json::Value, tile_id: &str) -> Option<serde_json::Value> {
+    let event = input.get("hook_event_name")?.as_str()?;
+    let status = match event {
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some("busy"),
+        "Stop" | "Interrupt" => Some("idle"),
+        "SessionEnd" => Some("exited"),
+        _ => None,
+    };
+    let mut state = serde_json::json!({"source":"codex-hook","agent":"codex","tileId":tile_id});
+    if let Some(value) = input.get("session_id") { state["sessionId"] = value.clone(); }
+    if let Some(value) = input.get("cwd") { state["cwd"] = value.clone(); }
+    if let Some(value) = input.get("model") { state["model"] = value.clone(); }
+    if let Some(value) = input.get("permission_mode") { state["permissionMode"] = value.clone(); }
+    if let Some(status) = status { state["status"] = status.into(); }
+    if event == "SessionStart" { state["sessionReset"] = input.get("source").cloned().unwrap_or("startup".into()); }
+    Some(state)
+}
+
+fn codex_hook_cmd() {
+    let Some(tile_id) = std::env::var("PANORAMA_TILE_ID").ok().filter(|s| !s.is_empty()) else { return };
+    let mut raw = String::new();
+    if std::io::stdin().read_to_string(&mut raw).is_err() { return; }
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(&raw) else { return };
+    if let Some(state) = codex_hook_state(&input, &tile_id) {
+        post_agent_status(&state.to_string());
+    }
+    let event = match input["hook_event_name"].as_str() {
+        Some("SessionStart") => "session-start",
+        Some("UserPromptSubmit") => "prompt-submit",
+        Some("Stop") => "stop",
+        _ => return,
+    };
+    let mut event_input = input;
+    event_input["agent"] = "codex".into();
+    let addr: std::net::SocketAddr = match format!("127.0.0.1:{}", port()).parse() { Ok(a) => a, Err(_) => return };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) else { return };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let body = event_input.to_string();
+    let path = format!("/agent-hook?tileId={tile_id}&event={event}");
+    let request = format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    if stream.write_all(request.as_bytes()).is_err() { return; }
+    if event == "prompt-submit" {
+        let mut response = String::new();
+        if stream.read_to_string(&mut response).is_ok() {
+            if let Some((_, context)) = response.split_once("\r\n\r\n") {
+                if !context.is_empty() {
+                    println!("{}", serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "UserPromptSubmit",
+                            "additionalContext": context,
+                        }
+                    }));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn codex_wrapper() -> Option<(PathBuf, String)> {
+    let bin = std::process::Command::new("where.exe").arg("codex").output().ok()?;
+    let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
+    if original.is_empty() { return None; }
+    let wrapper = panorama_dir()?.join("bin").join("codex.cmd");
+    let exe = host::brain_bin();
+    let body = format!("@echo off\r\n\"{}\" codex-launch %*\r\nexit /b %ERRORLEVEL%\r\n", exe.display());
+    let ps_wrapper = wrapper.with_extension("ps1");
+    let ps_body = format!("& '{}' codex-launch @args\r\n", exe.display().to_string().replace('\'', "''"));
+    std::fs::create_dir_all(wrapper.parent()?).ok()?;
+    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
+        std::fs::write(&wrapper, body).ok()?;
+    }
+    if std::fs::read_to_string(&ps_wrapper).ok().as_deref() != Some(ps_body.as_str()) {
+        std::fs::write(&ps_wrapper, ps_body).ok()?;
+    }
+    Some((wrapper.parent()?.to_path_buf(), original))
+}
+
+fn codex_launch_args(args: &[String], hook_exe: &Path) -> Vec<String> {
+    const PASSTHROUGH: &[&str] = &["agents", "exec", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "queue", "archive", "delete", "migrate-rollouts", "migrate-nfs-db", "unarchive", "cloud", "exec-server", "features", "help"];
+    if args.first().is_some_and(|a| PASSTHROUGH.contains(&a.as_str()) || a == "--help" || a == "-h" || a == "--version" || a == "-V") {
+        return args.to_vec();
+    }
+    let command = if cfg!(windows) { format!("& \"{}\" codex-hook", hook_exe.display()) } else { format!("\"{}\" codex-hook", hook_exe.display()) };
+    let handler = format!("[{{hooks=[{{type='command',command={}}}]}}]", serde_json::to_string(&command).unwrap());
+    let mut out = vec!["--no-daemon".to_string(), "-c".into(), "tui.status_line=['model-with-reasoning','context-remaining','current-dir']".into()];
+    for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Interrupt", "SessionEnd"] {
+        out.push("-c".into());
+        out.push(format!("hooks.{event}={handler}"));
+    }
+    out.extend_from_slice(args);
+    out
+}
+
+fn codex_launch_cmd() {
+    let Some(original) = std::env::var_os("PANORAMA_CODEX_ORIGINAL") else { std::process::exit(1) };
+    let exe = host::brain_bin();
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let status = std::process::Command::new(original).args(codex_launch_args(&args, &exe)).status();
+    std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
 }
 
 fn statusline_chain_path() -> Option<PathBuf> {
@@ -2022,7 +2134,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
 
     let mut payload = serde_json::json!({
         "v": 1,
-        "agent": "claude",
+        "agent": if evt["agent"] == "codex" { "codex" } else { "claude" },
         "event": event,
         "session_id": field("session_id"),
         "cwd": cwd,
@@ -2089,12 +2201,15 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     let Ok(evt) = serde_json::from_slice::<serde_json::Value>(body) else {
         return String::new();
     };
+    if event == "permission" && evt["agent"] == "codex" {
+        return String::new();
+    }
     let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
     if event == "prompt-restore" {
         return restore_prompt(tile_id, &field("text"));
     }
     let event = if event == "session-start" {
-        let binding = serde_json::json!({ "agent": "claude", "sessionId": field("session_id"), "cwd": evt.get("cwd") });
+        let binding = serde_json::json!({ "agent": if evt["agent"] == "codex" { "codex" } else { "claude" }, "sessionId": field("session_id"), "cwd": evt.get("cwd") });
         bind_agent_session(tile_id, &binding.to_string());
         "compact"
     } else {
@@ -2794,7 +2909,7 @@ fn spawn_session(
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| ".".into());
 
-    let (exe, args, mut env): (String, Vec<String>, Vec<(String, String)>) =
+    let (exe, mut args, mut env): (String, Vec<String>, Vec<(String, String)>) =
         if let Some(run_cmd) = &p.spawn_cmd {
             if cfg!(windows) {
                 (
@@ -2820,6 +2935,17 @@ fn spawn_session(
     env.push(("PANORAMA_TERMINAL".into(), "1".into()));
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
     env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
+    #[cfg(windows)]
+    if let Some((wrapper, original)) = codex_wrapper() {
+        let path = fresh_path().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
+        env.push(("PATH".into(), format!("{};{path}", wrapper.display())));
+        env.push(("PANORAMA_CODEX_ORIGINAL".into(), original));
+        let shell_name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        if p.spawn_cmd.is_none() && !p.elevated && (shell_name.starts_with("pwsh") || shell_name.starts_with("powershell")) {
+            let dir = wrapper.display().to_string().replace('\'', "''");
+            args.extend(["-NoExit".into(), "-Command".into(), format!("$env:PATH = '{dir};' + $env:PATH")]);
+        }
+    }
     if let Some(dirs) = claude_plugin_dirs() {
         env.push(("CLAUDE_CODE_PLUGIN_DIRS".into(), dirs));
     }
@@ -2827,7 +2953,7 @@ fn spawn_session(
     if !p.idle_compact {
         env.push(("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS".into(), IDLE_COMPACT_OFF_TOKENS.into()));
     }
-    if p.spawn_cmd.is_some() {
+    if p.spawn_cmd.is_some() && !env.iter().any(|(k, _)| k == "PATH") {
         if let Some(path) = fresh_path() {
             env.push(("PATH".into(), path));
         }
@@ -4269,6 +4395,13 @@ async fn main() {
         statusline_cmd();
         return;
     }
+    if std::env::args().nth(1).as_deref() == Some("codex-hook") {
+        codex_hook_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("codex-launch") {
+        codex_launch_cmd();
+    }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
         respawn_detached(&[DAEMON_ARG]);
@@ -4313,9 +4446,37 @@ async fn main() {
 mod tests {
     use super::{
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
-        merge_agent_state, merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_claude_hooks, strip_mod_owned, utf8_valid_len,
+        codex_hook_state, codex_launch_args, merge_agent_state, merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_claude_hooks, strip_mod_owned, utf8_valid_len,
         Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
     };
+
+    #[test]
+    fn codex_hook_reports_lifecycle_state() {
+        let start = codex_hook_state(&serde_json::json!({"hook_event_name":"SessionStart","session_id":"s","model":"gpt-test","source":"resume"}), "tile").unwrap();
+        assert_eq!(start["agent"], "codex");
+        assert_eq!(start["model"], "gpt-test");
+        assert_eq!(start["sessionReset"], "resume");
+        let request = codex_hook_state(&serde_json::json!({"hook_event_name":"PermissionRequest","permission_mode":"plan"}), "tile").unwrap();
+        assert!(request.get("status").is_none());
+        assert_eq!(request["permissionMode"], "plan");
+        let end = codex_hook_state(&serde_json::json!({"hook_event_name":"SessionEnd"}), "tile").unwrap();
+        assert_eq!(end["status"], "exited");
+        let wire = agent_state_ws_msg(&start.to_string()).unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        assert_eq!(wire["agent"], "codex");
+        assert_eq!(wire["model"], "gpt-test");
+    }
+
+    #[test]
+    fn codex_launch_is_scoped_to_interactive_sessions() {
+        let exe = Path::new(r"C:\Panorama\sidecar.exe");
+        let resume = codex_launch_args(&["resume".into(), "session-1".into()], exe);
+        assert_eq!(resume[0], "--no-daemon");
+        assert!(resume.iter().any(|arg| arg.starts_with("hooks.SessionStart=")));
+        assert!(resume.iter().any(|arg| arg.starts_with("hooks.UserPromptSubmit=")));
+        assert_eq!(&resume[resume.len() - 2..], &["resume", "session-1"]);
+        assert_eq!(codex_launch_args(&["exec".into(), "hello".into()], exe), ["exec", "hello"]);
+    }
 
     #[test]
     fn strip_claude_hooks_removes_only_this_binary() {
