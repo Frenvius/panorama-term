@@ -1243,6 +1243,21 @@ fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&raw).ok()
 }
 
+fn stamp_binding_activity(tile_id: &str) {
+    let Some(path) = binding_path(tile_id) else {
+        return;
+    };
+    let mut rec = read_binding_rec(tile_id)
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({ "tileId": tile_id }));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    rec.as_object_mut().unwrap().insert("lastActivity".into(), now.into());
+    let _ = write_atomic(path, rec.to_string().as_bytes());
+}
+
 fn clear_binding_session(tile_id: &str) {
     let Some(path) = binding_path(tile_id) else {
         return;
@@ -2219,6 +2234,9 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     if let Some(payload) = agent_event_body(event, &evt) {
         prompt_id = mobile::agent_event(tile_id, event, &evt);
         activity::record_agent_event(tile_id, &payload);
+        if activity::is_interaction(&payload) {
+            stamp_binding_activity(tile_id);
+        }
         if let Some(msg) = agent_event_ws_msg(&payload.to_string()) {
             push_tile_event(tile_id, msg);
         }

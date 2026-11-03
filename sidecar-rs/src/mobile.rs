@@ -621,13 +621,28 @@ fn tile_snippet(session: &Session, agent: Option<&str>) -> Option<Value> {
     shell_snippet(session)
 }
 
+fn transcript_mtime_ms(binding: &Value) -> Option<u64> {
+    let session_id = binding["agentSessionId"].as_str()?;
+    let path = find_transcript(session_id, binding["cwd"].as_str())?;
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
 fn tiles_json() -> Value {
     let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
     let tiles: Vec<Value> = list
         .iter()
         .map(|s| {
-            let agent = read_binding_rec(&s.tile_id)
+            let binding = read_binding_rec(&s.tile_id);
+            let agent = binding
+                .as_ref()
                 .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
+            let last_activity = binding.as_ref().and_then(|b| {
+                b.get("lastActivity").and_then(|t| t.as_u64()).or_else(|| transcript_mtime_ms(b))
+            });
             let snippet = tile_snippet(s, agent.as_deref());
             let model = s
                 .agent_state
@@ -646,6 +661,7 @@ fn tiles_json() -> Value {
                 "model": model,
                 "status": agent_status(&s.tile_id),
                 "snippet": snippet,
+                "lastActivity": last_activity,
             })
         })
         .collect();

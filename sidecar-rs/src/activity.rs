@@ -23,6 +23,10 @@ fn agent_snippets() -> MutexGuard<'static, HashMap<String, Value>> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+pub fn is_interaction(payload: &Value) -> bool {
+    matches!(payload["event"].as_str(), Some("prompt-submit" | "stop" | "permission"))
+}
+
 pub fn record_agent_event(tile_id: &str, payload: &Value) {
     let field = |k: &str| payload[k].as_str().unwrap_or("");
     let (role, text) = match field("event") {
@@ -136,6 +140,8 @@ mod tests {
     fn agent_snippet_follows_events() {
         record_agent_event("act-test", &json!({ "event": "prompt-submit", "query": "fix  the\nbug" }));
         assert_eq!(agent_snippet("act-test").unwrap(), json!({ "role": "user", "text": "fix the bug" }));
+        assert!(is_interaction(&json!({ "event": "stop" })));
+        assert!(!is_interaction(&json!({ "event": "session-start" })));
         record_agent_event("act-test", &json!({ "event": "stop", "response": "" }));
         assert_eq!(agent_snippet("act-test").unwrap()["role"], "user");
         record_agent_event("act-test", &json!({ "event": "permission", "tool_name": "Bash", "message": "ls" }));
