@@ -125,7 +125,7 @@ impl HostHandle {
         let _ = self.tx.send(frame);
     }
 
-    fn session_info(&self, key: &str) -> Option<(bool, u16)> {
+    fn session_info(&self, key: &str) -> Option<(bool, u16, u16)> {
         let reply = self.rpc_raw(serde_json::json!({ "op": "list" })).ok()?;
         let found = reply["sessions"]
             .as_array()?
@@ -133,6 +133,7 @@ impl HostHandle {
             .find(|s| s["key"].as_str() == Some(key))?;
         Some((
             found["alive"].as_bool().unwrap_or(false),
+            found["rows"].as_u64().unwrap_or(24) as u16,
             found["cols"].as_u64().unwrap_or(80) as u16,
         ))
     }
@@ -2369,7 +2370,7 @@ fn linked_peers_context(tile_id: &str) -> Option<String> {
     Some(format!(
         "Other terminals on this canvas are linked to yours; each may run its own agent or shell. Only interact with them when the user asks (e.g. \"ask X to...\", \"tell X...\", \"check on X\"):\n\
          - send a message: curl -s -X POST \"{base}/agent/send?tileId=<tileId>\" --data-raw \"your message\"\n\
-         - read its screen: curl -s \"{base}/capture?tileId=<tileId>&lines=80\"\n\
+         - read its output: curl -s \"{base}/capture?tileId=<tileId>&lines=80\" (returns the last N lines, scrollback included; raise lines, up to {SCROLLBACK_LINES}, when you need more history)\n\
          A send types the message into that terminal and presses Enter. After sending, wait, then read the screen to see the reply; long tasks can take minutes, so poll with pauses instead of resending. Linked terminals:\n{}",
         entries.join("\n")
     ))
@@ -2666,30 +2667,27 @@ fn foreground_command(pid: u32) -> Option<String> {
     Some(display_command_name(last))
 }
 
-fn capture_text(raw: &[u8], cols: u16, lines: usize) -> String {
-    let rows = lines.clamp(1, SCROLLBACK_LINES) as u16;
+fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
+    let rows = rows.max(2);
     let cols = cols.max(2);
-    let mut p = vt100::Parser::new(rows, cols, 0);
+    let mut p = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
     p.process(raw);
-    let screen = p.screen();
-    let mut out: Vec<String> = Vec::with_capacity(rows as usize);
-    for r in 0..rows {
-        let mut line = String::new();
-        for c in 0..cols {
-            match screen.cell(r, c) {
-                Some(cell) if !cell.contents().is_empty() => line.push_str(cell.contents()),
-                _ => line.push(' '),
-            }
-        }
-        while line.ends_with(' ') {
-            line.pop();
-        }
-        out.push(line);
+    let screen = p.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let depth = screen.scrollback();
+    let total = depth + rows as usize;
+    let mut out: Vec<String> = Vec::with_capacity(total);
+    while out.len() < total {
+        let offset = depth.saturating_sub(out.len());
+        screen.set_scrollback(offset);
+        let skip = out.len() - (depth - offset);
+        out.extend(screen.rows(0, cols).skip(skip).map(|l| l.trim_end().to_string()));
     }
     while out.last().map(|l| l.is_empty()).unwrap_or(false) {
         out.pop();
     }
-    out.join("\n")
+    let start = out.len().saturating_sub(lines.max(1));
+    out[start..].join("\n")
 }
 
 fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -3681,7 +3679,7 @@ fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     let live = session.is_some()
         || host_handle()
             .session_info(tile_id)
-            .map(|(alive, _)| alive)
+            .map(|(alive, _, _)| alive)
             .unwrap_or(false);
     if !live {
         return Err("no session for tile".into());
@@ -4168,14 +4166,18 @@ async fn handle_conn(mut stream: TcpStream) {
         let q = parse_query(query);
         let tid = q.get("tileId").cloned().unwrap_or_default();
         let lines = q.get("lines").and_then(|l| l.parse().ok()).unwrap_or(1000usize);
-        let (raw, cols) = match sessions().lock().unwrap().get(&tid).cloned() {
-            Some(s) => (host_handle().snapshot(&tid), s.cols.load(Ordering::Relaxed)),
+        let (raw, rows, cols) = match sessions().lock().unwrap().get(&tid).cloned() {
+            Some(s) => (
+                host_handle().snapshot(&tid),
+                s.rows.load(Ordering::Relaxed),
+                s.cols.load(Ordering::Relaxed),
+            ),
             None => match host_handle().session_info(&tid) {
-                Some((true, cols)) => (host_handle().snapshot(&tid), cols),
-                _ => (load_buffer(&tid), 80),
+                Some((true, rows, cols)) => (host_handle().snapshot(&tid), rows, cols),
+                _ => (load_buffer(&tid), 24, 80),
             },
         };
-        let text = capture_text(&raw, cols, lines);
+        let text = capture_text(&raw, rows, cols, lines);
         let resp = format!(
             "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
             text.len(),
