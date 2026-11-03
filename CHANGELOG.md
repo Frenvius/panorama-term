@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.13]
+
+### Added
+- Codex tiles get the prompt bar, live status, notifications, model and effort info, and linked context, like Claude tiles.
+- The phone tile list shows each tile's last agent interaction.
+
+### Fixed
+- Linked agents can read a peer terminal's scrollback, not only what is visible on its screen.
+
 ## [0.2.12]
 
 ### Fixed
