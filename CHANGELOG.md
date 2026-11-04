@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.14]
+
+### Added
+- The maximum zoom setting can go below 100%, down to 80%.
+
+### Fixed
+- Tile cards in the navigator show at most one line of summary and keep the same height when there is none.
+
 ## [0.2.13]
 
 ### Added
