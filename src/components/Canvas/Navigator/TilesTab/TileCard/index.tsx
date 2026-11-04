@@ -111,8 +111,6 @@ const TileCard = ({ tile, info, active, rename, handlers }: TileCardProps) => {
     return highlight(fallback, query);
   };
 
-  const hasSnippet = Boolean(snippet?.cmd || snippet?.text || fallback);
-
   return (
     <div
       className={styles.card}
@@ -141,7 +139,7 @@ const TileCard = ({ tile, info, active, rename, handlers }: TileCardProps) => {
           </span>
         )}
       </div>
-      {hasSnippet && <div className={styles.snippet}>{renderSnippet()}</div>}
+      <div className={styles.snippet}>{renderSnippet()}</div>
       <div className={styles.meta}>
         <span className={styles.icon} data-tooltip={agent?.name ?? type.name}>
           {agent ? <agent.Logo size={12} /> : <type.Icon size={12} strokeWidth={1.75} style={{ color: type.color }} />}

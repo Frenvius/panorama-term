@@ -116,14 +116,13 @@
 }
 
 .snippet {
-  display: -webkit-box;
   overflow: hidden;
+  height: 1lh;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.45;
-  word-break: break-word;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 
   b {
     color: var(--text-1);
