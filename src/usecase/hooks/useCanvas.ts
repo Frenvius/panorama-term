@@ -29,6 +29,7 @@ import {
   FRAME_WIDTH,
   NOTE_HEIGHT,
   MAX_ZOOM_KEY,
+  MAX_ZOOM_FLOOR,
   FRAME_PAD_KEY,
   TILE_HEIGHT,
   FRAME_HEIGHT,
@@ -41,7 +42,7 @@ import {
   FRAME_MIN_HEIGHT
 } from '~/usecase/util/constants';
 
-const maxZoom = (): number => Math.min(ZOOM_MAX, Math.max(1, getSetting(MAX_ZOOM_KEY, 1)));
+const maxZoom = (): number => Math.min(ZOOM_MAX, Math.max(MAX_ZOOM_FLOOR, getSetting(MAX_ZOOM_KEY, 1)));
 
 type PanOrigin = { ox: number; oy: number; vx: number; vy: number; moved: boolean; pan: boolean; activateId: string | null };
 

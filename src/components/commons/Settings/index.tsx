@@ -4,7 +4,7 @@ import { X, Bot, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, Slide
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
-import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
@@ -271,8 +271,8 @@ const Settings = ({ onClose }: SettingsProps) => {
                   <span className={styles.sliderValue}>{Math.round(maxZoom * 100)}%</span>
                 </div>
                 <input
-                  min={1}
                   step={0.05}
+                  min={MAX_ZOOM_FLOOR}
                   type="range"
                   max={ZOOM_MAX}
                   value={maxZoom}

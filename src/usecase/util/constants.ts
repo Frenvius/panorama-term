@@ -8,6 +8,7 @@ export const FONT_STEP = 12;
 export const ZOOM_MIN = 0.25;
 export const ZOOM_MAX = 3;
 export const MAX_ZOOM_KEY = 'maxZoom';
+export const MAX_ZOOM_FLOOR = 0.8;
 export const RUBBER_K = 400;
 export const SNAP_DELAY = 60;
 export const SETTLE_DELAY = 160;
