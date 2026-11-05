@@ -1,23 +1,23 @@
 {
-  "version": "0.2.14",
-  "notes": "### Added\n- The maximum zoom setting can go below 100%, down to 80%.\n\n### Fixed\n- Tile cards in the navigator show at most one line of summary and keep the same height when there is none.",
-  "pub_date": "2026-11-04T14:04:10Z",
+  "version": "0.2.15",
+  "notes": "### Fixed\n- Mouse scrolling, clicking and selection in terminal apps such as Claude Code now work on Windows 10. Panorama ships its own console host instead of relying on the older one built into Windows. Terminals open before the update restart once.",
+  "pub_date": "2026-11-05T15:31:28Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.14/Panorama_0.2.14_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9yRExPbC9VNHVENDk5WkxQZzNkL3pUdHBWVEFUcjJUczlQVm1iK0FoY3hGb3AwSUl3cUl1aENjNWZHaEVRMjBSZXNidjJtMTFhbnNCRE0vT3U3MkFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwODYwCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpmRG9uYThmNWllV2xvTEd2THhubTJUN0tPeGJvODFlNk1lTzhXWEJuRk5vSkZaOEZkYmE0RFNnMkdGWTV1LzdvZzJ5NzJ6QytOK3lSeHZ6cnIvU0hEQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.15/Panorama_0.2.15_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHRKaU5KaWdQcGdGTmJCOThhUXhid083OVRQSkxXTHkxLytvVllWeW13ZG10U0xEQlp0UlkxUG1nRUt4RVlwcTBIWDRXVTl3c2hjZnVrVVVGcGgxNUFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODkyMzcwCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negp2RU42dnl5c1BzVlQySkpRV3dWTkxneldUekFlTnYzRHNiSlZROHVkWSttcm9vT1NSREJJMFRUeEhrdDNxSit6bENxdWZ6cWgxTzlvTS91SmF5R1pDdz09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.14/Panorama_0.2.14_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG5JZVl0aEY1U1pLWnBBWngyLzJTTVZnT054WEIvdG5Ydi93b3JiVUNyZkxxellXWWhwNnZ6LzY5K2E5alhPTUNWYzBMN2xCUjZNSzhOaloyYjhaamdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwNzUwCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negpubWRpSENQeCtEbEZaUmJ5TjYxeE5xK3ZnZTh4M0ZqMFVCTi9DY0IxNEtnSWNlSTd6SFBDZ3VmYXBaN3puVnM3T1dubUdxRStnVW12WElFOEF5MEpEQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.15/Panorama_0.2.15_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9VaXFPZURjVHc3cVZMa2kzRDByZk1sZGVLajZpTFl1UDZWV0ZsSHZPQVBrSUJPMVUwUXloay9xU1dHMkRHenBYRGRoUlBHeEdPc1BodlJoZGRLSXdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODkyMjk5CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negoycXphMTJCOHZPS3NyZ2p6d2QvYXQwRk4zVVZsYTI0TkZodzkydXBpNVBXTnVmK0dPbTl1OHdyRWkwV0svYmZUaEptTjNPZVZwcCtGZlJGSW5HSmhBZz09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.14/Panorama_0.2.14_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHE1a0FLajd3bnZhbTdpdDB2cjRmZWtKSy9FOFZpc1dmUmdzdUpIVnlYOHp0Nm9rbUdmbkhPRmhidFBCOWl3V1M4aHNiR21UUGFGcmZETDBnYVo3NkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwODcxCWZpbGU6UGFub3JhbWFfMC4yLjE0X2FtZDY0LkFwcEltYWdlClEyMmY2Y3ZjVHNHNUFXRm1EWlJYTzY4TjdSNG5IM01zNW9UU2E0TXpjNnZmblhTNWtvMG1nM25uMmdHRWZyZ0djQ0JPMkNGdFBhUDlUQ2dvQkVsL0FBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.15/Panorama_0.2.15_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG55aXhIeHd0SHIzSmxaY21SeG5iT2kvbi9EMzh5QjB5Skx0TkQwbzl0b1ArOXI3aGVBaStVSFF5a2VQbFNRWU81VWZBY0xRdWpCajBLZEs1UXduS1EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODkyMzEzCWZpbGU6UGFub3JhbWFfMC4yLjE1X2FtZDY0LkFwcEltYWdlClNBUXBacUhSUGFaWUNCT2dYMHJqOWFTOVZxVTJwcElXK3ZZVXZKVmIvNTNLaXVWbTg5Q0ZwaUpjZmdtYWg2YU9KV2NTK0R4NGVKM1Q1Q1dYdzR6L0RnPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.14/Panorama_0.2.14_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFJU0pZdS8xR2RTckxzUkJDZzd3NDcwbURoN3hUUHc3eDBFVnRZd0JiSmVrdVFrREUyd1RBNkJmZXltYjV6NUJyZGgxMHpaK29zbDdmRzhXblBhU0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwOTg3CWZpbGU6UGFub3JhbWFfMC4yLjE0X3g2NC1zZXR1cC5leGUKWEZCREpteDU4TDE5UnA0OWx0OUZCb01JOWR5RHZ3YUVuVDhOMUloWUVha3hiRHJZZTdhWEFCbTJXcUxubEpTeVlxTFdKYWw5UHVjTnA4eUFwOEx0RHc9PQo="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.2.15/Panorama_0.2.15_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHU3WEEzRHJYbEFXbjJzODB0OE1tUFQzOCtLRTF3UllEd2tOTVROTzdDYzc2MUdubXM3ZWdsSGtLUUhVTk5meTAwSjFXaGo3eGZGakxjd1hoYVYrV1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODkyNjI1CWZpbGU6UGFub3JhbWFfMC4yLjE1X3g2NC1zZXR1cC5leGUKVDJsTUNlZlowSG51Q2o0dURLUTNQVDdvYXhqRWdVWXlKMnlzTU5CS1A4NlNyVHMrUWtmb3MrMW1NNVEyaGtQZE50NklFQ3p5ckMxVG1Kdm4vZ1FKQlE9PQo="
     }
   }
 }
