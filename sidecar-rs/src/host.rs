@@ -168,7 +168,7 @@ impl Host {
 }
 
 // bump when host-side code outside this file changes (RawRing, respawn_detached, port helpers)
-const REV: u32 = 1;
+const REV: u32 = 2;
 const KILL_WAIT_TRIES: u32 = 100;
 const INHERITED_CLAUDE_SESSION_VARS: &[&str] = &[
     "CLAUDECODE",

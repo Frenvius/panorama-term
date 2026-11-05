@@ -61,15 +61,35 @@ fn host_alive() -> bool {
 
 // the host never runs from the installed binary, so an update can replace it without killing live PTYs
 fn host_bin(brain: &Path) -> PathBuf {
-    let name = if cfg!(debug_assertions) { "panorama-host.exe" } else { "panorama-host-release.exe" };
-    let dst = std::env::temp_dir().join(name);
+    let dir_name = if cfg!(debug_assertions) { "panorama-host-dev" } else { "panorama-host" };
+    let dir = std::env::temp_dir().join(dir_name);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return brain.to_path_buf();
+    }
+    let dst = dir.join("panorama-host.exe");
     for _ in 0..20 {
         if std::fs::copy(brain, &dst).is_ok() {
+            copy_conpty(brain, &dir);
             return dst;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     brain.to_path_buf()
+}
+
+// portable-pty loads conpty.dll from the host exe's own directory, and conpty.dll starts the
+// OpenConsole.exe next to it; without them the host falls back to the inbox ConPTY
+fn copy_conpty(brain: &Path, dir: &Path) {
+    let Some(src) = brain.parent() else { return };
+    for file in ["conpty.dll", "OpenConsole.exe"] {
+        let from = src.join(file);
+        if !from.exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::copy(&from, dir.join(file)) {
+            eprintln!("[panorama] failed to copy {file}: {e}");
+        }
+    }
 }
 
 fn host_record() -> Option<PathBuf> {
