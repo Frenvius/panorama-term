@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.15]
+
+### Fixed
+- Mouse scrolling, clicking and selection in terminal apps such as Claude Code now work on Windows 10. Panorama ships its own console host instead of relying on the older one built into Windows. Terminals open before the update restart once.
+
 ## [0.2.14]
 
 ### Added
