@@ -22,6 +22,8 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ContextMenu from '~/components/commons/ContextMenu';
+import CrashNotice from '~/components/commons/CrashNotice';
+import ErrorBoundary from '~/components/commons/ErrorBoundary';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import HistoryMenu from '~/components/Canvas/TileFrame/HistoryMenu';
 import { hasHistory, resumeCommand } from '~/usecase/util/agentHistory';
@@ -102,6 +104,8 @@ const RUN_ICON = 14;
 const PHASE_LABEL: Record<RunPhase, string> = { starting: 'Starting', restarting: 'Restarting', stopping: 'Stopping', killing: 'Killing' };
 
 const commitCount = (n: number): string => (n > 99 ? '99+' : String(n));
+
+const tileCrash = (retry: () => void) => <CrashNotice title="This tile hit an error" action="Reload tile" onAction={retry} />;
 
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
@@ -937,33 +941,35 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           </div>
         </div>
         <div className={styles.body} onContextMenu={note ? (e) => openMenu(e, true) : undefined}>
-          {note && (
-            <NoteTile tile={tile} tab={tab} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
-          )}
-          {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} mode={EMBED} />}
-          {editor && tile.filePath && <EditorTile tile={tile} active={active} onActivate={onActivate} />}
-          {term && (
-            <GridTerminal
-              sessionId={tile.ptySessionId}
-              readOnly={runView}
-              cwd={runView ? tile.runCwd : tile.cwd}
-              onCwd={onCwd}
-              onOscTitle={onOscTitle}
-              onAgentActive={setAgentType}
-              onClaudeStatus={onClaudeStatus}
-              onClaudeDiff={onClaudeDiff}
-              onProgress={onProgress}
-              restart={restart}
-              elevated={elevated}
-              active={active}
-              visible={visible && !hidden}
-              tileId={tile.id}
-              cols={termCols}
-              rows={termRows}
-              onContextMenu={openMenu}
-            />
-          )}
-          {!note && !code && !editor && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
+          <ErrorBoundary fallback={tileCrash}>
+            {note && (
+              <NoteTile tile={tile} tab={tab} wsId={wsId} active={active} onChange={onNoteChange} onActivate={onActivate} onEditor={onNoteEditor} />
+            )}
+            {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} mode={EMBED} />}
+            {editor && tile.filePath && <EditorTile tile={tile} active={active} onActivate={onActivate} />}
+            {term && (
+              <GridTerminal
+                sessionId={tile.ptySessionId}
+                readOnly={runView}
+                cwd={runView ? tile.runCwd : tile.cwd}
+                onCwd={onCwd}
+                onOscTitle={onOscTitle}
+                onAgentActive={setAgentType}
+                onClaudeStatus={onClaudeStatus}
+                onClaudeDiff={onClaudeDiff}
+                onProgress={onProgress}
+                restart={restart}
+                elevated={elevated}
+                active={active}
+                visible={visible && !hidden}
+                tileId={tile.id}
+                cols={termCols}
+                rows={termRows}
+                onContextMenu={openMenu}
+              />
+            )}
+            {!note && !code && !editor && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
+          </ErrorBoundary>
         </div>
       </div>
       {showTabs && (

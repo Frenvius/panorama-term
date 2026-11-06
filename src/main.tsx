@@ -7,6 +7,9 @@ import { initPrefs } from '~/usecase/util/prefs';
 import { hydrateAlerts } from '~/usecase/util/alerts';
 import { loadHackFont } from '~/usecase/util/fontUtils';
 import { initSettings } from '~/adapter/settings/settings.client';
+import { reportUiError } from '~/usecase/util/uiErrors';
+import CrashNotice from '~/components/commons/CrashNotice';
+import ErrorBoundary from '~/components/commons/ErrorBoundary';
 import NotificationOverlay from '~/components/commons/Notifications';
 import { WorkspaceProvider } from '~/usecase/context/WorkspaceContext';
 
@@ -15,13 +18,23 @@ import '@fontsource/jetbrains-mono/400-italic.css';
 import '@fontsource/jetbrains-mono/700.css';
 import '~/styles/global.scss';
 
-const root = () => createRoot(document.getElementById('root')!);
+const root = () =>
+  createRoot(document.getElementById('root')!, {
+    onCaughtError: reportUiError('caught'),
+    onUncaughtError: reportUiError('uncaught')
+  });
+
+const reloadApp = () => location.reload();
+
+const appCrash = () => <CrashNotice title="Panorama hit an error" action="Reload" onAction={reloadApp} />;
 
 const mountApp = () =>
   root().render(
-    <WorkspaceProvider>
-      <App />
-    </WorkspaceProvider>
+    <ErrorBoundary fallback={appCrash}>
+      <WorkspaceProvider>
+        <App />
+      </WorkspaceProvider>
+    </ErrorBoundary>
   );
 
 const mountOverlay = () => {

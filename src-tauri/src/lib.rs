@@ -14,6 +14,7 @@ mod pi;
 mod history;
 mod ide;
 mod usage;
+mod crashlog;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
@@ -876,6 +877,7 @@ pub fn run() {
             run_unwatch_manifests,
             open_url,
             usage::agent_usage,
+            crashlog::log_ui_error,
             store::store_read,
             store::store_write,
             store::store_write_many,
