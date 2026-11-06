@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.16]
+
+### Added
+- When an agent works in a git worktree, the tile header and git panel follow the worktree instead of the shell folder.
+
+### Fixed
+- The conversation history menu lists conversations from the agent's worktree, so sessions started there show up.
+- The conversation history menu no longer lists the conversation already open in the tile.
+
 ## [0.2.15]
 
 ### Fixed
