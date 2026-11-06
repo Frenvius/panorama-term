@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.17]
+
+### Added
+- The tile palette is now a command bar (Shift Shift) that runs commands as well as jumping to tiles.
+- A fullscreen tile docks beside the menu and can be split side by side with the diff view.
+- The prompt bar and tile status show Claude subagents while they run.
+- A crash inside one panel no longer takes down the whole window; UI errors are written to a log file.
+
+### Fixed
+- Reopened terminals no longer draw new output on top of the old screen, and a leftover agent screen no longer brings up the prompt bar when no agent is running.
+- Terminal history keeps up to 5000 lines across restarts instead of only the last moments of agent output, and survives background service restarts intact.
+- Notification toasts no longer steal focus.
+- Closing the tile palette returns focus to where it was.
+
 ## [0.2.16]
 
 ### Added
