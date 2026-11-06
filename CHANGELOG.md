@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.18]
+
+### Fixed
+- The window no longer goes blank when the git panel shows a repository with a very large number of changed or untracked files.
+
 ## [0.2.17]
 
 ### Added
