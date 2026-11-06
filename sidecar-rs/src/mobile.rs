@@ -654,7 +654,7 @@ fn tiles_json() -> Value {
                 "tileId": s.tile_id,
                 "kind": tile_kind(&s.tile_id),
                 "title": s.title.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                "cwd": s.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                "cwd": s.effective_cwd(),
                 "branch": s.branch.lock().unwrap_or_else(|e| e.into_inner()).clone(),
                 "alive": !s.exited.load(Ordering::Relaxed),
                 "agent": agent,
@@ -772,7 +772,7 @@ fn drop_push_tokens(tokens: &[String]) {
 
 fn tile_project(tile_id: &str) -> String {
     let cwd = lookup(tile_id)
-        .and_then(|s| s.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        .and_then(|s| s.effective_cwd())
         .unwrap_or_default();
     std::path::Path::new(&cwd)
         .file_name()
@@ -983,8 +983,7 @@ fn subscribe_chat(p: &Value, subs: &mut Subs) -> Result<Value, String> {
 
 fn tile_cwd(tile_id: &str) -> Result<String, String> {
     let session = live_session(tile_id)?;
-    let cwd = session.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    cwd.ok_or_else(|| "tile has no folder yet".to_string())
+    session.effective_cwd().ok_or_else(|| "tile has no folder yet".to_string())
 }
 
 fn run_kind(p: &Value) -> &'static str {

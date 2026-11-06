@@ -351,6 +351,7 @@ fn reconnect_sessions() {
             rows: AtomicU16::new(rows),
             scrollback: AtomicUsize::new(0),
             cwd: Mutex::new(None),
+            agent_cwd: Mutex::new(None),
             cwd_dirty: AtomicBool::new(false),
             branch: Mutex::new(None),
             cmd: Mutex::new(None),
@@ -691,6 +692,35 @@ fn git_branch(cwd: &str) -> Option<String> {
         dir = d.parent();
     }
     None
+}
+
+fn repo_root(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|d| d.join(".git").exists())
+}
+
+fn native_path(p: &str) -> PathBuf {
+    let b = p.as_bytes();
+    let msys_drive = cfg!(windows)
+        && b.len() >= 2
+        && b[0] == b'/'
+        && b[1].is_ascii_alphabetic()
+        && b.get(2).is_none_or(|c| *c == b'/');
+    if !msys_drive {
+        return PathBuf::from(p);
+    }
+    let rest = if b.len() > 2 { &p[2..] } else { "/" };
+    PathBuf::from(format!("{}:{rest}", (b[1] as char).to_ascii_uppercase()))
+}
+
+fn path_string(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    if cfg!(windows) { s.replace('\\', "/") } else { s.into_owned() }
+}
+
+fn path_key(p: &Path) -> String {
+    let s = path_string(p);
+    let s = s.trim_end_matches('/');
+    if cfg!(windows) { s.to_lowercase() } else { s.to_string() }
 }
 
 fn branch_from_head(head: &Path) -> Option<String> {
@@ -1098,6 +1128,7 @@ struct Session {
     rows: AtomicU16,
     scrollback: AtomicUsize,
     cwd: Mutex<Option<String>>,
+    agent_cwd: Mutex<Option<String>>,
     cwd_dirty: AtomicBool,
     branch: Mutex<Option<String>>,
     cmd: Mutex<Option<(Instant, String)>>,
@@ -1112,6 +1143,13 @@ struct Session {
     focus_reporting: Arc<AtomicBool>,
     kimi: AtomicBool,
     run: Option<RunState>,
+}
+
+impl Session {
+    fn effective_cwd(&self) -> Option<String> {
+        let agent = self.agent_cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        agent.or_else(|| self.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
 }
 
 fn write_atomic(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
@@ -2213,6 +2251,35 @@ fn restore_prompt(tile_id: &str, text: &str) -> String {
     "restored".into()
 }
 
+fn follow_agent_cwd(tile_id: &str, cwd: &str) {
+    if cwd.is_empty() {
+        return;
+    }
+    let Some(s) = sessions().lock().unwrap().get(tile_id).cloned() else {
+        return;
+    };
+    let agent_path = native_path(cwd);
+    let Some(agent_root) = repo_root(&agent_path) else {
+        return;
+    };
+    let shell_cwd = s.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let shell_path = shell_cwd.as_deref().map(native_path);
+    let same_repo = shell_path
+        .as_deref()
+        .and_then(repo_root)
+        .is_some_and(|r| path_key(r) == path_key(agent_root));
+    let next = (!same_repo).then(|| path_string(agent_root));
+    let mut agent_cwd = s.agent_cwd.lock().unwrap_or_else(|e| e.into_inner());
+    if *agent_cwd == next {
+        return;
+    }
+    let branch = next.as_deref().or(shell_cwd.as_deref()).and_then(git_branch);
+    *agent_cwd = next;
+    drop(agent_cwd);
+    *s.branch.lock().unwrap_or_else(|e| e.into_inner()) = branch;
+    s.cwd_dirty.store(true, Ordering::Relaxed);
+}
+
 fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     let Ok(evt) = serde_json::from_slice::<serde_json::Value>(body) else {
         return String::new();
@@ -2221,6 +2288,7 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
         return String::new();
     }
     let field = |k: &str| evt.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    follow_agent_cwd(tile_id, &field("cwd"));
     if event == "prompt-restore" {
         return restore_prompt(tile_id, &field("text"));
     }
@@ -3027,6 +3095,7 @@ fn spawn_session(
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
         cwd: Mutex::new(Some(cwd.clone())),
+        agent_cwd: Mutex::new(None),
         cwd_dirty: AtomicBool::new(true),
         branch: Mutex::new(git_branch(&cwd)),
         cmd: Mutex::new(None),
@@ -3083,6 +3152,9 @@ fn run_consumer_loop(
                     }
                     if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
                         let branch = git_branch(&prompt_cwd);
+                        if s.agent_cwd.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
+                            s.cwd_dirty.store(true, Ordering::Relaxed);
+                        }
                         {
                             let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
                             if *cur != branch {
@@ -3856,7 +3928,7 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                     }
                 }
                 if session.cwd_dirty.swap(false, Ordering::Relaxed) {
-                    let cwd = session.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let cwd = session.effective_cwd();
                     let branch = session.branch.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(cwd) = cwd {
                         let msg = serde_json::json!({ "t": "cwd", "cwd": cwd, "branch": branch }).to_string();
@@ -4695,6 +4767,21 @@ mod tests {
         assert!(branch.is_some());
         assert!(!branch.unwrap().is_empty());
         assert_eq!(super::git_branch("C:\\"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn agent_cwd_paths_normalize_to_one_repo_key() {
+        use std::path::Path;
+        let msys = super::native_path("/d/repo/.claude/worktrees/x");
+        assert_eq!(super::path_string(&msys), "D:/repo/.claude/worktrees/x");
+        assert_eq!(
+            super::path_key(Path::new("D:\\Repo\\")),
+            super::path_key(Path::new("d:/repo"))
+        );
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        assert!(super::repo_root(&src).is_some());
+        assert_eq!(super::repo_root(Path::new("C:\\")), None);
     }
 
     #[test]
