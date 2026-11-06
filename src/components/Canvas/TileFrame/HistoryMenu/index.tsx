@@ -14,13 +14,14 @@ interface HistoryMenuProps {
   y: number;
   cwd: string;
   agent: string;
+  tileId: string;
   onClose: () => void;
   onPick: (id: string) => void;
 }
 
 const EDGE = 8;
 
-const HistoryMenu = ({ x, y, cwd, agent, onPick, onClose }: HistoryMenuProps) => {
+const HistoryMenu = ({ x, y, cwd, agent, tileId, onPick, onClose }: HistoryMenuProps) => {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [pos, setPos] = React.useState({ x, y });
   const [error, setError] = React.useState<string | null>(null);
@@ -28,13 +29,13 @@ const HistoryMenu = ({ x, y, cwd, agent, onPick, onClose }: HistoryMenuProps) =>
 
   React.useEffect(() => {
     let live = true;
-    agentHistory(agent, cwd)
+    agentHistory(agent, cwd, tileId)
       .then((list) => live && setEntries(list))
       .catch((e) => live && setError(String(e)));
     return () => {
       live = false;
     };
-  }, [agent, cwd]);
+  }, [agent, cwd, tileId]);
 
   React.useLayoutEffect(() => {
     const el = rootRef.current;

@@ -7,5 +7,5 @@ export const agentSessionSummary = (agent: string, sessionId: string, cwd?: stri
   return invoke<SessionSummary | null>('claude_session_summary', { sessionId, cwd: cwd ?? null }).catch(() => null);
 };
 
-export const agentHistory = (agent: string, cwd: string): Promise<ConversationEntry[]> =>
-  invoke<ConversationEntry[]>('agent_history', { agent, cwd });
+export const agentHistory = (agent: string, cwd: string, tileId: string): Promise<ConversationEntry[]> =>
+  invoke<ConversationEntry[]>('agent_history', { agent, cwd, tileId });

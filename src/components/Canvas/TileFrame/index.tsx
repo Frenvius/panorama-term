@@ -1003,6 +1003,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           y={historyMenu.y}
           cwd={tile.cwd}
           agent={historyAgent}
+          tileId={tile.ptySessionId ?? tile.id}
           onPick={resumeConversation}
           onClose={closeHistory}
         />

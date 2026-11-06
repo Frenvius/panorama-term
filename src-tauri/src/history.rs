@@ -269,8 +269,9 @@ fn kimi_history(cwd: &str) -> Vec<HistoryEntry> {
 }
 
 #[tauri::command]
-pub async fn agent_history(agent: String, cwd: String) -> Result<Vec<HistoryEntry>, String> {
+pub async fn agent_history(agent: String, cwd: String, tile_id: Option<String>) -> Result<Vec<HistoryEntry>, String> {
     crate::blocking(move || {
+        let current = tile_id.as_deref().and_then(crate::notes::bound_session);
         let mut entries = match agent.as_str() {
             "claude" => claude_history(&cwd),
             "pi" => pi_history(&cwd),
@@ -279,6 +280,7 @@ pub async fn agent_history(agent: String, cwd: String) -> Result<Vec<HistoryEntr
             "kimi" => kimi_history(&cwd),
             other => return Err(format!("no history source for {other}")),
         };
+        entries.retain(|e| Some(&e.id) != current.as_ref());
         entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(entries)
     })

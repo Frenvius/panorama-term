@@ -35,6 +35,12 @@ fn binding_path(tile_id: &str) -> Option<PathBuf> {
     Some(dir.join(format!("{}.json", sanitize(tile_id))))
 }
 
+pub fn bound_session(tile_id: &str) -> Option<String> {
+    let raw = fs::read_to_string(binding_path(tile_id)?).ok()?;
+    let rec: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    rec.get("agentSessionId")?.as_str().map(str::to_string)
+}
+
 fn notes_watcher() -> &'static Mutex<Option<RecommendedWatcher>> {
     static W: OnceLock<Mutex<Option<RecommendedWatcher>>> = OnceLock::new();
     W.get_or_init(|| Mutex::new(None))
