@@ -291,8 +291,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
         if (shown.length === 0) continue;
         const rid = repoKey(id, repo.root);
         if (multi && shut(rid)) continue;
-        if (groupBy === 'directory') out.push(...flattenTree(buildDirTree(shown, rid), shut));
-        else out.push(...shown.map(changeKey));
+        const keys = groupBy === 'directory' ? flattenTree(buildDirTree(shown, rid), shut) : shown.map(changeKey);
+        for (const key of keys) out.push(key);
       }
     }
 
