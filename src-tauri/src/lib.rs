@@ -282,6 +282,7 @@ fn create_notif_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .resizable(false)
         .shadow(false)
         .focused(false)
+        .focusable(false)
         .visible(false)
         .content_protected(true)
         .build()?;
@@ -296,10 +297,56 @@ fn raise_notif_window(app: &tauri::AppHandle) {
         return;
     };
     if notif.is_visible().unwrap_or(false) {
-        // Tao skips same-state updates on Windows, so flip the flag to renew the z-order.
-        let _ = notif.set_always_on_top(false);
-        let _ = notif.set_always_on_top(true);
+        show_overlay_on_top(&notif);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn show_overlay_on_top(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    let Ok(handle) = win.hwnd() else {
+        return;
+    };
+    unsafe {
+        SetWindowPos(
+            handle.0 as HWND,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_overlay(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+
+    let Ok(handle) = win.hwnd() else {
+        return;
+    };
+    unsafe {
+        ShowWindow(handle.0 as HWND, SW_HIDE);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_overlay_on_top(win: &tauri::WebviewWindow) {
+    let _ = win.show();
+    let _ = win.set_always_on_top(false);
+    let _ = win.set_always_on_top(true);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_overlay(win: &tauri::WebviewWindow) {
+    let _ = win.hide();
 }
 
 #[derive(serde::Serialize)]
@@ -343,7 +390,8 @@ fn notif_layout(
 ) -> Result<(), String> {
     let win = app.get_webview_window("notif").ok_or("no overlay window")?;
     if height <= 0.0 {
-        return win.hide().map_err(|e| e.to_string());
+        hide_overlay(&win);
+        return Ok(());
     }
     let corner = corner.unwrap_or_else(|| "bottom-right".into());
     let monitor = monitor
@@ -389,11 +437,7 @@ fn notif_layout(
         win.set_position(target_pos).map_err(|e| e.to_string())?;
     }
 
-    if !win.is_visible().map_err(|e| e.to_string())? {
-        win.show().map_err(|e| e.to_string())?;
-    }
-    win.set_always_on_top(false).map_err(|e| e.to_string())?;
-    win.set_always_on_top(true).map_err(|e| e.to_string())?;
+    show_overlay_on_top(&win);
     Ok(())
 }
 
