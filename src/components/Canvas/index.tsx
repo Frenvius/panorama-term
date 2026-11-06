@@ -9,7 +9,7 @@ import Frame from '~/components/Canvas/Frame';
 import Toasts from '~/components/commons/Toasts';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
-import Palette from '~/components/Canvas/Palette';
+import CommandBar from '~/components/Canvas/CommandBar';
 import SplitHandle from '~/components/Canvas/SplitHandle';
 import TileFrame from '~/components/Canvas/TileFrame';
 import Workbench, { type WorkbenchHandlers } from '~/components/Workbench';
@@ -31,6 +31,8 @@ import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
 import { onRefDiff } from '~/usecase/util/refDiff';
+import { touchTile } from '~/usecase/util/tileRecency';
+import type { CommandBarSources } from '~/usecase/hooks/useCommandBarItems';
 import { tabKey, openTab, pinTab, type OpenRequest } from '~/usecase/util/editorTabs';
 import type { FsBox } from '~/domain/interfaces/canvas.interface';
 import type { EditorTab } from '~/domain/interfaces/editor.interface';
@@ -71,8 +73,17 @@ interface Menu {
 }
 
 const Canvas = () => {
-  const { activeId, activeState, saveActiveState, tabs, activeTabId, moveTileToTab, switchTab, switchWorkspace } =
-    useWorkspace();
+  const {
+    tabs,
+    activeId,
+    switchTab,
+    workspaces,
+    activeState,
+    activeTabId,
+    moveTileToTab,
+    switchWorkspace,
+    saveActiveState
+  } = useWorkspace();
   const {
     view,
     tiles,
@@ -137,9 +148,9 @@ const Canvas = () => {
   const [navOpen, setNavOpen] = React.useState(() => getPref('panorama:navOpen') === '1');
   const [navWidth, setNavWidth] = React.useState(0);
   const [fsSplit, setFsSplit] = React.useState(savedSplit);
-  const [paletteOpen, setPaletteOpen] = React.useState(false);
-  const paletteRef = React.useRef(paletteOpen);
-  paletteRef.current = paletteOpen;
+  const [commandBarOpen, setCommandBarOpen] = React.useState(false);
+  const commandBarRef = React.useRef(commandBarOpen);
+  commandBarRef.current = commandBarOpen;
   React.useEffect(() => {
     setPref('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
@@ -251,55 +262,58 @@ const Canvas = () => {
 
   React.useEffect(() => () => clearTimeout(fsTimer.current), []);
 
+  const runCommand = (cmd: CommandId): boolean => {
+    if (cmd === 'tile.fullscreen') {
+      const id = fsIdRef.current ?? activeTileRef.current;
+      if (!id) return false;
+      toggleFs(id);
+      return true;
+    }
+    if (cmd === 'tile.new') {
+      addTile();
+      return true;
+    }
+    if (cmd === 'note.new') {
+      addNote();
+      return true;
+    }
+    if (cmd === 'tile.close') {
+      const id = activeTileRef.current;
+      if (!id || tabsOpenRef.current) return false;
+      closeTileRef.current(id);
+      return true;
+    }
+    if (cmd === 'tile.reopen') {
+      reopenTile();
+      return true;
+    }
+    if (cmd === 'tile.focus') {
+      const id = activeTileRef.current;
+      if (!id) return false;
+      focusTile(id, true);
+      return true;
+    }
+    if (cmd === 'editor.save') return dispatchSave().handled;
+    if (cmd === 'editor.find') return requestFind();
+    if (cmd === 'editor.preview') return requestPreview();
+    if (cmd === 'view.resetZoom') {
+      resetZoom();
+      return true;
+    }
+    if (cmd === 'view.navigator') {
+      setNavOpen((v) => !v);
+      return true;
+    }
+    if (cmd === 'view.palette') {
+      setCommandBarOpen((v) => !v);
+      return true;
+    }
+    return false;
+  };
+  const runCommandRef = React.useRef(runCommand);
+  runCommandRef.current = runCommand;
+
   React.useEffect(() => {
-    const run = (cmd: CommandId): boolean => {
-      if (cmd === 'tile.fullscreen') {
-        const id = fsIdRef.current ?? activeTileRef.current;
-        if (!id) return false;
-        toggleFs(id);
-        return true;
-      }
-      if (cmd === 'tile.new') {
-        addTile();
-        return true;
-      }
-      if (cmd === 'note.new') {
-        addNote();
-        return true;
-      }
-      if (cmd === 'tile.close') {
-        const id = activeTileRef.current;
-        if (!id || tabsOpenRef.current) return false;
-        closeTileRef.current(id);
-        return true;
-      }
-      if (cmd === 'tile.reopen') {
-        reopenTile();
-        return true;
-      }
-      if (cmd === 'tile.focus') {
-        const id = activeTileRef.current;
-        if (!id) return false;
-        focusTile(id, true);
-        return true;
-      }
-      if (cmd === 'editor.save') return dispatchSave().handled;
-      if (cmd === 'editor.find') return requestFind();
-      if (cmd === 'editor.preview') return requestPreview();
-      if (cmd === 'view.resetZoom') {
-        resetZoom();
-        return true;
-      }
-      if (cmd === 'view.navigator') {
-        setNavOpen((v) => !v);
-        return true;
-      }
-      if (cmd === 'view.palette') {
-        setPaletteOpen((v) => !v);
-        return true;
-      }
-      return false;
-    };
     let armedAt = 0;
     let cleanHold = false;
     const onKey = (e: KeyboardEvent) => {
@@ -310,7 +324,7 @@ const Canvas = () => {
         if (performance.now() - armedAt < 350) {
           armedAt = 0;
           cleanHold = false;
-          setPaletteOpen((v) => !v);
+          setCommandBarOpen((v) => !v);
           e.preventDefault();
           e.stopPropagation();
           return;
@@ -322,8 +336,8 @@ const Canvas = () => {
       cleanHold = false;
       const cmd = matchCommand(e);
       if (!cmd) return;
-      if (paletteRef.current && cmd !== 'view.palette') return;
-      if (!run(cmd)) return;
+      if (commandBarRef.current && cmd !== 'view.palette') return;
+      if (!runCommandRef.current(cmd)) return;
       e.preventDefault();
       e.stopPropagation();
     };
@@ -338,7 +352,7 @@ const Canvas = () => {
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('keyup', onKeyUp, true);
     };
-  }, [toggleFs, addTile, addNote, closeTile, reopenTile, resetZoom, focusTile]);
+  }, []);
 
   React.useEffect(() => {
     if (!fsId) return;
@@ -542,7 +556,9 @@ const Canvas = () => {
   }, []);
 
   React.useEffect(() => {
-    if (activeTile) clearAlert(activeTile);
+    if (!activeTile) return;
+    clearAlert(activeTile);
+    touchTile(activeTile);
   }, [activeTile]);
 
   const activateAndClear = React.useCallback(
@@ -584,7 +600,7 @@ const Canvas = () => {
   const hideNav = () => setNavOpen(false);
   const showNav = () => setNavOpen(true);
 
-  const closePalette = React.useCallback(() => setPaletteOpen(false), []);
+  const closeCommandBar = React.useCallback(() => setCommandBarOpen(false), []);
 
   const focusLeavingFs = React.useCallback(
     (id: string, zoomToMax = false) => {
@@ -594,7 +610,32 @@ const Canvas = () => {
     [exitFs, navFocus]
   );
 
-  const paletteSelect = React.useCallback((id: string) => focusLeavingFs(id, true), [focusLeavingFs]);
+  const commandBarFrame = (id: string) => {
+    if (fsIdRef.current) exitFs();
+    focusFrame(id);
+  };
+
+  const commandBarTab = (wsId: string, tabId: string) => {
+    if (wsId === activeId) void switchTab(tabId);
+    else void jumpToWorkspaceTab(wsId, tabId, switchWorkspace);
+  };
+
+  const commandBarSources: CommandBarSources = {
+    tiles,
+    frames,
+    activeId,
+    workspaces,
+    activeTabId,
+    alerts: alertKinds,
+    actions: {
+      openTab: commandBarTab,
+      openTile: openNotified,
+      focusFrame: commandBarFrame,
+      focusTile: (id) => focusLeavingFs(id, true),
+      runCommand: (id) => void runCommandRef.current(id),
+      openWorkspace: (wsId) => void switchWorkspace(wsId)
+    }
+  };
 
   const openEditorTab = (request: OpenRequest) => {
     clearTimeout(tabsTimer.current);
@@ -906,7 +947,7 @@ const Canvas = () => {
         )}
       </div>
       <Toasts />
-      {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
+      {commandBarOpen && <CommandBar sources={commandBarSources} onClose={closeCommandBar} />}
       {navOpen && (
         <Navigator
           tiles={tiles}

@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import { X, Bot, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
@@ -41,6 +42,7 @@ import styles from './styles.module.scss';
 
 interface SettingsProps {
   onClose: () => void;
+  initialSection?: SettingsSection;
 }
 
 interface ShortcutRowProps {
@@ -124,16 +126,16 @@ const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
   );
 };
 
-type Section = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'mobile' | 'shortcuts';
+const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
+  general: SlidersHorizontal,
+  appearance: Palette,
+  terminal: SquareTerminal,
+  agentBar: Bot,
+  mobile: Smartphone,
+  shortcuts: Keyboard
+};
 
-const SECTIONS: { id: Section; label: string; Icon: LucideIcon }[] = [
-  { id: 'general', label: 'General', Icon: SlidersHorizontal },
-  { id: 'appearance', label: 'Appearance', Icon: Palette },
-  { id: 'terminal', label: 'Terminal', Icon: SquareTerminal },
-  { id: 'agentBar', label: 'Agent bar', Icon: Bot },
-  { id: 'mobile', label: 'Mobile', Icon: Smartphone },
-  { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard }
-];
+const SECTIONS = SETTINGS_SECTIONS.map((s) => ({ ...s, Icon: SECTION_ICONS[s.id] }));
 
 const GROUPS = [...new Set(KEYBINDINGS.map((k) => k.group))];
 
@@ -148,9 +150,9 @@ const THEMES: { id: ThemePref; label: string; description: string }[] = [
   { id: 'light', label: 'Light', description: 'Light surfaces across the app.' }
 ];
 
-const Settings = ({ onClose }: SettingsProps) => {
+const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const options = React.useMemo(listTerminalTargets, []);
-  const [section, setSection] = React.useState<Section>('general');
+  const [section, setSection] = React.useState<SettingsSection>(initialSection);
   const [target, setTarget] = React.useState(() => getSetting(TERMINAL_TARGET_KEY, 'auto'));
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));

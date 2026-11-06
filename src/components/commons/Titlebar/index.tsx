@@ -7,6 +7,7 @@ import TabsBar from '~/components/commons/TabsBar';
 import Settings from '~/components/commons/Settings';
 import WorkspaceBar from '~/components/commons/WorkspaceBar';
 import UpdateIndicator from '~/components/commons/UpdateIndicator';
+import { onSettingsRequest, type SettingsSection } from '~/usecase/util/settingsNav';
 
 import styles from './styles.module.scss';
 
@@ -15,7 +16,7 @@ const win = getCurrentWindow();
 const Titlebar = () => {
   const [maximized, setMaximized] = React.useState(false);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
-  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsSection, setSettingsSection] = React.useState<SettingsSection | null>(null);
   const restoreMaximized = React.useRef(false);
 
   React.useEffect(() => {
@@ -64,9 +65,11 @@ const Titlebar = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  React.useEffect(() => onSettingsRequest(setSettingsSection), []);
+
   const close = () => void win.close();
-  const openSettings = () => setSettingsOpen(true);
-  const closeSettings = () => setSettingsOpen(false);
+  const openSettings = () => setSettingsSection('general');
+  const closeSettings = () => setSettingsSection(null);
 
   const onDragStart = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -129,7 +132,7 @@ const Titlebar = () => {
           )}
         </div>
       </div>
-      {settingsOpen && <Settings onClose={closeSettings} />}
+      {settingsSection && <Settings key={settingsSection} initialSection={settingsSection} onClose={closeSettings} />}
     </>
   );
 };

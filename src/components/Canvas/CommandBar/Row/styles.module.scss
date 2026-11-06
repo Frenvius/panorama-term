@@ -1,0 +1,79 @@
+.item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+  background: transparent;
+
+  &[data-selected] {
+    background: var(--hover-2);
+  }
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+.title {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.hit {
+  color: var(--text-strong);
+  font-weight: 600;
+  background: transparent;
+}
+
+.alert {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e6a957;
+}
+
+.scope {
+  overflow: hidden;
+  flex-shrink: 1;
+  max-width: 40%;
+  padding: 0 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.path {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+
+.hint {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 16px;
+}

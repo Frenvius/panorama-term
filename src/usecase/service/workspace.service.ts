@@ -233,6 +233,11 @@ class Service {
     return { activeTabId: file.activeTabId, tabs: file.tabs.map((t) => ({ id: t.id, name: t.name })) };
   }
 
+  async peekTabs(workspaceId: string): Promise<TabState[]> {
+    const file = await this.readWorkspace(workspaceId);
+    return file ? file.tabs.map((t) => ({ ...t, state: normalizeState(t.state) })) : [];
+  }
+
   async loadTabState(workspaceId: string, tabId: string): Promise<CanvasState | null> {
     const file = await this.readWorkspace(workspaceId);
     const tab = file && this.tabOf(file, tabId);

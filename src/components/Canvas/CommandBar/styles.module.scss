@@ -21,9 +21,9 @@
 
 .palette {
   display: flex;
-  width: 520px;
+  width: 560px;
   max-width: calc(100vw - 32px);
-  max-height: 380px;
+  max-height: 440px;
   height: fit-content;
   flex-direction: column;
   overflow: hidden;
@@ -110,42 +110,29 @@
   text-align: center;
 }
 
-.item {
+.header {
+  padding: 8px 8px 4px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.footer {
   display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  border-radius: 6px;
-  background: transparent;
-
-  &[data-selected] {
-    background: var(--hover-2);
-  }
-}
-
-.icon {
-  flex-shrink: 0;
-}
-
-.title {
-  overflow: hidden;
-  color: var(--text-1);
-  font-size: 12.5px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.path {
-  overflow: hidden;
-  min-width: 0;
-  flex: 1;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-1);
   color: var(--text-muted);
   font-size: 11px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  text-align: right;
+
+  kbd {
+    margin-right: 4px;
+    padding: 0 4px;
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 10.5px;
+  }
 }
