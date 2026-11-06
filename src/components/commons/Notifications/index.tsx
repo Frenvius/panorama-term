@@ -17,7 +17,7 @@ const GAP = 10;
 const PAD_TOP = 16;
 const MAX_PEEK = 3;
 const MAX_TOASTS = 6;
-const PAD_BOTTOM = 32;
+const PAD_BOTTOM = 8;
 const PEEK_SCALE = 0.05;
 const PEEK_OFFSET = 12;
 

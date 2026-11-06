@@ -54,6 +54,9 @@ where
 const SIDECAR_PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
 const HOST_PORT: u16 = if cfg!(debug_assertions) { 9878 } else { 9778 };
 const NOTIF_WIDTH: f64 = 448.0;
+// The overlay swallows clicks even on transparent pixels, so it must not cover the main
+// window's 24px status bar.
+const NOTIF_BOTTOM_GAP: f64 = 24.0;
 
 fn host_alive() -> bool {
     let addr = format!("127.0.0.1:{HOST_PORT}").parse().unwrap();
@@ -412,7 +415,7 @@ fn notif_layout(
     let area = monitor.work_area();
     let size = area.size.to_logical::<f64>(scale);
     let pos = area.position.to_logical::<f64>(scale);
-    let h = height.clamp(1.0, size.height);
+    let h = height.clamp(1.0, size.height - NOTIF_BOTTOM_GAP);
     let current = win
         .inner_size()
         .map_err(|e| e.to_string())?
@@ -425,7 +428,7 @@ fn notif_layout(
     let y = if corner.starts_with("top") {
         pos.y
     } else {
-        pos.y + size.height - h
+        pos.y + size.height - NOTIF_BOTTOM_GAP - h
     };
     let target_size = LogicalSize::new(NOTIF_WIDTH, h);
     let target_pos = LogicalPosition::new(x, y);
