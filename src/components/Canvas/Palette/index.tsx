@@ -48,9 +48,23 @@ const Palette = ({ tiles, onSelect, onClose }: PaletteProps) => {
   const [cursor, setCursor] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
   const listRef = React.useRef<HTMLDivElement | null>(null);
+  const pickedRef = React.useRef(false);
 
   React.useEffect(() => {
+    const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const sel = window.getSelection();
+    const caret = prev && sel?.rangeCount && prev.contains(sel.getRangeAt(0).startContainer)
+      ? sel.getRangeAt(0).cloneRange()
+      : null;
     inputRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (pickedRef.current || !prev?.isConnected) return;
+      prev.focus({ preventScroll: true });
+      if (!caret) return;
+      const restored = window.getSelection();
+      restored?.removeAllRanges();
+      restored?.addRange(caret);
+    };
   }, []);
 
   const results = React.useMemo(() => {
@@ -70,6 +84,7 @@ const Palette = ({ tiles, onSelect, onClose }: PaletteProps) => {
   }, [at]);
 
   const pick = (id: string) => {
+    pickedRef.current = true;
     onSelect(id);
     onClose();
   };
