@@ -20,6 +20,7 @@ mod host;
 mod chat;
 mod mobile;
 mod reflow;
+mod history;
 mod files;
 mod attach;
 mod activity;
@@ -27,7 +28,7 @@ mod git_glance;
 mod run_commands;
 
 enum ConsumerMsg {
-    Data(Vec<u8>),
+    Data(u64, Vec<u8>),
     Exit { code: Option<u32> },
 }
 
@@ -171,13 +172,13 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                     pending.drain(0..consumed);
                     match kind {
                         host::KIND_DATA => {
-                            if let Some((key, _offset, bytes)) =
+                            if let Some((key, offset, bytes)) =
                                 host::decode_data_payload(&payload)
                             {
                                 let consumers =
                                     h.consumers.lock().unwrap_or_else(|e| e.into_inner());
                                 if let Some(tx) = consumers.get(&key) {
-                                    let _ = tx.send(ConsumerMsg::Data(bytes));
+                                    let _ = tx.send(ConsumerMsg::Data(offset, bytes));
                                 }
                             }
                         }
@@ -294,9 +295,8 @@ fn reconnect_sessions() {
         let pid = si["pid"].as_u64().unwrap_or(0) as u32;
         let cols = (si["cols"].as_u64().unwrap_or(220) as u16).max(2);
         let rows = (si["rows"].as_u64().unwrap_or(50) as u16).max(2);
-        let snap_total = si["total"].as_u64().unwrap_or(0);
-
-        let raw = host_handle().snapshot(&key);
+        let (raw, snap_total) = host_handle().snapshot_total(&key);
+        let replay = adoption_replay(&key, pid, &raw, snap_total);
 
         let focused = Arc::new(AtomicBool::new(false));
         let focus_reporting = Arc::new(AtomicBool::new(false));
@@ -307,8 +307,8 @@ fn reconnect_sessions() {
         };
         let mut parser =
             vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
-        if !raw.is_empty() {
-            parser.process(&raw);
+        if !replay.is_empty() {
+            parser.process(&replay);
             let _ = parser.callbacks_mut().take_clipboard();
             let _ = parser.callbacks_mut().take_responses();
             let _ = parser.callbacks_mut().take_agent_events();
@@ -344,7 +344,10 @@ fn reconnect_sessions() {
             pid,
             parser: Mutex::new(parser),
             dirty: AtomicBool::new(true),
+            parsed_total: AtomicU64::new(snap_total),
             flushed_total: AtomicU64::new(0),
+            main_dirty: AtomicBool::new(true),
+            main_history: Mutex::new(Vec::new()),
             exited: AtomicBool::new(!alive),
             visible: AtomicBool::new(true),
             cols: AtomicU16::new(cols),
@@ -550,6 +553,7 @@ const OSC777_MAX: usize = 16 * 1024;
 
 const OSC_FG_RESPONSE: &[u8] = b"\x1b]10;rgb:c7c7/d0d0/e0e0\x07";
 const OSC_BG_RESPONSE: &[u8] = b"\x1b]11;rgb:0b0b/0e0e/1414\x07";
+const DA1_RESPONSE: &[u8] = b"\x1b[?62;22;52c";
 
 impl vt100::Callbacks for CwdSink {
     fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
@@ -641,6 +645,10 @@ impl vt100::Callbacks for CwdSink {
         params: &[&[u16]],
         c: char,
     ) {
+        if i1.is_none() && c == 'c' && params.iter().all(|p| p.iter().all(|&v| v == 0)) {
+            self.responses.push(DA1_RESPONSE.to_vec());
+            return;
+        }
         if i1 != Some(b'?') || (c != 'h' && c != 'l') {
             return;
         }
@@ -1121,7 +1129,10 @@ struct Session {
     pid: u32,
     parser: Mutex<vt100::Parser<CwdSink>>,
     dirty: AtomicBool,
+    parsed_total: AtomicU64,
     flushed_total: AtomicU64,
+    main_dirty: AtomicBool,
+    main_history: Mutex<Vec<u8>>,
     exited: AtomicBool,
     visible: AtomicBool,
     cols: AtomicU16,
@@ -1182,18 +1193,66 @@ fn load_buffer(tile_id: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn flush_session(s: &Session) {
-    if s.run.is_some() {
-        return;
+const RESTORE_RESET: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?6l\x1b[m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
+
+fn seal_restored_screen(parser: &mut vt100::Parser<CwdSink>) -> Vec<u8> {
+    parser.process(RESTORE_RESET);
+    let (rows, cols) = parser.screen().size();
+    let used = parser
+        .screen()
+        .rows(0, cols)
+        .enumerate()
+        .filter(|(_, row)| !row.trim().is_empty())
+        .last()
+        .map_or(0, |(i, _)| i + 1);
+    let mut tail = Vec::new();
+    if used > 0 {
+        tail.extend_from_slice(format!("\x1b[{rows};1H").as_bytes());
+        tail.extend_from_slice(&vec![b'\n'; used]);
     }
-    let (data, total) = host_handle().snapshot_total(&s.tile_id);
-    if total != 0 && total == s.flushed_total.load(Ordering::Relaxed) {
-        return;
-    }
-    if let Some(p) = buffer_path(&s.tile_id) {
-        if write_atomic(p, &data).is_ok() {
-            s.flushed_total.store(total, Ordering::Relaxed);
+    tail.extend_from_slice(b"\x1b[H");
+    parser.process(&tail);
+    let mut out = RESTORE_RESET.to_vec();
+    out.extend_from_slice(&tail);
+    out
+}
+
+fn adoption_replay(tile_id: &str, pid: u32, raw: &[u8], total: u64) -> Vec<u8> {
+    splice_saved_history(&load_buffer(tile_id), pid, raw, total)
+}
+
+fn splice_saved_history(saved: &[u8], pid: u32, raw: &[u8], total: u64) -> Vec<u8> {
+    let base = total.saturating_sub(raw.len() as u64);
+    match history::decode(saved) {
+        Some((saved_pid, at, body)) if saved_pid == pid && (base..=total).contains(&at) => {
+            let mut out = body.to_vec();
+            out.extend_from_slice(&raw[(at - base) as usize..]);
+            out
         }
+        _ => raw.to_vec(),
+    }
+}
+
+fn flush_session(s: &Session) {
+    if s.run.is_some() || s.parsed_total.load(Ordering::Relaxed) == s.flushed_total.load(Ordering::Relaxed) {
+        return;
+    }
+    let (total, body) = {
+        let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let total = s.parsed_total.load(Ordering::Relaxed);
+        let mut main = s.main_history.lock().unwrap_or_else(|e| e.into_inner());
+        if s.main_dirty.swap(false, Ordering::Relaxed) {
+            *main = history::main_history(parser.screen_mut());
+        }
+        let mut body = main.clone();
+        body.extend_from_slice(&history::screen_tail(parser.screen()));
+        (total, body)
+    };
+    let Some(path) = buffer_path(&s.tile_id) else {
+        return;
+    };
+    if write_atomic(path, &history::encode(s.pid, total, &body)).is_ok() {
+        s.flushed_total.store(total, Ordering::Relaxed);
     }
 }
 
@@ -3049,7 +3108,7 @@ fn spawn_session(
         }
     }
 
-    let seed = if p.spawn_cmd.is_some() { Vec::new() } else { load_buffer(&p.tile_id) };
+    let mut seed = if p.spawn_cmd.is_some() { Vec::new() } else { load_buffer(&p.tile_id) };
 
     let focused = Arc::new(AtomicBool::new(true));
     let focus_reporting = Arc::new(AtomicBool::new(false));
@@ -3061,6 +3120,8 @@ fn spawn_session(
     let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
     if !seed.is_empty() {
         parser.process(&seed);
+        let boundary = seal_restored_screen(&mut parser);
+        seed.extend_from_slice(&boundary);
         let _ = parser.callbacks_mut().take_clipboard();
         let _ = parser.callbacks_mut().take_responses();
         let _ = parser.callbacks_mut().take_agent_events();
@@ -3094,7 +3155,10 @@ fn spawn_session(
         pid,
         parser: Mutex::new(parser),
         dirty: AtomicBool::new(true),
+        parsed_total: AtomicU64::new(seed.len() as u64),
         flushed_total: AtomicU64::new(0),
+        main_dirty: AtomicBool::new(true),
+        main_history: Mutex::new(Vec::new()),
         exited: AtomicBool::new(false),
         visible: AtomicBool::new(true),
         cols: AtomicU16::new(cols),
@@ -3136,8 +3200,9 @@ fn run_consumer_loop(
     let mut carry: Vec<u8> = Vec::new();
     loop {
         match consumer_rx.recv() {
-            Ok(ConsumerMsg::Data(raw)) => {
+            Ok(ConsumerMsg::Data(offset, raw)) => {
                 permit.take();
+                let end = offset + raw.len() as u64;
                 let mut data = Vec::with_capacity(carry.len() + raw.len());
                 data.append(&mut carry);
                 data.extend_from_slice(&raw);
@@ -3151,7 +3216,12 @@ fn run_consumer_loop(
                 }
                 let responses = {
                     let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    let was_alt = p.screen().alternate_screen();
                     p.process(chunk);
+                    if !was_alt || !p.screen().alternate_screen() {
+                        s.main_dirty.store(true, Ordering::Relaxed);
+                    }
+                    s.parsed_total.store(end - carry.len() as u64, Ordering::Relaxed);
                     if let Some(new_cwd) = p.callbacks_mut().take_changed() {
                         *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
                         s.cwd_dirty.store(true, Ordering::Relaxed);
@@ -4544,8 +4614,9 @@ async fn main() {
 mod tests {
     use super::{
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
-        codex_hook_state, codex_launch_args, merge_agent_state, merge_plugin_dirs, sanitize_event_text, status_ws_msg, strip_claude_hooks, strip_mod_owned, utf8_valid_len,
-        Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        codex_hook_state, codex_launch_args, history, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
+        strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        SCROLLBACK_LINES,
     };
 
     #[test]
@@ -4927,6 +4998,61 @@ mod tests {
         parser.process(b"\x1b[?1004l");
         assert!(!reporting.load(Ordering::Relaxed));
         assert!(parser.callbacks_mut().take_responses().is_empty());
+    }
+
+    #[test]
+    fn primary_device_attributes_are_answered() {
+        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        parser.process(b"\x1b[c\x1b[0c\x1b[>c\x1b[5c");
+        assert_eq!(parser.callbacks_mut().take_responses(), vec![DA1_RESPONSE.to_vec(), DA1_RESPONSE.to_vec()]);
+    }
+
+    #[test]
+    fn adoption_splices_saved_history_with_ring_tail() {
+        let mut stream = Vec::new();
+        for i in 0..40 {
+            stream.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        stream.extend_from_slice(b"$ claude\x1b[?1049h\x1b[2J\x1b[Hframe 1");
+        let at = stream.len();
+        let mut live = vt100::Parser::new(5, 30, SCROLLBACK_LINES);
+        live.process(&stream);
+        let mut body = history::main_history(live.screen_mut());
+        body.extend_from_slice(&history::screen_tail(live.screen()));
+        let saved = history::encode(7, at as u64, &body);
+        stream.extend_from_slice(b"\x1b[1;7H2\x1b[?1049l\r\n$ ");
+        live.process(&stream[at..]);
+        let base = at - 10;
+        let ring = &stream[base..];
+
+        let mut adopted = vt100::Parser::new(5, 30, SCROLLBACK_LINES);
+        adopted.process(&splice_saved_history(&saved, 7, ring, stream.len() as u64));
+        assert_eq!(adopted.screen().contents(), live.screen().contents());
+        adopted.screen_mut().set_scrollback(usize::MAX);
+        live.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(adopted.screen().scrollback(), live.screen().scrollback());
+        assert_eq!(adopted.screen().contents(), live.screen().contents());
+
+        assert_eq!(splice_saved_history(&saved, 8, ring, stream.len() as u64), ring);
+        let late = &stream[at + 1..];
+        assert_eq!(splice_saved_history(&saved, 7, late, stream.len() as u64), late);
+    }
+
+    #[test]
+    fn restored_screen_is_sealed_into_scrollback() {
+        let mut parser = vt100::Parser::new_with_callbacks(6, 20, 100, CwdSink::default());
+        parser.process(b"history\r\n$ claude\r\n\x1b[?1049h\x1b[2J\x1b[Hagent ui\x1b[3;5r\x1b[?1000h");
+        seal_restored_screen(&mut parser);
+        let screen = parser.screen();
+        assert!(!screen.alternate_screen());
+        assert_eq!(screen.cursor_position(), (0, 0));
+        assert!(screen.rows(0, 20).all(|row| row.trim().is_empty()));
+        assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        parser.screen_mut().set_scrollback(2);
+        let history = parser.screen().contents();
+        assert!(history.contains("history"));
+        assert!(history.contains("$ claude"));
+        assert!(!history.contains("agent ui"));
     }
 
     #[test]

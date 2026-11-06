@@ -64,7 +64,7 @@ fn push_row(screen: &vt100::Screen, row: u16, cells: &mut Vec<Cell>) {
 
 // ConPTY repaints a line by padding it with spaces to the last column, which marks the row as
 // wrapped; a real soft wrap always leaves a glyph in the last cell.
-fn soft_wrapped(screen: &vt100::Screen, row: u16) -> bool {
+pub(crate) fn soft_wrapped(screen: &vt100::Screen, row: u16) -> bool {
     let last = screen.cell(row, screen.size().1 - 1);
     screen.row_wrapped(row)
         && last.is_some_and(|c| c.is_wide_continuation() || !c.contents().trim().is_empty())
