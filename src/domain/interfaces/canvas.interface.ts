@@ -6,6 +6,13 @@ export interface View {
   k: number;
 }
 
+export interface FsBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface FrameMember {
   id: string;
   x: number;

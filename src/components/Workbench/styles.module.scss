@@ -3,7 +3,7 @@
   top: 47px;
   right: 9px;
   bottom: 25px;
-  left: calc(9px + var(--nav-inset, 0px));
+  left: calc(9px + var(--nav-inset, 0px) + var(--bench-offset, 0px));
   z-index: 106;
   display: flex;
   overflow: hidden;

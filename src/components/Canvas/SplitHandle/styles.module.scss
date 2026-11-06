@@ -1,0 +1,33 @@
+.handle {
+  position: absolute;
+  top: 47px;
+  bottom: 25px;
+  z-index: 107;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: linear-gradient(to bottom, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  &:hover::before {
+    opacity: 0.45;
+    transition-delay: 0.1s;
+  }
+
+  &:active::before {
+    opacity: 0.9;
+    transition-delay: 0s;
+  }
+}

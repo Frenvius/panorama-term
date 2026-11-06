@@ -2,7 +2,7 @@ import React from 'react';
 import type { EditorView } from '@codemirror/view';
 import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
-import type { Tile, View } from '~/domain/interfaces/canvas.interface';
+import type { Tile, View, FsBox } from '~/domain/interfaces/canvas.interface';
 import type { RunPhase } from '~/domain/interfaces/run.interface';
 import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { IdeInfo } from '~/adapter/shell/shell.client';
@@ -54,8 +54,7 @@ interface TileFrameProps {
   hidden: boolean;
   fullscreen: boolean;
   exiting: boolean;
-  vpW: number;
-  vpH: number;
+  fsBox: FsBox;
   onClose: (id: string) => void;
   onSnap: (id: string) => void;
   onActivate: (id: string) => void;
@@ -96,8 +95,6 @@ const EMBED = { embedded: true };
 
 const HANDLES = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 
-const FS_PAD = 28;
-
 const DRAG_THRESHOLD = 4;
 
 const RUN_ICON = 14;
@@ -106,7 +103,7 @@ const PHASE_LABEL: Record<RunPhase, string> = { starting: 'Starting', restarting
 
 const commitCount = (n: number): string => (n > 99 ? '99+' : String(n));
 
-const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, vpW, vpH, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
   const parts = useHeaderParts();
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
@@ -667,11 +664,11 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
 
   const inset = TILE_GAP / 2;
   const ek = fullscreen ? 1 : k;
-  const bodyW = fullscreen ? vpW - FS_PAD * 2 : tile.width - TILE_GAP;
-  const bodyH = fullscreen ? vpH - FS_PAD * 2 : tile.height - TILE_GAP;
-  const sx = fullscreen ? FS_PAD : (tile.x + inset) * k + view.x;
-  const sy = fullscreen ? FS_PAD : (tile.y + inset) * k + view.y;
-  const z = fullscreen ? 50 : active ? 2 : 1;
+  const bodyW = fullscreen ? fsBox.width : tile.width - TILE_GAP;
+  const bodyH = fullscreen ? fsBox.height : tile.height - TILE_GAP;
+  const sx = fullscreen ? fsBox.x : (tile.x + inset) * k + view.x;
+  const sy = fullscreen ? fsBox.y : (tile.y + inset) * k + view.y;
+  const z = fullscreen || active ? 2 : 1;
   const box = fullscreen
     ? { width: bodyW, height: bodyH }
     : { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };

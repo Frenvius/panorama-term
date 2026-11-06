@@ -10,6 +10,7 @@ import Toasts from '~/components/commons/Toasts';
 import FrameBar from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import Palette from '~/components/Canvas/Palette';
+import SplitHandle from '~/components/Canvas/SplitHandle';
 import TileFrame from '~/components/Canvas/TileFrame';
 import Workbench, { type WorkbenchHandlers } from '~/components/Workbench';
 import UnsavedDialog from '~/components/commons/UnsavedDialog';
@@ -31,6 +32,7 @@ import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } fr
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
 import { onRefDiff } from '~/usecase/util/refDiff';
 import { tabKey, openTab, pinTab, type OpenRequest } from '~/usecase/util/editorTabs';
+import type { FsBox } from '~/domain/interfaces/canvas.interface';
 import type { EditorTab } from '~/domain/interfaces/editor.interface';
 import type { NotifyKind, NotifyTarget } from '~/domain/interfaces/notify.interface';
 
@@ -38,6 +40,15 @@ import styles from './styles.module.scss';
 
 const FS_ANIM = 170;
 const DIFF_ANIM = 130;
+
+const FS_GAP = 8;
+const FS_MIN = 320;
+const SPLIT_KEY = 'panorama:fsSplit';
+
+const savedSplit = (): number => {
+  const raw = Number(getPref(SPLIT_KEY));
+  return raw > 0 && raw < 1 ? raw : 0.5;
+};
 
 const DBLCLICK_MS = 400;
 
@@ -124,12 +135,17 @@ const Canvas = () => {
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
   const [navOpen, setNavOpen] = React.useState(() => getPref('panorama:navOpen') === '1');
+  const [navWidth, setNavWidth] = React.useState(0);
+  const [fsSplit, setFsSplit] = React.useState(savedSplit);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const paletteRef = React.useRef(paletteOpen);
   paletteRef.current = paletteOpen;
   React.useEffect(() => {
     setPref('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
+  React.useEffect(() => {
+    setPref(SPLIT_KEY, String(fsSplit));
+  }, [fsSplit]);
 
   React.useLayoutEffect(() => {
     const id = pendingFocusTileId;
@@ -350,8 +366,17 @@ const Canvas = () => {
     }
   }, [tiles, fsId]);
 
-  const vpW = size.w - 16;
-  const vpH = size.h - 70;
+  const navInset = navOpen ? navWidth + 8 : 0;
+  const areaW = size.w - 18 - navInset;
+  const splitting = fsId !== null && activeEditorTab !== null;
+  const fsWidth = splitting ? Math.min(Math.max(Math.round(areaW * fsSplit), FS_MIN), areaW - FS_MIN - FS_GAP) : areaW;
+  const fsBox: FsBox = { x: navInset, y: 0, width: fsWidth, height: size.h - 72 };
+  const benchOffset = { ['--bench-offset' as string]: splitting ? `${fsWidth + FS_GAP}px` : '0px' };
+
+  const moveSplit = (clientX: number) => {
+    const ratio = (clientX - 9 - navInset - FS_GAP / 2) / areaW;
+    setFsSplit(Math.min(0.9, Math.max(0.1, ratio)));
+  };
 
   const inset = TILE_GAP / 2;
   const isVisible = (t: (typeof tiles)[number]): boolean => {
@@ -561,13 +586,15 @@ const Canvas = () => {
 
   const closePalette = React.useCallback(() => setPaletteOpen(false), []);
 
-  const paletteSelect = React.useCallback(
-    (id: string) => {
+  const focusLeavingFs = React.useCallback(
+    (id: string, zoomToMax = false) => {
       if (fsIdRef.current && fsIdRef.current !== id) exitFs();
-      navFocus(id, true);
+      navFocus(id, zoomToMax);
     },
     [exitFs, navFocus]
   );
+
+  const paletteSelect = React.useCallback((id: string) => focusLeavingFs(id, true), [focusLeavingFs]);
 
   const openEditorTab = (request: OpenRequest) => {
     clearTimeout(tabsTimer.current);
@@ -692,13 +719,14 @@ const Canvas = () => {
 
   const navHandlers: NavigatorHandlers = {
     onNewTile: addTile,
-    onFocusTile: navFocus,
+    onFocusTile: focusLeavingFs,
     onFocusFrame: focusFrame,
     onRenameTile: setTileTitle,
     onCloseTile: requestCloseTile,
     onDiffFiles: setDiffFiles,
     onOpenDiff: openDiff,
     onOpenFile: openEditorFile,
+    onWidth: setNavWidth,
     onClose: hideNav
   };
 
@@ -713,7 +741,7 @@ const Canvas = () => {
   });
 
   return (
-    <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root}>
+    <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root} style={benchOffset}>
       <div
         ref={bgRef}
         className={styles.bg}
@@ -843,8 +871,7 @@ const Canvas = () => {
               fullscreen={t.id === fsId}
               exiting={fsExit}
               hidden={fsId !== null && t.id !== fsId}
-              vpW={vpW}
-              vpH={vpH}
+              fsBox={fsBox}
             />
           );
         })}
@@ -880,7 +907,7 @@ const Canvas = () => {
       </div>
       <Toasts />
       {paletteOpen && <Palette tiles={tiles} onSelect={paletteSelect} onClose={closePalette} />}
-      {!fsId && navOpen && (
+      {navOpen && (
         <Navigator
           tiles={tiles}
           frames={frames}
@@ -891,7 +918,8 @@ const Canvas = () => {
           handlers={navHandlers}
         />
       )}
-      {!fsId && activeEditorTab && (
+      {splitting && <SplitHandle left={9 + navInset + fsWidth} onMove={moveSplit} />}
+      {activeEditorTab && (
         <Workbench
           tabs={editorTabs}
           active={activeEditorTab}
@@ -908,7 +936,7 @@ const Canvas = () => {
           onCancel={cancelCloseTile}
         />
       )}
-      {!fsId && !navOpen && (
+      {!navOpen && (
         <div className={styles.navRevealZone}>
           <button
             className={styles.navReveal}
@@ -926,7 +954,6 @@ const Canvas = () => {
           onColor={(c) => setNoteColor(activeNote.id, c)}
         />
       )}
-      {fsId && <div className={fsExit ? `${styles.backdrop} ${styles.backdropExit}` : styles.backdrop} />}
       {menu && (
         <ContextMenu
           x={menu.sx}

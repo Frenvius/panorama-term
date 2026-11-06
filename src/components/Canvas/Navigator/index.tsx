@@ -46,6 +46,7 @@ export interface NavigatorHandlers {
   onDiffFiles: (files: string[]) => void;
   onOpenDiff: (root: string, file: string, commit?: string) => void;
   onOpenFile: (root: string, file: string, preview?: boolean) => void;
+  onWidth: (width: number) => void;
   onClose: () => void;
 }
 
@@ -77,8 +78,18 @@ const savedWidth = (): number => {
 };
 
 const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, handlers }: NavigatorProps) => {
-  const { onNewTile, onFocusTile, onFocusFrame, onRenameTile, onCloseTile, onDiffFiles, onOpenDiff, onOpenFile, onClose } =
-    handlers;
+  const {
+    onNewTile,
+    onFocusTile,
+    onFocusFrame,
+    onRenameTile,
+    onCloseTile,
+    onDiffFiles,
+    onOpenDiff,
+    onOpenFile,
+    onWidth,
+    onClose
+  } = handlers;
   const [tab, setTab] = React.useState<Tab>(savedTab);
   const [hasDocker, setHasDocker] = React.useState(false);
 
@@ -102,6 +113,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
   React.useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty('--nav-inset', `${width + 8}px`);
+    onWidth(width);
     return () => root.style.setProperty('--nav-inset', '0px');
   }, [width]);
 
