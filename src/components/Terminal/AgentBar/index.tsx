@@ -2,6 +2,7 @@ import React from 'react';
 import { Brain, Sparkles, ChevronDown } from 'lucide-react';
 
 import Suggest from './Suggest';
+import Subagents from './Subagents';
 import ModelMenu from './ModelMenu';
 import PiActions from './PiActions';
 import Magnifier from './Magnifier';
@@ -13,7 +14,7 @@ import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
 import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
-import { NO_MATCH, modeKey, trackMode, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, parseCodexFooter, detectAgentIdentity, detectSuggestTrigger } from './parse';
+import { NO_MATCH, modeKey, trackMode, inputTopRow, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, parseCodexFooter, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, CODEX_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
 import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraftEmpty, renderEditor, replaceEditor, getCaretOffset, setCaretOffset, serializeEditor, placeCaretAtEnd, consolidateParts, draftToSendParts, insertPartsAtCaret, isCaretOnLastLine, isCaretOnFirstLine } from './editor';
 
@@ -57,6 +58,14 @@ const claudeModels = (options?: string[]) =>
 
 const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
   a.mode === b.mode && a.model === b.model && a.effort === b.effort && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
+
+const TERM_ROW_PX = 15;
+const TERM_TOP_INSET_PX = 4;
+const BAR_BOTTOM_INSET_PX = 4;
+
+const coverStyle = (inputTop: number | null): React.CSSProperties => ({
+  minHeight: inputTop === null ? '0px' : `calc(100% - ${TERM_TOP_INSET_PX + BAR_BOTTOM_INSET_PX + inputTop * TERM_ROW_PX}px)`
+});
 
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -113,6 +122,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const [effortMenu, setEffortMenu] = React.useState(false);
   const [preview, setPreview] = React.useState<string | null>(null);
   const [spentSuggestion, setSpentSuggestion] = React.useState('');
+  const [inputTop, setInputTop] = React.useState<number | null>(null);
 
   const editorRef = React.useRef<HTMLDivElement>(null);
   const modelRef = React.useRef<HTMLDivElement>(null);
@@ -311,16 +321,17 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       }
       if (!seenRef.current) return;
 
+      setInputTop(inputTopRow(lines));
       const footer = readFooter(lines);
       const nextStatus = currentType === 'codex' || liveState?.agent === 'codex' || detectAgentIdentity(bufferText) === 'codex'
         ? parseCodexFooter(lines)
         : parseStatusLines(footer.status);
       setStatus((prev) => (sameStatus(prev, nextStatus) ? prev : nextStatus));
-      const model = footer.model;
+      const live = getStructured();
+      const model = live?.viewing ? undefined : footer.model;
       if (model) {
         setScraped((prev) => (prev && prev.model === model.model && prev.contextInfo === model.contextInfo ? prev : model));
       }
-      const live = getStructured();
       setStructured(live);
       syncMode(footer.boxed && footer.status.length ? nextStatus.mode ?? 'default' : null, live);
       syncQuestion(typeof live?.dialog === 'boolean' ? live.dialog : footer.questionMode);
@@ -609,6 +620,15 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       send('\r');
     }
     await waitUntil(inputEmpty, 1200);
+  };
+
+  const viewSubagent = (agentId: string) => {
+    const current = structured?.viewing ?? '';
+    const target = current === agentId ? '' : agentId;
+    if (target === current) return;
+    sendChainRef.current = sendChainRef.current
+      .then(() => sendDraft({ text: `/panorama-view ${target}`.trim(), images: [] }))
+      .catch((err) => console.error('[agentbar] subagent view failed', err));
   };
 
   const applyKimiModel = (id: string) => {
@@ -1140,6 +1160,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   };
 
   const meta = getAgentMetadata();
+  const subagents = agentType === 'claude' ? structured?.subagents ?? [] : [];
+  const viewing = agentType === 'claude' ? structured?.viewing ?? '' : '';
+  const barStyle = hidden ? { display: 'none' } : coverStyle(subagents.length > 0 ? inputTop : null);
 
   if (!agentType || agentType === 'opencode') return null;
 
@@ -1153,7 +1176,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       <div
         className={styles.bar}
         data-agent={agentType}
-        style={hidden ? { display: 'none' } : undefined}
+        style={barStyle}
         onClick={focusEditor}
       >
         <div className={styles.row}>
@@ -1240,6 +1263,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                 ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
                 : 'Enter send - Shift+Enter newline - Tab terminal'}
         </div>
+        {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
         {hasStatus && (
           <div className={styles.footer} aria-hidden="true">
             {parsed.mode && (

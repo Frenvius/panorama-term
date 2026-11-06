@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 
-import { NO_MATCH, trackMode, slashScore, aliasLabel, detectSuggestTrigger, readFooter, parseStatusLines, parseCodexFooter, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { NO_MATCH, trackMode, slashScore, aliasLabel, prettyModel,detectSuggestTrigger, readFooter, parseStatusLines, parseCodexFooter, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+
+it('names Claude model ids by family and version', () => {
+  expect(prettyModel('claude-haiku-5-5')).toEqual({ model: 'Haiku 5.5' });
+  expect(prettyModel('claude-opus-5-5[1m]')).toEqual({ model: 'Opus 5.5', contextInfo: '1M context' });
+  expect(prettyModel('claude-sonnet-4-20250514')).toEqual({ model: 'Sonnet 4' });
+  expect(prettyModel('gpt-6-sol')).toEqual({ model: 'Gpt-6-Sol' });
+});
 
 it('reads Codex model, effort, Plan mode and measured context from the TUI footer', () => {
   const base = ['› Ask Codex to do anything', '  GPT-6-Sol medium · D:\\workspace\\repo', '  ? for shortcuts'];

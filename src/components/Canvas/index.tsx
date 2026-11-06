@@ -28,6 +28,7 @@ import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
 import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
+import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
 import { onRefDiff } from '~/usecase/util/refDiff';
@@ -140,7 +141,7 @@ const Canvas = () => {
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
-  const [agents, setAgents] = React.useState<Map<string, 'idle' | 'busy'>>(new Map());
+  const agents = React.useSyncExternalStore(subscribeAgentStatuses, getAgentStatuses);
   const [noteEditors, setNoteEditors] = React.useState<Record<string, EditorView>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
   const [fsId, setFsId] = React.useState<string | null>(null);
@@ -545,14 +546,7 @@ const Canvas = () => {
   }, []);
 
   const setAgentState = React.useCallback((id: string, live: boolean, busy: boolean) => {
-    setAgents((prev) => {
-      const next = live ? (busy ? 'busy' : 'idle') : undefined;
-      if (prev.get(id) === next) return prev;
-      const m = new Map(prev);
-      if (next) m.set(id, next);
-      else m.delete(id);
-      return m;
-    });
+    setAgentStatus(id, live ? (busy ? 'busy' : 'idle') : null);
   }, []);
 
   React.useEffect(() => {

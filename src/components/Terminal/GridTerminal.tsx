@@ -441,6 +441,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             if (state.reset) statusRef.current = undefined;
             claudeRef.current = mergeClaudeState(claudeRef.current ?? {}, state);
             onClaudeDiffRef.current?.(claudeRef.current.linesAdded ?? 0, claudeRef.current.linesRemoved ?? 0);
+            if (!state.status && state.lastStatus && !statusRef.current) onClaudeStatusRef.current?.(state.lastStatus);
             const prev = statusRef.current;
             const next = state.status;
             if (next && next !== prev) {

@@ -51,6 +51,15 @@ export interface CatalogModel {
   contextWindow?: number;
 }
 
+export interface Subagent {
+  id: string;
+  type: string;
+  tool?: string;
+  status: string;
+  startedAt?: number;
+  description: string;
+}
+
 export interface ClaudeState {
   agent?: string;
   models?: AgentModel[];
@@ -79,7 +88,10 @@ export interface ClaudeState {
   linesAdded?: number;
   linesRemoved?: number;
   reset?: boolean;
+  lastStatus?: string;
   sessionReset?: string;
+  viewing?: string;
+  subagents?: Subagent[];
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

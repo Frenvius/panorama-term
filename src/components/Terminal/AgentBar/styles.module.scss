@@ -47,6 +47,7 @@ $accent: #d97757;
   border: 1px solid var(--border-2);
   border-radius: 4px;
   box-shadow: var(--shadow-pop);
+  transition: min-height 200ms ease-out;
 
   &[data-agent='pi'] {
     padding-top: 8px;

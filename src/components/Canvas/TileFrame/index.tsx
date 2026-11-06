@@ -115,9 +115,8 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const onClaudeStatus = (s: string) => setAgentBusy(s === 'busy');
   const agentLive = agentType !== null;
   React.useEffect(() => {
-    onAgentState(tile.id, agentLive, agentBusy);
-  }, [tile.id, agentLive, agentBusy, onAgentState]);
-  React.useEffect(() => () => onAgentState(tile.id, false, false), [tile.id, onAgentState]);
+    if (live) onAgentState(tile.id, agentLive, agentBusy);
+  }, [tile.id, live, agentLive, agentBusy, onAgentState]);
   React.useEffect(() => reportAgent(tile.id, agentType, agentBusy), [tile.id, agentType, agentBusy]);
   const onClaudeDiff = (a: number, r: number) => setDiff(a || r ? { a, r } : null);
   const onProgress = (state: number, pct: number) => setProgress(state === 0 || state === 3 ? null : { state, pct });

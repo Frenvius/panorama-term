@@ -60,13 +60,15 @@ export const prettyModel = (raw: string | undefined): { model?: string; contextI
   if (!raw) return {};
   const beta = raw.match(/\[([^\]]+)\]/);
   const contextInfo = beta?.[1] && /1m/i.test(beta[1]) ? '1M context' : undefined;
-  const label = raw
-    .replace(/\[[^\]]*\]/, '')
-    .replace(/-\d{6,8}$/, '')
-    .split('-')
-    .filter(Boolean)
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join('-');
+  const bare = raw.replace(/\[[^\]]*\]/, '').replace(/-\d{6,8}$/, '');
+  const family = bare.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?$/i);
+  const label = family
+    ? `${family[1].charAt(0).toUpperCase()}${family[1].slice(1).toLowerCase()} ${family[2]}${family[3] ? `.${family[3]}` : ''}`
+    : bare
+        .split('-')
+        .filter(Boolean)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join('-');
   const out: { model?: string; contextInfo?: string } = {};
   if (label) out.model = label;
   if (contextInfo) out.contextInfo = contextInfo;
@@ -224,6 +226,8 @@ const inputBounds = (rows: string[]): { top: number; bottom: number } | null => 
   }
   return null;
 };
+
+export const inputTopRow = (rows: string[]): number | null => inputBounds(rows)?.top ?? null;
 
 export const readInputText = (rows: string[]): string => {
   const bounds = inputBounds(rows);

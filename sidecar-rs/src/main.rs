@@ -1672,6 +1672,8 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "suggestion",
     "dialog",
     "sessionReset",
+    "subagents",
+    "viewing",
 ];
 
 fn agent_state_ws_msg(body: &str) -> Option<String> {
@@ -1705,6 +1707,10 @@ fn merge_agent_state(cache: &mut serde_json::Map<String, serde_json::Value>, msg
         }
     }
     for (key, val) in obj {
+        if key == "status" {
+            cache.insert("lastStatus".into(), val);
+            continue;
+        }
         if AGENT_STATE_VOLATILE.contains(&key.as_str()) {
             continue;
         }
@@ -4635,6 +4641,7 @@ mod tests {
         assert_eq!(cache["models"][0]["id"], "a");
         assert_eq!(cache["model"], "b");
         assert!(!cache.contains_key("status"));
+        assert_eq!(cache["lastStatus"], "busy");
         assert!(!cache.contains_key("t"));
     }
 

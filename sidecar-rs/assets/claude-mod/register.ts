@@ -1,10 +1,14 @@
-import type { EngineInterface, PermissionRequestDecision, Register, TurnStepChunk } from 'claude-code'
+import type { AgentInfo, EngineInterface, PermissionRequestDecision, Register, TurnStepChunk } from 'claude-code'
 
 const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const COMMAND_DIALOG_MS = 500
 const LIVE_FLUSH_MS = 100
 const LIVE_TEXT_MAX = 16000
+const AGENT_SETTLE_MS = 1500
+const AGENT_RECHECK_MS = 300
+const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
+const VIEW_COMMAND = 'panorama-view'
 
 type LivePhase = 'idle' | 'thinking' | 'text' | 'tool'
 type LiveState = { seq: number; turnId: string; phase: LivePhase; text: string; tool?: string }
@@ -19,6 +23,11 @@ const askedTools = new Set<string>()
 let toolDialog = false
 let commandDialog = false
 let elicitDialog = false
+let mainTurn = false
+const subagentStart = new Map<string, number>()
+const subagentTool = new Map<string, string>()
+let lastSubagents = '[]'
+let lastView: string | undefined
 
 const dialogOpen = () => toolDialog || commandDialog || elicitDialog
 
@@ -131,6 +140,48 @@ async function settleTool($: EngineInterface, id: string | undefined) {
   await post($, { status: 'busy', dialog: dialogOpen() })
 }
 
+async function listAgents($: EngineInterface): Promise<AgentInfo[]> {
+  try {
+    return await $.agent.list()
+  } catch (err) {
+    $.ui.log(`panorama: agent list failed: ${String(err)}`, { to: 'debug' })
+    return []
+  }
+}
+
+async function agentsActive($: EngineInterface, except?: string) {
+  return (await listAgents($)).some(a => a.id !== except && ACTIVE_AGENT.has(a.status))
+}
+
+async function reportSubagents($: EngineInterface) {
+  const now = Date.now()
+  const agents = (await listAgents($)).filter(a => ACTIVE_AGENT.has(a.status))
+  for (const a of agents) if (!subagentStart.has(a.id)) subagentStart.set(a.id, now)
+  for (const id of [...subagentStart.keys()]) {
+    if (agents.some(a => a.id === id)) continue
+    subagentStart.delete(id)
+    subagentTool.delete(id)
+  }
+  const rows = agents.map(a => ({
+    id: a.id,
+    type: a.type,
+    description: a.description,
+    status: a.status,
+    tool: subagentTool.get(a.id),
+    startedAt: subagentStart.get(a.id),
+  }))
+  const key = JSON.stringify(rows)
+  if (key === lastSubagents) return
+  lastSubagents = key
+  await post($, { subagents: rows })
+}
+
+async function settleAgents($: EngineInterface, finished: string) {
+  await reportSubagents($)
+  if (mainTurn || (await agentsActive($, finished))) return
+  await post($, { status: 'idle', dialog: dialogOpen() })
+}
+
 async function closeCommandDialog($: EngineInterface) {
   if (!commandDialog) return
   commandDialog = false
@@ -228,13 +279,41 @@ export const register: Register = (on) => {
     const started = await next(e)
     await syncTurns($)
     await reportCatalog($)
-    await reportStatus($, { dialog: false, effort: await configuredEffort($) })
+    lastSubagents = '[]'
+    lastView = ''
+    if (await $.env.get('PANORAMA_TILE_ID')) {
+      await $.command.register({
+        name: VIEW_COMMAND,
+        description: "Show a subagent's transcript, or the main one without an id",
+        argumentHint: '[agentId]',
+        immediate: true,
+      })
+    }
+    await reportStatus($, { status: 'idle', dialog: false, subagents: [], viewing: '', effort: await configuredEffort($) })
     return started
   })
 
   on('command.run', { command: 'tui' }, async ($, e, next) => {
     if (!(await $.env.get('PANORAMA_TILE_ID'))) return next(e)
     return { text: 'Panorama keeps Claude Code on the fullscreen renderer.' }
+  })
+
+  on('command.run', { command: VIEW_COMMAND }, async ($, e) => {
+    const agentId = e.args.trim()
+    const shown = await $.ui.view(agentId ? { agentId } : {})
+    if (shown.deny) return { text: `Panorama: ${shown.deny}` }
+    lastView = agentId
+    await post($, { viewing: agentId })
+    return {}
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
+    const viewing = e.props.view.agentId ?? ''
+    if (viewing !== lastView) {
+      lastView = viewing
+      void post($, { viewing })
+    }
+    return next(e)
   })
 
   on('command.run', async ($, e, next) => {
@@ -253,8 +332,18 @@ export const register: Register = (on) => {
     return result
   })
 
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+    await reportSubagents($)
+    return spawned
+  })
+
   on('turn.start', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined) {
+      void reportSubagents($)
+      return next(e)
+    }
+    mainTurn = true
     commandDialog = false
     await post($, { status: 'busy', suggestion: '', dialog: dialogOpen() })
     return next(e)
@@ -313,11 +402,19 @@ export const register: Register = (on) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     await syncTurns($)
-    if (e.agentId !== undefined) return done
+    if (e.agentId !== undefined) {
+      const finished = e.agentId
+      void reportSubagents($)
+      void $.clock.after(AGENT_RECHECK_MS, () => void reportSubagents($))
+      void $.clock.after(AGENT_SETTLE_MS, () => void settleAgents($, finished))
+      return done
+    }
+    mainTurn = false
     askedTools.clear()
     toolDialog = false
     commandDialog = false
-    await post($, { status: 'idle', dialog: dialogOpen() })
+    await reportSubagents($)
+    await post($, { status: (await agentsActive($)) ? 'busy' : 'idle', dialog: dialogOpen() })
     await reportStatus($)
     return done
   })
@@ -361,6 +458,10 @@ export const register: Register = (on) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      subagentTool.set(e.agentId, String(e.tool))
+      void reportSubagents($)
+    }
     const result = await next(e)
     await settleTool($, e.tool_use_id)
     return result
@@ -381,6 +482,11 @@ export const register: Register = (on) => {
     if (e.origin.kind !== 'engine' || !rewound || !e.text.trim()) return next(e)
     const delivered = await forwardHook($, 'prompt-restore', { text: e.text })
     if (delivered === 'restored') void $.prompt.fill({ text: '', mode: 'replace' })
+    return next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason !== 'clear' && e.reason !== 'resume') await post($, { status: 'exited', subagents: [] })
     return next(e)
   })
 

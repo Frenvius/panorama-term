@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { openPtyConnection } from '~/adapter/pty/pty.client';
+import { setAgentStatus, toAgentStatus } from '~/usecase/util/agentStatus';
 import { createAgentNotifier } from '~/usecase/util/agentNotify';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { clearNotify, notifyBackground } from '~/components/commons/Notifications/bridge';
@@ -54,7 +55,7 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
     {
       acceptGrid: () => false,
       onGrid: () => {},
-      onExit: () => {},
+      onExit: () => setAgentStatus(tileId, null),
       onCwd: () => {},
       onTitle: () => {},
       onProgress: () => {},
@@ -66,6 +67,8 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
       onClaude: (state) => {
         if (state.reset) status = undefined;
         const next = state.status;
+        const known = next ?? state.lastStatus;
+        if (known) setAgentStatus(tileId, toAgentStatus(known));
         if (!ready || !next || next === status) return;
         const prev = status;
         status = next;

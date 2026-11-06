@@ -691,6 +691,10 @@ pub fn record_status(tile_id: &str, status: &Value) {
     if status != "waiting" {
         prompt::clear(tile_id);
     }
+    if status == "exited" {
+        agent_statuses().remove(tile_id);
+        return;
+    }
     agent_statuses().insert(tile_id.to_string(), status.clone());
 }
 
