@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.19]
+
+### Fixed
+- The app no longer freezes or runs out of memory when the git panel is open on a repository with hundreds of thousands of changed or untracked files. Very large sections now show a count with a "Show all" option.
+- Notifications no longer cover the status bar, so it stays clickable.
+
+### Performance
+- The git changes list, commit history and commit file list only draw the rows on screen, so huge lists scroll smoothly.
+- The git panel waits longer between refreshes on repositories where git status is slow, instead of running it nonstop.
+- Expanding a large folder in the file tree no longer freezes the window, and folders with many entries show them in pages of 500.
+- Files larger than 2 MB open a "File too large to diff" notice instead of locking up the diff viewer, and very long files skip syntax coloring.
+- The branch menu starts with remote folders collapsed when a repository has more than 200 remote branches.
+- Opening a long agent conversation on the mobile app reads only its latest part.
+
 ## [0.2.18]
 
 ### Fixed
