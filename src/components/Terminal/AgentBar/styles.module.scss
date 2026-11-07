@@ -392,6 +392,40 @@ $accent: #d97757;
   box-shadow: 0 0 3px rgba(74, 222, 128, 0.6);
 }
 
+.chipShells {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--text-dim);
+  }
+
+  &:focus-visible {
+    outline: 1px solid #e0844a;
+  }
+
+  &[aria-pressed='true'] {
+    color: #e0844a;
+    background: rgba(224, 132, 74, 0.12);
+    border-color: rgba(224, 132, 74, 0.6);
+  }
+}
+
+.shellDot {
+  width: 5px;
+  height: 5px;
+  background: #e0844a;
+  border-radius: 50%;
+  animation: shellPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes shellPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .meter {
   display: inline-flex;
   align-items: center;

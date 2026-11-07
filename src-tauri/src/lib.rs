@@ -675,6 +675,18 @@ fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_file_tail(path: String, max_bytes: u64) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    let start = len.saturating_sub(max_bytes.min(MAX_TEXT_FILE));
+    file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tauri::command]
 fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if meta.len() > MAX_BINARY_FILE {
@@ -875,6 +887,7 @@ pub fn run() {
             reveal_path,
             read_dir,
             read_text_file,
+            read_file_tail,
             read_file_bytes,
             watch_text_file,
             unwatch_text_file,

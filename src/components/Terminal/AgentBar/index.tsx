@@ -1,6 +1,7 @@
 import React from 'react';
 import { Brain, Sparkles, ChevronDown } from 'lucide-react';
 
+import Shells from './Shells';
 import Suggest from './Suggest';
 import Subagents from './Subagents';
 import ModelMenu from './ModelMenu';
@@ -120,6 +121,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const [pending, setPending] = React.useState(0);
   const [modelMenu, setModelMenu] = React.useState(false);
   const [effortMenu, setEffortMenu] = React.useState(false);
+  const [shellsOpen, setShellsOpen] = React.useState(false);
   const [preview, setPreview] = React.useState<string | null>(null);
   const [spentSuggestion, setSpentSuggestion] = React.useState('');
   const [inputTop, setInputTop] = React.useState<number | null>(null);
@@ -1061,18 +1063,24 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const effort = status.effort ?? structured?.effort ?? '';
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
 
-  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null);
+  const shells = agentType === 'claude' ? structured?.shells ?? [] : [];
+  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null || shells.length > 0);
+
+  React.useEffect(() => {
+    if (!shells.length) setShellsOpen(false);
+  }, [shells.length]);
 
   const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
   const suggestSelect = { arg: onArgSelect, slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };
 
   const toggleModelMenu = () => setModelMenu((o) => !o);
   const toggleEffortMenu = () => setEffortMenu((o) => !o);
+  const toggleShells = () => setShellsOpen((o) => !o);
   const restore = () => setManualHide(false);
 
   const focusEditor = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    if (target.closest('[data-imgpath]') || target.closest(`.${styles.actions}`) || target.closest(`.${styles.editor}`)) return;
+    if (target.closest('[data-imgpath]') || target.closest('[data-shells]') || target.closest(`.${styles.actions}`) || target.closest(`.${styles.editor}`)) return;
     const el = editorRef.current;
     if (el) {
       el.focus({ preventScroll: true });
@@ -1264,8 +1272,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                 : 'Enter send - Shift+Enter newline - Tab terminal'}
         </div>
         {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
+        {shells.length > 0 && <Shells open={shellsOpen} shells={shells} />}
         {hasStatus && (
-          <div className={styles.footer} aria-hidden="true">
+          <div className={styles.footer}>
             {parsed.mode && (
               <span className={`${styles.chip} ${styles.chipMode} ${MODE_CLASS[modeKey(parsed.mode)]}`}>
                 <Sparkles size={10} />
@@ -1289,6 +1298,19 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                 <span className={styles.dot} />
                 <span className={styles.chipLabel}>focus</span>
               </span>
+            )}
+            {shells.length > 0 && (
+              <button
+                type="button"
+                data-shells
+                aria-pressed={shellsOpen}
+                className={`${styles.chip} ${styles.chipShells}`}
+                title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
+                onClick={toggleShells}
+              >
+                <span className={styles.shellDot} />
+                <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
+              </button>
             )}
             {(parsed.progress != null || structured?.costUsd != null) && (
               <span className={styles.meter}>

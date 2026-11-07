@@ -12,6 +12,9 @@ export const readDir = (path: string): Promise<DirEntry[]> =>
 
 export const readTextFile = (path: string): Promise<string> => invoke<string>('read_text_file', { path });
 
+export const readFileTail = (path: string, maxBytes: number): Promise<string> =>
+  invoke<string>('read_file_tail', { path, maxBytes });
+
 export const readFileBytes = (path: string): Promise<ArrayBuffer> => invoke<ArrayBuffer>('read_file_bytes', { path });
 
 export const writeTextFile = (path: string, content: string): Promise<void> =>

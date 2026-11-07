@@ -2,6 +2,8 @@ import type { Subagent } from '~/domain/interfaces/pty.interface';
 
 import React from 'react';
 
+import { formatElapsed } from '~/usecase/util/elapsed';
+
 import styles from './styles.module.scss';
 
 interface SubagentsProps {
@@ -9,12 +11,6 @@ interface SubagentsProps {
   viewing: string;
   onView: (agentId: string) => void;
 }
-
-const formatElapsed = (ms: number): string => {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const min = Math.floor(total / 60);
-  return min ? `${min}m ${total % 60}s` : `${total}s`;
-};
 
 const Subagents = ({ agents, viewing, onView }: SubagentsProps) => {
   const [now, setNow] = React.useState(Date.now);

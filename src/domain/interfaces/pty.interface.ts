@@ -60,6 +60,14 @@ export interface Subagent {
   description: string;
 }
 
+export interface BackgroundShell {
+  id: string;
+  command: string;
+  startedAt: number;
+  outputFile?: string;
+  description?: string;
+}
+
 export interface ClaudeState {
   agent?: string;
   models?: AgentModel[];
@@ -92,6 +100,7 @@ export interface ClaudeState {
   sessionReset?: string;
   viewing?: string;
   subagents?: Subagent[];
+  shells?: BackgroundShell[];
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

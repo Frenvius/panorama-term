@@ -1,0 +1,114 @@
+.collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -2px;
+  transition: grid-template-rows 200ms ease;
+
+  &[data-open='true'] {
+    grid-template-rows: 1fr;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
+}
+
+.inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  margin-top: 2px;
+  border-top: 1px solid var(--border-2);
+  user-select: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+
+  &:hover,
+  &[aria-pressed='true'] {
+    background: var(--border-2);
+  }
+
+  &:focus-visible {
+    outline: 1px solid #e0844a;
+  }
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: #e0844a;
+  border-radius: 50%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.command {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: 'Hack', ui-monospace, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.elapsed {
+  flex: none;
+  min-width: 40px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+.output {
+  height: 168px;
+  padding: 4px 8px;
+  margin: 4px 0 0;
+  overflow-y: auto;
+  font-family: 'Hack', ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  background: var(--hover-1);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+}
+
+.path {
+  padding: 0 4px;
+  overflow: hidden;
+  font-size: 9px;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

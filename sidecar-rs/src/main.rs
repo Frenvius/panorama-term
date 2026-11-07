@@ -1732,6 +1732,7 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "dialog",
     "sessionReset",
     "subagents",
+    "shells",
     "viewing",
 ];
 

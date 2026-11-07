@@ -1,4 +1,4 @@
-import type { AgentInfo, EngineInterface, PermissionRequestDecision, Register, TurnStepChunk } from 'claude-code'
+import type { AgentInfo, BackgroundTaskSummary, EngineInterface, PermissionRequestDecision, Register, TurnStepChunk } from 'claude-code'
 
 const DESC_MAX = 160
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -9,6 +9,7 @@ const AGENT_SETTLE_MS = 1500
 const AGENT_RECHECK_MS = 300
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
 const VIEW_COMMAND = 'panorama-view'
+const SHELL_OUTPUT_RE = /Output is being written to: (.+?\.output)/
 
 type LivePhase = 'idle' | 'thinking' | 'text' | 'tool'
 type LiveState = { seq: number; turnId: string; phase: LivePhase; text: string; tool?: string }
@@ -28,6 +29,10 @@ const subagentStart = new Map<string, number>()
 const subagentTool = new Map<string, string>()
 let lastSubagents = '[]'
 let lastView: string | undefined
+
+type ShellRow = { id: string; command: string; description?: string; outputFile?: string; startedAt: number }
+const shells = new Map<string, ShellRow>()
+let lastShells = '[]'
 
 const dialogOpen = () => toolDialog || commandDialog || elicitDialog
 
@@ -176,6 +181,35 @@ async function reportSubagents($: EngineInterface) {
   await post($, { subagents: rows })
 }
 
+async function reportShells($: EngineInterface) {
+  const rows = [...shells.values()]
+  const key = JSON.stringify(rows)
+  if (key === lastShells) return
+  lastShells = key
+  await post($, { shells: rows })
+}
+
+function trackShell(e: { tool: unknown; command?: unknown; description?: unknown }, result: { result?: unknown; text?: string }) {
+  if (e.tool !== 'Bash') return false
+  const id = (result.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
+  if (typeof id !== 'string' || shells.has(id)) return false
+  shells.set(id, {
+    id,
+    command: String(e.command ?? ''),
+    description: typeof e.description === 'string' ? e.description : undefined,
+    outputFile: result.text?.match(SHELL_OUTPUT_RE)?.[1],
+    startedAt: Date.now(),
+  })
+  return true
+}
+
+async function dropEndedShells($: EngineInterface, inFlight: BackgroundTaskSummary[] | undefined) {
+  if (!inFlight) return
+  const live = new Set(inFlight.filter(t => t.type === 'shell').map(t => t.id))
+  for (const id of [...shells.keys()]) if (!live.has(id)) shells.delete(id)
+  await reportShells($)
+}
+
 async function settleAgents($: EngineInterface, finished: string) {
   await reportSubagents($)
   if (mainTurn || (await agentsActive($, finished))) return
@@ -281,6 +315,8 @@ export const register: Register = (on) => {
     await reportCatalog($)
     lastSubagents = '[]'
     lastView = ''
+    shells.clear()
+    lastShells = '[]'
     if (await $.env.get('PANORAMA_TILE_ID')) {
       await $.command.register({
         name: VIEW_COMMAND,
@@ -289,7 +325,7 @@ export const register: Register = (on) => {
         immediate: true,
       })
     }
-    await reportStatus($, { status: 'idle', dialog: false, subagents: [], viewing: '', effort: await configuredEffort($) })
+    await reportStatus($, { status: 'idle', dialog: false, subagents: [], shells: [], viewing: '', effort: await configuredEffort($) })
     return started
   })
 
@@ -313,6 +349,12 @@ export const register: Register = (on) => {
       lastView = viewing
       void post($, { viewing })
     }
+    return next(e)
+  })
+
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    const id = e.props.task?.id
+    if (id && shells.delete(id)) void reportShells($)
     return next(e)
   })
 
@@ -464,6 +506,7 @@ export const register: Register = (on) => {
     }
     const result = await next(e)
     await settleTool($, e.tool_use_id)
+    if (!('deny' in result && result.deny) && trackShell(e as Parameters<typeof trackShell>[0], result)) await reportShells($)
     return result
   })
 
@@ -486,13 +529,19 @@ export const register: Register = (on) => {
   })
 
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear' && e.reason !== 'resume') await post($, { status: 'exited', subagents: [] })
+    if (e.reason !== 'clear' && e.reason !== 'resume') await post($, { status: 'exited', subagents: [], shells: [] })
     return next(e)
   })
 
   on('classic.Stop', async ($, e, next) => {
     await post($, { permissionMode: e.permission_mode, effort: e.effort?.level })
+    await dropEndedShells($, e.background_tasks)
     if (!e.stop_hook_active) await forwardHook($, 'stop', e)
+    return next(e)
+  })
+
+  on('classic.SubagentStop', async ($, e, next) => {
+    await dropEndedShells($, e.background_tasks)
     return next(e)
   })
 }
