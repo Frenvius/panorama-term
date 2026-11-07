@@ -29,15 +29,15 @@ import ContextMenu from '~/components/commons/ContextMenu';
 import Log from '~/components/Canvas/Navigator/GitTab/History';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
+import { useWindowedList } from '~/usecase/hooks/useWindowedList';
 import {
   splitKey,
   changeKey,
   statusKey,
   STATUS_COLOR,
   buildDirTree,
-  collectKeys,
   collectFiles,
-  flattenTree,
+  sameSnapshots,
   collectFolderIds
 } from '~/usecase/util/fileTree';
 import {
@@ -86,6 +86,52 @@ const displayDir = (dir: string): string => dir.replace(/\//g, '\\');
 const pluralize = (n: number): string => (n === 1 ? '1 file' : `${n} files`);
 
 const repoKey = (section: string, repo: string): string => `${section}::${repo}`;
+
+const ROW_HEIGHT = 22;
+const SECTION_LIMIT = 5000;
+
+type Row =
+  | { kind: 'more'; id: string; count: number; section: string }
+  | { kind: 'file'; id: string; pad: number; flat: boolean; file: FileChange }
+  | { kind: 'repo'; id: string; open: boolean; repo: RepoEntry; keys: string[]; files: FileChange[] }
+  | { kind: 'section'; id: string; open: boolean; label: string; total: number; keys: string[]; files: FileChange[] }
+  | { kind: 'folder'; id: string; pad: number; open: boolean; node: Extract<TreeNode, { kind: 'folder' }> };
+
+const pushTree = (out: Row[], nodes: TreeNode[], depth: number, shut: (id: string) => boolean) => {
+  const pad = 8 + depth * 14;
+  for (const node of nodes) {
+    if (node.kind === 'file') {
+      out.push({ kind: 'file', id: changeKey(node.change), pad: pad + 16, flat: false, file: node.change });
+      continue;
+    }
+    const open = !shut(node.id);
+    out.push({ kind: 'folder', id: node.id, pad, open, node });
+    if (open) pushTree(out, node.children, depth + 1, shut);
+  }
+};
+
+interface FolderContents {
+  keys: string[];
+  files: FileChange[];
+}
+
+const folderCache = new WeakMap<TreeNode, FolderContents>();
+
+const folderContents = (node: TreeNode & { kind: 'folder' }): FolderContents => {
+  const hit = folderCache.get(node);
+  if (hit) return hit;
+  const files = collectFiles(node.children);
+  const contents = { keys: files.map(changeKey), files };
+  folderCache.set(node, contents);
+  return contents;
+};
+
+const sameList = (a: string[], b: string[]): boolean => a.length === b.length && a.every((item, i) => item === b[i]);
+
+const sameCounts = (a: Record<string, number>, b: Record<string, number>): boolean => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+};
 
 interface TriCheckboxProps {
   state: 'all' | 'none' | 'partial';
@@ -152,9 +198,15 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   } | null>(null);
   const [rollback, setRollback] = React.useState<FileChange[] | null>(null);
   const [rollbackBusy, setRollbackBusy] = React.useState(false);
+  const [revealed, setRevealed] = React.useState<Set<string>>(() => new Set());
   const lastCommit = React.useRef<CommitMessageEntry | null>(null);
   const known = React.useRef<Set<string>>(new Set());
   const commitRef = React.useRef<HTMLDivElement>(null);
+  const snapshots = React.useRef<Record<string, StatusSnapshot>>({});
+  const polling = React.useRef(false);
+  const nextPoll = React.useRef(0);
+  const sentFiles = React.useRef<string[]>([]);
+  const rowsRef = React.useRef<Row[]>([]);
 
   const primary = repos[0]?.root ?? root;
 
@@ -200,6 +252,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   React.useEffect(() => {
     setRepos([]);
     setStatuses({});
+    snapshots.current = {};
     gitRepos(root)
       .then(setRepos)
       .catch((err: unknown) => setError(message(err)));
@@ -208,10 +261,13 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   const fetchStatus = React.useCallback(
     (quiet: boolean) => {
       if (repos.length === 0) return;
+      polling.current = true;
       if (!quiet) setRefreshing(true);
+      const startedAt = Date.now();
+      const limit = revealed.size > 0 ? undefined : SECTION_LIMIT;
       Promise.all(
         repos.map((repo) =>
-          Promise.all([gitStatus(repo.root), gitUnpushedCommits(repo.root).catch(() => [])]).then(
+          Promise.all([gitStatus(repo.root, limit), gitUnpushedCommits(repo.root).catch(() => [])]).then(
             ([snap, ahead]) => [repo.root, snap, ahead.length] as const
           )
         )
@@ -223,22 +279,26 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
             snaps[key] = snap;
             ahead[key] = count;
           }
-          setStatuses(snaps);
-          setUnpushed(ahead);
+          setUnpushed((prev) => (sameCounts(prev, ahead) ? prev : ahead));
           setError(null);
+          if (sameSnapshots(snapshots.current, snaps)) return;
+          snapshots.current = snaps;
+          setStatuses(snaps);
           applySelection(snaps);
         })
         .catch((err: unknown) => {
           if (!quiet) setError(message(err));
         })
         .finally(() => {
+          polling.current = false;
+          nextPoll.current = Date.now() + 2 * (Date.now() - startedAt);
           if (!quiet) setRefreshing(false);
         });
       gitLogMessages(primary, 1)
         .then((entries) => (lastCommit.current = entries[0] ?? null))
         .catch(() => (lastCommit.current = null));
     },
-    [repos, primary, applySelection]
+    [repos, primary, revealed, applySelection]
   );
 
   const load = React.useCallback(() => fetchStatus(false), [fetchStatus]);
@@ -247,13 +307,13 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
 
   React.useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!busy && !pushing && view === 'changes') fetchStatus(true);
+      if (busy || pushing || polling.current || view !== 'changes' || Date.now() < nextPoll.current) return;
+      fetchStatus(true);
     }, 5000);
     return () => window.clearInterval(timer);
   }, [fetchStatus, busy, pushing, view]);
 
   const needle = query.trim().toLowerCase();
-  const matches = (file: FileChange): boolean => !needle || file.path.toLowerCase().includes(needle);
 
   const nestedPrefixes = React.useCallback(
     (repo: string): string[] =>
@@ -272,41 +332,79 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
     [statuses, nestedPrefixes]
   );
 
-  const multi =
-    repos.filter((repo) => SECTIONS.some(([id]) => filesOf(repo.root, id).length > 0)).length > 1;
-
-  const sectionFiles = React.useCallback(
-    (id: string): FileChange[] => repos.flatMap((repo) => filesOf(repo.root, id)),
-    [repos, filesOf]
+  const withheld = React.useCallback(
+    (repo: string, id: string): number => {
+      const snap = statuses[repo];
+      if (!snap) return 0;
+      return id === 'changes' ? snap.changes_total - snap.changes.length : snap.unversioned_total - snap.unversioned.length;
+    },
+    [statuses]
   );
 
-  const visible = React.useMemo(() => {
-    const shut = (id: string) => !needle && collapsed.has(id);
-    const out: string[] = [];
+  const countOf = React.useCallback(
+    (repo: string, id: string): number => filesOf(repo, id).length + withheld(repo, id),
+    [filesOf, withheld]
+  );
 
-    for (const [id] of SECTIONS) {
+  const multi = repos.filter((repo) => SECTIONS.some(([id]) => countOf(repo.root, id) > 0)).length > 1;
+
+  const rows = React.useMemo(() => {
+    const shut = (id: string) => !needle && collapsed.has(id);
+    const out: Row[] = [];
+
+    for (const [id, label] of SECTIONS) {
+      const total = repos.reduce((sum, repo) => sum + countOf(repo.root, id), 0);
+      if (total === 0) continue;
+      const hidden = repos.reduce((sum, repo) => sum + withheld(repo.root, id), 0);
+      const groups = repos
+        .map((repo) => [repo, filesOf(repo.root, id).filter((file) => !needle || file.path.toLowerCase().includes(needle))] as const)
+        .filter(([, files]) => files.length > 0);
+      const files = groups.flatMap(([, shown]) => shown);
+      out.push({ kind: 'section', id, open: !shut(id), label, total, keys: files.map(changeKey), files });
       if (shut(id)) continue;
-      for (const repo of repos) {
-        const shown = filesOf(repo.root, id).filter((file) => !needle || file.path.toLowerCase().includes(needle));
-        if (shown.length === 0) continue;
+      if (hidden > 0 || (files.length > SECTION_LIMIT && !revealed.has(id))) {
+        out.push({ kind: 'more', id: `${id}:more`, count: files.length + hidden, section: id });
+        continue;
+      }
+
+      for (const [repo, shown] of groups) {
         const rid = repoKey(id, repo.root);
+        if (multi) out.push({ kind: 'repo', id: rid, open: !shut(rid), repo, keys: shown.map(changeKey), files: shown });
         if (multi && shut(rid)) continue;
-        const keys = groupBy === 'directory' ? flattenTree(buildDirTree(shown, rid), shut) : shown.map(changeKey);
-        for (const key of keys) out.push(key);
+        const depth = multi ? 2 : 1;
+        if (groupBy === 'directory') pushTree(out, buildDirTree(shown, rid), depth, shut);
+        else for (const file of shown) out.push({ kind: 'file', id: changeKey(file), pad: 29 + depth * 14, flat: true, file });
       }
     }
 
     return out;
-  }, [repos, filesOf, needle, collapsed, groupBy, multi]);
+  }, [repos, filesOf, withheld, countOf, needle, collapsed, groupBy, multi, revealed]);
+
+  rowsRef.current = rows;
+
+  const visible = React.useMemo(() => rows.flatMap((row) => (row.kind === 'file' ? [row.id] : [])), [rows]);
+
+  const { attach, start, end, before, after, scrollToIndex } = useWindowedList({ count: rows.length, rowHeight: ROW_HEIGHT });
+
+  const setList = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      listRef.current = node;
+      attach(node);
+    },
+    [attach]
+  );
 
   React.useEffect(() => {
+    if (sameList(sentFiles.current, visible)) return;
+    sentFiles.current = visible;
     onFiles(visible);
   }, [visible, onFiles]);
 
   React.useEffect(() => {
     if (!active) return;
-    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [active]);
+    const at = rowsRef.current.findIndex((row) => row.kind === 'file' && row.id === active);
+    if (at >= 0) scrollToIndex(at);
+  }, [active, scrollToIndex]);
 
   const openDiff = (key: string) => {
     listRef.current?.focus({ preventScroll: true });
@@ -361,7 +459,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   };
 
   const triState = (keys: string[]): 'all' | 'none' | 'partial' => {
-    const on = keys.filter((k) => selected.has(k)).length;
+    let on = 0;
+    for (const key of keys) if (selected.has(key)) on++;
     if (on === 0) return 'none';
     return on === keys.length ? 'all' : 'partial';
   };
@@ -654,167 +753,118 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
 
   const canCommit = !busy && selected.size > 0 && (msg.trim().length > 0 || amend);
 
-  const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
-    const pad = 8 + depth * 14;
+  const caret = (open: boolean) =>
+    open ? (
+      <ChevronDown size={12} strokeWidth={2.5} className={styles.caret} />
+    ) : (
+      <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
+    );
 
-    if (node.kind === 'folder') {
-      const shut = !needle && collapsed.has(node.id);
-      const keys = collectKeys(node.children);
-      const open = () => toggleCollapse(node.id);
-      const check = (on: boolean) => setMany(keys, on);
-      const files = collectFiles(node.children);
-      const menu = (e: React.MouseEvent) => openFolderMenu(e, files[0]?.repo ?? primary, node.dir, files);
+  const folderRow = (row: Extract<Row, { kind: 'folder' }>) => {
+    const { keys, files } = folderContents(row.node);
+    const open = () => toggleCollapse(row.id);
+    const check = (on: boolean) => setMany(keys, on);
+    const menu = (e: React.MouseEvent) => openFolderMenu(e, files[0]?.repo ?? primary, row.node.dir, files);
 
-      return (
-        <div key={node.id}>
-          <div className={styles.row} style={{ paddingLeft: pad }} onClick={open} onContextMenu={menu}>
-            {shut ? (
-              <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
-            ) : (
-              <ChevronDown size={12} strokeWidth={2.5} className={styles.caret} />
-            )}
-            <TriCheckbox state={triState(keys)} onChange={check} />
-            <FileIcon dir open={!shut} size={14} />
-            <span className={styles.name}>{node.name}</span>
-          </div>
-          {!shut && node.children.map((child) => renderNode(child, depth + 1))}
-        </div>
-      );
-    }
+    return (
+      <div key={row.id} className={styles.row} style={{ paddingLeft: row.pad }} onClick={open} onContextMenu={menu}>
+        {caret(row.open)}
+        <TriCheckbox state={triState(keys)} onChange={check} />
+        <FileIcon dir open={row.open} size={14} />
+        <span className={styles.name}>{row.node.name}</span>
+      </div>
+    );
+  };
 
-    const file = node.change;
-    const key = changeKey(file);
+  const fileRow = (row: Extract<Row, { kind: 'file' }>) => {
+    const { file } = row;
     const kind = statusKey(file);
-    const pick = () => toggle(key);
-    const show = () => openDiff(key);
+    const pick = () => toggle(row.id);
+    const show = () => openDiff(row.id);
     const menu = (e: React.MouseEvent) => openFileMenu(e, file);
 
     return (
       <div
-        key={node.id}
+        key={row.id}
         className={styles.row}
-        style={{ paddingLeft: pad + 16 }}
+        style={{ paddingLeft: row.pad }}
         title={file.path}
         onClick={show}
         onContextMenu={menu}
-        data-active={key === active}
+        data-active={row.id === active}
       >
-        <input type="checkbox" checked={selected.has(key)} onChange={pick} onClick={stopClick} />
+        <input type="checkbox" checked={selected.has(row.id)} onChange={pick} onClick={stopClick} />
         <FileIcon name={file.name} size={14} />
         <span
-          className={styles.name}
+          className={row.flat ? styles.fileName : styles.name}
           style={{ color: STATUS_COLOR[kind], textDecoration: kind === 'deleted' ? 'line-through' : undefined }}
         >
           {file.name}
         </span>
+        {row.flat && file.dir && <span className={styles.dir}>{displayDir(file.dir)}</span>}
       </div>
     );
   };
 
-  const flatRow = (file: FileChange, depth: number) => {
-    const key = changeKey(file);
-    const kind = statusKey(file);
-    const pick = () => toggle(key);
-    const show = () => openDiff(key);
-    const menu = (e: React.MouseEvent) => openFileMenu(e, file);
-    return (
-      <div
-        key={key}
-        className={styles.row}
-        style={{ paddingLeft: 43 + depth * 14 }}
-        title={file.path}
-        onClick={show}
-        onContextMenu={menu}
-        data-active={key === active}
-      >
-        <input type="checkbox" checked={selected.has(key)} onChange={pick} onClick={stopClick} />
-        <FileIcon name={file.name} size={14} />
-        <span
-          className={styles.fileName}
-          style={{ color: STATUS_COLOR[kind], textDecoration: kind === 'deleted' ? 'line-through' : undefined }}
-        >
-          {file.name}
-        </span>
-        {file.dir && <span className={styles.dir}>{displayDir(file.dir)}</span>}
-      </div>
-    );
-  };
-
-  const repoBody = (id: string, repo: RepoEntry, files: FileChange[], depth: number): React.ReactNode => (
-    <React.Fragment key={repo.root}>
-      {groupBy === 'directory'
-        ? buildDirTree(files, repoKey(id, repo.root)).map((node) => renderNode(node, depth))
-        : files.map((file) => flatRow(file, depth - 1))}
-    </React.Fragment>
-  );
-
-  const repoGroup = (id: string, repo: RepoEntry, files: FileChange[]) => {
-    const rid = repoKey(id, repo.root);
-    const shut = !needle && collapsed.has(rid);
-    const keys = files.map(changeKey);
-    const open = () => toggleCollapse(rid);
-    const check = (on: boolean) => setMany(keys, on);
-    const menu = (e: React.MouseEvent) => openFolderMenu(e, repo.root, '.', files);
+  const repoRow = (row: Extract<Row, { kind: 'repo' }>) => {
+    const open = () => toggleCollapse(row.id);
+    const check = (on: boolean) => setMany(row.keys, on);
+    const menu = (e: React.MouseEvent) => openFolderMenu(e, row.repo.root, '.', row.files);
 
     return (
-      <div key={rid}>
-        <div className={styles.row} style={{ paddingLeft: 22 }} onClick={open} onContextMenu={menu}>
-          {shut ? (
-            <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
-          ) : (
-            <ChevronDown size={12} strokeWidth={2.5} className={styles.caret} />
-          )}
-          <TriCheckbox state={triState(keys)} onChange={check} />
-          <FileIcon dir open={!shut} size={14} />
-          <span className={styles.fileName}>{repo.name}</span>
-          <span className={styles.count}>{pluralize(files.length)}</span>
-          {repo.branch && <span className={styles.branch}>{repo.branch}</span>}
-        </div>
-        {!shut && repoBody(id, repo, files, 2)}
+      <div key={row.id} className={styles.row} style={{ paddingLeft: 22 }} onClick={open} onContextMenu={menu}>
+        {caret(row.open)}
+        <TriCheckbox state={triState(row.keys)} onChange={check} />
+        <FileIcon dir open={row.open} size={14} />
+        <span className={styles.fileName}>{row.repo.name}</span>
+        <span className={styles.count}>{pluralize(row.files.length)}</span>
+        {row.repo.branch && <span className={styles.branch}>{row.repo.branch}</span>}
       </div>
     );
   };
 
-  const section = (id: string, label: string) => {
-    const all = sectionFiles(id);
-    if (all.length === 0) return null;
-    const shown = all.filter(matches);
-    const keys = shown.map(changeKey);
-    const shut = !needle && collapsed.has(id);
-    const open = () => toggleCollapse(id);
-    const check = (on: boolean) => setMany(keys, on);
+  const sectionRow = (row: Extract<Row, { kind: 'section' }>) => {
+    const open = () => toggleCollapse(row.id);
+    const check = (on: boolean) => setMany(row.keys, on);
     const menu = (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setSectionMenu({ x: e.clientX, y: e.clientY, id, keys, files: shown });
+      setSectionMenu({ x: e.clientX, y: e.clientY, id: row.id, keys: row.keys, files: row.files });
     };
 
-    const groups = repos
-      .map((repo) => [repo, filesOf(repo.root, id).filter(matches)] as const)
-      .filter(([, files]) => files.length > 0);
-
     return (
-      <div>
-        <div className={styles.sectionHead} onClick={open} onContextMenu={menu}>
-          {shut ? (
-            <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} />
-          ) : (
-            <ChevronDown size={12} strokeWidth={2.5} className={styles.caret} />
-          )}
-          <TriCheckbox state={triState(keys)} onChange={check} />
-          <span className={styles.sectionLabel}>{label}</span>
-          <span className={styles.count}>{pluralize(all.length)}</span>
-        </div>
-        {!shut &&
-          (multi
-            ? groups.map(([repo, files]) => repoGroup(id, repo, files))
-            : groups.map(([repo, files]) => repoBody(id, repo, files, 1)))}
+      <div key={row.id} className={styles.sectionHead} onClick={open} onContextMenu={menu}>
+        {caret(row.open)}
+        <TriCheckbox state={triState(row.keys)} onChange={check} />
+        <span className={styles.sectionLabel}>{row.label}</span>
+        <span className={styles.count}>{pluralize(row.total)}</span>
       </div>
     );
   };
 
+  const moreRow = (row: Extract<Row, { kind: 'more' }>) => {
+    const reveal = () => setRevealed((prev) => new Set(prev).add(row.section));
+
+    return (
+      <div key={row.id} className={styles.more}>
+        <span>{pluralize(row.count)} hidden</span>
+        <button type="button" className={styles.showAll} onClick={reveal}>
+          Show all
+        </button>
+      </div>
+    );
+  };
+
+  const renderRow = (row: Row) => {
+    if (row.kind === 'section') return sectionRow(row);
+    if (row.kind === 'repo') return repoRow(row);
+    if (row.kind === 'folder') return folderRow(row);
+    if (row.kind === 'more') return moreRow(row);
+    return fileRow(row);
+  };
+
   const ready = repos.length > 0 && Object.keys(statuses).length > 0;
-  const clean = ready && SECTIONS.every(([id]) => sectionFiles(id).length === 0);
+  const clean = ready && SECTIONS.every(([id]) => repos.every((repo) => countOf(repo.root, id) === 0));
 
   const blocked = Boolean(error && !ready);
   const friendly = error && error.includes('not a git repository') ? 'Not a git repository' : error;
@@ -852,7 +902,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
           </button>
         </div>
 
-        <div ref={listRef} className={styles.list} tabIndex={-1} onKeyDown={onListKeys}>
+        <div ref={setList} className={styles.list} tabIndex={-1} onKeyDown={onListKeys}>
           {!ready && !error && (
             <div className={styles.notice}>
               <LoaderCircle size={16} strokeWidth={2} className={styles.spinning} />
@@ -865,7 +915,13 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
               Working tree clean
             </div>
           )}
-          {ready && SECTIONS.map(([id, label]) => <React.Fragment key={id}>{section(id, label)}</React.Fragment>)}
+          {ready && rows.length > 0 && (
+            <>
+              <div style={{ height: before }} />
+              {rows.slice(start, end).map(renderRow)}
+              <div style={{ height: after }} />
+            </>
+          )}
         </div>
 
         <div className={styles.commit} ref={commitRef}>

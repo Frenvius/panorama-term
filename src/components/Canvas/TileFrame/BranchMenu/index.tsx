@@ -28,6 +28,8 @@ interface BranchMenuProps {
   onError: (error: string | null) => void;
 }
 
+const REMOTE_OPEN_LIMIT = 200;
+
 interface MenuState {
   leaf: BranchLeaf;
   x: number;
@@ -36,7 +38,7 @@ interface MenuState {
 
 const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose, onSnapshot, onError }: BranchMenuProps) => {
   const [query, setQuery] = React.useState('');
-  const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set());
+  const [toggled, setToggled] = React.useState<Set<string>>(() => new Set());
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const [dialog, setDialog] = React.useState<DialogState | null>(null);
   const [diffBranch, setDiffBranch] = React.useState<string | null>(null);
@@ -71,7 +73,10 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   const current = snapshot?.current ?? '';
   const filtering = query.trim().length > 0;
 
-  const isOpen = (folderKey: string) => filtering || !collapsed.has(folderKey);
+  const crowded = (snapshot?.remotes.length ?? 0) > REMOTE_OPEN_LIMIT;
+  const shutByDefault = React.useMemo(() => new Set(crowded ? trees.remote.map((node) => node.key) : []), [crowded, trees]);
+
+  const isOpen = (folderKey: string) => filtering || toggled.has(folderKey) === shutByDefault.has(folderKey);
   const leaves = visibleLeaves(
     [
       ['favorites', filtered.favorites],
@@ -250,7 +255,7 @@ const BranchMenu = ({ k, cwd, anchor, zIndex, snapshot, loading, error, onClose,
   };
 
   const toggleFolder = (key: string) => {
-    setCollapsed((prev) => {
+    setToggled((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);

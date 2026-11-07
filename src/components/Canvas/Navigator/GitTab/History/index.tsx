@@ -11,6 +11,7 @@ import { openUrl } from '~/adapter/shell/shell.client';
 import { gitLogGraph, gitRemoteUrl, gitUnpushedCommits } from '~/adapter/git/git.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { isCapturing } from '~/usecase/util/keybindings';
+import { useWindowedList } from '~/usecase/hooks/useWindowedList';
 import { graphColor, graphColorLocal, buildCommitGraph } from '~/usecase/util/commitGraph';
 
 import styles from './styles.module.scss';
@@ -34,6 +35,8 @@ const author = (row: LogRow): string => (row.committer === row.author ? row.auth
 const subject = (row: LogRow): string => row.message.split('\n', 1)[0];
 
 const refsLabel = (refs: string): string => refs.replace(/^HEAD -> /, '');
+
+const sameSet = (a: Set<string>, b: Set<string>): boolean => a.size === b.size && [...a].every((item) => b.has(item));
 
 const matchRow = (row: LogRow, needle: string): boolean =>
   `${row.message} ${row.author} ${row.committer} ${row.short} ${row.refs} ${row.date}`.toLowerCase().includes(needle);
@@ -116,13 +119,17 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
   const [picked, setPicked] = React.useState<LogRow | null>(null);
   const [exiting, setExiting] = React.useState(false);
   const exitTimer = React.useRef(0);
+  const polling = React.useRef(false);
+
+  const keepLocal = (next: Set<string>) => setLocal((prev) => (sameSet(prev, next) ? prev : next));
 
   const fetchLog = React.useCallback(
     (quiet: boolean) => {
       if (!quiet) setBusy(true);
+      polling.current = true;
       gitUnpushedCommits(root)
-        .then((ahead) => setLocal(new Set(ahead.map((entry) => entry.short))))
-        .catch(() => setLocal(new Set()));
+        .then((ahead) => keepLocal(new Set(ahead.map((entry) => entry.short))))
+        .catch(() => keepLocal(new Set()));
       gitLogGraph(root, limit)
         .then((next) => {
           setRows((prev) => (prev && sameLog(prev, next) ? prev : next));
@@ -132,6 +139,7 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
           if (!quiet) setError(typeof err === 'string' ? err : String(err));
         })
         .finally(() => {
+          polling.current = false;
           if (!quiet) setBusy(false);
         });
     },
@@ -143,7 +151,9 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
   React.useEffect(load, [load]);
 
   React.useEffect(() => {
-    const timer = window.setInterval(() => fetchLog(true), 5000);
+    const timer = window.setInterval(() => {
+      if (!polling.current) fetchLog(true);
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [fetchLog]);
 
@@ -246,6 +256,16 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
 
   const height = wide ? 24 : 38;
 
+  const { attach, start, end, before, after } = useWindowedList({ count: shown.length, rowHeight: height });
+
+  const setList = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      listRef.current = node;
+      attach(node);
+    },
+    [attach]
+  );
+
   if (error) return <div className={styles.notice}>{error}</div>;
 
   if (!rows)
@@ -268,8 +288,9 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
         <span className={styles.count}>{shown.length === 1 ? '1 commit' : `${shown.length} commits`}</span>
       </div>
 
-      <div ref={listRef} className={styles.list} tabIndex={-1}>
-        {shown.map(({ row, at }) => {
+      <div ref={setList} className={styles.list} tabIndex={-1}>
+        <div style={{ height: before }} />
+        {shown.slice(start, end).map(({ row, at }) => {
           const menuAt = (e: React.MouseEvent) => openMenu(e, row);
           const select = () => pick(row);
           return (
@@ -312,6 +333,7 @@ const History = ({ root, active, onOpenDiff }: HistoryProps) => {
             </div>
           );
         })}
+        <div style={{ height: after }} />
         {shown.length === 0 && <div className={styles.notice}>No matching commits</div>}
         {rows.length >= limit && (
           <button className={styles.more} onClick={more} disabled={busy}>

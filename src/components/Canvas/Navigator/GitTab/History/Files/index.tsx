@@ -8,6 +8,7 @@ import FileIcon from '~/components/commons/FileIcon';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { gitCommitFiles } from '~/adapter/git/git.client';
+import { useWindowedList } from '~/usecase/hooks/useWindowedList';
 import { sortTree, changeKey, statusKey, STATUS_COLOR, buildDirTree, collectFolderIds } from '~/usecase/util/fileTree';
 
 import styles from './styles.module.scss';
@@ -25,6 +26,25 @@ const GROUP_KEY = 'panorama:gitCommitGroup';
 const HEIGHT_KEY = 'panorama:gitCommitHeight';
 const MIN_HEIGHT = 96;
 const MAX_HEIGHT = 720;
+const ROW_HEIGHT = 22;
+
+type Row =
+  | { kind: 'file'; file: FileChange; pad: number; dir: boolean }
+  | { kind: 'folder'; node: Extract<TreeNode, { kind: 'folder' }>; pad: number; open: boolean };
+
+const flattenRows = (nodes: TreeNode[], depth: number, shut: Set<string>, out: Row[]): Row[] => {
+  const pad = 8 + depth * 14;
+  for (const node of nodes) {
+    if (node.kind === 'file') {
+      out.push({ kind: 'file', file: node.change, pad, dir: true });
+      continue;
+    }
+    const open = !shut.has(node.id);
+    out.push({ kind: 'folder', node, pad, open });
+    if (open) flattenRows(node.children, depth + 1, shut, out);
+  }
+  return out;
+};
 
 const savedHeight = (): number => {
   const raw = Number(getPref(HEIGHT_KEY));
@@ -69,6 +89,14 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
     () => (files && byDir ? sortTree(buildDirTree(files, commit.short)) : null),
     [files, byDir, commit.short]
   );
+
+  const rows = React.useMemo((): Row[] => {
+    if (!files) return [];
+    if (tree) return flattenRows(tree, 0, collapsed, []);
+    return files.map((file) => ({ kind: 'file', file, pad: 8, dir: false }));
+  }, [files, tree, collapsed]);
+
+  const { attach, start, end, before, after } = useWindowedList({ count: rows.length, rowHeight: ROW_HEIGHT });
 
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -143,24 +171,19 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
     );
   };
 
-  const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
-    const pad = 8 + depth * 14;
-    if (node.kind === 'file') return fileRow(node.change, pad, true);
-
-    const shut = collapsed.has(node.id);
-    const open = () => toggleFolder(node.id);
+  const folderRow = (row: Extract<Row, { kind: 'folder' }>) => {
+    const open = () => toggleFolder(row.node.id);
 
     return (
-      <div key={node.id}>
-        <div className={styles.row} style={{ paddingLeft: pad }} onClick={open}>
-          <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} data-open={!shut || undefined} />
-          <FileIcon dir open={!shut} size={14} />
-          <span className={styles.name}>{node.name}</span>
-        </div>
-        {!shut && node.children.map((child) => renderNode(child, depth + 1))}
+      <div key={row.node.id} className={styles.row} style={{ paddingLeft: row.pad }} onClick={open}>
+        <ChevronRight size={12} strokeWidth={2.5} className={styles.caret} data-open={row.open || undefined} />
+        <FileIcon dir open={row.open} size={14} />
+        <span className={styles.name}>{row.node.name}</span>
       </div>
     );
   };
+
+  const renderRow = (row: Row) => (row.kind === 'folder' ? folderRow(row) : fileRow(row.file, row.pad, row.dir));
 
   const body = () => {
     if (error) return <div className={styles.notice}>{error}</div>;
@@ -171,8 +194,13 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
         </div>
       );
     if (files.length === 0) return <div className={styles.notice}>No files changed</div>;
-    if (tree) return tree.map((node) => renderNode(node, 0));
-    return files.map((file) => fileRow(file, 8, false));
+    return (
+      <>
+        <div style={{ height: before }} />
+        {rows.slice(start, end).map(renderRow)}
+        <div style={{ height: after }} />
+      </>
+    );
   };
 
   return (
@@ -196,7 +224,9 @@ const Files = ({ root, commit, active, exiting, onOpenDiff, onClose }: FilesProp
           <X size={13} strokeWidth={2} />
         </button>
       </div>
-      <div className={styles.list}>{body()}</div>
+      <div ref={attach} className={styles.list}>
+        {body()}
+      </div>
 
       {viewMenu && <ContextMenu x={viewMenu.x} y={viewMenu.y} items={viewItems} onClose={closeViewMenu} />}
     </div>

@@ -100,7 +100,8 @@ export const gitRepos = (path: string): Promise<RepoEntry[]> => invoke<RepoEntry
 export const gitBlob = (path: string, file: string, old: boolean, revision: DiffRevision = {}): Promise<ArrayBuffer> =>
   invoke<ArrayBuffer>('git_blob', { path, file, old, commit: revision.commit ?? null, base: revision.base ?? null });
 
-export const gitStatus = (path: string): Promise<StatusSnapshot> => invoke<StatusSnapshot>('git_status', { path });
+export const gitStatus = (path: string, limit?: number): Promise<StatusSnapshot> =>
+  invoke<StatusSnapshot>('git_status', { path, limit: limit ?? null });
 
 export const gitCommit = (path: string, files: string[], message: string, amend: boolean): Promise<void> =>
   invoke<void>('git_commit', { path, files, message, amend });

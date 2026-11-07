@@ -77,6 +77,8 @@ pub struct FileChange {
 pub struct StatusSnapshot {
     changes: Vec<FileChange>,
     unversioned: Vec<FileChange>,
+    changes_total: usize,
+    unversioned_total: usize,
 }
 
 #[derive(Serialize)]
@@ -522,8 +524,12 @@ pub async fn git_repos(path: String) -> Result<Vec<RepoEntry>, String> {
 }
 
 #[tauri::command]
-pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
-    let path = repo_root(&path)?;
+pub async fn git_status(path: String, limit: Option<usize>) -> Result<StatusSnapshot, String> {
+    crate::blocking(move || status_snapshot(&path, limit)).await
+}
+
+fn status_snapshot(path: &str, limit: Option<usize>) -> Result<StatusSnapshot, String> {
+    let path = repo_root(path)?;
     let out = crate::hidden_command("git")
         .arg("-C")
         .arg(&path)
@@ -548,16 +554,22 @@ pub async fn git_status(path: String) -> Result<StatusSnapshot, String> {
         }
     }
 
-    let by_name = |a: &FileChange, b: &FileChange| {
-        natural_cmp(&a.name, &b.name).then_with(|| natural_cmp(&a.path, &b.path))
-    };
-    changes.sort_by(by_name);
-    unversioned.sort_by(by_name);
-
+    let changes_total = changes.len();
+    let unversioned_total = unversioned.len();
     Ok(StatusSnapshot {
-        changes,
-        unversioned,
+        changes: within_limit(changes, limit),
+        unversioned: within_limit(unversioned, limit),
+        changes_total,
+        unversioned_total,
     })
+}
+
+fn within_limit(mut files: Vec<FileChange>, limit: Option<usize>) -> Vec<FileChange> {
+    if limit.is_some_and(|max| files.len() > max) {
+        return Vec::new();
+    }
+    files.sort_by(|a, b| natural_cmp(&a.name, &b.name).then_with(|| natural_cmp(&a.path, &b.path)));
+    files
 }
 
 #[tauri::command]
@@ -998,8 +1010,35 @@ pub struct FileDiff {
     old: String,
     new: String,
     binary: bool,
+    too_large: bool,
     crlf: bool,
     old_crlf: bool,
+}
+
+const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+impl FileDiff {
+    fn withheld(binary: bool, too_large: bool) -> Self {
+        FileDiff {
+            old: String::new(),
+            new: String::new(),
+            binary,
+            too_large,
+            crlf: false,
+            old_crlf: false,
+        }
+    }
+
+    fn text(old: String, new: String) -> Self {
+        FileDiff {
+            crlf: new.contains("\r\n"),
+            old_crlf: old.contains("\r\n"),
+            old: old.replace("\r\n", "\n"),
+            new: new.replace("\r\n", "\n"),
+            binary: false,
+            too_large: false,
+        }
+    }
 }
 
 fn is_binary(text: &[u8]) -> bool {
@@ -1142,33 +1181,27 @@ pub async fn git_commit_diff_file(
     commit: String,
     file: String,
 ) -> Result<FileDiff, String> {
-    let source = commit_changes(&path, &commit)
+    crate::blocking(move || Ok(commit_file_diff(&path, &commit, &file))).await
+}
+
+fn commit_file_diff(path: &str, commit: &str, file: &str) -> FileDiff {
+    let source = commit_changes(path, commit)
         .unwrap_or_default()
         .into_iter()
-        .find(|(_, _, to)| *to == file)
+        .find(|(_, _, to)| to == file)
         .map(|(_, from, _)| from)
-        .unwrap_or_else(|| file.clone());
+        .unwrap_or_else(|| file.to_string());
 
-    let old = run_git(&path, &["show", &format!("{}^:{}", commit, source)]).unwrap_or_default();
-    let new = run_git(&path, &["show", &format!("{}:{}", commit, file)]).unwrap_or_default();
+    let old = run_git(path, &["show", &format!("{}^:{}", commit, source)]).unwrap_or_default();
+    let new = run_git(path, &["show", &format!("{}:{}", commit, file)]).unwrap_or_default();
 
     if is_binary(old.as_bytes()) || is_binary(new.as_bytes()) {
-        return Ok(FileDiff {
-            old: String::new(),
-            new: String::new(),
-            binary: true,
-            crlf: false,
-            old_crlf: false,
-        });
+        return FileDiff::withheld(true, false);
     }
-
-    Ok(FileDiff {
-        crlf: new.contains("\r\n"),
-        old_crlf: old.contains("\r\n"),
-        old: old.replace("\r\n", "\n"),
-        new: new.replace("\r\n", "\n"),
-        binary: false,
-    })
+    if old.len() > MAX_DIFF_BYTES || new.len() > MAX_DIFF_BYTES {
+        return FileDiff::withheld(false, true);
+    }
+    FileDiff::text(old, new)
 }
 
 #[tauri::command]
@@ -1177,38 +1210,37 @@ pub async fn git_diff_file(
     file: String,
     base: Option<String>,
 ) -> Result<FileDiff, String> {
+    crate::blocking(move || Ok(working_file_diff(&path, &file, base))).await
+}
+
+fn working_file_diff(path: &str, file: &str, base: Option<String>) -> FileDiff {
     let base = base.unwrap_or_else(|| "HEAD".into());
-    let mut old = run_git(&path, &["show", &format!("{}:{}", base, file)]).unwrap_or_default();
+    let mut old = run_git(path, &["show", &format!("{}:{}", base, file)]).unwrap_or_default();
 
     if old.is_empty() {
-        if let Some(from) = rename_source(&path, &base, &file) {
-            old = run_git(&path, &["show", &format!("{}:{}", base, from)]).unwrap_or_default();
+        if let Some(from) = rename_source(path, &base, file) {
+            old = run_git(path, &["show", &format!("{}:{}", base, from)]).unwrap_or_default();
         }
     }
 
-    let full = PathBuf::from(&path).join(&file);
-    let bytes = fs::read(&full).unwrap_or_default();
-    if is_binary(&bytes) || is_binary(old.as_bytes()) {
-        return Ok(FileDiff {
-            old: String::new(),
-            new: String::new(),
-            binary: true,
-            crlf: false,
-            old_crlf: false,
-        });
+    let full = PathBuf::from(path).join(file);
+    let size = fs::metadata(&full).map(|m| m.len() as usize).unwrap_or(0);
+    if old.len() > MAX_DIFF_BYTES || size > MAX_DIFF_BYTES {
+        let head = fs::File::open(&full)
+            .and_then(|f| {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                f.take(8000).read_to_end(&mut buf).map(|_| buf)
+            })
+            .unwrap_or_default();
+        return FileDiff::withheld(is_binary(&head) || is_binary(old.as_bytes()), true);
     }
 
-    let new = String::from_utf8_lossy(&bytes).into_owned();
-    let crlf = new.contains("\r\n");
-    let old_crlf = old.contains("\r\n");
-
-    Ok(FileDiff {
-        old: old.replace("\r\n", "\n"),
-        new: new.replace("\r\n", "\n"),
-        binary: false,
-        crlf,
-        old_crlf,
-    })
+    let bytes = fs::read(&full).unwrap_or_default();
+    if is_binary(&bytes) || is_binary(old.as_bytes()) {
+        return FileDiff::withheld(true, false);
+    }
+    FileDiff::text(old, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 static NEXT_WATCH: AtomicU32 = AtomicU32::new(1);

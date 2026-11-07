@@ -1,4 +1,4 @@
-import type { FileChange } from '~/domain/interfaces/git.interface';
+import type { FileChange, StatusSnapshot } from '~/domain/interfaces/git.interface';
 
 export const STATUS_COLOR: Record<string, string> = {
   modified: '#6897bb',
@@ -39,18 +39,20 @@ export type TreeNode =
 
 export const buildDirTree = (files: FileChange[], prefix: string): TreeNode[] => {
   const root: TreeNode[] = [];
+  const folders = new Map<string, TreeNode[]>();
   for (const file of files) {
     const segments = file.dir ? file.dir.split('/').filter(Boolean) : [];
     let current = root;
     let sofar = '';
     for (const segment of segments) {
       sofar = sofar ? `${sofar}/${segment}` : segment;
-      let folder = current.find((n): n is Extract<TreeNode, { kind: 'folder' }> => n.kind === 'folder' && n.name === segment);
-      if (!folder) {
-        folder = { kind: 'folder', id: `${prefix}:${sofar}`, name: segment, dir: sofar, children: [] };
-        current.push(folder);
+      let children = folders.get(sofar);
+      if (!children) {
+        children = [];
+        folders.set(sofar, children);
+        current.push({ kind: 'folder', id: `${prefix}:${sofar}`, name: segment, dir: sofar, children });
       }
-      current = folder.children;
+      current = children;
     }
     current.push({ kind: 'file', id: `${prefix}:${file.path}`, change: file });
   }
@@ -67,17 +69,32 @@ export const sortTree = (nodes: TreeNode[]): TreeNode[] =>
     })
     .map((node) => (node.kind === 'folder' ? { ...node, children: sortTree(node.children) } : node));
 
-export const collectKeys = (nodes: TreeNode[]): string[] =>
-  nodes.flatMap((node) => (node.kind === 'file' ? [changeKey(node.change)] : collectKeys(node.children)));
-
 export const collectFiles = (nodes: TreeNode[]): FileChange[] =>
   nodes.flatMap((node) => (node.kind === 'file' ? [node.change] : collectFiles(node.children)));
 
 export const collectFolderIds = (nodes: TreeNode[]): string[] =>
   nodes.flatMap((node) => (node.kind === 'folder' ? [node.id, ...collectFolderIds(node.children)] : []));
 
-export const flattenTree = (nodes: TreeNode[], shut: (id: string) => boolean): string[] =>
-  nodes.flatMap((node) => {
-    if (node.kind === 'file') return [changeKey(node.change)];
-    return shut(node.id) ? [] : flattenTree(node.children, shut);
-  });
+const sameChange = (a: FileChange, b: FileChange): boolean =>
+  a.path === b.path &&
+  a.repo === b.repo &&
+  a.rename_from === b.rename_from &&
+  a.is_untracked === b.is_untracked &&
+  a.status_index === b.status_index &&
+  a.status_worktree === b.status_worktree;
+
+const sameChanges = (a: FileChange[], b: FileChange[]): boolean =>
+  a.length === b.length && a.every((change, i) => sameChange(change, b[i]));
+
+export const sameSnapshots = (a: Record<string, StatusSnapshot>, b: Record<string, StatusSnapshot>): boolean => {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(
+    (key) =>
+      b[key] &&
+      a[key].changes_total === b[key].changes_total &&
+      a[key].unversioned_total === b[key].unversioned_total &&
+      sameChanges(a[key].changes, b[key].changes) &&
+      sameChanges(a[key].unversioned, b[key].unversioned)
+  );
+};

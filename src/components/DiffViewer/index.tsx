@@ -103,7 +103,13 @@ const DiffViewer = ({ root, file, revision, mode, handlers }: DiffViewerProps) =
         .then((result) => {
           if (!alive) return;
           setDiff((prev) =>
-            prev && prev.old === result.old && prev.new === result.new && prev.binary === result.binary ? prev : result
+            prev &&
+            prev.old === result.old &&
+            prev.new === result.new &&
+            prev.binary === result.binary &&
+            prev.too_large === result.too_large
+              ? prev
+              : result
           );
           setError(null);
         })
@@ -249,7 +255,7 @@ const DiffViewer = ({ root, file, revision, mode, handlers }: DiffViewerProps) =
   ];
 
   const ready = Boolean(diff) && !error;
-  const same = ready && !diff!.binary && chunks.length === 0;
+  const same = ready && !diff!.binary && !diff!.too_large && chunks.length === 0;
   const eolOnly = same && diff!.crlf !== diff!.old_crlf;
   const banner = !same ? null : eolOnly ? 'Contents have differences only in line separators' : 'Contents are identical';
   const total = chunks.length === 1 ? '1 difference' : `${chunks.length} differences`;
@@ -268,6 +274,7 @@ const DiffViewer = ({ root, file, revision, mode, handlers }: DiffViewerProps) =
       if (!isImageFile(name)) return <div className={styles.notice}>Binary file</div>;
       return <Images root={root} file={file} revision={{ base, commit }} />;
     }
+    if (diff.too_large) return <div className={styles.notice}>File too large to diff</div>;
 
     if (view === 'unified') {
       return <Unified old={diff.old} next={diff.new} lang={lang} chunks={chunks} collapse={collapse} />;

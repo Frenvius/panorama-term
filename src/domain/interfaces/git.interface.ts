@@ -62,7 +62,9 @@ export interface FileChange {
 
 export interface StatusSnapshot {
   changes: FileChange[];
+  changes_total: number;
   unversioned: FileChange[];
+  unversioned_total: number;
 }
 
 export interface DiffRevision {
@@ -74,6 +76,7 @@ export interface FileDiff {
   old: string;
   new: string;
   binary: boolean;
+  too_large: boolean;
   crlf: boolean;
   old_crlf: boolean;
 }

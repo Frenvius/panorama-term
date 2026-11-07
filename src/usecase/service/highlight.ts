@@ -1,6 +1,7 @@
 import type { Highlighter, ThemedToken, BundledLanguage } from 'shiki';
 
 const THEME = 'panorama';
+const MAX_HIGHLIGHT_CHARS = 400_000;
 
 let boot: Promise<Highlighter> | null = null;
 let ready: Highlighter | null = null;
@@ -31,6 +32,6 @@ export const tokenizeNow = (code: string, lang: string): ThemedToken[][] | null 
 };
 
 export const highlight = async (code: string, lang: string): Promise<ThemedToken[][]> => {
-  const id = await loadLang(lang);
+  const id = await loadLang(code.length > MAX_HIGHLIGHT_CHARS ? 'plaintext' : lang);
   return (await boot!).codeToTokens(code, { lang: id as BundledLanguage, theme: THEME }).tokens;
 };
