@@ -1,0 +1,30 @@
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.path {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: Hack, monospace;
+  word-break: break-all;
+}
+
+.button {
+  align-self: flex-start;
+  padding: 6px 16px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  transition: border-color 0.12s ease, color 0.12s ease;
+
+  &:hover {
+    color: var(--text-strong);
+    border-color: var(--border-3);
+  }
+}

@@ -1,0 +1,49 @@
+import { expect, test } from 'bun:test';
+
+import { parseManifest, readPlugins, toggleDisabled } from '~/usecase/util/plugins';
+
+const manifest = (over: Record<string, unknown> = {}): string =>
+  JSON.stringify({ id: 'nord', name: 'Nord', version: '1.0.0', ...over });
+
+test('a valid manifest keeps its fields', () => {
+  expect(parseManifest('nord', manifest({ description: 'Cold colors', author: 'me' }))).toEqual({
+    id: 'nord',
+    name: 'Nord',
+    version: '1.0.0',
+    description: 'Cold colors',
+    author: 'me'
+  });
+});
+
+test('pre-release versions are accepted', () => {
+  expect(parseManifest('nord', manifest({ version: '2.1.0-beta.1' }))).toMatchObject({ version: '2.1.0-beta.1' });
+});
+
+test('broken manifests explain what is wrong', () => {
+  expect(parseManifest('nord', null)).toBe('Missing plugin.json');
+  expect(parseManifest('nord', '{oops')).toBe('plugin.json is not valid JSON');
+  expect(parseManifest('nord', '[]')).toBe('plugin.json must be a JSON object');
+  expect(parseManifest('nord', manifest({ id: 'Nord Theme' }))).toBe('"id" must use lowercase letters, digits and dashes');
+  expect(parseManifest('other', manifest())).toBe('"id" must match the folder name "other"');
+  expect(parseManifest('nord', manifest({ name: ' ' }))).toBe('"name" is required');
+  expect(parseManifest('nord', manifest({ version: 'v1' }))).toBe('"version" must look like 1.0.0');
+  expect(parseManifest('nord', manifest({ description: 3 }))).toBe('"description" must be text');
+  expect(parseManifest('nord', manifest({ author: {} }))).toBe('"author" must be text');
+});
+
+test('plugins are enabled unless disabled, and broken ones carry their error', () => {
+  const plugins = readPlugins(
+    [
+      { dir: 'nord', manifest: manifest() },
+      { dir: 'mono', manifest: manifest({ id: 'mono' }) },
+      { dir: 'empty', manifest: null }
+    ],
+    ['mono']
+  );
+  expect(plugins.map((p) => ('error' in p ? p.error : p.enabled))).toEqual([true, false, 'Missing plugin.json']);
+});
+
+test('toggling flips a plugin in the disabled list', () => {
+  expect(toggleDisabled([], 'nord')).toEqual(['nord']);
+  expect(toggleDisabled(['mono', 'nord'], 'nord')).toEqual(['mono']);
+});
