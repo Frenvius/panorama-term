@@ -2,11 +2,12 @@ import { createRoot } from 'react-dom/client';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import App from '~/App';
-import { initTheme } from '~/usecase/util/theme';
+import { initTheme, usesPluginTheme } from '~/usecase/util/theme';
 import { initPrefs } from '~/usecase/util/prefs';
 import { hydrateAlerts } from '~/usecase/util/alerts';
 import { loadHackFont } from '~/usecase/util/fontUtils';
 import { initSettings } from '~/adapter/settings/settings.client';
+import { initPlugins } from '~/usecase/service/plugins.service';
 import { reportUiError } from '~/usecase/util/uiErrors';
 import CrashNotice from '~/components/commons/CrashNotice';
 import ErrorBoundary from '~/components/commons/ErrorBoundary';
@@ -48,6 +49,8 @@ const isOverlay = getCurrentWindow().label === 'notif';
 void loadHackFont();
 const boot = async (): Promise<void> => {
   await initSettings().catch(() => {});
+  const plugins = initPlugins();
+  if (usesPluginTheme()) await plugins;
   if (!isOverlay) {
     await initPrefs().catch(() => {});
     hydrateAlerts();

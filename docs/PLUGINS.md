@@ -39,6 +39,54 @@ away, no restart needed. Plugins are on when installed and can be switched off t
 
 A plugin whose manifest is missing or invalid is listed in Settings with the reason.
 
+`contributes` (optional) lists what the plugin adds. Each kind is described below.
+
+## Themes
+
+```json
+{
+  "contributes": {
+    "themes": [
+      {
+        "id": "dark",
+        "label": "Nord Dark",
+        "kind": "dark",
+        "colors": { "surface-1": "#2e3440", "text-1": "#d8dee9", "accent": "#88c0d0" },
+        "terminal": {
+          "foreground": "#d8dee9",
+          "cursor": "#d8dee9",
+          "ansi": ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+                   "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]
+        }
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `id` | yes | lowercase letters, digits and dashes; unique within the plugin |
+| `label` | yes | shown in Settings; by convention ends in "Dark" or "Light" |
+| `kind` | yes | `dark` or `light` |
+| `colors` | no | values for the app's CSS variables, without the leading `--` |
+| `terminal.foreground` / `terminal.cursor` | no | default text and cursor color |
+| `terminal.ansi` | no | the 16 ANSI colors (normal 0-7, then bright 8-15), used for text and backgrounds |
+
+A theme is drawn on top of the built-in theme of its kind, so it only needs the values
+it changes. **Settings → Appearance** shows a picker for the dark and the light theme
+once a plugin adds one; *System* switches between the two. If the plugin is switched
+off or removed, Panorama goes back to its own theme.
+
+Colors a theme can set: `surface-1..3`, `border-1..3`, `text-1`, `text-strong`,
+`text-muted`, `text-dim`, `accent`, `danger`, `run-glyph`, `run-fill`, `run-on-fill`,
+`stop-fill`, `stop-on-fill`, `fill-hover`, `fill-press`, `hover-1..3`, `hover-soft`,
+`pill-bg`, `minimap-bg`, `shadow-island`, `shadow-tile`, `shadow-pop`, `shadow-modal`,
+and the code colors `shiki-foreground`, `shiki-token-comment`, `shiki-token-punctuation`,
+`shiki-token-link`, `shiki-token-keyword`, `shiki-token-string`,
+`shiki-token-string-expression`, `shiki-token-constant`, `shiki-token-parameter`,
+`shiki-token-function`. Any other name makes the manifest invalid.
+
 ## Limits
 
 - Plugins only change what the extension points expose. They cannot restyle or replace

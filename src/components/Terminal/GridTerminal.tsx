@@ -80,6 +80,7 @@ const fgOf = (w0: number): string => {
   if (v === DEFAULT_FG) return termTheme.fg;
   return termTheme.ansi?.get(v) ?? hex(v);
 };
+const bgOf = (w1: number): string => termTheme.ansiBg?.get(w1 & 0xffffff) ?? hex(w1);
 
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
@@ -179,7 +180,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
       runStyle = '';
       const isDefault = (w0 & 0xffffff) === DEFAULT_FG && !bold && !hasBg;
       const symStyle = `width:7.23px;text-align:center;font-family:'Segoe UI Symbol',monospace;font-size:${(12 * symScale(cp, ch)).toFixed(2)}px${
-        isDefault ? '' : `;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${hex(w1)}` : ''}`
+        isDefault ? '' : `;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${bgOf(w1)}` : ''}`
       }`;
       html += `<span style="${symStyle}">${esc(ch)}</span>`;
       continue;
@@ -190,19 +191,19 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
       const isDefault = (w0 & 0xffffff) === DEFAULT_FG && !bold && !hasBg;
       const wideStyle = isDefault
         ? 'width:2ch'
-        : `width:2ch;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${hex(w1)}` : ''}`;
+        : `width:2ch;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${bgOf(w1)}` : ''}`;
       html += `<span style="${wideStyle}">${esc(ch)}</span>`;
       c++;
       continue;
     }
     if (block) {
-      style = `color:${fgOf(w0)};${blockCss(cp)}${hasBg ? `;background-color:${hex(w1)}` : ''}`;
+      style = `color:${fgOf(w0)};${blockCss(cp)}${hasBg ? `;background-color:${bgOf(w1)}` : ''}`;
       text = ' ';
     } else {
       const isDefault = (w0 & 0xffffff) === DEFAULT_FG && !bold && !hasBg;
       style = isDefault
         ? ''
-        : `color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${hex(w1)}` : ''}`;
+        : `color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${bgOf(w1)}` : ''}`;
       text = ch;
     }
     if (style !== runStyle) {

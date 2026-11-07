@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { parseManifest, readPlugins, toggleDisabled } from '~/usecase/util/plugins';
+import { parseManifest, readPlugins, toggleDisabled, enabledManifests } from '~/usecase/util/plugins';
 
 const manifest = (over: Record<string, unknown> = {}): string =>
   JSON.stringify({ id: 'nord', name: 'Nord', version: '1.0.0', ...over });
@@ -11,7 +11,8 @@ test('a valid manifest keeps its fields', () => {
     name: 'Nord',
     version: '1.0.0',
     description: 'Cold colors',
-    author: 'me'
+    author: 'me',
+    contributes: { themes: [] }
   });
 });
 
@@ -41,6 +42,18 @@ test('plugins are enabled unless disabled, and broken ones carry their error', (
     ['mono']
   );
   expect(plugins.map((p) => ('error' in p ? p.error : p.enabled))).toEqual([true, false, 'Missing plugin.json']);
+  expect(enabledManifests(plugins).map((m) => m.id)).toEqual(['nord']);
+});
+
+test('themes come from contributes, and a bad theme breaks the manifest', () => {
+  const theme = { id: 'night', label: 'Nord Night', kind: 'dark', colors: { accent: '#88c0d0' } };
+  expect(parseManifest('nord', manifest({ contributes: { themes: [theme] } }))).toMatchObject({
+    contributes: { themes: [{ ...theme, terminal: {} }] }
+  });
+  expect(parseManifest('nord', manifest({ contributes: [] }))).toBe('"contributes" must be an object');
+  expect(parseManifest('nord', manifest({ contributes: { themes: [{ ...theme, kind: 'dim' }] } }))).toBe(
+    'themes[0] "kind" must be "dark" or "light"'
+  );
 });
 
 test('toggling flips a plugin in the disabled list', () => {

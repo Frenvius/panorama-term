@@ -1,12 +1,13 @@
 import { revealPath } from '~/adapter/shell/shell.client';
 import { usePlugins } from '~/usecase/hooks/usePlugins';
+import { togglePlugin } from '~/usecase/service/plugins.service';
 import ToggleOption from '~/components/commons/Settings/ToggleOption';
 import settingsStyles from '~/components/commons/Settings/styles.module.scss';
 
 import styles from './styles.module.scss';
 
 const PluginsSection = () => {
-  const { root, plugins, error, toggle } = usePlugins();
+  const { root, plugins, error } = usePlugins();
 
   return (
     <div className={settingsStyles.pane}>
@@ -30,7 +31,7 @@ const PluginsSection = () => {
                 <ToggleOption
                   key={plugin.dir}
                   checked={plugin.enabled}
-                  onToggle={() => toggle(plugin.dir)}
+                  onToggle={() => togglePlugin(plugin.dir)}
                   label={`${plugin.manifest.name} ${plugin.manifest.version}`}
                   description={plugin.manifest.description ?? plugin.manifest.author ?? ''}
                 />
