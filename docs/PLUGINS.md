@@ -1,7 +1,13 @@
 # Plugins
 
+*Leia em [português](PLUGINS.pt-BR.md).*
+
 A plugin extends Panorama through the extension points the app offers. Most plugins
 are declarative: a `plugin.json` plus the files it points to, no code.
+
+For a complete plugin that uses every extension point (two themes, two fonts, a new
+language and an extension mapping), see
+[panorama-gatinhos](https://github.com/FlavioDias97/panorama-gatinhos).
 
 ## Where plugins live
 
