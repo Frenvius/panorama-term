@@ -19,6 +19,8 @@ export interface FileTreeHandlers {
 
 const focusInput = (el: HTMLInputElement | null) => el?.focus({ preventScroll: true });
 
+const CHILD_PAGE = 500;
+
 interface NodeProps {
   depth: number;
   query: string;
@@ -33,6 +35,7 @@ const Node = ({ entry, depth, query, expanded, creating, handlers }: NodeProps) 
   const [open, setOpen] = React.useState(Boolean(expanded));
   const [error, setError] = React.useState<string | null>(null);
   const [children, setChildren] = React.useState<DirEntry[] | null>(null);
+  const [limit, setLimit] = React.useState(CHILD_PAGE);
   const adding = creating?.parent === entry.path ? creating : null;
 
   React.useEffect(() => {
@@ -79,8 +82,14 @@ const Node = ({ entry, depth, query, expanded, creating, handlers }: NodeProps) 
       .catch((err) => setError(String(err)));
   };
 
+  const showMore = () => setLimit((n) => n + CHILD_PAGE);
+
   const hidden = query && !entry.name.toLowerCase().includes(query);
   if (hidden && !entry.dir) return null;
+
+  const listed = query ? children?.filter((child) => child.dir || child.name.toLowerCase().includes(query)) : children;
+  const shown = listed?.slice(0, limit);
+  const rest = (listed?.length ?? 0) - limit;
 
   return (
     <>
@@ -119,9 +128,17 @@ const Node = ({ entry, depth, query, expanded, creating, handlers }: NodeProps) 
         </div>
       )}
       {open &&
-        children?.map((child) => (
+        shown?.map((child) => (
           <Node key={child.path} entry={child} depth={depth + 1} query={query} creating={creating} handlers={handlers} />
         ))}
+      {open && rest > 0 && (
+        <div className={styles.more} style={{ paddingLeft: 24 + (depth + 1) * 14 }}>
+          <span>{rest} more</span>
+          <button type="button" className={styles.showMore} onClick={showMore}>
+            Show more
+          </button>
+        </div>
+      )}
     </>
   );
 };

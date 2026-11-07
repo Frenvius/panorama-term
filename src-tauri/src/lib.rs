@@ -628,8 +628,12 @@ fn ignored_names(dir: &str, names: &[String]) -> std::collections::HashSet<Strin
 }
 
 #[tauri::command]
-fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
-    let mut out: Vec<DirEntry> = std::fs::read_dir(&path)
+async fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    blocking(move || list_dir(&path)).await
+}
+
+fn list_dir(path: &str) -> Result<Vec<DirEntry>, String> {
+    let mut out: Vec<DirEntry> = std::fs::read_dir(path)
         .map_err(|e| e.to_string())?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
@@ -644,7 +648,7 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
         .collect();
 
     let names: Vec<String> = out.iter().map(|e| e.name.clone()).collect();
-    let ignored = ignored_names(&path, &names);
+    let ignored = ignored_names(path, &names);
     for entry in out.iter_mut() {
         entry.ignored = ignored.contains(&entry.name);
     }
