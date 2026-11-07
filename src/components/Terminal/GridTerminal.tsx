@@ -3,6 +3,7 @@ import React from 'react';
 import AgentBar from '~/components/Terminal/AgentBar';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ResumePanel from '~/components/Terminal/ResumePanel';
+import { termMetrics } from '~/usecase/util/fonts';
 import { termTheme, THEME_EVENT } from '~/usecase/util/theme';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { scheduleConnect } from '~/usecase/util/connectScheduler';
@@ -179,7 +180,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
       flush();
       runStyle = '';
       const isDefault = (w0 & 0xffffff) === DEFAULT_FG && !bold && !hasBg;
-      const symStyle = `width:7.23px;text-align:center;font-family:'Segoe UI Symbol',monospace;font-size:${(12 * symScale(cp, ch)).toFixed(2)}px${
+      const symStyle = `width:${termMetrics.cellW}px;text-align:center;font-family:'Segoe UI Symbol',monospace;font-size:${(12 * symScale(cp, ch)).toFixed(2)}px${
         isDefault ? '' : `;color:${fgOf(w0)}${bold ? ';font-weight:700' : ''}${hasBg ? `;background:${bgOf(w1)}` : ''}`
       }`;
       html += `<span style="${symStyle}">${esc(ch)}</span>`;

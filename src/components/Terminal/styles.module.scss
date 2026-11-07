@@ -5,7 +5,7 @@
   overflow: hidden;
   user-select: none;
   outline: none;
-  font-family: 'Hack', ui-monospace, monospace;
+  font-family: var(--font-terminal);
   font-size: 12px;
   line-height: 15px;
   white-space: pre;

@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import App from '~/App';
 import { initTheme, usesPluginTheme } from '~/usecase/util/theme';
+import { initFonts, usesPluginFont } from '~/usecase/util/fonts';
 import { initPrefs } from '~/usecase/util/prefs';
 import { hydrateAlerts } from '~/usecase/util/alerts';
 import { loadHackFont } from '~/usecase/util/fontUtils';
@@ -50,12 +51,14 @@ void loadHackFont();
 const boot = async (): Promise<void> => {
   await initSettings().catch(() => {});
   const plugins = initPlugins();
-  if (usesPluginTheme()) await plugins;
+  if (usesPluginTheme() || usesPluginFont()) await plugins;
   if (!isOverlay) {
     await initPrefs().catch(() => {});
     hydrateAlerts();
   }
   initTheme();
+  const fonts = initFonts();
+  if (usesPluginFont()) await fonts;
   if (isOverlay) mountOverlay();
   else mountApp();
 };

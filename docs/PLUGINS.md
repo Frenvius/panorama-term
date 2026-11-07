@@ -87,8 +87,43 @@ and the code colors `shiki-foreground`, `shiki-token-comment`, `shiki-token-punc
 `shiki-token-string-expression`, `shiki-token-constant`, `shiki-token-parameter`,
 `shiki-token-function`. Any other name makes the manifest invalid.
 
+## Fonts
+
+```json
+{
+  "contributes": {
+    "fonts": [
+      {
+        "family": "Iosevka Term",
+        "monospace": true,
+        "files": ["fonts/regular.woff2", { "path": "fonts/bold.woff2", "weight": 700 }]
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `family` | yes | letters, digits, spaces, dots, dashes or underscores; unique within the plugin |
+| `monospace` | no | `true` lets the font be used for code and the terminal; default `false` |
+| `files` | yes | font files inside the plugin folder (`.woff2`, `.woff`, `.ttf`, `.otf`) |
+| `files[].weight` | no | `100` to `900`, default `400` |
+| `files[].style` | no | `normal` or `italic`, default `normal` |
+
+A file can be given as a plain path when it is the regular face. **Settings →
+Appearance** shows a picker for the interface font, the code font (editor and diff)
+and the terminal font once a plugin adds one. Only the chosen fonts are read, when
+they are chosen. The terminal measures the chosen font, so columns keep matching the
+tile width. If a font cannot be read, or its plugin is switched off, Panorama goes
+back to its own font.
+
 ## Limits
 
 - Plugins only change what the extension points expose. They cannot restyle or replace
   parts of the app.
 - Plugins apply to the desktop app only, not to the phone app.
+- The terminal font keeps Panorama's size and line height and draws cell by cell, so
+  it must be monospaced and ligatures are not shown.
+- In the terminal, ANSI white (7) and bright white (15) arrive as the same color, so a
+  theme cannot tell them apart; bright white wins.

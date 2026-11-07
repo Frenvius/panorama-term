@@ -1,4 +1,4 @@
-import type { PluginManifest, PluginTheme, ThemeKind } from '~/domain/interfaces/plugin.interface';
+import type { PluginChoice, PluginManifest, PluginTheme, ThemeKind } from '~/domain/interfaces/plugin.interface';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { enabledPlugins, PLUGINS_EVENT } from '~/usecase/service/plugins.service';
@@ -52,13 +52,7 @@ const LIGHT = {
   line: '#303030'
 };
 
-export interface ThemeChoice {
-  key: string;
-  label: string;
-  description: string;
-}
-
-export const themeChoices = (plugins: PluginManifest[], kind: ThemeKind): ThemeChoice[] => [
+export const themeChoices = (plugins: PluginManifest[], kind: ThemeKind): PluginChoice[] => [
   { key: BUILTIN_THEME, label: BUILTIN_LABELS[kind], description: 'Built into Panorama.' },
   ...plugins.flatMap((plugin) =>
     plugin.contributes.themes

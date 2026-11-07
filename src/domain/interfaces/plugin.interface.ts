@@ -18,16 +18,36 @@ export interface PluginTheme {
   terminal: { foreground?: string; cursor?: string; ansi?: string[] };
 }
 
+export type FontUse = 'ui' | 'code' | 'terminal';
+
+export interface PluginFontFile {
+  path: string;
+  weight: string;
+  style: 'normal' | 'italic';
+}
+
+export interface PluginFont {
+  family: string;
+  monospace: boolean;
+  files: PluginFontFile[];
+}
+
 export interface PluginManifest {
   id: string;
   name: string;
   version: string;
   description?: string;
   author?: string;
-  contributes: { themes: PluginTheme[] };
+  contributes: { themes: PluginTheme[]; fonts: PluginFont[] };
 }
 
 export type Plugin = { dir: string; manifest: PluginManifest; enabled: boolean } | { dir: string; error: string };
+
+export interface PluginChoice {
+  key: string;
+  label: string;
+  description: string;
+}
 
 export interface PluginsState {
   root: string | null;

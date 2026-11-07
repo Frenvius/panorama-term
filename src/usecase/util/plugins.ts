@@ -1,6 +1,7 @@
 import type { Plugin, PluginManifest, PluginSource } from '~/domain/interfaces/plugin.interface';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { parseFonts } from '~/usecase/util/pluginFont';
 import { parseThemes } from '~/usecase/util/pluginTheme';
 
 const DISABLED_KEY = 'pluginsDisabled';
@@ -32,6 +33,8 @@ export const parseManifest = (dir: string, raw: string | null): PluginManifest |
   if (!isRecord(contributes)) return '"contributes" must be an object';
   const themes = parseThemes(contributes.themes);
   if (typeof themes === 'string') return themes;
+  const fonts = parseFonts(contributes.fonts);
+  if (typeof fonts === 'string') return fonts;
 
   return {
     id,
@@ -39,7 +42,7 @@ export const parseManifest = (dir: string, raw: string | null): PluginManifest |
     version,
     description: description as string | undefined,
     author: author as string | undefined,
-    contributes: { themes }
+    contributes: { themes, fonts }
   };
 };
 
