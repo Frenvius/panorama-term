@@ -128,22 +128,49 @@ pub fn parse_lines(raw: &str) -> Vec<Value> {
         .collect()
 }
 
-pub fn read_chunk(path: &Path, offset: Option<u64>) -> std::io::Result<ChatChunk> {
-    let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    let start = offset.filter(|o| *o <= len).unwrap_or(0);
+const TAIL_WINDOW: u64 = 4 * 1024 * 1024;
+
+fn read_from(file: &mut std::fs::File, start: u64) -> std::io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
-    let complete = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    let mut items = parse_lines(&String::from_utf8_lossy(&buf[..complete]));
-    if offset.is_none() && items.len() > INITIAL_ITEMS {
-        items.drain(..items.len() - INITIAL_ITEMS);
+    Ok(buf)
+}
+
+fn line_end(buf: &[u8]) -> usize {
+    buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
+}
+
+pub fn read_chunk(path: &Path, offset: Option<u64>) -> std::io::Result<ChatChunk> {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if let Some(start) = offset.filter(|o| *o <= len) {
+        let buf = read_from(&mut file, start)?;
+        let complete = line_end(&buf);
+        return Ok(ChatChunk {
+            items: parse_lines(&String::from_utf8_lossy(&buf[..complete])),
+            offset: start + complete as u64,
+        });
     }
-    Ok(ChatChunk {
-        items,
-        offset: start + complete as u64,
-    })
+
+    let mut window = TAIL_WINDOW;
+    loop {
+        let from = len.saturating_sub(window);
+        let buf = read_from(&mut file, from)?;
+        let skip = if from == 0 { 0 } else { buf.iter().position(|b| *b == b'\n').map_or(buf.len(), |i| i + 1) };
+        let complete = line_end(&buf).max(skip);
+        let mut items = parse_lines(&String::from_utf8_lossy(&buf[skip..complete]));
+        if items.len() >= INITIAL_ITEMS || from == 0 {
+            if items.len() > INITIAL_ITEMS {
+                items.drain(..items.len() - INITIAL_ITEMS);
+            }
+            return Ok(ChatChunk {
+                items,
+                offset: from + complete as u64,
+            });
+        }
+        window = window.saturating_mul(4);
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +218,23 @@ mod tests {
         let chunk = read_chunk(&dir, Some(0)).unwrap();
         assert_eq!(chunk.items.len(), 1);
         assert_eq!(chunk.offset, line.len() as u64);
+        let _ = std::fs::remove_file(dir);
+    }
+
+    #[test]
+    fn initial_chunk_reads_only_the_tail() {
+        let dir = std::env::temp_dir().join("panorama-chat-tail-test.jsonl");
+        let filler = format!("{{\"type\":\"user\",\"uuid\":\"f\",\"isMeta\":true,\"message\":{{\"content\":\"{}\"}}}}\n", "x".repeat(1024));
+        let line = |i: usize| format!("{{\"type\":\"user\",\"uuid\":\"u{i}\",\"message\":{{\"content\":\"m{i}\"}}}}\n");
+        let mut raw = filler.repeat(6 * 1024);
+        let tail: String = (0..INITIAL_ITEMS + 5).map(line).collect();
+        raw.push_str(&tail);
+        std::fs::write(&dir, &raw).unwrap();
+
+        let chunk = read_chunk(&dir, None).unwrap();
+        assert_eq!(chunk.items.len(), INITIAL_ITEMS);
+        assert_eq!(chunk.items[0]["text"], "m5");
+        assert_eq!(chunk.offset, raw.len() as u64);
         let _ = std::fs::remove_file(dir);
     }
 }
