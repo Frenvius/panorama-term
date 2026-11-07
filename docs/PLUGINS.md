@@ -118,6 +118,36 @@ they are chosen. The terminal measures the chosen font, so columns keep matching
 tile width. If a font cannot be read, or its plugin is switched off, Panorama goes
 back to its own font.
 
+## Languages
+
+```json
+{
+  "contributes": {
+    "languages": [
+      { "id": "mylang", "extensions": [".my"], "grammar": "syntaxes/mylang.tmLanguage.json" },
+      { "id": "groovy", "extensions": [".jenkins"] }
+    ]
+  }
+}
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `id` | yes | lowercase letters, digits and `+ # . -`; unique within the plugin |
+| `extensions` | no | file extensions like `.my` that use this language |
+| `grammar` | no | a TextMate grammar (`.json`, with a `scopeName`) inside the plugin |
+
+A language needs a `grammar`, `extensions`, or both:
+
+- **With a grammar**, the plugin brings a language Panorama does not know. Files with its
+  extensions, and fenced code blocks tagged with its `id`, are colored with it.
+- **Without a grammar**, the extensions are mapped to a language Panorama already knows
+  (`id` is that language, e.g. `groovy`).
+
+Coloring follows the active theme's code colors, in the editor, the diff viewer and
+Markdown code blocks. A grammar is read the first time a file needs it; changes to a
+grammar apply to files opened afterwards.
+
 ## Limits
 
 - Plugins only change what the extension points expose. They cannot restyle or replace
@@ -125,5 +155,6 @@ back to its own font.
 - Plugins apply to the desktop app only, not to the phone app.
 - The terminal font keeps Panorama's size and line height and draws cell by cell, so
   it must be monospaced and ligatures are not shown.
+- Languages bring coloring only: no completion, linting or other editor features.
 - In the terminal, ANSI white (7) and bright white (15) arrive as the same color, so a
   theme cannot tell them apart; bright white wins.

@@ -32,13 +32,19 @@ export interface PluginFont {
   files: PluginFontFile[];
 }
 
+export interface PluginLanguage {
+  id: string;
+  extensions: string[];
+  grammar?: string;
+}
+
 export interface PluginManifest {
   id: string;
   name: string;
   version: string;
   description?: string;
   author?: string;
-  contributes: { themes: PluginTheme[]; fonts: PluginFont[] };
+  contributes: { themes: PluginTheme[]; fonts: PluginFont[]; languages: PluginLanguage[] };
 }
 
 export type Plugin = { dir: string; manifest: PluginManifest; enabled: boolean } | { dir: string; error: string };

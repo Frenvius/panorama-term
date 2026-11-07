@@ -12,7 +12,7 @@ test('a valid manifest keeps its fields', () => {
     version: '1.0.0',
     description: 'Cold colors',
     author: 'me',
-    contributes: { themes: [], fonts: [] }
+    contributes: { themes: [], fonts: [], languages: [] }
   });
 });
 

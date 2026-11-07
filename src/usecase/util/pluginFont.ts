@@ -1,14 +1,10 @@
 import type { PluginFont, PluginFontFile } from '~/domain/interfaces/plugin.interface';
 
+import { isInside, isRecord } from '~/usecase/util/pluginFields';
+
 const FAMILY = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
 const FONT_FILE = /\.(woff2?|ttf|otf)$/i;
 const WEIGHT = /^[1-9]00$/;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const isInside = (path: string): boolean =>
-  !path.startsWith('/') && !path.includes('\\') && !path.includes(':') && path.split('/').every((p) => p && p !== '..');
 
 const parseFile = (value: unknown, where: string): PluginFontFile | string => {
   const file = typeof value === 'string' ? { path: value } : value;

@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { expect, test, mock } from 'bun:test';
+import { expect, test, mock, afterAll } from 'bun:test';
 
 const settings = new Map<string, unknown>();
 let manifests: Record<string, string> = {};
@@ -9,15 +9,15 @@ mock.module('~/adapter/settings/settings.client', () => ({
   setSetting: async (key: string, value: unknown) => void settings.set(key, value)
 }));
 
-const files = new Map<string, ArrayBuffer>();
+const files = new Map<string, ArrayBuffer | string>();
 
-mock.module('~/adapter/fs/fs.client', () => ({
-  readFileBytes: async (path: string) => {
-    const bytes = files.get(path);
-    if (!bytes) throw new Error(`no file ${path}`);
-    return bytes;
-  }
-}));
+const file = async (path: string) => {
+  const content = files.get(path);
+  if (content === undefined) throw new Error(`no file ${path}`);
+  return content;
+};
+
+mock.module('~/adapter/fs/fs.client', () => ({ readFileBytes: file, readTextFile: file }));
 
 mock.module('~/adapter/plugins/plugins.client', () => ({
   scanPlugins: async () => ({
@@ -27,7 +27,11 @@ mock.module('~/adapter/plugins/plugins.client', () => ({
   onPluginsChanged: () => () => {}
 }));
 
-if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+const ownDom = !GlobalRegistrator.isRegistered;
+if (ownDom) GlobalRegistrator.register();
+afterAll(async () => {
+  if (ownDom) await GlobalRegistrator.unregister();
+});
 
 const added: { family: string; weight?: string }[] = [];
 class FakeFontFace {
@@ -77,8 +81,9 @@ const iosevka = {
 const load = async () => {
   const theme = await import('~/usecase/util/theme');
   const fonts = await import('~/usecase/util/fonts');
+  const highlight = await import('~/usecase/service/highlight');
   const service = await import('~/usecase/service/plugins.service');
-  return { ...theme, ...fonts, ...service };
+  return { ...theme, ...fonts, ...highlight, ...service };
 };
 
 const cssVar = (name: string) => document.documentElement.style.getPropertyValue(name);
@@ -176,4 +181,49 @@ test('a chosen terminal font is loaded from the plugin, measured, and dropped wi
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(cssVar('--font-terminal')).toBe('');
   expect(termMetrics.cellW).toBe(7.23);
+});
+
+const demo = {
+  id: 'demo',
+  name: 'Demo',
+  version: '1.0.0',
+  contributes: {
+    languages: [
+      { id: 'demo', extensions: ['.dmo'], grammar: 'demo.tmLanguage.json' },
+      { id: 'groovy', extensions: ['.jenkins'] }
+    ]
+  }
+};
+
+const grammar = {
+  scopeName: 'source.demo',
+  patterns: [{ match: '\\bhello\\b', name: 'keyword.control.demo' }]
+};
+
+test('plugin grammars color their files, extensions map to known languages, both go away with the plugin', async () => {
+  const { initPlugins, togglePlugin, loadLang, highlight } = await load();
+  manifests = { demo: JSON.stringify(demo) };
+  files.set('/plugins/demo/demo.tmLanguage.json', JSON.stringify(grammar));
+  await initPlugins();
+
+  const lang = await loadLang('dmo');
+  expect(lang).toStartWith('demo/demo#');
+  const [line] = await highlight('hello world', 'dmo');
+  expect(line[0]).toMatchObject({ content: 'hello', color: 'var(--shiki-token-keyword)' });
+  expect(await loadLang('demo')).toBe(lang);
+  expect(await loadLang('jenkins')).toBe('groovy');
+
+  togglePlugin('demo');
+  expect(await loadLang('dmo')).toBe('plaintext');
+  expect(await loadLang('jenkins')).toBe('plaintext');
+  expect(await loadLang('ts')).toBe('ts');
+});
+
+test('a grammar that cannot be read leaves the file uncolored', async () => {
+  const { initPlugins, togglePlugin, loadLang } = await load();
+  manifests = { demo: JSON.stringify(demo) };
+  files.delete('/plugins/demo/demo.tmLanguage.json');
+  await initPlugins();
+  togglePlugin('demo');
+  expect(await loadLang('dmo')).toBe('plaintext');
 });

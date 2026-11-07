@@ -1,5 +1,7 @@
 import type { PluginTheme } from '~/domain/interfaces/plugin.interface';
 
+import { isRecord, isText } from '~/usecase/util/pluginFields';
+
 export const THEME_COLORS = [
   'surface-1',
   'surface-2',
@@ -44,11 +46,6 @@ export const THEME_COLORS = [
 
 const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const KNOWN = new Set(THEME_COLORS);
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const isText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
 const parseColors = (value: unknown, where: string): Record<string, string> | string => {
   if (value === undefined) return {};

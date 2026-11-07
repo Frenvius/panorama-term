@@ -1,16 +1,15 @@
 import type { Plugin, PluginManifest, PluginSource } from '~/domain/interfaces/plugin.interface';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { isRecord, isText } from '~/usecase/util/pluginFields';
 import { parseFonts } from '~/usecase/util/pluginFont';
+import { parseLanguages } from '~/usecase/util/pluginLanguage';
 import { parseThemes } from '~/usecase/util/pluginTheme';
 
 const DISABLED_KEY = 'pluginsDisabled';
 const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const VERSION = /^\d+\.\d+\.\d+([-+][\w.-]+)?$/;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-const isText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 const isOptionalText = (value: unknown): boolean => value === undefined || typeof value === 'string';
 
 export const parseManifest = (dir: string, raw: string | null): PluginManifest | string => {
@@ -35,6 +34,8 @@ export const parseManifest = (dir: string, raw: string | null): PluginManifest |
   if (typeof themes === 'string') return themes;
   const fonts = parseFonts(contributes.fonts);
   if (typeof fonts === 'string') return fonts;
+  const languages = parseLanguages(contributes.languages);
+  if (typeof languages === 'string') return languages;
 
   return {
     id,
@@ -42,7 +43,7 @@ export const parseManifest = (dir: string, raw: string | null): PluginManifest |
     version,
     description: description as string | undefined,
     author: author as string | undefined,
-    contributes: { themes, fonts }
+    contributes: { themes, fonts, languages }
   };
 };
 
