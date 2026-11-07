@@ -10,6 +10,7 @@ import {
 } from '~/usecase/util/plugins';
 
 export const PLUGINS_EVENT = 'panorama-plugins';
+const SETTLE_MS = 150;
 
 let sources: PluginSource[] = [];
 let state: PluginsState = { root: null, plugins: [], error: null };
@@ -39,11 +40,15 @@ export const togglePlugin = (id: string): void => {
 };
 
 let watching = false;
+let settle: ReturnType<typeof setTimeout> | undefined;
 
 export const initPlugins = (): Promise<void> => {
   if (!watching) {
     watching = true;
-    onPluginsChanged(() => void refreshPlugins());
+    onPluginsChanged(() => {
+      clearTimeout(settle);
+      settle = setTimeout(() => void refreshPlugins(), SETTLE_MS);
+    });
   }
   return refreshPlugins();
 };

@@ -116,7 +116,8 @@ Appearance** shows a picker for the interface font, the code font (editor and di
 and the terminal font once a plugin adds one. Only the chosen fonts are read, when
 they are chosen. The terminal measures the chosen font, so columns keep matching the
 tile width. If a font cannot be read, or its plugin is switched off, Panorama goes
-back to its own font.
+back to its own font. Font files are read once per session; replacing them takes
+effect after a restart.
 
 ## Languages
 
