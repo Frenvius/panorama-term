@@ -16,6 +16,7 @@ export interface PluginTheme {
   kind: ThemeKind;
   colors: Record<string, string>;
   terminal: { foreground?: string; cursor?: string; ansi?: string[] };
+  background?: { image: string; opacity: number };
 }
 
 export type FontUse = 'ui' | 'code' | 'terminal';

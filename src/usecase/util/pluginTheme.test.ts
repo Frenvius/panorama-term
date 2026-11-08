@@ -33,3 +33,29 @@ test('bad themes explain what is wrong', () => {
   expect(parseThemes([theme({ terminal: { ansi: ansi.slice(1) } })])).toBe('themes[0] terminal "ansi" must list 16 colors');
   expect(parseThemes([theme(), theme()])).toBe('themes[1] repeats the id "night"');
 });
+
+test('tile transparency and blur stay within readable limits', () => {
+  const ok = theme({ colors: { 'tile-alpha': '45%', 'tile-chrome-alpha': '100%', 'tile-blur': '0px' } });
+  expect(parseThemes([ok])).toMatchObject([{ colors: { 'tile-alpha': '45%', 'tile-blur': '0px' } }]);
+  expect(parseThemes([theme({ colors: { 'tile-alpha': '10%' } })])).toBe('themes[0] "tile-alpha" must be 30% to 100%');
+  expect(parseThemes([theme({ colors: { 'tile-alpha': '0.5' } })])).toBe('themes[0] "tile-alpha" must be 30% to 100%');
+  expect(parseThemes([theme({ colors: { 'tile-blur': '40px' } })])).toBe('themes[0] "tile-blur" must be 0px to 32px');
+});
+
+test('a background is an image inside the plugin with an optional opacity', () => {
+  expect(parseThemes([theme({ background: { image: 'bg/cats.svg' } })])).toMatchObject([
+    { background: { image: 'bg/cats.svg', opacity: 1 } }
+  ]);
+  expect(parseThemes([theme({ background: { image: 'bg/cats.webp', opacity: 0.4 } })])).toMatchObject([
+    { background: { image: 'bg/cats.webp', opacity: 0.4 } }
+  ]);
+  expect(parseThemes([theme({ background: 'cats.svg' })])).toBe('themes[0] "background" must be an object');
+  for (const image of ['../cats.svg', '/cats.svg', 'cats.html', 3]) {
+    expect(parseThemes([theme({ background: { image } })])).toBe(
+      'themes[0] background "image" must be an image file inside the plugin'
+    );
+  }
+  expect(parseThemes([theme({ background: { image: 'a.png', opacity: 2 } })])).toBe(
+    'themes[0] background "opacity" must be 0 to 1'
+  );
+});

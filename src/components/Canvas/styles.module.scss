@@ -33,6 +33,19 @@
   }
 }
 
+.backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+
+  @media (prefers-reduced-motion: reduce) {
+    display: none;
+  }
+}
+
 .grid {
   position: absolute;
   inset: 0;

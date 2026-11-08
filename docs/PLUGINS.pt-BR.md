@@ -80,6 +80,8 @@ Um plugin sem manifesto, ou com manifesto inválido, aparece em Settings com o m
 | `colors` | não | valores para as variáveis CSS do app, sem o `--` inicial |
 | `terminal.foreground` / `terminal.cursor` | não | cor padrão do texto e do cursor |
 | `terminal.ansi` | não | as 16 cores ANSI (normais 0-7, depois as brilhantes 8-15), usadas no texto e no fundo |
+| `background.image` | não | uma imagem dentro do plugin desenhada atrás do canvas (`.svg`, `.png`, `.gif`, `.webp`, `.avif`, `.jpg`); pode ser animada |
+| `background.opacity` | não | `0` a `1`, padrão `1` |
 
 Um tema é aplicado por cima do tema embutido do mesmo tipo, então só precisa trazer o
 que muda. **Settings → Appearance** mostra a escolha do tema escuro e do claro assim
@@ -94,6 +96,17 @@ e as cores de código `shiki-foreground`, `shiki-token-comment`, `shiki-token-pu
 `shiki-token-link`, `shiki-token-keyword`, `shiki-token-string`,
 `shiki-token-string-expression`, `shiki-token-constant`, `shiki-token-parameter`,
 `shiki-token-function`. Qualquer outro nome torna o manifesto inválido.
+
+Mais três valores definem o quanto do canvas aparece através dos tiles: `tile-alpha`
+(corpo do tile, `30%` a `100%`, padrão `62%`), `tile-chrome-alpha` (cabeçalho do tile,
+`30%` a `100%`, padrão `90%`) e `tile-blur` (desfoque atrás dos tiles, `0px` a `32px`,
+padrão `16px`).
+
+O fundo preenche o canvas atrás dos tiles e fica parado enquanto você navega. Ele some
+quando um tile está em tela cheia e quando o sistema pede para reduzir movimento. Um
+fundo animado custa processamento a cada quadro enquanto aparece (um SVG animado pode
+ocupar um núcleo inteiro da CPU), então prefira uma imagem parada, a menos que a animação
+seja a graça; o custo some assim que outro tema é escolhido.
 
 ## Fontes
 

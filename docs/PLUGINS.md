@@ -78,6 +78,8 @@ A plugin whose manifest is missing or invalid is listed in Settings with the rea
 | `colors` | no | values for the app's CSS variables, without the leading `--` |
 | `terminal.foreground` / `terminal.cursor` | no | default text and cursor color |
 | `terminal.ansi` | no | the 16 ANSI colors (normal 0-7, then bright 8-15), used for text and backgrounds |
+| `background.image` | no | an image inside the plugin drawn behind the canvas (`.svg`, `.png`, `.gif`, `.webp`, `.avif`, `.jpg`); it may be animated |
+| `background.opacity` | no | `0` to `1`, default `1` |
 
 A theme is drawn on top of the built-in theme of its kind, so it only needs the values
 it changes. **Settings → Appearance** shows a picker for the dark and the light theme
@@ -92,6 +94,16 @@ and the code colors `shiki-foreground`, `shiki-token-comment`, `shiki-token-punc
 `shiki-token-link`, `shiki-token-keyword`, `shiki-token-string`,
 `shiki-token-string-expression`, `shiki-token-constant`, `shiki-token-parameter`,
 `shiki-token-function`. Any other name makes the manifest invalid.
+
+Three more values set how much of the canvas shows through the tiles: `tile-alpha`
+(tile body, `30%` to `100%`, default `62%`), `tile-chrome-alpha` (tile header, `30%` to
+`100%`, default `90%`) and `tile-blur` (blur behind tiles, `0px` to `32px`, default `16px`).
+
+The background fills the canvas behind the tiles and stays put while you pan. It is
+hidden while a tile is fullscreen and when the system asks to reduce motion. An
+animated background costs processing every frame while it shows (an animated SVG can
+keep a CPU core busy), so prefer a still image unless the animation is the point; the
+cost goes away as soon as another theme is chosen.
 
 ## Fonts
 

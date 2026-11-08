@@ -1,6 +1,6 @@
 import type { PluginTheme } from '~/domain/interfaces/plugin.interface';
 
-import { isRecord, isText } from '~/usecase/util/pluginFields';
+import { isInside, isRecord, isText } from '~/usecase/util/pluginFields';
 
 export const THEME_COLORS = [
   'surface-1',
@@ -41,11 +41,27 @@ export const THEME_COLORS = [
   'shiki-token-string-expression',
   'shiki-token-constant',
   'shiki-token-parameter',
-  'shiki-token-function'
+  'shiki-token-function',
+  'tile-alpha',
+  'tile-chrome-alpha',
+  'tile-blur'
 ];
+
+const RANGES: Record<string, [number, number, string]> = {
+  'tile-alpha': [30, 100, '%'],
+  'tile-chrome-alpha': [30, 100, '%'],
+  'tile-blur': [0, 32, 'px']
+};
+
+const IMAGE = /\.(svg|png|gif|webp|avif|jpe?g)$/i;
 
 const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const KNOWN = new Set(THEME_COLORS);
+
+const inRange = (value: string, [min, max, unit]: [number, number, string]): boolean => {
+  const n = value.endsWith(unit) ? Number(value.slice(0, -unit.length)) : NaN;
+  return n >= min && n <= max;
+};
 
 const parseColors = (value: unknown, where: string): Record<string, string> | string => {
   if (value === undefined) return {};
@@ -53,6 +69,8 @@ const parseColors = (value: unknown, where: string): Record<string, string> | st
   for (const [key, color] of Object.entries(value)) {
     if (!KNOWN.has(key)) return `${where} has an unknown color "${key}"`;
     if (!isText(color)) return `${where} color "${key}" must be text`;
+    const range = RANGES[key];
+    if (range && !inRange(color, range)) return `${where} "${key}" must be ${range[0]}${range[2]} to ${range[1]}${range[2]}`;
   }
   return value as Record<string, string>;
 };
@@ -69,6 +87,17 @@ const parseTerminal = (value: unknown, where: string): PluginTheme['terminal'] |
   return { foreground, cursor, ansi } as PluginTheme['terminal'];
 };
 
+const parseBackground = (value: unknown, where: string): PluginTheme['background'] | string => {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return `${where} "background" must be an object`;
+  const { image, opacity = 1 } = value;
+  if (typeof image !== 'string' || !isInside(image) || !IMAGE.test(image)) {
+    return `${where} background "image" must be an image file inside the plugin`;
+  }
+  if (typeof opacity !== 'number' || opacity < 0 || opacity > 1) return `${where} background "opacity" must be 0 to 1`;
+  return { image, opacity };
+};
+
 const parseTheme = (value: unknown, index: number): PluginTheme | string => {
   const where = `themes[${index}]`;
   if (!isRecord(value)) return `${where} must be an object`;
@@ -80,7 +109,9 @@ const parseTheme = (value: unknown, index: number): PluginTheme | string => {
   if (typeof colors === 'string') return colors;
   const terminal = parseTerminal(value.terminal, where);
   if (typeof terminal === 'string') return terminal;
-  return { id, label, kind, colors, terminal };
+  const background = parseBackground(value.background, where);
+  if (typeof background === 'string') return background;
+  return { id, label, kind, colors, terminal, background };
 };
 
 export const parseThemes = (value: unknown): PluginTheme[] | string => {

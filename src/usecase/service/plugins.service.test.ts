@@ -227,3 +227,27 @@ test('a grammar that cannot be read leaves the file uncolored', async () => {
   togglePlugin('demo');
   expect(await loadLang('dmo')).toBe('plaintext');
 });
+
+test('a theme background is read from the plugin and goes away with the theme', async () => {
+  const { initPlugins, setThemePref, setThemeChoice, getBackdrop } = await load();
+  const cats = {
+    id: 'cats',
+    name: 'Cats',
+    version: '1.0.0',
+    contributes: {
+      themes: [{ id: 'night', label: 'Cats Dark', kind: 'dark', background: { image: 'bg/cats.svg', opacity: 0.5 } }]
+    }
+  };
+  manifests = { cats: JSON.stringify(cats) };
+  files.set('/plugins/cats/bg/cats.svg', new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>').buffer);
+  await initPlugins();
+  setThemePref('dark');
+  setThemeChoice('dark', 'cats:night');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(getBackdrop()).toMatchObject({ opacity: 0.5 });
+  expect(getBackdrop()?.url).toStartWith('blob:');
+
+  setThemeChoice('dark', 'panorama');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(getBackdrop()).toBeNull();
+});

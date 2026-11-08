@@ -1,7 +1,8 @@
 import type { PluginChoice, PluginManifest, PluginTheme, ThemeKind } from '~/domain/interfaces/plugin.interface';
 
+import { readFileBytes } from '~/adapter/fs/fs.client';
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
-import { enabledPlugins, PLUGINS_EVENT } from '~/usecase/service/plugins.service';
+import { enabledPlugins, getPluginsState, PLUGINS_EVENT } from '~/usecase/service/plugins.service';
 
 export type ThemePref = 'system' | 'dark' | 'light';
 type Resolved = ThemeKind;
@@ -82,6 +83,45 @@ const mql = () => window.matchMedia('(prefers-color-scheme: light)');
 export const resolveTheme = (pref: ThemePref): Resolved =>
   pref === 'system' ? (mql().matches ? 'light' : 'dark') : pref;
 
+const IMAGE_TYPES: Record<string, string> = {
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg'
+};
+
+export interface Backdrop {
+  url: string;
+  opacity: number;
+}
+
+let backdrop: Backdrop | null = null;
+let backdropKey = '';
+
+export const getBackdrop = (): Backdrop | null => backdrop;
+
+const showBackdrop = async (pluginId: string | null, background: PluginTheme['background']): Promise<void> => {
+  const key = pluginId && background ? `${pluginId}/${background.image}|${background.opacity}` : '';
+  if (key === backdropKey) return;
+  backdropKey = key;
+  if (backdrop) URL.revokeObjectURL(backdrop.url);
+  backdrop = null;
+  if (pluginId && background) {
+    try {
+      const bytes = await readFileBytes(`${getPluginsState().root}/${pluginId}/${background.image}`);
+      if (backdropKey !== key) return;
+      const type = IMAGE_TYPES[background.image.split('.').pop()!.toLowerCase()];
+      backdrop = { url: URL.createObjectURL(new Blob([bytes], { type })), opacity: background.opacity };
+    } catch {
+      return;
+    }
+  }
+  window.dispatchEvent(new Event(THEME_EVENT));
+};
+
 let painted: string[] = [];
 let applied = '';
 
@@ -94,10 +134,12 @@ const paint = (colors: Record<string, string>): void => {
 
 export const applyTheme = (pref: ThemePref): void => {
   const resolved = resolveTheme(pref);
-  const theme = findTheme(enabledPlugins(), savedChoice(resolved), resolved);
+  const choice = savedChoice(resolved);
+  const theme = findTheme(enabledPlugins(), choice, resolved);
   const signature = JSON.stringify([resolved, theme]);
   if (signature === applied) return;
   applied = signature;
+  void showBackdrop(theme ? choice.split(':')[0] : null, theme?.background);
 
   const p = resolved === 'light' ? LIGHT : DARK;
   document.documentElement.dataset.theme = resolved;
