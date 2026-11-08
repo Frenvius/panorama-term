@@ -16,6 +16,8 @@ mod history;
 mod ide;
 mod usage;
 mod crashlog;
+#[cfg(target_os = "linux")]
+mod appimage;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
@@ -23,6 +25,8 @@ pub(crate) fn hidden_command(program: &str) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10")
         .env("GCM_INTERACTIVE", "never");
+    #[cfg(target_os = "linux")]
+    appimage::restore_system_env(&mut cmd);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -165,6 +169,8 @@ fn spawn_sidecar() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        #[cfg(target_os = "linux")]
+        appimage::restore_system_env(&mut cmd);
         cmd
     };
 
