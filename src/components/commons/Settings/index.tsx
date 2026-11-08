@@ -1,12 +1,23 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { X, Bot, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal } from 'lucide-react';
+import { X, Bot, Puzzle, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
 import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
-import { getThemePref, setThemePref, type ThemePref } from '~/usecase/util/theme';
+import type { FontUse, PluginChoice, ThemeKind } from '~/domain/interfaces/plugin.interface';
+import { usePlugins } from '~/usecase/hooks/usePlugins';
+import { enabledManifests } from '~/usecase/util/plugins';
+import { fontChoices, getFontChoice, setFontChoice } from '~/usecase/util/fonts';
+import {
+  themeChoices,
+  getThemePref,
+  setThemePref,
+  getThemeChoice,
+  setThemeChoice,
+  type ThemePref
+} from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
 import {
@@ -38,6 +49,7 @@ import {
 
 import ToggleOption from './ToggleOption';
 import MobileSection from './MobileSection';
+import PluginsSection from './PluginsSection';
 import styles from './styles.module.scss';
 
 interface SettingsProps {
@@ -71,6 +83,34 @@ const RadioOption = ({ label, description, selected, onSelect }: RadioOptionProp
     </span>
   </button>
 );
+
+interface ChoiceGroupProps {
+  label: string;
+  choices: PluginChoice[];
+  selected: string;
+  onSelect: (key: string) => void;
+}
+
+const ChoiceGroup = ({ label, choices, selected, onSelect }: ChoiceGroupProps) => {
+  if (choices.length < 2) return null;
+  const current = choices.some((c) => c.key === selected) ? selected : choices[0].key;
+  return (
+    <div className={styles.group}>
+      <p className={styles.groupLabel}>{label}</p>
+      <div className={styles.options}>
+        {choices.map((choice) => (
+          <RadioOption
+            key={choice.key}
+            label={choice.label}
+            description={choice.description}
+            selected={current === choice.key}
+            onSelect={() => onSelect(choice.key)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
   const [combo, setCombo] = React.useState(() => getBinding(id));
@@ -132,6 +172,7 @@ const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
   terminal: SquareTerminal,
   agentBar: Bot,
   mobile: Smartphone,
+  plugins: Puzzle,
   shortcuts: Keyboard
 };
 
@@ -150,6 +191,17 @@ const THEMES: { id: ThemePref; label: string; description: string }[] = [
   { id: 'light', label: 'Light', description: 'Light surfaces across the app.' }
 ];
 
+const THEME_KINDS: { kind: ThemeKind; label: string }[] = [
+  { kind: 'dark', label: 'Dark theme' },
+  { kind: 'light', label: 'Light theme' }
+];
+
+const FONT_GROUPS: { use: FontUse; label: string }[] = [
+  { use: 'ui', label: 'Interface font' },
+  { use: 'code', label: 'Code font' },
+  { use: 'terminal', label: 'Terminal font' }
+];
+
 const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const options = React.useMemo(listTerminalTargets, []);
   const [section, setSection] = React.useState<SettingsSection>(initialSection);
@@ -165,6 +217,14 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const [placement, setPlacement] = React.useState(getNotifPlacement);
   const [providers] = React.useState(getSeenProviders);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
+  const { plugins } = usePlugins();
+  const installed = React.useMemo(() => enabledManifests(plugins), [plugins]);
+  const [themeKeys, setThemeKeys] = React.useState(() => ({ dark: getThemeChoice('dark'), light: getThemeChoice('light') }));
+  const [fontKeys, setFontKeys] = React.useState(() => ({
+    ui: getFontChoice('ui'),
+    code: getFontChoice('code'),
+    terminal: getFontChoice('terminal')
+  }));
 
   React.useEffect(() => {
     void listMonitors().then(setMonitors).catch(() => {});
@@ -197,6 +257,16 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const selectTheme = (pref: ThemePref) => {
     setTheme(pref);
     setThemePref(pref);
+  };
+
+  const selectThemeChoice = (kind: ThemeKind, key: string) => {
+    setThemeKeys((keys) => ({ ...keys, [kind]: key }));
+    setThemeChoice(kind, key);
+  };
+
+  const selectFontChoice = (use: FontUse, key: string) => {
+    setFontKeys((keys) => ({ ...keys, [use]: key }));
+    void setFontChoice(use, key);
   };
 
   const toggleMinimapPinned = () => {
@@ -426,6 +496,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
             </div>
           )}
           {section === 'mobile' && <MobileSection />}
+          {section === 'plugins' && <PluginsSection />}
           {section === 'appearance' && (
             <div className={styles.pane}>
               <div className={styles.paneHead}>
@@ -446,6 +517,24 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                   ))}
                 </div>
               </div>
+              {THEME_KINDS.map(({ kind, label }) => (
+                <ChoiceGroup
+                  key={kind}
+                  label={label}
+                  selected={themeKeys[kind]}
+                  choices={themeChoices(installed, kind)}
+                  onSelect={(key) => selectThemeChoice(kind, key)}
+                />
+              ))}
+              {FONT_GROUPS.map(({ use, label }) => (
+                <ChoiceGroup
+                  key={use}
+                  label={label}
+                  selected={fontKeys[use]}
+                  choices={fontChoices(installed, use)}
+                  onSelect={(key) => selectFontChoice(use, key)}
+                />
+              ))}
               <div className={styles.group}>
                 <p className={styles.groupLabel}>Tile header</p>
                 <div className={styles.options}>

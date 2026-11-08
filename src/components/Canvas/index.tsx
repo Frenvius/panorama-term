@@ -19,6 +19,7 @@ import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
 import { useRemoteTiles } from '~/usecase/hooks/useRemoteTiles';
+import { useBackdrop } from '~/usecase/hooks/useBackdrop';
 import { writeNote } from '~/adapter/notes/notes.client';
 import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
@@ -147,6 +148,7 @@ const Canvas = () => {
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
   const [navOpen, setNavOpen] = React.useState(() => getPref('panorama:navOpen') === '1');
+  const backdrop = useBackdrop();
   const [navWidth, setNavWidth] = React.useState(0);
   const [fsSplit, setFsSplit] = React.useState(savedSplit);
   const [commandBarOpen, setCommandBarOpen] = React.useState(false);
@@ -789,6 +791,9 @@ const Canvas = () => {
         onPointerCancel={endPan}
         onPointerDownCapture={onBgPointerDownCapture}
       >
+        {backdrop && !fsId && (
+          <img alt="" draggable={false} src={backdrop.url} className={styles.backdrop} style={{ opacity: backdrop.opacity }} />
+        )}
         <canvas ref={gridRef} className={styles.grid} />
         {!fsId && (
           <svg className={styles.links} width={size.w} height={size.h}>

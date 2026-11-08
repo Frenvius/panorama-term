@@ -9,6 +9,7 @@ mod git;
 mod store;
 mod docker;
 mod notes;
+mod plugins;
 mod claude;
 mod pi;
 mod history;
@@ -848,6 +849,7 @@ pub fn run() {
             }
             create_notif_window(app.handle())?;
             notes::start_notes_watch(app.handle().clone());
+            plugins::start_plugins_watch(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -935,6 +937,7 @@ pub fn run() {
             notes::read_note,
             notes::write_note,
             notes::delete_note,
+            plugins::plugins_scan,
             claude::claude_session_summary,
             pi::pi_session_summary,
             history::agent_history,
