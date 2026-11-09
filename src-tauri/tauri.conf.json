@@ -30,6 +30,11 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/sidecar"],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
