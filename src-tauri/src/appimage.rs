@@ -15,6 +15,9 @@ const SET_BY_APPRUN: &[&str] = &[
 
 type EnvFix = Vec<(String, Option<String>)>;
 
+// Where tauri.conf.json puts appimage/fonts.conf inside the bundle.
+const BUNDLED_FONTCONFIG: &str = "/usr/share/panorama/fonts.conf";
+
 // Must run before the webview starts. Points fontconfig at the bundled fonts.conf, which hides
 // the COLRv1 fonts that crash the bundled WebKit. Pointing inside the bundle also keeps it out
 // of launched programs: restore_system_env drops it like any other bundle path.
@@ -28,7 +31,7 @@ pub(crate) fn use_bundled_fontconfig() {
 
 fn bundled_fontconfig(appdir: Option<&str>, user_has_own: bool) -> Option<String> {
     let appdir = appdir.filter(|dir| !dir.is_empty() && !user_has_own)?;
-    Some(format!("{}/usr/share/panorama/fonts.conf", appdir.trim_end_matches('/')))
+    Some(format!("{}{BUNDLED_FONTCONFIG}", appdir.trim_end_matches('/')))
 }
 
 // Inside an AppImage, AppRun points LD_LIBRARY_PATH, PATH, PYTHONHOME and friends at the bundle so
@@ -136,7 +139,7 @@ mod tests {
     fn fontconfig_points_at_the_bundle_only_inside_an_appimage() {
         assert_eq!(
             bundled_fontconfig(Some("/tmp/.mount_panoraXYZ/"), false).as_deref(),
-            Some("/tmp/.mount_panoraXYZ/usr/share/panorama/fonts.conf")
+            Some(format!("{APPDIR}{BUNDLED_FONTCONFIG}").as_str())
         );
         assert_eq!(bundled_fontconfig(None, false), None);
         assert_eq!(bundled_fontconfig(Some(""), false), None);
@@ -145,14 +148,14 @@ mod tests {
 
     #[test]
     fn launched_programs_do_not_inherit_the_bundled_fontconfig() {
-        let out = fix(&[("FONTCONFIG_FILE", "/tmp/.mount_panoraXYZ/usr/share/panorama/fonts.conf")]);
+        let out = fix(&[("FONTCONFIG_FILE", &format!("{APPDIR}{BUNDLED_FONTCONFIG}"))]);
         assert_eq!(out, [unset("FONTCONFIG_FILE")]);
     }
 
     #[test]
     fn bundled_fontconfig_is_packaged_and_hides_colrv1() {
         let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        let src = &conf["bundle"]["linux"]["appimage"]["files"]["/usr/share/panorama/fonts.conf"];
+        let src = &conf["bundle"]["linux"]["appimage"]["files"][BUNDLED_FONTCONFIG];
         assert_eq!(src, "appimage/fonts.conf");
         let fonts = include_str!("../appimage/fonts.conf");
         assert!(fonts.contains("<include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>"));
