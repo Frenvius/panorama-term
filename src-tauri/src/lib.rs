@@ -829,6 +829,8 @@ fn compact_traffic_lights(ns_window: tauri::Result<*mut std::ffi::c_void>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    appimage::use_bundled_fontconfig();
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());

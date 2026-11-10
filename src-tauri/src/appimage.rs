@@ -15,6 +15,22 @@ const SET_BY_APPRUN: &[&str] = &[
 
 type EnvFix = Vec<(String, Option<String>)>;
 
+// Must run before the webview starts. Points fontconfig at the bundled fonts.conf, which hides
+// the COLRv1 fonts that crash the bundled WebKit. Pointing inside the bundle also keeps it out
+// of launched programs: restore_system_env drops it like any other bundle path.
+pub(crate) fn use_bundled_fontconfig() {
+    let appdir = std::env::var("APPDIR").ok();
+    let own = std::env::var_os("FONTCONFIG_FILE").is_some();
+    if let Some(file) = bundled_fontconfig(appdir.as_deref(), own) {
+        std::env::set_var("FONTCONFIG_FILE", file);
+    }
+}
+
+fn bundled_fontconfig(appdir: Option<&str>, user_has_own: bool) -> Option<String> {
+    let appdir = appdir.filter(|dir| !dir.is_empty() && !user_has_own)?;
+    Some(format!("{}/usr/share/panorama/fonts.conf", appdir.trim_end_matches('/')))
+}
+
 // Inside an AppImage, AppRun points LD_LIBRARY_PATH, PATH, PYTHONHOME and friends at the bundle so
 // the webview loads its own libraries. Anything we launch for the user (shells, git, xdg-open)
 // must see the system's instead, or it mixes the bundle's libraries with the system's.
@@ -114,6 +130,33 @@ mod tests {
                 unset("PYTHONDONTWRITEBYTECODE"),
             ]
         );
+    }
+
+    #[test]
+    fn fontconfig_points_at_the_bundle_only_inside_an_appimage() {
+        assert_eq!(
+            bundled_fontconfig(Some("/tmp/.mount_panoraXYZ/"), false).as_deref(),
+            Some("/tmp/.mount_panoraXYZ/usr/share/panorama/fonts.conf")
+        );
+        assert_eq!(bundled_fontconfig(None, false), None);
+        assert_eq!(bundled_fontconfig(Some(""), false), None);
+        assert_eq!(bundled_fontconfig(Some(APPDIR), true), None);
+    }
+
+    #[test]
+    fn launched_programs_do_not_inherit_the_bundled_fontconfig() {
+        let out = fix(&[("FONTCONFIG_FILE", "/tmp/.mount_panoraXYZ/usr/share/panorama/fonts.conf")]);
+        assert_eq!(out, [unset("FONTCONFIG_FILE")]);
+    }
+
+    #[test]
+    fn bundled_fontconfig_is_packaged_and_hides_colrv1() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let src = &conf["bundle"]["linux"]["appimage"]["files"]["/usr/share/panorama/fonts.conf"];
+        assert_eq!(src, "appimage/fonts.conf");
+        let fonts = include_str!("../appimage/fonts.conf");
+        assert!(fonts.contains("<include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>"));
+        assert!(fonts.contains("<glob>*COLRv1*</glob>"));
     }
 
     #[test]

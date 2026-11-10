@@ -32,7 +32,10 @@
     "externalBin": ["binaries/sidecar"],
     "linux": {
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": true,
+        "files": {
+          "/usr/share/panorama/fonts.conf": "appimage/fonts.conf"
+        }
       }
     },
     "windows": {
