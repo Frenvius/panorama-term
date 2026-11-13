@@ -14,8 +14,16 @@
   }
 }
 
+// Fullscreen lifts the canvas over the titlebar and status bar, but the root itself
+// covers the whole window and is transparent there: let clicks outside its children
+// fall through to the bars. :where keeps the children's own pointer-events winning.
 .rootFs {
   z-index: 30;
+  pointer-events: none;
+}
+
+:where(.rootFs > *) {
+  pointer-events: auto;
 }
 
 .bg {
@@ -30,6 +38,19 @@
 
   &:active {
     cursor: grabbing;
+  }
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+
+  @media (prefers-reduced-motion: reduce) {
+    display: none;
   }
 }
 

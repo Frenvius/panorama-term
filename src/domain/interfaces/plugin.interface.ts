@@ -1,0 +1,63 @@
+export interface PluginSource {
+  dir: string;
+  manifest: string | null;
+}
+
+export interface PluginScan {
+  root: string;
+  plugins: PluginSource[];
+}
+
+export type ThemeKind = 'dark' | 'light';
+
+export interface PluginTheme {
+  id: string;
+  label: string;
+  kind: ThemeKind;
+  colors: Record<string, string>;
+  terminal: { foreground?: string; cursor?: string; ansi?: string[] };
+  background?: { image: string; opacity: number };
+}
+
+export type FontUse = 'ui' | 'code' | 'terminal';
+
+export interface PluginFontFile {
+  path: string;
+  weight: string;
+  style: 'normal' | 'italic';
+}
+
+export interface PluginFont {
+  family: string;
+  monospace: boolean;
+  files: PluginFontFile[];
+}
+
+export interface PluginLanguage {
+  id: string;
+  extensions: string[];
+  grammar?: string;
+}
+
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  contributes: { themes: PluginTheme[]; fonts: PluginFont[]; languages: PluginLanguage[] };
+}
+
+export type Plugin = { dir: string; manifest: PluginManifest; enabled: boolean } | { dir: string; error: string };
+
+export interface PluginChoice {
+  key: string;
+  label: string;
+  description: string;
+}
+
+export interface PluginsState {
+  root: string | null;
+  plugins: Plugin[];
+  error: string | null;
+}

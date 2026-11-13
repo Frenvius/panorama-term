@@ -1,4 +1,4 @@
-export type SettingsSection = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'mobile' | 'shortcuts';
+export type SettingsSection = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'mobile' | 'plugins' | 'shortcuts';
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'General' },
@@ -6,6 +6,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'terminal', label: 'Terminal' },
   { id: 'agentBar', label: 'Agent bar' },
   { id: 'mobile', label: 'Mobile' },
+  { id: 'plugins', label: 'Plugins' },
   { id: 'shortcuts', label: 'Shortcuts' }
 ];
 

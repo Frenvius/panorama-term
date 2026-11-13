@@ -37,9 +37,16 @@
 
 :root {
   color-scheme: dark;
+  --font-ui:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-terminal: 'Hack', ui-monospace, monospace;
   --tile-alpha: 62%;
   --tile-chrome-alpha: 90%;
+  --tile-blur: 16px;
   --surface-1: #0b0e14;
   --surface-2: #10141c;
   --surface-3: #161c28;
@@ -135,11 +142,7 @@ body,
 body {
   color: var(--text-1);
   background: var(--surface-1);
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
+  font-family: var(--font-ui);
 }
 
 input[type='checkbox'] {

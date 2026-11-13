@@ -54,6 +54,8 @@ Early stage, moving fast.
 - **Diff viewer** - side-by-side or unified, word-level highlights, walk changes with `Alt+Arrow`.
 - **Workspaces and tabs** - separate canvases per project, all saved locally.
 - **Rebindable shortcuts** - every command lives in Settings > Shortcuts.
+- **Plugins** - add themes, fonts and language coloring by dropping a folder with a
+  `plugin.json` into the plugins folder. See [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ### Agent support
 

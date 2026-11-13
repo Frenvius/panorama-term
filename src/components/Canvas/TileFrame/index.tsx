@@ -37,6 +37,7 @@ import { cachedIdes, detectIdes, openInIde } from '~/adapter/shell/shell.client'
 import { useBranches } from '~/usecase/hooks/useBranches';
 import { notifyClaude } from '~/components/commons/Notifications/bridge';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
+import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { operationTag } from '~/usecase/util/repoOperation';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
@@ -110,6 +111,7 @@ const tileCrash = (retry: () => void) => <CrashNotice title="This tile hit an er
 const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
   const k = view.k;
   const parts = useHeaderParts();
+  const cellW = useTermCellWidth();
   const drag = React.useRef<{ sx: number; sy: number; ox: number; oy: number; pid: number; on: boolean } | null>(null);
   const resize = React.useRef<{ x: number; y: number; dir: string } | null>(null);
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
@@ -676,7 +678,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ? { width: bodyW, height: bodyH }
     : { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };
   const term = tile.type === 'term' && live;
-  const termCols = Math.max(20, Math.floor((bodyW - 8) / 7.23));
+  const termCols = Math.max(20, Math.floor((bodyW - 8) / cellW));
   const termRows = Math.max(2, Math.floor((bodyH - TILE_HEADER - 11) / 15));
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
   const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, note && linkActive && styles.linkActive, selected && !fullscreen && styles.selected, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');

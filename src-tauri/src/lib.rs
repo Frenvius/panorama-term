@@ -9,12 +9,15 @@ mod git;
 mod store;
 mod docker;
 mod notes;
+mod plugins;
 mod claude;
 mod pi;
 mod history;
 mod ide;
 mod usage;
 mod crashlog;
+#[cfg(target_os = "linux")]
+mod appimage;
 
 pub(crate) fn hidden_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
@@ -22,6 +25,8 @@ pub(crate) fn hidden_command(program: &str) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10")
         .env("GCM_INTERACTIVE", "never");
+    #[cfg(target_os = "linux")]
+    appimage::restore_system_env(&mut cmd);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -164,6 +169,8 @@ fn spawn_sidecar() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        #[cfg(target_os = "linux")]
+        appimage::restore_system_env(&mut cmd);
         cmd
     };
 
@@ -834,6 +841,8 @@ fn compact_traffic_lights(ns_window: tauri::Result<*mut std::ffi::c_void>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    appimage::use_bundled_fontconfig();
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
@@ -860,6 +869,7 @@ pub fn run() {
             }
             create_notif_window(app.handle())?;
             notes::start_notes_watch(app.handle().clone());
+            plugins::start_plugins_watch(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -948,6 +958,7 @@ pub fn run() {
             notes::read_note,
             notes::write_note,
             notes::delete_note,
+            plugins::plugins_scan,
             claude::claude_session_summary,
             pi::pi_session_summary,
             history::agent_history,
