@@ -2,6 +2,7 @@ export interface MobileDevice {
   id: string;
   name: string;
   pairedAt: number;
+  desktop: boolean;
 }
 
 export type RelayStatus = 'off' | 'connecting' | 'online';

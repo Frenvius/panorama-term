@@ -2,6 +2,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { UsageProvider } from '~/domain/interfaces/usage.interface';
 
 import React from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Plus, Check, RefreshCw } from 'lucide-react';
 
 import ContextMenu from '~/components/commons/ContextMenu';
@@ -11,6 +12,9 @@ import UsageSegment from '~/components/commons/StatusBar/UsageSegment';
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
 import { USAGE_PROVIDERS, STATUS_BAR_USAGE_KEY } from '~/usecase/util/constants';
+import { useRemoteStatus } from '~/usecase/hooks/useRemoteStatus';
+import { remoteLabel, remoteTransferLabel, type RemoteTransfer } from '~/usecase/util/remote';
+import { requestSettings } from '~/usecase/util/settingsNav';
 
 import styles from './styles.module.scss';
 
@@ -18,6 +22,15 @@ const StatusBar = () => {
   const [enabled, setEnabled] = React.useState(() => getSetting<UsageProvider[]>(STATUS_BAR_USAGE_KEY, USAGE_PROVIDERS));
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const { usage, loading, refresh } = useAgentUsage(enabled);
+  const remote = useRemoteStatus();
+  const [transfer, setTransfer] = React.useState<RemoteTransfer | null>(null);
+  React.useEffect(() => {
+    let active = true;
+    const subscription = listen<RemoteTransfer | { done: true }>('remote-transfer', ({ payload }) => {
+      if (active) setTransfer(payload.done === true ? null : payload as RemoteTransfer);
+    });
+    return () => { active = false; void subscription.then((unlisten) => unlisten()).catch(() => {}); };
+  }, []);
 
   const toggle = (provider: UsageProvider) => {
     const next = enabled.includes(provider) ? enabled.filter((p) => p !== provider) : [...enabled, provider];
@@ -42,6 +55,17 @@ const StatusBar = () => {
 
   return (
     <footer className={styles.root} onContextMenu={openMenu}>
+      {remote && remote.status !== 'disconnected' && (
+        <button className={styles.add} onClick={() => requestSettings('remote')}>
+          {remoteLabel(remote)}
+          {remote.transport === 'relay' && transfer && (
+            <span className={styles.transfer}>
+              {remoteTransferLabel(transfer)}
+              {transfer.total != null && transfer.total > 0 && <span className={styles.progress}><span style={{ width: `${Math.min(100, transfer.done / transfer.total * 100)}%` }} /></span>}
+            </span>
+          )}
+        </button>
+      )}
       {shown.map((u) => (
         <UsageSegment usage={u} key={u.provider} />
       ))}

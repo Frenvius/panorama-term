@@ -1,3 +1,5 @@
+mod local_origins;
+mod config_dir;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod service_bridge;
 mod ui;
 mod host;
 mod chat;
@@ -343,25 +346,27 @@ fn reconnect_sessions() {
             shell: key.clone(),
             pid,
             parser: Mutex::new(parser),
-            dirty: AtomicBool::new(true),
+            dirty: AtomicU64::new(1),
             parsed_total: AtomicU64::new(snap_total),
             flushed_total: AtomicU64::new(0),
             main_dirty: AtomicBool::new(true),
             main_history: Mutex::new(Vec::new()),
             exited: AtomicBool::new(!alive),
             visible: AtomicBool::new(true),
+            clients: Mutex::new(Vec::new()),
+            size_ownership: Mutex::new(SizeOwnership::default()),
             cols: AtomicU16::new(cols),
             rows: AtomicU16::new(rows),
             scrollback: AtomicUsize::new(0),
             cwd: Mutex::new(None),
             agent_cwd: Mutex::new(None),
-            cwd_dirty: AtomicBool::new(false),
+            cwd_dirty: AtomicU64::new(0),
             branch: Mutex::new(None),
             cmd: Mutex::new(None),
             clipboard: Mutex::new(None),
-            clipboard_dirty: AtomicBool::new(false),
+            clipboard_dirty: AtomicU64::new(0),
             title: Mutex::new(None),
-            title_dirty: AtomicBool::new(false),
+            title_dirty: AtomicU64::new(0),
             events: Mutex::new(Vec::new()),
             agent_state: Mutex::new(serde_json::Map::new()),
             mod_session: Mutex::new(None),
@@ -1128,25 +1133,27 @@ struct Session {
     shell: String,
     pid: u32,
     parser: Mutex<vt100::Parser<CwdSink>>,
-    dirty: AtomicBool,
+    dirty: AtomicU64,
     parsed_total: AtomicU64,
     flushed_total: AtomicU64,
     main_dirty: AtomicBool,
     main_history: Mutex<Vec<u8>>,
     exited: AtomicBool,
     visible: AtomicBool,
+    clients: Mutex<Vec<(u64, bool, bool)>>,
+    size_ownership: Mutex<SizeOwnership>,
     cols: AtomicU16,
     rows: AtomicU16,
     scrollback: AtomicUsize,
     cwd: Mutex<Option<String>>,
     agent_cwd: Mutex<Option<String>>,
-    cwd_dirty: AtomicBool,
+    cwd_dirty: AtomicU64,
     branch: Mutex<Option<String>>,
     cmd: Mutex<Option<(Instant, String)>>,
     clipboard: Mutex<Option<String>>,
-    clipboard_dirty: AtomicBool,
+    clipboard_dirty: AtomicU64,
     title: Mutex<Option<String>>,
-    title_dirty: AtomicBool,
+    title_dirty: AtomicU64,
     events: Mutex<Vec<String>>,
     agent_state: Mutex<serde_json::Map<String, serde_json::Value>>,
     mod_session: Mutex<Option<String>>,
@@ -1257,18 +1264,31 @@ fn flush_session(s: &Session) {
 }
 
 fn shared_panorama_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var("USERPROFILE")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok())?;
-    Some(Path::new(&home).join(".panorama"))
+    config_dir::config_dir(
+        std::env::var_os("PANORAMA_CONFIG_DIR").map(Into::into),
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(Into::into),
+        ".panorama",
+    )
 }
 
 fn panorama_dir() -> Option<std::path::PathBuf> {
     let dir = shared_panorama_dir()?;
-    if cfg!(debug_assertions) {
-        return Some(dir.with_file_name(".panorama-dev"));
-    }
-    Some(dir)
+    Some(instance_dir(dir, std::env::var_os("PANORAMA_CONFIG_DIR").is_some(), cfg!(debug_assertions)))
+}
+
+fn instance_dir(dir: std::path::PathBuf, overridden: bool, debug: bool) -> std::path::PathBuf {
+    if debug && !overridden { dir.with_file_name(".panorama-dev") } else { dir }
+}
+
+#[test]
+fn instance_directories_preserve_defaults_and_overrides() {
+    let dir = std::path::PathBuf::from("/home/user/.panorama");
+    assert_eq!(instance_dir(dir.clone(), false, false), dir);
+    assert_eq!(instance_dir(dir.clone(), false, true), Path::new("/home/user/.panorama-dev"));
+    assert_eq!(instance_dir(Path::new("/tmp/panorama-host").into(), true, true), Path::new("/tmp/panorama-host"));
+    assert_eq!(instance_dir(Path::new("/tmp/panorama-client").into(), true, true), Path::new("/tmp/panorama-client"));
 }
 
 fn sanitize_key(key: &str) -> String {
@@ -2343,7 +2363,7 @@ fn follow_agent_cwd(tile_id: &str, cwd: &str) {
     *agent_cwd = next;
     drop(agent_cwd);
     *s.branch.lock().unwrap_or_else(|e| e.into_inner()) = branch;
-    s.cwd_dirty.store(true, Ordering::Relaxed);
+    s.cwd_dirty.fetch_add(1, Ordering::Relaxed);
 }
 
 fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
@@ -2846,6 +2866,7 @@ struct Params {
     run_kind: String,
     attach_only: bool,
     watch_only: bool,
+    remote: bool,
 }
 
 fn default_shell() -> String {
@@ -3155,25 +3176,27 @@ fn spawn_session(
         shell: p.spawn_cmd.clone().unwrap_or_else(|| shell.clone()),
         pid,
         parser: Mutex::new(parser),
-        dirty: AtomicBool::new(true),
+        dirty: AtomicU64::new(1),
         parsed_total: AtomicU64::new(seed.len() as u64),
         flushed_total: AtomicU64::new(0),
         main_dirty: AtomicBool::new(true),
         main_history: Mutex::new(Vec::new()),
         exited: AtomicBool::new(false),
         visible: AtomicBool::new(true),
+        clients: Mutex::new(Vec::new()),
+        size_ownership: Mutex::new(SizeOwnership::default()),
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
         cwd: Mutex::new(Some(cwd.clone())),
         agent_cwd: Mutex::new(None),
-        cwd_dirty: AtomicBool::new(true),
+        cwd_dirty: AtomicU64::new(1),
         branch: Mutex::new(git_branch(&cwd)),
         cmd: Mutex::new(None),
         clipboard: Mutex::new(None),
-        clipboard_dirty: AtomicBool::new(false),
+        clipboard_dirty: AtomicU64::new(0),
         title: Mutex::new(None),
-        title_dirty: AtomicBool::new(false),
+        title_dirty: AtomicU64::new(0),
         events: Mutex::new(Vec::new()),
         agent_state: Mutex::new(serde_json::Map::new()),
         mod_session: Mutex::new(None),
@@ -3225,18 +3248,18 @@ fn run_consumer_loop(
                     s.parsed_total.store(end - carry.len() as u64, Ordering::Relaxed);
                     if let Some(new_cwd) = p.callbacks_mut().take_changed() {
                         *s.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cwd);
-                        s.cwd_dirty.store(true, Ordering::Relaxed);
+                        s.cwd_dirty.fetch_add(1, Ordering::Relaxed);
                     }
                     if let Some(prompt_cwd) = p.callbacks_mut().take_prompt() {
                         let branch = git_branch(&prompt_cwd);
                         if s.agent_cwd.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
-                            s.cwd_dirty.store(true, Ordering::Relaxed);
+                            s.cwd_dirty.fetch_add(1, Ordering::Relaxed);
                         }
                         {
                             let mut cur = s.branch.lock().unwrap_or_else(|e| e.into_inner());
                             if *cur != branch {
                                 *cur = branch;
-                                s.cwd_dirty.store(true, Ordering::Relaxed);
+                                s.cwd_dirty.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         let done = s.cmd.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -3257,12 +3280,12 @@ fn run_consumer_loop(
                     }
                     if let Some(text) = p.callbacks_mut().take_clipboard() {
                         *s.clipboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
-                        s.clipboard_dirty.store(true, Ordering::Relaxed);
+                        s.clipboard_dirty.fetch_add(1, Ordering::Relaxed);
                     }
                     if let Some(title) = p.callbacks_mut().take_title() {
                         if title != s.shell {
                             *s.title.lock().unwrap_or_else(|e| e.into_inner()) = Some(title);
-                            s.title_dirty.store(true, Ordering::Relaxed);
+                            s.title_dirty.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     let mut outgoing: Vec<String> = Vec::new();
@@ -3314,11 +3337,11 @@ fn run_consumer_loop(
                         run.log.lock().unwrap_or_else(|e| e.into_inner()).feed(text);
                     }
                 }
-                s.dirty.store(true, Ordering::Relaxed);
+                s.dirty.fetch_add(1, Ordering::Relaxed);
             }
             Ok(ConsumerMsg::Exit { code }) => {
                 s.exited.store(true, Ordering::Relaxed);
-                s.dirty.store(true, Ordering::Relaxed);
+                s.dirty.fetch_add(1, Ordering::Relaxed);
                 if let Some(run) = &s.run {
                     let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
                     if exit.is_none() {
@@ -3333,7 +3356,7 @@ fn run_consumer_loop(
             }
             Err(_) => {
                 s.exited.store(true, Ordering::Relaxed);
-                s.dirty.store(true, Ordering::Relaxed);
+                s.dirty.fetch_add(1, Ordering::Relaxed);
                 flush_session(&s);
                 if s.run.is_none() {
                     forget_session(&s);
@@ -3398,7 +3421,7 @@ fn resize_session(s: &Session, cols: u16, rows: u16) {
         .unwrap_or_else(|e| e.into_inner())
         .screen_mut()
         .set_size(rows, cols);
-    s.dirty.store(true, Ordering::Relaxed);
+    s.dirty.fetch_add(1, Ordering::Relaxed);
 }
 
 fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
@@ -3457,7 +3480,7 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
         parser.screen().scrollback()
     };
     s.scrollback.store(actual, Ordering::Relaxed);
-    s.dirty.store(true, Ordering::Relaxed);
+    s.dirty.fetch_add(1, Ordering::Relaxed);
 }
 
 fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mods: i64) {
@@ -3525,7 +3548,7 @@ fn forget_session(s: &Arc<Session>) {
 
 fn mark_killed(s: &Arc<Session>) {
     s.exited.store(true, Ordering::Relaxed);
-    s.dirty.store(true, Ordering::Relaxed);
+    s.dirty.fetch_add(1, Ordering::Relaxed);
     if let Some(run) = &s.run {
         let mut exit = run.exit.lock().unwrap_or_else(|e| e.into_inner());
         if exit.is_none() {
@@ -3545,7 +3568,7 @@ fn kill_session(s: &Arc<Session>) {
     }
     run.phase.store(RUN_PHASE_KILLING, Ordering::Relaxed);
     run.stopped_by_user.store(true, Ordering::Relaxed);
-    s.dirty.store(true, Ordering::Relaxed);
+    s.dirty.fetch_add(1, Ordering::Relaxed);
     host_handle().kill(&s.tile_id);
     let s = s.clone();
     std::thread::spawn(move || {
@@ -3639,6 +3662,7 @@ async fn run_start_json(kind: &str, tile: &str, cwd: &str, cmd: &str) -> String 
         run_kind: kind.to_string(),
         attach_only: false,
         watch_only: false,
+        remote: false,
     };
     match get_or_create(&params).await {
         Ok(_) => run_status_json(run_lookup_tile(kind, tile)),
@@ -3844,14 +3868,14 @@ fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     }
     if let Some(s) = &session {
         s.scrollback.store(0, Ordering::Relaxed);
-        s.dirty.store(true, Ordering::Relaxed);
+        s.dirty.fetch_add(1, Ordering::Relaxed);
     }
     let tile_id = tile_id.to_string();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(150)).await;
         host_handle().write(&tile_id, b"\r");
         if let Some(s) = sessions().lock().unwrap().get(&tile_id) {
-            s.dirty.store(true, Ordering::Relaxed);
+            s.dirty.fetch_add(1, Ordering::Relaxed);
         }
     });
     Ok(())
@@ -3859,7 +3883,7 @@ fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
 
 fn write_input(s: &Arc<Session>, d: &str) {
     s.scrollback.store(0, Ordering::Relaxed);
-    s.dirty.store(true, Ordering::Relaxed);
+    s.dirty.fetch_add(1, Ordering::Relaxed);
     if d.contains('\r') || d.contains('\n') {
         let line = current_command_line(s);
         let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
@@ -3868,13 +3892,174 @@ fn write_input(s: &Arc<Session>, d: &str) {
     host_handle().write(&s.tile_id, d.as_bytes());
 }
 
-fn handle_client_msg(s: &Arc<Session>, text: &str) {
+#[derive(Default)]
+struct SizeOwnership {
+    owner: Option<u64>,
+    clients: Vec<(u64, bool, (u16, u16))>,
+}
+
+impl SizeOwnership {
+    fn connect(&mut self, id: u64, remote: bool, size: (u16, u16)) -> Option<(u16, u16)> {
+        self.clients.push((id, remote, size));
+        if !remote {
+            self.claim(id)
+        } else {
+            None
+        }
+    }
+    fn claim(&mut self, id: u64) -> Option<(u16, u16)> {
+        let size = self.clients.iter().find(|c| c.0 == id)?.2;
+        self.owner = Some(id);
+        Some(size)
+    }
+    fn activity(&mut self, id: u64, kind: &str, focused: bool) -> Option<(u16, u16)> {
+        if matches!(kind, "in" | "mouse") || (kind == "focus" && focused) {
+            self.claim(id)
+        } else {
+            None
+        }
+    }
+    fn resize(&mut self, id: u64, size: (u16, u16)) -> Option<(u16, u16)> {
+        let client = self.clients.iter_mut().find(|c| c.0 == id)?;
+        client.2 = size;
+        (self.owner.is_none() || self.owner == Some(id)).then_some(size)
+    }
+    fn disconnect(&mut self, id: u64) -> Option<(u16, u16)> {
+        self.clients.retain(|c| c.0 != id);
+        if self.owner != Some(id) {
+            return None;
+        }
+        let next = self
+            .clients
+            .iter()
+            .rev()
+            .find(|c| !c.1)
+            .or_else(|| self.clients.last())
+            .copied();
+        self.owner = next.map(|c| c.0);
+        next.map(|c| c.2)
+    }
+}
+
+#[cfg(test)]
+mod size_ownership_tests {
+    use super::SizeOwnership;
+
+    #[test]
+    fn connects_and_claims_on_activity() {
+        let mut state = SizeOwnership::default();
+        assert_eq!(state.connect(1, false, (80, 24)), Some((80, 24)));
+        assert_eq!(state.connect(2, true, (100, 40)), None);
+        assert_eq!(state.owner, Some(1));
+        assert_eq!(state.activity(2, "in", false), Some((100, 40)));
+        assert_eq!(state.owner, Some(2));
+    }
+
+    #[test]
+    fn resize_is_stored_until_owner_claims() {
+        let mut state = SizeOwnership::default();
+        state.connect(1, false, (80, 24));
+        state.connect(2, true, (100, 40));
+        assert_eq!(state.resize(2, (120, 50)), None);
+        assert_eq!(state.resize(1, (90, 30)), Some((90, 30)));
+        assert_eq!(state.activity(2, "mouse", false), Some((120, 50)));
+    }
+
+    #[test]
+    fn focus_claims_but_scroll_does_not() {
+        let mut state = SizeOwnership::default();
+        state.connect(1, false, (80, 24));
+        state.connect(2, true, (100, 40));
+        assert_eq!(state.activity(2, "scroll", false), None);
+        assert_eq!(state.activity(2, "focus", false), None);
+        assert_eq!(state.owner, Some(1));
+        assert_eq!(state.activity(2, "focus", true), Some((100, 40)));
+    }
+
+    #[test]
+    fn disconnect_prefers_most_recent_local() {
+        let mut state = SizeOwnership::default();
+        state.connect(1, false, (80, 24));
+        state.connect(2, false, (90, 30));
+        state.connect(3, true, (100, 40));
+        state.connect(4, true, (110, 45));
+        state.claim(3);
+        assert_eq!(state.disconnect(3), Some((90, 30)));
+        assert_eq!(state.disconnect(2), Some((80, 24)));
+        assert_eq!(state.disconnect(1), Some((110, 45)));
+        assert_eq!(state.disconnect(4), None);
+        assert_eq!(state.owner, None);
+    }
+}
+
+fn update_size(s: &Session, update: impl FnOnce(&mut SizeOwnership) -> Option<(u16, u16)>) {
+    let mut ownership = s.size_ownership.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cols, rows)) = update(&mut ownership) {
+        resize_session(s, cols, rows);
+    }
+}
+
+static NEXT_PTY_CLIENT: AtomicU64 = AtomicU64::new(1);
+
+fn client_state(clients: &[(u64, bool, bool)]) -> (bool, bool) {
+    (clients.iter().any(|c| c.1), clients.iter().any(|c| c.2))
+}
+
+struct PtyClient {
+    id: u64,
+    visible: bool,
+    focused: bool,
+}
+impl PtyClient {
+    fn new(s: &Session, watch_only: bool, remote: bool, size: (u16, u16)) -> Self {
+        let mut clients = s.clients.lock().unwrap_or_else(|e| e.into_inner());
+        let client = Self {
+            id: NEXT_PTY_CLIENT.fetch_add(1, Ordering::Relaxed),
+            visible: s.visible.load(Ordering::Relaxed),
+            focused: s.focused.load(Ordering::Relaxed),
+        };
+        if !watch_only {
+            clients.push((client.id, client.visible, client.focused));
+            drop(clients);
+            update_size(s, |state| state.connect(client.id, remote, size));
+        }
+        client
+    }
+    fn update(&mut self, s: &Session, visible: Option<bool>, focused: Option<bool>) {
+        self.visible = visible.unwrap_or(self.visible);
+        self.focused = focused.unwrap_or(self.focused);
+        let mut clients = s.clients.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = clients.iter_mut().find(|c| c.0 == self.id) {
+            *c = (self.id, self.visible, self.focused);
+        } else {
+            clients.push((self.id, self.visible, self.focused));
+        }
+        let (visible, focused) = client_state(&clients);
+        s.visible.store(visible, Ordering::Relaxed);
+        focus_session(s, focused);
+    }
+    fn remove(&self, s: &Session) {
+        update_size(s, |state| state.disconnect(self.id));
+        let mut clients = s.clients.lock().unwrap_or_else(|e| e.into_inner());
+        clients.retain(|c| c.0 != self.id);
+        if !clients.is_empty() {
+            let (visible, focused) = client_state(&clients);
+            s.visible.store(visible, Ordering::Relaxed);
+            focus_session(s, focused);
+        }
+    }
+}
+
+fn handle_client_msg(s: &Arc<Session>, client: &mut PtyClient, watch_only: bool, text: &str) {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return,
     };
     match v.get("t").and_then(|t| t.as_str()) {
         Some("in") => {
+            if !watch_only {
+                update_size(s, |state| state.activity(client.id, "in", false));
+            }
             if let Some(d) = v.get("d").and_then(|d| d.as_str()) {
                 write_input(s, d);
             }
@@ -3889,6 +4074,9 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
             }
         }
         Some("mouse") => {
+            if !watch_only {
+                update_size(s, |state| state.activity(client.id, "mouse", false));
+            }
             let kind = v.get("kind").and_then(|k| k.as_u64()).unwrap_or(0) as u8;
             let button = v.get("button").and_then(|b| b.as_i64()).unwrap_or(0);
             let col = v.get("col").and_then(|c| c.as_u64()).unwrap_or(1) as usize;
@@ -3899,19 +4087,22 @@ fn handle_client_msg(s: &Arc<Session>, text: &str) {
         Some("resize") => {
             let cols = v.get("cols").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
             let rows = v.get("rows").and_then(|r| r.as_u64()).unwrap_or(0) as u16;
-            if cols >= 2 && rows >= 2 {
-                resize_session(s, cols, rows);
+            if !watch_only && cols >= 2 && rows >= 2 {
+                update_size(s, |state| state.resize(client.id, (cols, rows)));
             }
         }
-        Some("focus") => {
+        Some("focus") if !watch_only => {
             let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(true);
-            focus_session(s, focused);
+            if focused {
+                update_size(s, |state| state.activity(client.id, "focus", focused));
+            }
+            client.update(s, None, Some(focused));
         }
-        Some("visible") => {
+        Some("visible") if !watch_only => {
             let visible = v.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
-            s.visible.store(visible, Ordering::Relaxed);
+            client.update(s, Some(visible), None);
             if visible {
-                s.dirty.store(true, Ordering::Relaxed);
+                s.dirty.fetch_add(1, Ordering::Relaxed);
             }
         }
         Some("dismissAgent") => clear_binding_session(&s.tile_id),
@@ -3930,9 +4121,7 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
             return;
         }
     };
-    if !params.watch_only {
-        resize_session(&session, params.cols, params.rows);
-    }
+    let mut client = PtyClient::new(&session, params.watch_only, params.remote, (params.cols, params.rows));
 
     let binding = read_binding_rec(&params.tile_id);
     let binding_field = |key: &str| {
@@ -3952,25 +4141,35 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     })
     .to_string();
     if tx.send(Message::Text(ready)).await.is_err() {
+        if !params.watch_only {
+            client.remove(&session);
+        }
         return;
     }
     if let Some(state) = cached_agent_state(&session) {
         if tx.send(Message::Text(state)).await.is_err() {
+            if !params.watch_only {
+                client.remove(&session);
+            }
             return;
         }
     }
-    if !params.watch_only {
-        if tx
+    let mut seen_dirty = session.dirty.load(Ordering::Relaxed);
+    if !params.watch_only
+        && tx
             .send(Message::Binary(build_frame(&session)))
             .await
             .is_err()
-        {
-            return;
-        }
-        session.dirty.store(false, Ordering::Relaxed);
+    {
+        client.remove(&session);
+        return;
     }
 
-    let mut tick = tokio::time::interval(Duration::from_millis(60));
+    let mut seen_cwd = 0;
+    let mut seen_title = 0;
+    let mut seen_clipboard = session.clipboard_dirty.load(Ordering::Relaxed);
+    let mut tick =
+        tokio::time::interval(Duration::from_millis(if params.remote { 10 } else { 60 }));
     let mut claude = ClaudeTracker::default();
     let mut claude_tick = tokio::time::interval(Duration::from_millis(800));
     let mut last_frame = tokio::time::Instant::now();
@@ -3993,18 +4192,19 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                     break;
                 }
                 if !params.watch_only
-                    && session.visible.load(Ordering::Relaxed)
-                    && session.dirty.load(Ordering::Relaxed)
-                    && (session.focused.load(Ordering::Relaxed)
+                    && client.visible
+                    && session.dirty.load(Ordering::Relaxed) != seen_dirty
+                    && (client.focused
                         || last_frame.elapsed() >= Duration::from_millis(UNFOCUSED_FRAME_MS))
                 {
-                    session.dirty.store(false, Ordering::Relaxed);
+                    seen_dirty = session.dirty.load(Ordering::Relaxed);
                     last_frame = tokio::time::Instant::now();
                     if tx.send(Message::Binary(build_frame(&session))).await.is_err() {
                         break;
                     }
                 }
-                if session.cwd_dirty.swap(false, Ordering::Relaxed) {
+                if session.cwd_dirty.load(Ordering::Relaxed) != seen_cwd {
+                    seen_cwd = session.cwd_dirty.load(Ordering::Relaxed);
                     let cwd = session.effective_cwd();
                     let branch = session.branch.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(cwd) = cwd {
@@ -4014,8 +4214,9 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                         }
                     }
                 }
-                if session.clipboard_dirty.swap(false, Ordering::Relaxed) {
-                    let text = session.clipboard.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if session.clipboard_dirty.load(Ordering::Relaxed) != seen_clipboard {
+                    seen_clipboard = session.clipboard_dirty.load(Ordering::Relaxed);
+                    let text = session.clipboard.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(text) = text {
                         let msg = serde_json::json!({ "t": "clipboard", "text": text }).to_string();
                         if tx.send(Message::Text(msg)).await.is_err() {
@@ -4023,7 +4224,8 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                         }
                     }
                 }
-                if session.title_dirty.swap(false, Ordering::Relaxed) {
+                if session.title_dirty.load(Ordering::Relaxed) != seen_title {
+                    seen_title = session.title_dirty.load(Ordering::Relaxed);
                     let title = session.title.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(title) = title {
                         let msg = serde_json::json!({ "t": "title", "title": title }).to_string();
@@ -4049,7 +4251,11 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
             }
             msg = rx.next() => {
                 match msg {
-                    Some(Ok(Message::Text(t))) => handle_client_msg(&session, &t),
+                    Some(Ok(Message::Text(t))) => {
+                        if !params.remote || mobile::remote_pty_message_allowed(&t) {
+                            handle_client_msg(&session, &mut client, params.watch_only, &t);
+                        }
+                    },
                     Some(Ok(Message::Binary(b))) => {
                         host_handle().write(&session.tile_id, &b);
                     }
@@ -4059,6 +4265,9 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
                 }
             }
         }
+    }
+    if !params.watch_only {
+        client.remove(&session);
     }
 }
 
@@ -4136,6 +4345,13 @@ fn parse_query(query: &str) -> HashMap<String, String> {
     map
 }
 
+fn query_size(q: &HashMap<String, String>) -> (u16, u16) {
+    let dimension = |key, default| {
+        q.get(key).and_then(|value| value.parse::<u16>().ok()).filter(|&value| value > 0).unwrap_or(default)
+    };
+    (dimension("cols", 80), dimension("rows", 24))
+}
+
 async fn accept_ws(mut stream: TcpStream, headers: &HashMap<String, String>) -> Option<WebSocketStream<TcpStream>> {
     let key = headers.get("sec-websocket-key")?;
     let accept = derive_accept_key(key.as_bytes());
@@ -4163,6 +4379,15 @@ async fn handle_conn(mut stream: TcpStream) {
 
     let origin = headers.get("origin").map(String::as_str);
 
+    if is_ws && path_only == "/host-service" {
+        if service_bridge::authorized(&headers) {
+            if let Some(ws) = accept_ws(stream, &headers).await {
+                service_bridge::serve(ws).await;
+            }
+        }
+        return;
+    }
+
     if is_ws && path_only == "/ui" {
         if !mobile::origin_allowed(origin) {
             return;
@@ -4183,10 +4408,12 @@ async fn handle_conn(mut stream: TcpStream) {
             _ => return,
         };
         let watch_only = q.get("watch").map(|v| v == "1").unwrap_or(false);
+        let remote = headers.get("x-panorama-remote").is_some_and(|s| s == mobile::desktop_tunnel::secret());
+        let (cols, rows) = query_size(&q);
         let params = Params {
             tile_id,
-            cols: q.get("cols").and_then(|c| c.parse().ok()).unwrap_or(80),
-            rows: q.get("rows").and_then(|r| r.parse().ok()).unwrap_or(24),
+            cols,
+            rows,
             cwd: q.get("cwd").cloned(),
             shell: q.get("shell").cloned(),
             target: q.get("target").cloned(),
@@ -4196,6 +4423,7 @@ async fn handle_conn(mut stream: TcpStream) {
             run_kind: "run".into(),
             attach_only: watch_only || q.get("attach").map(|v| v == "1").unwrap_or(false),
             watch_only,
+            remote,
         };
         handle_ws(ws, params).await;
         return;
@@ -4586,6 +4814,7 @@ async fn main() {
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
+    if let Err(e) = service_bridge::init() { eprintln!("[host service] {e}"); }
     mobile::boot();
     tokio::spawn(async {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -4619,6 +4848,16 @@ mod tests {
         strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
         SCROLLBACK_LINES,
     };
+
+    #[test]
+    fn query_size_uses_valid_values_and_defaults() {
+        assert_eq!(super::query_size(&super::parse_query("cols=120&rows=40")), (120, 40));
+        assert_eq!(super::query_size(&super::parse_query("")), (80, 24));
+        assert_eq!(super::query_size(&super::parse_query("cols=0&rows=0")), (80, 24));
+        assert_eq!(super::query_size(&super::parse_query("cols=garbage&rows=garbage")), (80, 24));
+        assert_eq!(super::query_size(&super::parse_query("cols=120&rows=0")), (120, 24));
+        assert_eq!(super::query_size(&super::parse_query("cols=garbage&rows=40")), (80, 40));
+    }
 
     #[test]
     fn codex_hook_reports_lifecycle_state() {
@@ -4981,6 +5220,46 @@ mod tests {
         assert_eq!(responses, vec![OSC_FG_RESPONSE.to_vec(), OSC_BG_RESPONSE.to_vec()]);
         assert_eq!(parser.callbacks_mut().take_title().as_deref(), Some("my title"));
         assert_eq!(parser.callbacks_mut().take_title(), None);
+    }
+
+    #[test]
+    fn pty_client_inherits_state_and_last_disconnect_preserves_it() {
+        use super::*;
+        let focused = Arc::new(AtomicBool::new(false));
+        let reporting = Arc::new(AtomicBool::new(true));
+        let session = Session {
+            tile_id: "test".into(), shell: String::new(), pid: 0,
+            parser: Mutex::new(vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default())),
+            dirty: AtomicU64::new(0), parsed_total: AtomicU64::new(0), flushed_total: AtomicU64::new(0),
+            main_dirty: AtomicBool::new(false), main_history: Mutex::new(Vec::new()), exited: AtomicBool::new(false),
+            visible: AtomicBool::new(false), clients: Mutex::new(Vec::new()),
+            size_ownership: Mutex::new(SizeOwnership::default()), cols: AtomicU16::new(80), rows: AtomicU16::new(24),
+            scrollback: AtomicUsize::new(0), cwd: Mutex::new(None), agent_cwd: Mutex::new(None), cwd_dirty: AtomicU64::new(0),
+            branch: Mutex::new(None), cmd: Mutex::new(None), clipboard: Mutex::new(None), clipboard_dirty: AtomicU64::new(0),
+            title: Mutex::new(None), title_dirty: AtomicU64::new(0), events: Mutex::new(Vec::new()),
+            agent_state: Mutex::new(serde_json::Map::new()), mod_session: Mutex::new(None),
+            focused: focused.clone(), focus_reporting: reporting, kimi: AtomicBool::new(false), run: None,
+        };
+        let client = PtyClient::new(&session, false, false, (80, 24));
+        assert!(!client.focused && !client.visible);
+        assert!(!focused.load(Ordering::Relaxed));
+        client.remove(&session);
+        assert!(!focused.load(Ordering::Relaxed));
+        session.focused.store(true, Ordering::Relaxed);
+        session.visible.store(true, Ordering::Relaxed);
+        let client = PtyClient::new(&session, false, false, (80, 24));
+        assert!(client.focused && client.visible);
+        client.remove(&session);
+        assert!(focused.load(Ordering::Relaxed));
+        assert!(session.visible.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn pty_client_states_are_aggregated_independently() {
+        assert_eq!(super::client_state(&[(1, false, false), (2, true, true)]), (true, true));
+        assert_eq!(super::client_state(&[(1, true, false), (2, false, true)]), (true, true));
+        assert_eq!(super::client_state(&[(1, false, false)]), (false, false));
+        assert_eq!(super::client_state(&[]), (false, false));
     }
 
     #[test]

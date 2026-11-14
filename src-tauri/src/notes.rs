@@ -30,9 +30,20 @@ fn note_path(ws_id: &str, note_id: &str) -> Option<PathBuf> {
 
 fn binding_path(tile_id: &str) -> Option<PathBuf> {
     let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
-    let dir = home()?.join(name).join("agent-bindings");
+    let dir = binding_dir(std::env::var_os("PANORAMA_CONFIG_DIR").map(PathBuf::from), home(), name)?.join("agent-bindings");
     fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.json", sanitize(tile_id))))
+}
+
+fn binding_dir(config: Option<PathBuf>, home: Option<PathBuf>, name: &str) -> Option<PathBuf> {
+    config.or_else(|| home.map(|path| path.join(name)))
+}
+
+#[test]
+fn binding_dir_uses_instance_or_default() {
+    let home = Some(PathBuf::from("/home/user"));
+    assert_eq!(binding_dir(None, home.clone(), ".panorama-dev"), Some(PathBuf::from("/home/user/.panorama-dev")));
+    assert_eq!(binding_dir(Some(PathBuf::from("/tmp/host")), home, ".panorama-dev"), Some(PathBuf::from("/tmp/host")));
 }
 
 pub fn bound_session(tile_id: &str) -> Option<String> {

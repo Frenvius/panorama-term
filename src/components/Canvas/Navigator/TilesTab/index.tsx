@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import React from 'react';
 import { Pencil, Trash2, Crosshair, FolderOpen, AlignJustify } from 'lucide-react';
 
@@ -154,7 +155,7 @@ const TilesTab = ({ tiles, query, frames, signals, activeTile, handlers }: Tiles
       label: 'Reveal in explorer',
       icon: <FolderOpen size={15} strokeWidth={1.75} />,
       onSelect: () => tile.cwd && revealPath(tile.cwd),
-      disabled: !tile.cwd
+      disabled: !tile.cwd || isRemote()
     },
     { label: 'Close', icon: <Trash2 size={15} strokeWidth={1.75} />, danger: true, onSelect: () => onCloseTile(tile.id) }
   ];

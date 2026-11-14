@@ -213,12 +213,20 @@ pub fn brain_bin() -> PathBuf {
 }
 
 fn brain_run_copy(bin: &Path) -> PathBuf {
-    let name = if cfg!(debug_assertions) { "panorama-brain.exe" } else { "panorama-brain-release.exe" };
+    let name = brain_run_name(cfg!(debug_assertions), std::env::var("PANORAMA_HOST_PORT").ok().as_deref());
     let dst = std::env::temp_dir().join(name);
     if std::fs::copy(bin, &dst).is_ok() {
         dst
     } else {
         bin.to_path_buf()
+    }
+}
+
+fn brain_run_name(debug: bool, port: Option<&str>) -> String {
+    let base = if debug { "panorama-brain" } else { "panorama-brain-release" };
+    match port.and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0) {
+        Some(port) => format!("{base}-{port}.exe"),
+        None => format!("{base}.exe"),
     }
 }
 
@@ -847,6 +855,17 @@ mod tests {
     use super::*;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn brain_copy_name_is_isolated_by_valid_host_port() {
+        for (debug, base) in [(true, "panorama-brain"), (false, "panorama-brain-release")] {
+            for port in [None, Some(""), Some("bad"), Some("0"), Some("65536")] {
+                assert_eq!(brain_run_name(debug, port), format!("{base}.exe"));
+            }
+            assert_eq!(brain_run_name(debug, Some("19878")), format!("{base}-19878.exe"));
+            assert_ne!(brain_run_name(debug, Some("19878")), brain_run_name(debug, Some("19978")));
+        }
+    }
 
     #[test]
     fn frame_codec_round_trip() {

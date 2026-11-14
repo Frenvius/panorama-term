@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { usePlugins } from '~/usecase/hooks/usePlugins';
 import { togglePlugin } from '~/usecase/service/plugins.service';
@@ -45,7 +46,7 @@ const PluginsSection = () => {
           <p className={settingsStyles.groupLabel}>Plugins folder</p>
           <p className={settingsStyles.hint}>Each plugin is a folder with a plugin.json. Changes show up right away.</p>
           <span className={styles.path}>{root}</span>
-          <button type="button" className={styles.button} onClick={() => revealPath(root)}>
+          <button type="button" className={styles.button} disabled={isRemote()} onClick={() => revealPath(root)}>
             Open folder
           </button>
         </div>

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '~/adapter/transport';
 import { listen } from '@tauri-apps/api/event';
 
 import type { RunKind, RunStatus, RunCommand } from '~/domain/interfaces/run.interface';

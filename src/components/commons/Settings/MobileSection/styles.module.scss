@@ -4,6 +4,22 @@
   font-size: 12px;
 }
 
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.uri {
+  width: 100%;
+  min-width: 300px;
+  min-height: 80px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 8px;
+  resize: vertical;
+}
+
 .pairing {
   display: flex;
   align-items: flex-start;

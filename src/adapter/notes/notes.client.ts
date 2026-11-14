@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '~/adapter/transport';
 
 export const readNote = (wsId: string, noteId: string): Promise<string | null> =>
   invoke('read_note', { wsId, noteId });

@@ -1,6 +1,39 @@
-export const SIDECAR_PORT = import.meta.env.DEV ? 9877 : 9777;
-export const SIDECAR_HTTP = `http://127.0.0.1:${SIDECAR_PORT}`;
-export const SIDECAR_WS = `ws://127.0.0.1:${SIDECAR_PORT}`;
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { setRemote } from '~/adapter/transport';
+
+export let SIDECAR_HTTP = '';
+export let SIDECAR_WS = '';
+export let LOCAL_SIDECAR_HTTP = '';
+let localEndpoint = '';
+let currentEndpoint = '';
+
+const setEndpoint = (endpoint: string): void => {
+  currentEndpoint = endpoint;
+  if (localEndpoint) setRemote(endpoint !== localEndpoint);
+  SIDECAR_HTTP = `http://${endpoint}`;
+  SIDECAR_WS = `ws://${endpoint}`;
+};
+
+export const initSidecar = async (
+  getEndpoint: () => Promise<string> = () => invoke('sidecar_endpoint'),
+  getLocalEndpoint: () => Promise<string> = () => invoke('local_sidecar_endpoint'),
+  onEndpoint: (callback: (endpoint: string) => void) => Promise<unknown> = (callback) =>
+    listen<string>('sidecar:endpoint', (event) => callback(event.payload)),
+  bootstrap: () => Promise<unknown> = () => invoke('remote_bootstrap')
+): Promise<void> => {
+  await bootstrap();
+  let changes = 0;
+  await onEndpoint((endpoint) => {
+    changes++;
+    setEndpoint(endpoint);
+  });
+  const [endpoint, local] = await Promise.all([getEndpoint(), getLocalEndpoint()]);
+  localEndpoint = local;
+  if (changes === 0) setEndpoint(endpoint);
+  else setRemote(currentEndpoint !== localEndpoint);
+  LOCAL_SIDECAR_HTTP = `http://${local}`;
+};
 
 export const killPtySession = (tileId: string): Promise<unknown> =>
   fetch(`${SIDECAR_HTTP}/kill?tileId=${encodeURIComponent(tileId)}`).catch(() => undefined);

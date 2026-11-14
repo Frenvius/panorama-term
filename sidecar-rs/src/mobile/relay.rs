@@ -156,7 +156,7 @@ async fn accept(url: String) {
     match tokio_tungstenite::connect_async_with_config(url, Some(ws_config()), true).await {
         Ok((ws, _)) => {
             let (tx, rx) = ws.split();
-            serve_session(Box::pin(tx), Box::pin(rx)).await;
+            serve_session(Box::pin(tx), Box::pin(rx), true).await;
         }
         Err(e) => eprintln!("mobile relay accept: {e}"),
     }

@@ -1,6 +1,6 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { X, Bot, Puzzle, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal } from 'lucide-react';
+import { X, Bot, Puzzle, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal, Monitor } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
@@ -49,6 +49,7 @@ import {
 
 import ToggleOption from './ToggleOption';
 import MobileSection from './MobileSection';
+import RemoteSection from './RemoteSection';
 import PluginsSection from './PluginsSection';
 import styles from './styles.module.scss';
 
@@ -172,6 +173,7 @@ const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
   terminal: SquareTerminal,
   agentBar: Bot,
   mobile: Smartphone,
+  remote: Monitor,
   plugins: Puzzle,
   shortcuts: Keyboard
 };
@@ -496,6 +498,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
             </div>
           )}
           {section === 'mobile' && <MobileSection />}
+          {section === 'remote' && <RemoteSection />}
           {section === 'plugins' && <PluginsSection />}
           {section === 'appearance' && (
             <div className={styles.pane}>

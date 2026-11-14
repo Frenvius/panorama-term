@@ -56,6 +56,8 @@ Early stage, moving fast.
 - **Rebindable shortcuts** - every command lives in Settings > Shortcuts.
 - **Plugins** - add themes, fonts and language coloring by dropping a folder with a
   `plugin.json` into the plugins folder. See [docs/PLUGINS.md](docs/PLUGINS.md).
+- **Remote desktop** - control a host workspace over the local network, Tailscale or the public relay.
+  See [docs/REMOTE.md](docs/REMOTE.md) ([português](docs/REMOTE.pt-BR.md)).
 
 ### Agent support
 

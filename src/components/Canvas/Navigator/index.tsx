@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import React from 'react';
 import {
   Plus,
@@ -195,7 +196,7 @@ const Navigator = ({ tiles, frames, activeTile, activeDiff, alerts, agents, hand
       onSelect: () => openFile(entry.path),
       disabled: entry.dir
     },
-    { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
+    { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path), disabled: isRemote() },
     {
       label: 'Copy path',
       icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
