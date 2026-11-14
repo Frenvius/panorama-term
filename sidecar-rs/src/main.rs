@@ -2266,11 +2266,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
         return None;
     }
     let cwd = field("cwd");
-    let project = Path::new(&cwd)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
+    let project = cwd.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
 
     let mut payload = serde_json::json!({
         "v": 1,
