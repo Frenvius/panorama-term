@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0]
+
+### Added
+- Plugins: folders with a `plugin.json` in the config folder are discovered automatically and listed in Settings > Plugins, with errors shown and an on/off switch per plugin.
+- Plugins can add dark and light themes, including the terminal colors. Settings > Appearance picks one theme per mode, and System switches between them.
+- Plugins can add fonts. Settings > Appearance picks the interface, code and terminal font, and the terminal measures the chosen font so columns stay aligned.
+- Plugins can add syntax coloring for new languages or map more file extensions to a known one, in the editor, the diff viewer and Markdown code blocks.
+- Themes can show a still or animated background behind the canvas and make tiles partly transparent. The background hides while a tile is fullscreen or when the system asks to reduce motion.
+- The AgentBar shows a chip with the agent's background shells and their live output.
+- The Windows app and installer are now digitally signed, so Windows shows a verified publisher instead of "Unknown publisher".
+
+### Fixed
+- The titlebar and status bar stay clickable while a tile is fullscreen.
+- Linux (AppImage): color emoji no longer crash the window on systems that only ship COLRv1 emoji fonts, such as Fedora.
+- Linux (AppImage): notification sounds no longer crash the window.
+- Linux (AppImage): terminals and programs launched from Panorama no longer pick up the AppImage's bundled libraries.
+
 ## [0.2.19]
 
 ### Fixed
