@@ -75,11 +75,12 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "SimplySign install failed with exit code $($install.ExitCode)" }
           Start-Process 'C:\Program Files\Certum\SimplySign Desktop\SimplySignDesktop.exe'
           $script = Join-Path $env:GITHUB_WORKSPACE '.github\codesign\sign-windows.ps1'
-          $config = @{ bundle = @{ windows = @{ signCommand = @{ cmd = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-File', $script, '%1') } } } } | ConvertTo-Json -Depth 6 -Compress
-          "TAURI_CONFIG=$config" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $config = Join-Path $env:RUNNER_TEMP 'tauri.sign.json'
+          @{ bundle = @{ windows = @{ signCommand = @{ cmd = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-File', $script, '%1') } } } } | ConvertTo-Json -Depth 6 | Set-Content $config
+          "TAURI_BUILD_ARGS=--config $config" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build Tauri app
-        run: bun run tauri build --target ${{ matrix.target }}
+        run: bun run tauri build --target ${{ matrix.target }} ${{ env.TAURI_BUILD_ARGS }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
