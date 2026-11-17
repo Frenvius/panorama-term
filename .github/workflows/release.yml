@@ -91,8 +91,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $release = "src-tauri/target/${{ matrix.target }}/release"
-          $files = @(Get-ChildItem "$release/bundle/nsis/*-setup.exe") + @(Get-ChildItem "$release/*.exe")
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe"
+          $extracted = Join-Path $env:RUNNER_TEMP 'nsis-extracted'
+          & 'C:\Program Files\7-Zip\7z.exe' x $setup.FullName "-o$extracted" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract $($setup.Name)" }
+          $files = @($setup) + @(Get-ChildItem $extracted -Recurse -Include *.exe, *.dll)
           $unsigned = foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature $file.FullName
             Write-Host "$($signature.Status) | $($signature.SignerCertificate.Subject) | $($file.Name)"
