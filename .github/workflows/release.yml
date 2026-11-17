@@ -95,7 +95,7 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'nsis-extracted'
           & 'C:\Program Files\7-Zip\7z.exe' x $setup.FullName "-o$extracted" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Failed to extract $($setup.Name)" }
-          $files = @($setup) + @(Get-ChildItem $extracted -Recurse -Include *.exe, *.dll)
+          $files = @($setup) + @(Get-ChildItem $extracted -Recurse -Include *.exe, *.dll -Exclude nsExec.dll)
           $unsigned = foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature $file.FullName
             Write-Host "$($signature.Status) | $($signature.SignerCertificate.Subject) | $($file.Name)"
