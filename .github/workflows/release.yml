@@ -14,10 +14,10 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
           - platform: darwin-aarch64
-            os: macos-latest
+            os: [self-hosted, macOS, panorama]
             target: aarch64-apple-darwin
           - platform: darwin-x86_64
-            os: macos-latest
+            os: [self-hosted, macOS, panorama]
             target: x86_64-apple-darwin
           - platform: linux-x86_64
             os: ubuntu-22.04
@@ -27,6 +27,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: macOS toolchain path
+        if: runner.os == 'macOS'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -79,6 +85,17 @@ jobs:
           @{ bundle = @{ windows = @{ signCommand = @{ cmd = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-File', $script, '%1') } } } } | ConvertTo-Json -Depth 6 | Set-Content $config
           "TAURI_BUILD_ARGS=--config $config" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Set up macOS code signing
+        if: runner.os == 'macOS'
+        run: |
+          signing="$HOME/kiwi/signing"
+          security unlock-keychain -p "$(cat "$signing/keychain-password")" "$signing/kiwinote-signing.keychain-db"
+          notary="$signing/notary"
+          echo "APPLE_SIGNING_IDENTITY=Developer ID Application: Felipe Ribeiro (47T2RP8332)" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY=$(cat "$notary/key-id")" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$(cat "$notary/issuer-id")" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_PATH=$notary/AuthKey_$(cat "$notary/key-id").p8" >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         run: bun run tauri build --target ${{ matrix.target }} ${{ env.TAURI_BUILD_ARGS }}
         env:
@@ -102,6 +119,20 @@ jobs:
             if ($signature.Status -ne 'Valid') { $file.Name }
           }
           if ($unsigned) { throw "Unsigned binaries: $($unsigned -join ', ')" }
+
+      - name: Notarize DMG and verify macOS signatures
+        if: runner.os == 'macOS'
+        run: |
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app="$bundle/macos/Panorama.app"
+          dmg=$(ls "$bundle"/dmg/*.dmg)
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -q 'TeamIdentifier=47T2RP8332'
+          xcrun stapler validate "$app"
+          spctl -a -vv -t exec "$app"
+          spctl -a -vv -t open --context context:primary-signature "$dmg"
 
       - name: Collect bundles
         shell: bash

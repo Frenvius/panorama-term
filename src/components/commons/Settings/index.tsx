@@ -10,14 +10,7 @@ import type { FontUse, PluginChoice, ThemeKind } from '~/domain/interfaces/plugi
 import { usePlugins } from '~/usecase/hooks/usePlugins';
 import { enabledManifests } from '~/usecase/util/plugins';
 import { fontChoices, getFontChoice, setFontChoice } from '~/usecase/util/fonts';
-import {
-  themeChoices,
-  getThemePref,
-  setThemePref,
-  getThemeChoice,
-  setThemeChoice,
-  type ThemePref
-} from '~/usecase/util/theme';
+import { themeChoices, getThemePref, setThemePref, getThemeChoice, setThemeChoice, type ThemePref } from '~/usecase/util/theme';
 import { listTerminalTargets, TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setHeaderPart, getHeaderParts, HEADER_PART_OPTIONS, type HeaderPart } from '~/usecase/util/headerParts';
 import {
@@ -27,6 +20,12 @@ import {
   setMinimapPinned,
   type MinimapCorner
 } from '~/usecase/util/minimap';
+import {
+  getCanvasSidebarMode,
+  setCanvasSidebarMode,
+  CANVAS_SIDEBAR_MODE_EVENT,
+  type CanvasSidebarMode
+} from '~/usecase/util/canvasSidebars';
 import {
   listMonitors,
   monitorLabel,
@@ -72,11 +71,7 @@ interface RadioOptionProps {
 }
 
 const RadioOption = ({ label, description, selected, onSelect }: RadioOptionProps) => (
-  <button
-    type="button"
-    onClick={onSelect}
-    className={`${styles.option} ${selected ? styles.selected : ''}`}
-  >
+  <button type="button" onClick={onSelect} className={`${styles.option} ${selected ? styles.selected : ''}`}>
     <span className={styles.radio}>{selected && <span className={styles.dot} />}</span>
     <span className={styles.optionText}>
       <span className={styles.optionLabel}>{label}</span>
@@ -156,10 +151,7 @@ const ShortcutRow = ({ id, label, defaultCombo }: ShortcutRowProps) => {
             <RotateCcw size={13} strokeWidth={2} />
           </button>
         )}
-        <button
-          onClick={startListening}
-          className={`${styles.shortcutCombo} ${listening ? styles.listening : ''}`}
-        >
+        <button onClick={startListening} className={`${styles.shortcutCombo} ${listening ? styles.listening : ''}`}>
           {listening ? 'Press keys...' : formatCombo(combo)}
         </button>
       </div>
@@ -215,6 +207,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
   const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
   const [minimapCorner, setCorner] = React.useState(getMinimapCorner);
+  const [sidebarMode, setSidebarMode] = React.useState<CanvasSidebarMode>(getCanvasSidebarMode);
   const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
   const [placement, setPlacement] = React.useState(getNotifPlacement);
   const [providers] = React.useState(getSeenProviders);
@@ -229,7 +222,14 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   }));
 
   React.useEffect(() => {
-    void listMonitors().then(setMonitors).catch(() => {});
+    void listMonitors()
+      .then(setMonitors)
+      .catch(() => {});
+  }, []);
+  React.useEffect(() => {
+    const onMode = () => setSidebarMode(getCanvasSidebarMode());
+    window.addEventListener(CANVAS_SIDEBAR_MODE_EVENT, onMode);
+    return () => window.removeEventListener(CANVAS_SIDEBAR_MODE_EVENT, onMode);
   }, []);
 
   React.useEffect(() => {
@@ -279,6 +279,11 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const selectMinimapCorner = (corner: MinimapCorner) => {
     setCorner(corner);
     setMinimapCorner(corner);
+  };
+
+  const selectSidebarMode = (mode: CanvasSidebarMode) => {
+    setSidebarMode(mode);
+    setCanvasSidebarMode(mode);
   };
 
   const selectCorner = (corner: NotifCorner) => {
@@ -358,13 +363,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
               <div className={styles.group}>
                 <div className={styles.sliderHead}>
                   <p className={styles.groupLabel}>Frame fit padding</p>
-                  <input
-                    min={0}
-                    type="number"
-                    value={framePad}
-                    onChange={changeFramePad}
-                    className={styles.numberInput}
-                  />
+                  <input min={0} type="number" value={framePad} onChange={changeFramePad} className={styles.numberInput} />
                 </div>
                 <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
               </div>
@@ -392,6 +391,23 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                       <span className={styles.optionLabel}>{label}</span>
                     </button>
                   ))}
+                </div>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Sidebars</p>
+                <div className={styles.options}>
+                  <RadioOption
+                    label="Float over canvas"
+                    selected={sidebarMode === 'overlay'}
+                    description="Sidebars float above the canvas surface."
+                    onSelect={() => selectSidebarMode('overlay')}
+                  />
+                  <RadioOption
+                    label="Beside canvas"
+                    selected={sidebarMode === 'docked'}
+                    description="Beside canvas shrinks the canvas to the space between the sidebars."
+                    onSelect={() => selectSidebarMode('docked')}
+                  />
                 </div>
               </div>
               <div className={styles.group}>
@@ -448,9 +464,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                       key={id}
                       label={label}
                       selected={target === id}
-                      description={
-                        isDefault ? 'Recommended default for this platform.' : 'Available for new terminals.'
-                      }
+                      description={isDefault ? 'Recommended default for this platform.' : 'Available for new terminals.'}
                       onSelect={() => selectTarget(id)}
                     />
                   ))}

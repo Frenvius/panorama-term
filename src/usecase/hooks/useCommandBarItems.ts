@@ -18,7 +18,12 @@ const BAR_COMMANDS = new Set<CommandId>([
   'tile.reopen',
   'tile.fullscreen',
   'view.resetZoom',
-  'view.navigator'
+  'view.navigator',
+  'view.toggleMode',
+  'view.inspector',
+  'view.resetPanels',
+  'panel.splitRight',
+  'panel.splitDown'
 ]);
 
 export interface CommandBarActions {
@@ -75,9 +80,7 @@ const settingItems = (): CommandBarItem[] =>
 
 const remoteItems = async (sources: CommandBarSources): Promise<CommandBarItem[]> => {
   const { workspaces, activeId, activeTabId, alerts, actions } = sources;
-  const perWorkspace = await Promise.all(
-    workspaces.map(async (ws) => ({ ws, tabs: await workspaceService.peekTabs(ws.id) }))
-  );
+  const perWorkspace = await Promise.all(workspaces.map(async (ws) => ({ ws, tabs: await workspaceService.peekTabs(ws.id) })));
   const items: CommandBarItem[] = [];
   for (const { ws, tabs } of perWorkspace) {
     const local = ws.id === activeId;

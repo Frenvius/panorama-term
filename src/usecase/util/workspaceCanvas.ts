@@ -1,11 +1,13 @@
 import type { View } from '~/domain/interfaces/canvas.interface';
-import type { Tile, Frame, CanvasState, Viewport } from '~/domain/interfaces/workspace.interface';
+import type { Tile, Frame, Viewport, CanvasState, ProjectViewState } from '~/domain/interfaces/workspace.interface';
+
 import { isLegacyHtml, htmlToMarkdown } from '~/usecase/util/tiptapMigrate';
 
 export interface RuntimeCanvas {
   view: View;
   tiles: Tile[];
   frames: Frame[];
+  projectView?: ProjectViewState;
 }
 
 const viewportSize = (): { w: number; h: number } => ({ w: window.innerWidth, h: window.innerHeight });
@@ -30,12 +32,14 @@ const migrateTile = (tile: Tile): Tile => {
 export const toRuntime = (state: CanvasState): RuntimeCanvas => ({
   tiles: (state.tiles ?? []).map(migrateTile),
   frames: state.frames ?? [],
-  view: viewFromViewport(state.viewport)
+  view: viewFromViewport(state.viewport),
+  projectView: state.projectView
 });
 
 export const toStored = (canvas: RuntimeCanvas): CanvasState => ({
   version: 1,
   tiles: canvas.tiles.filter((t) => !t.runCwd),
   frames: canvas.frames,
-  viewport: viewportFromView(canvas.view)
+  viewport: viewportFromView(canvas.view),
+  projectView: canvas.projectView
 });

@@ -14,7 +14,11 @@ import SplitHandle from '~/components/Canvas/SplitHandle';
 import TileFrame from '~/components/Canvas/TileFrame';
 import Workbench, { type WorkbenchHandlers } from '~/components/Workbench';
 import UnsavedDialog from '~/components/commons/UnsavedDialog';
-import Navigator, { type NavigatorHandlers } from '~/components/Canvas/Navigator';
+import CanvasDock, { type CanvasDockHandlers } from '~/components/Canvas/CanvasDock';
+import { useDockLayout } from '~/usecase/hooks/useDockLayout';
+import { dockerAvailable } from '~/adapter/docker/docker.client';
+import { visiblePanels } from '~/usecase/util/dockLayout';
+import { PANEL_DESCRIPTORS } from '~/components/commons/Dock/panels';
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
@@ -27,17 +31,26 @@ import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
-import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH } from '~/usecase/util/constants';
+import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH, TILE_WIDTH, TILE_HEIGHT, NOTE_WIDTH, NOTE_HEIGHT, TOOLBAR_HEIGHT } from '~/usecase/util/constants';
+import { showToast } from '~/usecase/util/toasts';
+import { buildProjectGroups } from '~/usecase/util/projectGroups';
+import { spawnInGroup, fixGroupFrame } from '~/usecase/util/projectGroupActions';
+import { syncProjectViewWithTiles, projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
+import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
+import AddProjectModal from '~/components/ProjectView/AddProjectModal';
+import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
 import { onRefDiff } from '~/usecase/util/refDiff';
 import { touchTile } from '~/usecase/util/tileRecency';
+import { getCanvasSidebarMode, CANVAS_SIDEBAR_MODE_EVENT } from '~/usecase/util/canvasSidebars';
 import type { CommandBarSources } from '~/usecase/hooks/useCommandBarItems';
 import { tabKey, openTab, pinTab, type OpenRequest } from '~/usecase/util/editorTabs';
 import type { FsBox } from '~/domain/interfaces/canvas.interface';
 import type { EditorTab } from '~/domain/interfaces/editor.interface';
+import type { PanelId } from '~/domain/interfaces/dock.interface';
 import type { NotifyKind, NotifyTarget } from '~/domain/interfaces/notify.interface';
 
 import styles from './styles.module.scss';
@@ -58,11 +71,7 @@ const DBLCLICK_MS = 400;
 
 let pendingFocusTileId: string | null = null;
 
-const jumpToWorkspaceTab = async (
-  wsId: string,
-  tabId: string,
-  switchWorkspace: (id: string) => Promise<void>
-): Promise<void> => {
+const jumpToWorkspaceTab = async (wsId: string, tabId: string, switchWorkspace: (id: string) => Promise<void>): Promise<void> => {
   await workspaceService.setActiveTab(wsId, tabId);
   await switchWorkspace(wsId);
 };
@@ -79,6 +88,7 @@ const Canvas = () => {
     tabs,
     activeId,
     switchTab,
+    setTabMode,
     workspaces,
     activeState,
     activeTabId,
@@ -127,6 +137,9 @@ const Canvas = () => {
     resizeTile,
     removeFrame,
     renameFrame,
+    createFrame,
+    patchFrame,
+    placeTiles,
     resizeFrame,
     recolorFrame,
     removeFrameWithTiles,
@@ -148,8 +161,14 @@ const Canvas = () => {
   const [fsId, setFsId] = React.useState<string | null>(null);
   const [fsExit, setFsExit] = React.useState(false);
   const [navOpen, setNavOpen] = React.useState(() => getPref('panorama:navOpen') === '1');
+  const [dockRightOpen, setDockRightOpen] = React.useState(() => {
+    const v = getPref('panorama:dockRightOpen');
+    return v === null || v === '1';
+  });
   const backdrop = useBackdrop();
   const [navWidth, setNavWidth] = React.useState(0);
+  const [dockRightWidth, setDockRightWidth] = React.useState(0);
+  const [sidebarMode, setSidebarMode] = React.useState(getCanvasSidebarMode);
   const [fsSplit, setFsSplit] = React.useState(savedSplit);
   const [commandBarOpen, setCommandBarOpen] = React.useState(false);
   const commandBarRef = React.useRef(commandBarOpen);
@@ -158,8 +177,31 @@ const Canvas = () => {
     setPref('panorama:navOpen', navOpen ? '1' : '0');
   }, [navOpen]);
   React.useEffect(() => {
+    setPref('panorama:dockRightOpen', dockRightOpen ? '1' : '0');
+  }, [dockRightOpen]);
+  React.useEffect(() => {
     setPref(SPLIT_KEY, String(fsSplit));
   }, [fsSplit]);
+  React.useEffect(() => {
+    const onMode = () => setSidebarMode(getCanvasSidebarMode());
+    window.addEventListener(CANVAS_SIDEBAR_MODE_EVENT, onMode);
+    return () => window.removeEventListener(CANVAS_SIDEBAR_MODE_EVENT, onMode);
+  }, []);
+
+  const { layout: canvasLayout, reset: resetCanvasLayout } = useDockLayout('canvas');
+  const [hasDocker, setHasDocker] = React.useState(false);
+
+  React.useEffect(() => {
+    dockerAvailable()
+      .then(setHasDocker)
+      .catch(() => setHasDocker(false));
+  }, []);
+
+  const panelAvailable = React.useCallback((id: PanelId) => id !== 'docker' || hasDocker, [hasDocker]);
+  const leftPanels = visiblePanels(canvasLayout, 'left', panelAvailable).map((id) => PANEL_DESCRIPTORS[id]);
+  const rightPanels = visiblePanels(canvasLayout, 'right', panelAvailable).map((id) => PANEL_DESCRIPTORS[id]);
+  const leftHasVisible = leftPanels.length > 0;
+  const rightHasVisible = rightPanels.length > 0;
 
   React.useLayoutEffect(() => {
     const id = pendingFocusTileId;
@@ -212,7 +254,14 @@ const Canvas = () => {
       const wx = (e.clientX - v.x) / v.k;
       const wy = (e.clientY - v.y) / v.k;
       const term = tilesR.current.find(
-        (t) => t.type === 'term' && t.id !== dragId && !t.runCwd && wx >= t.x && wx <= t.x + t.width && wy >= t.y && wy <= t.y + t.height
+        (t) =>
+          t.type === 'term' &&
+          t.id !== dragId &&
+          !t.runCwd &&
+          wx >= t.x &&
+          wx <= t.x + t.width &&
+          wy >= t.y &&
+          wy <= t.y + t.height
       );
       setLinkDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, over: term?.id ?? null } : d));
     };
@@ -304,11 +353,24 @@ const Canvas = () => {
       return true;
     }
     if (cmd === 'view.navigator') {
-      setNavOpen((v) => !v);
+      if (leftHasVisible) setNavOpen((v) => !v);
+      return true;
+    }
+    if (cmd === 'view.inspector') {
+      if (rightHasVisible) setDockRightOpen((v) => !v);
+      return true;
+    }
+    if (cmd === 'view.resetPanels') {
+      resetCanvasLayout();
       return true;
     }
     if (cmd === 'view.palette') {
       setCommandBarOpen((v) => !v);
+      return true;
+    }
+    if (cmd === 'view.toggleMode') {
+      if (!activeTabId) return false;
+      void setTabMode(activeTabId, 'project');
       return true;
     }
     return false;
@@ -383,11 +445,26 @@ const Canvas = () => {
     }
   }, [tiles, fsId]);
 
-  const navInset = navOpen ? navWidth + 8 : 0;
-  const areaW = size.w - 18 - navInset;
+  const navInset = navOpen && leftHasVisible ? navWidth + 8 : 0;
+  const rightInset = dockRightOpen && rightHasVisible ? dockRightWidth + 8 : 0;
+  const areaW = size.w - 18 - navInset - rightInset;
+  const dockedLeft = sidebarMode === 'docked' ? navInset : 0;
+  const dockedRight = sidebarMode === 'docked' ? rightInset : 0;
+  const prevDocked = React.useRef({ left: dockedLeft, right: dockedRight });
+  React.useLayoutEffect(() => {
+    const dLeft = dockedLeft - prevDocked.current.left;
+    const dRight = dockedRight - prevDocked.current.right;
+    prevDocked.current = { left: dockedLeft, right: dockedRight };
+    // the viewport ResizeObserver re-centers by half the width change; this cancels it so tiles stay put on screen
+    if (dLeft !== 0 || dRight !== 0) panTo(view.x + (dRight - dLeft) / 2, view.y);
+  }, [dockedLeft, dockedRight]);
+  const bgStyle =
+    sidebarMode === 'docked'
+      ? ({ left: `${8 + dockedLeft}px`, right: `${8 + dockedRight}px`, '--dock-right-inset': '0px' } as React.CSSProperties)
+      : undefined;
   const splitting = fsId !== null && activeEditorTab !== null;
   const fsWidth = splitting ? Math.min(Math.max(Math.round(areaW * fsSplit), FS_MIN), areaW - FS_MIN - FS_GAP) : areaW;
-  const fsBox: FsBox = { x: navInset, y: 0, width: fsWidth, height: size.h - 72 };
+  const fsBox: FsBox = { x: navInset - dockedLeft, y: 0, width: fsWidth, height: size.h - 72 };
   const benchOffset = { ['--bench-offset' as string]: splitting ? `${fsWidth + FS_GAP}px` : '0px' };
 
   const moveSplit = (clientX: number) => {
@@ -401,12 +478,7 @@ const Canvas = () => {
     const top = (t.y + inset) * view.k + view.y;
     const w = (t.width - TILE_GAP) * view.k;
     const h = (t.height - TILE_GAP) * view.k;
-    return (
-      left < size.w + CULL_MARGIN &&
-      left + w > -CULL_MARGIN &&
-      top < size.h + CULL_MARGIN &&
-      top + h > -CULL_MARGIN
-    );
+    return left < size.w + CULL_MARGIN && left + w > -CULL_MARGIN && top < size.h + CULL_MARGIN && top + h > -CULL_MARGIN;
   };
 
   const [receded, setReceded] = React.useState<Set<string>>(new Set());
@@ -595,6 +667,8 @@ const Canvas = () => {
 
   const hideNav = () => setNavOpen(false);
   const showNav = () => setNavOpen(true);
+  const hideDockRight = () => setDockRightOpen(false);
+  const showDockRight = () => setDockRightOpen(true);
 
   const closeCommandBar = React.useCallback(() => setCommandBarOpen(false), []);
 
@@ -640,8 +714,7 @@ const Canvas = () => {
     setActiveEditorTab(tabKey(request.kind, request.path));
   };
 
-  const openEditorFile = (root: string, path: string, preview?: boolean) =>
-    openEditorTab({ kind: 'file', root, path, preview });
+  const openEditorFile = (root: string, path: string, preview?: boolean) => openEditorTab({ kind: 'file', root, path, preview });
   const openDiff = (root: string, path: string, commit?: string) => openEditorTab({ kind: 'diff', root, path, commit });
 
   React.useEffect(
@@ -670,7 +743,7 @@ const Canvas = () => {
   const closeEditorTab = (key: string) => {
     setEditorTabs((prev) => {
       const next = prev.filter((t) => t.key !== key);
-      setActiveEditorTab((cur) => (cur === key ? next[next.length - 1]?.key ?? null : cur));
+      setActiveEditorTab((cur) => (cur === key ? (next[next.length - 1]?.key ?? null) : cur));
       return next;
     });
   };
@@ -754,18 +827,139 @@ const Canvas = () => {
     [moveTileToTab, tiles, frames, view]
   );
 
-  const navHandlers: NavigatorHandlers = {
-    onNewTile: addTile,
-    onFocusTile: focusLeavingFs,
-    onFocusFrame: focusFrame,
-    onRenameTile: setTileTitle,
-    onCloseTile: requestCloseTile,
+  const baseDockHandlers = {
     onDiffFiles: setDiffFiles,
     onOpenDiff: openDiff,
-    onOpenFile: openEditorFile,
-    onWidth: setNavWidth,
-    onClose: hideNav
+    onOpenFile: openEditorFile
   };
+
+  const leftDockHandlers: CanvasDockHandlers = { ...baseDockHandlers, onWidth: setNavWidth, onClose: hideNav };
+  const rightDockHandlers: CanvasDockHandlers = { ...baseDockHandlers, onWidth: setDockRightWidth, onClose: hideDockRight };
+
+  const folderPickerResolveRef = React.useRef<((p: string | null) => void) | null>(null);
+  const [addProjectOpen, setAddProjectOpen] = React.useState(false);
+
+  const canvasProjects = React.useMemo(
+    () => syncProjectViewWithTiles(activeState?.projectView, tiles).projects,
+    [activeState?.projectView, tiles]
+  );
+
+  const canvasGroups = React.useMemo(
+    () => buildProjectGroups({ frames, tiles, projects: canvasProjects }),
+    [frames, tiles, canvasProjects]
+  );
+
+  const canvasGroupOps = React.useMemo(
+    () => ({ tiles, frames, createFrame, patchFrame, placeTiles }),
+    [tiles, frames, createFrame, patchFrame, placeTiles]
+  );
+
+  const getCanvasCenter = React.useCallback(() => {
+    const cx = (window.innerWidth / 2 - view.x) / view.k;
+    const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - view.y) / view.k;
+    return { x: cx, y: cy };
+  }, [view]);
+
+  const openFolderPicker = React.useCallback((): Promise<string | null> => {
+    return new Promise((resolve) => {
+      folderPickerResolveRef.current = resolve;
+      setAddProjectOpen(true);
+    });
+  }, []);
+
+  const handleFolderPickerSelect = (path: string) => {
+    setAddProjectOpen(false);
+    const resolve = folderPickerResolveRef.current;
+    folderPickerResolveRef.current = null;
+    resolve?.(path);
+  };
+
+  const handleFolderPickerClose = () => {
+    setAddProjectOpen(false);
+    const resolve = folderPickerResolveRef.current;
+    folderPickerResolveRef.current = null;
+    resolve?.(null);
+  };
+
+  const canvasOnAddProject = React.useCallback(() => {
+    void openFolderPicker().then((path) => {
+      if (!path) return;
+      const norm = normalizeProjectPath(path);
+      const near = getCanvasCenter();
+      const emptyGroup: ProjectGroup = {
+        key: `path:${norm}`,
+        kind: 'path',
+        title: projectName(norm),
+        path: norm,
+        frameId: null,
+        tiles: [],
+        outside: [],
+        drifted: []
+      };
+      fixGroupFrame({ ops: canvasGroupOps, group: emptyGroup, near });
+    });
+  }, [openFolderPicker, getCanvasCenter, canvasGroupOps]);
+
+  const canvasSpawnTerminal = React.useCallback((group: ProjectGroup | null) => {
+    if (group?.kind === 'frame' && group.frameId) {
+      const result = spawnInGroup({ ops: canvasGroupOps, group, width: TILE_WIDTH, height: TILE_HEIGHT });
+      if (result) {
+        addTile({ x: result.x, y: result.y }, group.path ?? undefined);
+        if (!result.fitted) showToast({ kind: 'info', message: 'No room in frame' });
+      } else {
+        addTile(undefined, group.path ?? undefined);
+      }
+    } else {
+      addTile(undefined, group?.path ?? undefined);
+    }
+  }, [canvasGroupOps, addTile]);
+
+  const canvasSpawnNote = React.useCallback((group: ProjectGroup) => {
+    if (group.kind === 'frame' && group.frameId) {
+      const result = spawnInGroup({ ops: canvasGroupOps, group, width: NOTE_WIDTH, height: NOTE_HEIGHT });
+      if (result) {
+        addNote({ x: result.x + NOTE_WIDTH / 2, y: result.y + NOTE_HEIGHT / 2 });
+      } else {
+        addNote();
+      }
+    } else {
+      addNote();
+    }
+  }, [canvasGroupOps, addNote]);
+
+  const canvasSelectGroupOp = React.useCallback((group: ProjectGroup) => {
+    if (group.kind === 'frame' && group.frameId) {
+      focusFrame(group.frameId);
+    } else {
+      const first = group.tiles[0] ?? group.outside[0];
+      if (first) focusTile(first.id);
+    }
+  }, [focusFrame, focusTile]);
+
+  const projectActions = useProjectsPanelActions({
+    ops: canvasGroupOps,
+    removeFrameOp: removeFrame,
+    renameFrameOp: renameFrame,
+    activateTileOp: (tile) => activateTile(tile.id),
+    closeTileOp: requestCloseTile,
+    renameTileOp: setTileTitle,
+    spawnTerminal: canvasSpawnTerminal,
+    spawnNote: canvasSpawnNote,
+    selectGroupOp: canvasSelectGroupOp,
+    onAddProject: canvasOnAddProject,
+    openFolderPicker,
+    getViewCenter: getCanvasCenter
+  });
+
+  const activeGroupKey = React.useMemo(() => {
+    if (!activeTile) return null;
+    for (const group of canvasGroups) {
+      if (group.tiles.some((t) => t.id === activeTile) || group.outside.some((t) => t.id === activeTile)) {
+        return group.key;
+      }
+    }
+    return null;
+  }, [canvasGroups, activeTile]);
 
   useNotifyBridge({
     tiles,
@@ -781,6 +975,7 @@ const Canvas = () => {
     <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root} style={benchOffset}>
       <div
         ref={bgRef}
+        style={bgStyle}
         className={styles.bg}
         onWheel={onWheel}
         onPointerUp={endPan}
@@ -799,11 +994,21 @@ const Canvas = () => {
           <svg className={styles.links} width={size.w} height={size.h}>
             {tiles.map((t) => {
               if ((t.type !== 'note' && t.type !== 'term') || !t.linkedTo?.length) return null;
-              const srcRect = { x: t.x * view.k + view.x, y: t.y * view.k + view.y, width: t.width * view.k, height: t.height * view.k };
+              const srcRect = {
+                x: t.x * view.k + view.x,
+                y: t.y * view.k + view.y,
+                width: t.width * view.k,
+                height: t.height * view.k
+              };
               return t.linkedTo.map((termId) => {
                 const term = tiles.find((x) => x.id === termId);
                 if (!term) return null;
-                const termRect = { x: term.x * view.k + view.x, y: term.y * view.k + view.y, width: term.width * view.k, height: term.height * view.k };
+                const termRect = {
+                  x: term.x * view.k + view.x,
+                  y: term.y * view.k + view.y,
+                  width: term.width * view.k,
+                  height: term.height * view.k
+                };
                 const d = flowPath(srcRect, termRect);
                 const removeLink = (e: React.PointerEvent) => {
                   e.stopPropagation();
@@ -822,7 +1027,12 @@ const Canvas = () => {
               (() => {
                 const src = tiles.find((x) => x.id === linkDrag.srcId);
                 if (!src) return null;
-                const srcRect = { x: src.x * view.k + view.x, y: src.y * view.k + view.y, width: src.width * view.k, height: src.height * view.k };
+                const srcRect = {
+                  x: src.x * view.k + view.x,
+                  y: src.y * view.k + view.y,
+                  width: src.width * view.k,
+                  height: src.height * view.k
+                };
                 const d = flowPath(srcRect, { x: linkDrag.x, y: linkDrag.y, width: 0, height: 0 });
                 return <path d={d} className={styles.linkLine} />;
               })()}
@@ -843,26 +1053,28 @@ const Canvas = () => {
               })()}
           </svg>
         )}
-        {!fsId &&
-          frames.map((f) => (
-            <Frame key={f.id} frame={f} view={view} onSnap={snapFrame} onResize={resizeFrame} />
-          ))}
+        {!fsId && frames.map((f) => <Frame key={f.id} frame={f} view={view} onSnap={snapFrame} onResize={resizeFrame} />)}
         {tiles.map((t) => {
           const vis = isVisible(t);
           if (vis && (t.width - TILE_GAP) * view.k >= MIN_LIVE_WIDTH) activated.current.add(t.id);
           const live = activated.current.has(t.id);
           const linkedIds =
             t.type === 'note'
-              ? t.linkedTo ?? []
+              ? (t.linkedTo ?? [])
               : t.type === 'term' && !t.runCwd
-                ? [...new Set([...(t.linkedTo ?? []), ...tiles.filter((x) => x.type === 'term' && (x.linkedTo ?? []).includes(t.id)).map((x) => x.id)])]
+                ? [
+                    ...new Set([
+                      ...(t.linkedTo ?? []),
+                      ...tiles.filter((x) => x.type === 'term' && (x.linkedTo ?? []).includes(t.id)).map((x) => x.id)
+                    ])
+                  ]
                 : [];
           const linkActive = t.type === 'note' && linkedIds.some((id) => id === activeTile || selected.has(id));
           const cand = t.type === 'note' ? adjacentTerm(t, tiles) : null;
           const linkCand = cand && !linkedIds.includes(cand.id) ? cand : null;
           const linkedTerms = linkedIds
             .map((id) => tiles.find((x) => x.id === id))
-            .filter((x): x is typeof tiles[number] => Boolean(x))
+            .filter((x): x is (typeof tiles)[number] => Boolean(x))
             .map((term) => ({ id: term.id, name: termName(term) }));
           return (
             <TileFrame
@@ -941,21 +1153,42 @@ const Canvas = () => {
         <div ref={indicatorRef} className={styles.indicator}>
           100%
         </div>
-        {!fsId && (
-          <Minimap view={view} tiles={tiles} agents={agents} alerts={alertKinds} viewportRef={bgRef} onPan={panTo} />
-        )}
+        {!fsId && <Minimap view={view} tiles={tiles} agents={agents} alerts={alertKinds} viewportRef={bgRef} onPan={panTo} />}
       </div>
       <Toasts />
       {commandBarOpen && <CommandBar sources={commandBarSources} onClose={closeCommandBar} />}
-      {navOpen && (
-        <Navigator
+      {navOpen && leftHasVisible && (
+        <CanvasDock
+          mode={sidebarMode}
+          side="left"
           tiles={tiles}
-          frames={frames}
+          groups={canvasGroups}
           alerts={alertKinds}
           agents={agents}
+          panels={leftPanels}
           activeTile={activeTile}
           activeDiff={activeDiffFile}
-          handlers={navHandlers}
+          activeGroupKey={activeGroupKey}
+          recentProjects={[]}
+          handlers={leftDockHandlers}
+          projectActions={projectActions}
+        />
+      )}
+      {dockRightOpen && rightHasVisible && (
+        <CanvasDock
+          mode={sidebarMode}
+          side="right"
+          tiles={tiles}
+          groups={canvasGroups}
+          alerts={alertKinds}
+          agents={agents}
+          panels={rightPanels}
+          activeTile={activeTile}
+          activeDiff={activeDiffFile}
+          activeGroupKey={activeGroupKey}
+          recentProjects={[]}
+          handlers={rightDockHandlers}
+          projectActions={projectActions}
         />
       )}
       {splitting && <SplitHandle left={9 + navInset + fsWidth} onMove={moveSplit} />}
@@ -969,14 +1202,9 @@ const Canvas = () => {
         />
       )}
       {tileToClose && (
-        <UnsavedDialog
-          paths={[tileToClose.path]}
-          onSave={onSaveTile}
-          onDiscard={discardTile}
-          onCancel={cancelCloseTile}
-        />
+        <UnsavedDialog paths={[tileToClose.path]} onSave={onSaveTile} onDiscard={discardTile} onCancel={cancelCloseTile} />
       )}
-      {!navOpen && (
+      {!navOpen && leftHasVisible && (
         <div className={styles.navRevealZone}>
           <button
             className={styles.navReveal}
@@ -984,6 +1212,17 @@ const Canvas = () => {
             data-tooltip="Show menu"
             data-shortcut={formatCombo(getBinding('view.navigator'))}
             aria-label="Show menu"
+          />
+        </div>
+      )}
+      {!dockRightOpen && rightHasVisible && (
+        <div className={styles.dockRightRevealZone}>
+          <button
+            className={styles.dockRightReveal}
+            onClick={showDockRight}
+            data-tooltip="Show right panel"
+            data-shortcut={formatCombo(getBinding('view.inspector'))}
+            aria-label="Show right panel"
           />
         </div>
       )}
@@ -1007,6 +1246,14 @@ const Canvas = () => {
               ? [{ label: 'Frame selection', icon: <Group size={15} strokeWidth={1.75} />, onSelect: frameSelection }]
               : [])
           ]}
+        />
+      )}
+      {addProjectOpen && (
+        <AddProjectModal
+          recentProjects={[]}
+          existingProjects={canvasProjects}
+          onSelect={handleFolderPickerSelect}
+          onClose={handleFolderPickerClose}
         />
       )}
     </div>

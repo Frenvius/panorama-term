@@ -1,4 +1,4 @@
-.panel {
+.panelLeft {
   position: absolute;
   top: 47px;
   bottom: 25px;
@@ -13,10 +13,50 @@
   background: color-mix(in srgb, var(--surface-3) 86%, transparent);
   backdrop-filter: blur(16px) saturate(140%);
   box-shadow: var(--shadow-pop);
-  animation: slide-in 0.14s ease-out both;
+  animation: slideInLeft 0.14s ease-out both;
+
+  &[data-mode='docked'] {
+    top: 46px;
+    left: 8px;
+    bottom: 24px;
+    animation: none;
+    border-color: var(--border-1);
+    background: var(--surface-2);
+    backdrop-filter: none;
+    box-shadow: var(--shadow-island);
+  }
 }
 
-.resizer {
+.panelRight {
+  position: absolute;
+  top: 47px;
+  right: 9px;
+  bottom: 25px;
+  z-index: 20;
+  display: flex;
+  width: 248px;
+  flex-direction: column;
+  cursor: default;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-3) 86%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow-pop);
+  animation: slideInRight 0.14s ease-out both;
+
+  &[data-mode='docked'] {
+    top: 46px;
+    right: 8px;
+    bottom: 24px;
+    animation: none;
+    border-color: var(--border-1);
+    background: var(--surface-2);
+    backdrop-filter: none;
+    box-shadow: var(--shadow-island);
+  }
+}
+
+.resizerRight {
   position: absolute;
   top: 0;
   right: -4px;
@@ -51,19 +91,76 @@
   }
 }
 
-.toggleZone {
+.resizerLeft {
   position: absolute;
   top: 0;
+  left: -4px;
   bottom: 0;
-  left: 100%;
-  width: 28px;
+  z-index: 5;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
 
-  &:hover .toggle {
+  &::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: linear-gradient(to bottom, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  &:hover::before {
+    opacity: 0.45;
+    transition-delay: 0.1s;
+  }
+
+  &:active::before {
     opacity: 0.9;
+    transition-delay: 0s;
   }
 }
 
-.toggle {
+.toggleZoneRight {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  bottom: 0;
+  width: 28px;
+
+  &:hover .toggleHandle {
+    opacity: 0.9;
+  }
+
+  .toggleHandle {
+    left: 4px;
+    right: auto;
+  }
+}
+
+.toggleZoneLeft {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  bottom: 0;
+  width: 28px;
+
+  &:hover .toggleHandle {
+    opacity: 0.9;
+  }
+
+  .toggleHandle {
+    right: 4px;
+    left: auto;
+  }
+}
+
+.toggleHandle {
   position: absolute;
   top: 50%;
   left: 4px;
@@ -79,11 +176,24 @@
   transition: opacity 0.15s ease-in-out;
 }
 
-@keyframes slide-in {
+@keyframes slideInLeft {
   from {
     opacity: 0;
     transform: translateX(-8px);
   }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+
   to {
     opacity: 1;
     transform: translateX(0);
@@ -120,40 +230,6 @@
   }
 }
 
-.tabs {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 7px;
-  background: var(--hover-soft);
-}
-
-.tab {
-  display: flex;
-  width: 30px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  cursor: pointer;
-  color: var(--text-muted);
-  border-radius: 5px;
-  background: transparent;
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
-
-  &:hover {
-    color: var(--text-1);
-  }
-
-  &[data-active='true'] {
-    color: var(--text-strong);
-    background: var(--surface-1);
-    box-shadow: var(--shadow-island);
-  }
-}
-
 .search {
   display: flex;
   align-items: center;
@@ -161,7 +237,7 @@
   margin: 0 8px 8px;
 }
 
-.new {
+.newBtn {
   display: flex;
   width: 28px;
   height: 28px;
@@ -229,4 +305,3 @@
   font-size: 12px;
   text-align: center;
 }
-

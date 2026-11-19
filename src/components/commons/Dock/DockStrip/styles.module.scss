@@ -1,0 +1,35 @@
+.strip {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--hover-soft);
+}
+
+.tab {
+  display: flex;
+  width: 30px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 5px;
+  font-size: 0;
+  background: transparent;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+
+  &:hover {
+    color: var(--text-1);
+  }
+
+  &[data-active='true'] {
+    color: var(--text-strong);
+    background: var(--surface-1);
+    box-shadow: var(--shadow-island);
+  }
+}

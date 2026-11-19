@@ -131,6 +131,35 @@
   transition: opacity 0.15s ease-in-out;
 }
 
+.dockRightRevealZone {
+  position: absolute;
+  top: 47px;
+  right: 0;
+  bottom: 25px;
+  z-index: 20;
+  width: 26px;
+
+  &:hover .dockRightReveal {
+    opacity: 0.9;
+  }
+}
+
+.dockRightReveal {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 7px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: var(--border-3);
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+}
+
 .marquee {
   position: absolute;
   z-index: 100;

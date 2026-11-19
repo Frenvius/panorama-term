@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { ChevronRight } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 
 import styles from './styles.module.scss';
 
@@ -10,6 +10,7 @@ export interface ContextMenuItem {
   icon?: React.ReactNode;
   shortcut?: string;
   danger?: boolean;
+  checked?: boolean;
   disabled?: boolean;
   submenu?: ContextMenuEntry[];
 }
@@ -82,13 +83,18 @@ const Entries = ({ items, onClose }: EntriesProps) => (
         onClose();
       };
 
-      const cls = [styles.item, item.danger && styles.danger, item.disabled && styles.disabled]
-        .filter(Boolean)
-        .join(' ');
+      const cls = [styles.item, item.danger && styles.danger, item.disabled && styles.disabled].filter(Boolean).join(' ');
+
+      const iconSlot =
+        item.checked !== undefined ? (
+          <span className={styles.icon}>{item.checked ? <Check size={13} strokeWidth={2} /> : null}</span>
+        ) : item.icon ? (
+          <span className={styles.icon}>{item.icon}</span>
+        ) : null;
 
       return (
         <button key={item.label} className={cls} onClick={select} disabled={item.disabled}>
-          {item.icon && <span className={styles.icon}>{item.icon}</span>}
+          {iconSlot}
           <span className={styles.label}>{item.label}</span>
           {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
         </button>

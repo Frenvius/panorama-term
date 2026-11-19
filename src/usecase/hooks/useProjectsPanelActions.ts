@@ -1,0 +1,129 @@
+import type { Frame, Tile } from '~/domain/interfaces/workspace.interface';
+import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
+import type { GroupOps } from '~/usecase/util/projectGroupActions';
+import type { ProjectsPanelActions } from '~/components/commons/ProjectsPanel/types';
+
+import React from 'react';
+
+import { findFreeRect } from '~/usecase/util/frameLayout';
+import { fixGroupFrame, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
+import { projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
+import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
+
+export interface UseProjectsPanelActionsOpts {
+  ops: GroupOps;
+  removeFrameOp: (id: string) => void;
+  renameFrameOp: (id: string, title: string) => void;
+  activateTileOp: (tile: Tile) => void;
+  closeTileOp: (id: string) => void;
+  renameTileOp: (id: string, title: string) => void;
+  spawnTerminal: (group: ProjectGroup | null) => void;
+  spawnNote: (group: ProjectGroup) => void;
+  selectGroupOp: (group: ProjectGroup) => void;
+  onAddProject: () => void;
+  openFolderPicker: () => Promise<string | null>;
+  getViewCenter: () => { x: number; y: number };
+  removeProjectOp?: (path: string) => void;
+}
+
+export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): ProjectsPanelActions => {
+  const ref = React.useRef(opts);
+  ref.current = opts;
+
+  const onActivateTile = React.useCallback((tile: Tile) => ref.current.activateTileOp(tile), []);
+
+  const onCloseTile = React.useCallback((id: string) => ref.current.closeTileOp(id), []);
+
+  const onRenameTile = React.useCallback((id: string, title: string) => ref.current.renameTileOp(id, title), []);
+
+  const onSelectGroup = React.useCallback((group: ProjectGroup) => ref.current.selectGroupOp(group), []);
+
+  const onNewTerminal = React.useCallback((group: ProjectGroup | null) => ref.current.spawnTerminal(group), []);
+
+  const onNewNote = React.useCallback((group: ProjectGroup) => ref.current.spawnNote(group), []);
+
+  const onAddProject = React.useCallback(() => ref.current.onAddProject(), []);
+
+  const onNewFrame = React.useCallback(() => {
+    const { ops, getViewCenter } = ref.current;
+    const near = getViewCenter();
+    const obstacles = [
+      ...ops.tiles.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
+      ...ops.frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
+    ];
+    const { x, y } = findFreeRect({ width: FRAME_WIDTH, height: FRAME_HEIGHT, near, obstacles });
+    ops.createFrame({ x, y, width: FRAME_WIDTH, height: FRAME_HEIGHT, title: 'Frame', color: FRAME_COLOR });
+  }, []);
+
+  const onFixFrame = React.useCallback((group: ProjectGroup) => {
+    const { ops, getViewCenter } = ref.current;
+    const near = getViewCenter();
+    fixGroupFrame({ ops, group, near });
+  }, []);
+
+  const onMoveTileIntoFrame = React.useCallback((tile: Tile, frameId: string) => {
+    moveTileIntoFrame({ ops: ref.current.ops, tile, frameId });
+  }, []);
+
+  const onRenameFrame = React.useCallback((frameId: string, title: string) => {
+    ref.current.renameFrameOp(frameId, title);
+  }, []);
+
+  const onDeleteFrame = React.useCallback((frameId: string) => {
+    ref.current.removeFrameOp(frameId);
+  }, []);
+
+  const onSetFolder = React.useCallback((frameId: string) => {
+    void (async () => {
+      const path = await ref.current.openFolderPicker();
+      if (!path) return;
+      const norm = normalizeProjectPath(path);
+      const frame = ref.current.ops.frames.find((f) => f.id === frameId);
+      const patch: Partial<Omit<Frame, 'id'>> = { path: norm };
+      if (frame?.title === 'Frame') patch.title = projectName(norm);
+      ref.current.ops.patchFrame(frameId, patch);
+    })();
+  }, []);
+
+  const onRemoveProject = React.useCallback((path: string) => {
+    ref.current.removeProjectOp?.(path);
+  }, []);
+
+  const hasRemoveProject = Boolean(opts.removeProjectOp);
+
+  return React.useMemo(
+    () => ({
+      onActivateTile,
+      onCloseTile,
+      onRenameTile,
+      onSelectGroup,
+      onNewTerminal,
+      onNewNote,
+      onAddProject,
+      onNewFrame,
+      onFixFrame,
+      onMoveTileIntoFrame,
+      onRenameFrame,
+      onDeleteFrame,
+      onSetFolder,
+      onRemoveProject: hasRemoveProject ? onRemoveProject : undefined
+    }),
+    [
+      hasRemoveProject,
+      onActivateTile,
+      onAddProject,
+      onCloseTile,
+      onDeleteFrame,
+      onFixFrame,
+      onMoveTileIntoFrame,
+      onNewFrame,
+      onNewNote,
+      onNewTerminal,
+      onRemoveProject,
+      onRenameFrame,
+      onRenameTile,
+      onSelectGroup,
+      onSetFolder
+    ]
+  );
+};
