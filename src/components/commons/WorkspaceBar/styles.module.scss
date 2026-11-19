@@ -96,6 +96,19 @@
   }
 }
 
+.nameInput {
+  height: 30px;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--border-3);
+  border-radius: 6px;
+  outline: none;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--surface-1);
+}
+
 .new {
   display: flex;
   align-items: center;

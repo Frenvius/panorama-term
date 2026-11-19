@@ -60,6 +60,18 @@
   text-overflow: ellipsis;
 }
 
+.renameInput {
+  width: 120px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border-3);
+  border-radius: 4px;
+  outline: none;
+  color: var(--text-1);
+  font: inherit;
+  background: var(--surface-1);
+}
+
 .close {
   display: flex;
   align-items: center;

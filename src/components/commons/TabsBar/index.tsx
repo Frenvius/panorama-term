@@ -20,7 +20,10 @@ const TabsBar = () => {
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
   const [addMenuOpen, setAddMenuOpen] = React.useState(false);
   const [ctxMenu, setCtxMenu] = React.useState<TabContextState | null>(null);
+  const [renamingId, setRenamingId] = React.useState<string | null>(null);
+  const [draft, setDraft] = React.useState('');
   const addWrapRef = React.useRef<HTMLDivElement>(null);
+  const renameRef = React.useRef<HTMLInputElement>(null);
 
   const alerted = React.useMemo(() => new Set([...alerts.values()].map((alert) => alert.tabId)), [alerts]);
 
@@ -54,10 +57,29 @@ const TabsBar = () => {
 
   const closeCtxMenu = () => setCtxMenu(null);
 
-  const promptRename = (tab: TabMeta) => {
-    const name = window.prompt('Tab name', tab.name);
-    if (name) void renameTab(tab.id, name);
+  const stopPropagation = (e: React.MouseEvent) => e.stopPropagation();
+
+  const startRename = (tab: TabMeta) => {
+    setDraft(tab.name);
+    setRenamingId(tab.id);
   };
+
+  const commitRename = () => {
+    if (!renamingId) return;
+    const next = draft.trim();
+    const current = tabs.find((tab) => tab.id === renamingId);
+    setRenamingId(null);
+    if (next && next !== current?.name) void renameTab(renamingId, next);
+  };
+
+  const onRenameKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') commitRename();
+    if (e.key === 'Escape') setRenamingId(null);
+  };
+
+  React.useEffect(() => {
+    if (renamingId) renameRef.current?.select();
+  }, [renamingId]);
 
   const ctxItems: ContextMenuEntry[] = React.useMemo(() => {
     if (!ctxMenu) return [];
@@ -73,7 +95,7 @@ const TabsBar = () => {
       },
       {
         label: 'Rename tab',
-        onSelect: () => promptRename(tab)
+        onSelect: () => startRename(tab)
       },
       'separator',
       {
@@ -102,7 +124,7 @@ const TabsBar = () => {
       {tabs.map((tab) => {
         const mode = tab.mode ?? 'canvas';
         const select = () => void switchTab(tab.id);
-        const rename = () => promptRename(tab);
+        const rename = () => startRename(tab);
         const close = (e: React.MouseEvent) => {
           e.stopPropagation();
           void deleteTab(tab.id);
@@ -127,7 +149,22 @@ const TabsBar = () => {
             <span className={styles.modeIcon}>
               {mode === 'project' ? <Columns3 size={12} /> : <LayoutGrid size={12} />}
             </span>
-            <span className={styles.name}>{tab.name}</span>
+            {renamingId === tab.id ? (
+              <input
+                ref={renameRef}
+                className={styles.renameInput}
+                value={draft}
+                aria-label="Tab name"
+                onBlur={commitRename}
+                onKeyDown={onRenameKey}
+                onClick={stopPropagation}
+                onDoubleClick={stopPropagation}
+                onChange={(e) => setDraft(e.target.value)}
+                autoFocus
+              />
+            ) : (
+              <span className={styles.name}>{tab.name}</span>
+            )}
             <button
               className={styles.close}
               onClick={close}
