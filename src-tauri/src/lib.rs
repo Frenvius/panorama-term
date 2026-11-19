@@ -127,22 +127,19 @@ fn stop_host(pid: u32) {
     }
 }
 
-fn sidecar_bin() -> PathBuf {
-    let name = if cfg!(windows) { "sidecar.exe" } else { "sidecar" };
-
+fn sidecar_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         return PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("sidecar-rs")
             .join("target")
-            .join("debug")
-            .join(name);
+            .join("debug");
     }
 
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .unwrap_or_else(|| PathBuf::from(name))
+        .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn remove_retired_files(dir: &Path) {
@@ -207,12 +204,11 @@ fn start_gc_thread(root: PathBuf) {
 }
 
 fn spawn_sidecar() {
-    let source = sidecar_bin();
-    if let Some(dir) = source.parent() {
-        remove_retired_files(dir);
-    }
-    if !source.exists() {
-        eprintln!("[panorama] sidecar binary missing: {}", source.display());
+    let dir = sidecar_dir();
+    remove_retired_files(&dir);
+    let source_host = panorama_runtime::source_exe(&dir, panorama_runtime::Role::Host);
+    if !source_host.exists() {
+        eprintln!("[panorama] sidecar binary missing: {}", source_host.display());
         return;
     }
 
@@ -223,17 +219,17 @@ fn spawn_sidecar() {
 
     let flavor = panorama_runtime::Flavor::current();
 
-    let host = match panorama_runtime::prepare(&source, &root, flavor) {
-        Ok(dir) => {
+    let host = match panorama_runtime::prepare(&dir, &root, flavor) {
+        Ok(runtime_dir) => {
             let cf = panorama_runtime::current_file(&root, host_port());
-            if let Err(e) = panorama_runtime::publish(&cf, &dir, &source) {
+            if let Err(e) = panorama_runtime::publish(&cf, &runtime_dir, &dir) {
                 eprintln!("[panorama] publish failed: {e}");
             }
-            panorama_runtime::host_exe(&dir, flavor)
+            panorama_runtime::exe(&runtime_dir, panorama_runtime::Role::Host, flavor)
         }
         Err(e) => {
             eprintln!("[panorama] runtime prepare failed: {e}, running source binary directly");
-            source.clone()
+            source_host
         }
     };
 
@@ -249,8 +245,7 @@ fn spawn_sidecar() {
 
     let make = || {
         let mut cmd = Command::new(&host);
-        cmd.arg("host")
-            .env("PANORAMA_HOST_PORT", host_port().to_string())
+        cmd.env("PANORAMA_HOST_PORT", host_port().to_string())
             .env("PANORAMA_SIDECAR_PORT", sidecar_port().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())

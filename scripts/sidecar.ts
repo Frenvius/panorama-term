@@ -25,7 +25,10 @@ if (build.status !== 0) process.exit(build.status ?? 1);
 const out = cross ? join('sidecar-rs', 'target', triple, profile) : join('sidecar-rs', 'target', profile);
 const dir = join('src-tauri', 'binaries');
 mkdirSync(dir, { recursive: true });
-copyFileSync(join(out, `sidecar${ext}`), join(dir, `sidecar-${triple}${ext}`));
+for (const name of ['panorama-host', 'panorama-brain', 'panorama-cli']) {
+  copyFileSync(join(out, `${name}${ext}`), join(dir, `${name}-${triple}${ext}`));
+}
+rmSync(join(dir, `sidecar-${triple}${ext}`), { force: true });
 
 // the ConPTY inside Windows 10 drops mouse-tracking escapes, so ship a current one beside the host
 const CONPTY_VERSION = '1.24.261001001';

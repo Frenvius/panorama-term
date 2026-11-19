@@ -424,7 +424,92 @@ fn respawn_detached(extra: &[&str]) {
     }
 }
 fn hook_exe() -> Option<PathBuf> {
-    std::env::current_exe().ok()
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    Some(panorama_runtime::exe_beside(&dir, panorama_runtime::Role::Cli, panorama_runtime::Flavor::current()))
+}
+
+#[cfg(windows)]
+pub fn init_process() {
+    restore_ctrl_c();
+}
+
+#[cfg(not(windows))]
+pub fn init_process() {}
+
+pub fn host_main() {
+    if std::env::args().nth(1).as_deref() == Some("host-id") {
+        println!("{}", host::id());
+        return;
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
+        respawn_detached(&[DAEMON_ARG]);
+    }
+    host::supervise_brain();
+    host::run_host_server(host_port());
+}
+
+pub async fn brain_main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
+        respawn_detached(&[DAEMON_ARG]);
+    }
+    if let Some(path) = fresh_path() {
+        std::env::set_var("PATH", path);
+    }
+    tokio::task::block_in_place(|| reconnect_sessions());
+    uninstall_claude_hook();
+    install_claude_mod();
+    install_pi_extension();
+    install_kimi_statusline();
+    let listener = TcpListener::bind(("127.0.0.1", port()))
+        .await
+        .expect("bind sidecar port");
+    if let Err(e) = service_bridge::init() { eprintln!("[host service] {e}"); }
+    mobile::boot();
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
+            let _ = tokio::task::spawn_blocking(move || {
+                for s in list {
+                    flush_session(&s);
+                }
+            })
+            .await;
+        }
+    });
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let _ = stream.set_nodelay(true);
+                tokio::spawn(handle_conn(stream));
+            }
+            Err(_) => continue,
+        }
+    }
+}
+
+pub fn cli_main() {
+    // settings.json hooks written by older builds may still call these until the next brain start removes them
+    if matches!(std::env::args().nth(1).as_deref(), Some("record-agent" | "emit-event")) {
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("statusline") {
+        statusline_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("codex-hook") {
+        codex_hook_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("codex-launch") {
+        codex_launch_cmd();
+        return;
+    }
+    eprintln!("panorama-cli: unknown command");
+    std::process::exit(2);
 }
 
 const DEFAULT_FG: u32 = 0xC7_D0_E0;
@@ -2095,7 +2180,7 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
     if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex.cmd");
-    let exe = std::env::current_exe().ok()?;
+    let exe = hook_exe()?;
     let body = format!("@echo off\r\n\"{}\" codex-launch %*\r\nexit /b %ERRORLEVEL%\r\n", exe.display());
     let ps_wrapper = wrapper.with_extension("ps1");
     let ps_body = format!("& '{}' codex-launch @args\r\n", exe.display().to_string().replace('\'', "''"));
@@ -2116,7 +2201,7 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
     if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex");
-    let exe = std::env::current_exe().ok()?;
+    let exe = hook_exe()?;
     let body = format!("#!/bin/sh\nexec \"{}\" codex-launch \"$@\"\n", exe.display());
     std::fs::create_dir_all(wrapper.parent()?).ok()?;
     if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
@@ -2817,7 +2902,7 @@ fn uninstall_claude_hook() {
             let cf = panorama_runtime::current_file(&r, host_port());
             panorama_runtime::read_current(&cf)
         })
-        .map(|c| c.source)
+        .map(|c| c.source.join(format!("sidecar{}", std::env::consts::EXE_SUFFIX)))
         .or_else(hook_exe);
     let Some(exe) = exe else {
         return;
@@ -4842,78 +4927,6 @@ fn restore_ctrl_c() {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    #[cfg(windows)]
-    restore_ctrl_c();
-    if std::env::args().nth(1).as_deref() == Some("host-id") {
-        println!("{}", host::id());
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("host") {
-        #[cfg(windows)]
-        if std::env::args().nth(2).as_deref() != Some(DAEMON_ARG) {
-            respawn_detached(&["host", DAEMON_ARG]);
-        }
-        host::supervise_brain();
-        host::run_host_server(host_port());
-        return;
-    }
-    // settings.json hooks written by older builds may still call these until the next brain start removes them
-    if matches!(std::env::args().nth(1).as_deref(), Some("record-agent" | "emit-event")) {
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("statusline") {
-        statusline_cmd();
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("codex-hook") {
-        codex_hook_cmd();
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("codex-launch") {
-        codex_launch_cmd();
-    }
-    #[cfg(windows)]
-    if std::env::args().nth(1).as_deref() != Some(DAEMON_ARG) {
-        respawn_detached(&[DAEMON_ARG]);
-    }
-    if let Some(path) = fresh_path() {
-        std::env::set_var("PATH", path);
-    }
-    tokio::task::block_in_place(|| reconnect_sessions());
-    uninstall_claude_hook();
-    install_claude_mod();
-    install_pi_extension();
-    install_kimi_statusline();
-    let listener = TcpListener::bind(("127.0.0.1", port()))
-        .await
-        .expect("bind sidecar port");
-    if let Err(e) = service_bridge::init() { eprintln!("[host service] {e}"); }
-    mobile::boot();
-    tokio::spawn(async {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            tick.tick().await;
-            let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
-            let _ = tokio::task::spawn_blocking(move || {
-                for s in list {
-                    flush_session(&s);
-                }
-            })
-            .await;
-        }
-    });
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let _ = stream.set_nodelay(true);
-                tokio::spawn(handle_conn(stream));
-            }
-            Err(_) => continue,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

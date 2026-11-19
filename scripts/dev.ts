@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const isWin = process.platform === 'win32';
-const bin = join('sidecar-rs', 'target', 'debug', isWin ? 'sidecar.exe' : 'sidecar');
+const bin = join('sidecar-rs', 'target', 'debug', isWin ? 'panorama-host.exe' : 'panorama-host');
 
 const build = spawnSync('bun', ['scripts/sidecar.ts'], { stdio: 'inherit', shell: isWin });
 if (build.status !== 0 || !existsSync(bin)) {

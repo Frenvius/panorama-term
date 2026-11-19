@@ -2,10 +2,23 @@
 name = "sidecar"
 version = "0.1.0"
 edition = "2021"
+autobins = false
+
+[lib]
+name = "sidecar"
+path = "src/lib.rs"
 
 [[bin]]
-name = "sidecar"
-path = "src/main.rs"
+name = "panorama-host"
+path = "src/bin/panorama-host.rs"
+
+[[bin]]
+name = "panorama-brain"
+path = "src/bin/panorama-brain.rs"
+
+[[bin]]
+name = "panorama-cli"
+path = "src/bin/panorama-cli.rs"
 
 [dependencies]
 panorama-runtime = { path = "runtime" }

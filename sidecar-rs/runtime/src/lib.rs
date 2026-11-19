@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Flavor {
     Dev,
     Release,
@@ -14,6 +14,13 @@ impl Flavor {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Role {
+    Host,
+    Brain,
+    Cli,
+}
+
 pub fn root(panorama_dir: &Path) -> PathBuf {
     panorama_dir.join("runtime")
 }
@@ -22,26 +29,47 @@ pub fn current_file(root: &Path, host_port: u16) -> PathBuf {
     root.join(format!("current-{}.json", host_port))
 }
 
-fn host_exe_name(flavor: Flavor) -> String {
-    match flavor {
-        Flavor::Dev => format!("panorama-host-dev{}", std::env::consts::EXE_SUFFIX),
-        Flavor::Release => format!("panorama-host{}", std::env::consts::EXE_SUFFIX),
+fn role_base_name(role: Role) -> &'static str {
+    match role {
+        Role::Host => "panorama-host",
+        Role::Brain => "panorama-brain",
+        Role::Cli => "panorama-cli",
     }
 }
 
-fn brain_exe_name(flavor: Flavor) -> String {
+fn exe_name(role: Role, flavor: Flavor) -> String {
     match flavor {
-        Flavor::Dev => format!("panorama-brain-dev{}", std::env::consts::EXE_SUFFIX),
-        Flavor::Release => format!("panorama-brain{}", std::env::consts::EXE_SUFFIX),
+        Flavor::Dev => format!("{}-dev{}", role_base_name(role), std::env::consts::EXE_SUFFIX),
+        Flavor::Release => format!("{}{}", role_base_name(role), std::env::consts::EXE_SUFFIX),
     }
 }
 
-pub fn host_exe(dir: &Path, flavor: Flavor) -> PathBuf {
-    dir.join(host_exe_name(flavor))
+fn source_exe_name(role: Role) -> String {
+    format!("{}{}", role_base_name(role), std::env::consts::EXE_SUFFIX)
 }
 
-pub fn brain_exe(dir: &Path, flavor: Flavor) -> PathBuf {
-    dir.join(brain_exe_name(flavor))
+pub fn exe(dir: &Path, role: Role, flavor: Flavor) -> PathBuf {
+    dir.join(exe_name(role, flavor))
+}
+
+pub fn source_exe(dir: &Path, role: Role) -> PathBuf {
+    dir.join(source_exe_name(role))
+}
+
+pub fn exe_beside(dir: &Path, role: Role, flavor: Flavor) -> PathBuf {
+    let flavored = exe(dir, role, flavor);
+    if flavored.exists() { flavored } else { source_exe(dir, role) }
+}
+
+pub fn source_mtime(source_dir: &Path) -> Option<SystemTime> {
+    [Role::Host, Role::Brain, Role::Cli]
+        .iter()
+        .filter_map(|&r| {
+            std::fs::metadata(source_exe(source_dir, r))
+                .and_then(|m| m.modified())
+                .ok()
+        })
+        .max()
 }
 
 fn fnv1a_feed(hash: &mut u64, bytes: &[u8]) {
@@ -56,20 +84,17 @@ struct FileEntry {
     content: Vec<u8>,
 }
 
-fn build_entries(source_bin: &Path, flavor: Flavor) -> io::Result<Vec<FileEntry>> {
-    let source_content = std::fs::read(source_bin)?;
-    let src_dir = source_bin.parent();
+fn build_entries(source_dir: &Path, flavor: Flavor) -> io::Result<Vec<FileEntry>> {
+    let maybe_conpty = std::fs::read(source_dir.join("conpty.dll")).ok();
+    let maybe_openconsole = std::fs::read(source_dir.join("OpenConsole.exe")).ok();
 
-    let maybe_conpty = src_dir.and_then(|d| std::fs::read(d.join("conpty.dll")).ok());
-    let maybe_openconsole = src_dir.and_then(|d| std::fs::read(d.join("OpenConsole.exe")).ok());
-
-    let host_name = host_exe_name(flavor);
-    let brain_name = brain_exe_name(flavor);
-
-    let mut entries = vec![
-        FileEntry { name: host_name, content: source_content.clone() },
-        FileEntry { name: brain_name, content: source_content },
-    ];
+    let mut entries = Vec::new();
+    for role in [Role::Host, Role::Brain, Role::Cli] {
+        let src = source_exe(source_dir, role);
+        let content = std::fs::read(&src)
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", src.display())))?;
+        entries.push(FileEntry { name: exe_name(role, flavor), content });
+    }
     if let Some(c) = maybe_conpty {
         entries.push(FileEntry { name: "conpty.dll".into(), content: c });
     }
@@ -97,8 +122,8 @@ fn is_valid(dir: &Path, entries: &[FileEntry]) -> bool {
     })
 }
 
-pub fn prepare(source_bin: &Path, root: &Path, flavor: Flavor) -> io::Result<PathBuf> {
-    let entries = build_entries(source_bin, flavor)?;
+pub fn prepare(source_dir: &Path, root: &Path, flavor: Flavor) -> io::Result<PathBuf> {
+    let entries = build_entries(source_dir, flavor)?;
     let id = build_id(&entries);
     let primary = root.join(&id);
 
@@ -134,8 +159,9 @@ pub fn prepare(source_bin: &Path, root: &Path, flavor: Flavor) -> io::Result<Pat
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::Permissions::from_mode(0o755);
-        let _ = std::fs::set_permissions(tmp.join(host_exe_name(flavor)), mode.clone());
-        let _ = std::fs::set_permissions(tmp.join(brain_exe_name(flavor)), mode.clone());
+        for role in [Role::Host, Role::Brain, Role::Cli] {
+            let _ = std::fs::set_permissions(tmp.join(exe_name(role, flavor)), mode.clone());
+        }
         let _ = std::fs::set_permissions(tmp.join("OpenConsole.exe"), mode);
     }
 
@@ -275,22 +301,23 @@ mod tests {
         dir
     }
 
-    fn dummy_bin(dir: &Path, content: &[u8]) -> PathBuf {
+    fn dummy_source_dir(dir: &Path, content: &[u8]) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
-        let path = dir.join(format!("src{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&path, content).unwrap();
-        path
+        for role in [Role::Host, Role::Brain, Role::Cli] {
+            std::fs::write(source_exe(dir, role), content).unwrap();
+        }
+        dir.to_path_buf()
     }
 
     #[test]
     fn prepare_idempotent() {
         let root = unique_root();
         let src_dir = root.join("src");
-        let bin = dummy_bin(&src_dir, b"fake binary data");
+        dummy_source_dir(&src_dir, b"fake binary data");
         let rt = root.join("rt");
 
-        let dir1 = prepare(&bin, &rt, Flavor::Dev).unwrap();
-        let dir2 = prepare(&bin, &rt, Flavor::Dev).unwrap();
+        let dir1 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+        let dir2 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
         assert_eq!(dir1, dir2);
 
         let tmps: Vec<_> = std::fs::read_dir(&rt)
@@ -304,18 +331,50 @@ mod tests {
     }
 
     #[test]
+    fn prepare_output_has_all_three_exes() {
+        let root = unique_root();
+        let src_dir = root.join("src");
+        dummy_source_dir(&src_dir, b"binary content");
+        let rt = root.join("rt");
+
+        let dir = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+        for role in [Role::Host, Role::Brain, Role::Cli] {
+            assert!(exe(&dir, role, Flavor::Dev).exists(), "{:?} missing", role);
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_cli_change_gives_different_dir() {
+        let root = unique_root();
+        let src_dir = root.join("src");
+        let rt = root.join("rt");
+
+        dummy_source_dir(&src_dir, b"content v1");
+        let dir1 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+
+        std::fs::write(source_exe(&src_dir, Role::Cli), b"content v2 cli").unwrap();
+        let dir2 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+
+        assert_ne!(dir1, dir2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn prepare_recovers_deleted_file() {
         let root = unique_root();
         let src_dir = root.join("src");
-        let bin = dummy_bin(&src_dir, b"content xyz");
+        dummy_source_dir(&src_dir, b"content xyz");
         let rt = root.join("rt");
 
-        let dir1 = prepare(&bin, &rt, Flavor::Dev).unwrap();
-        let b = brain_exe(&dir1, Flavor::Dev);
+        let dir1 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+        let b = exe(&dir1, Role::Brain, Flavor::Dev);
         std::fs::remove_file(&b).unwrap();
 
-        let dir2 = prepare(&bin, &rt, Flavor::Dev).unwrap();
-        assert!(brain_exe(&dir2, Flavor::Dev).exists());
+        let dir2 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
+        assert!(exe(&dir2, Role::Brain, Flavor::Dev).exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -326,11 +385,11 @@ mod tests {
         let src_dir = root.join("src");
         let rt = root.join("rt");
 
-        let bin1 = dummy_bin(&src_dir, b"binary v1");
-        let dir1 = prepare(&bin1, &rt, Flavor::Dev).unwrap();
+        dummy_source_dir(&src_dir, b"binary v1");
+        let dir1 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
 
-        let bin2 = dummy_bin(&src_dir, b"binary v2");
-        let dir2 = prepare(&bin2, &rt, Flavor::Dev).unwrap();
+        dummy_source_dir(&src_dir, b"binary v2");
+        let dir2 = prepare(&src_dir, &rt, Flavor::Dev).unwrap();
 
         assert_ne!(dir1, dir2);
 
@@ -345,7 +404,7 @@ mod tests {
 
         let dir_a = root.join("aaaa");
         let dir_b = root.join("bbbb");
-        let src = root.join("sidecar.exe");
+        let src = root.join("src");
 
         publish(&file, &dir_a, &src).unwrap();
         let c1 = read_current(&file).unwrap();
@@ -385,7 +444,7 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
 
-        let src = root.join("src.exe");
+        let src = root.join("src");
         let cf = rt.join("current-9778.json");
         let json = serde_json::json!({
             "dir": dir_current.to_string_lossy(),
@@ -416,7 +475,7 @@ mod tests {
         std::fs::create_dir_all(&unref).unwrap();
 
         let ping_src = Path::new("C:\\Windows\\System32\\PING.EXE");
-        let brain = brain_exe(&unref, Flavor::Release);
+        let brain = exe(&unref, Role::Brain, Flavor::Release);
         std::fs::copy(ping_src, &brain).unwrap();
 
         let mut child = std::process::Command::new(&brain)

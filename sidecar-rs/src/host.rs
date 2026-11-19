@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -226,12 +226,8 @@ fn no_window(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
 fn same_host(dir: &Path, flavor: panorama_runtime::Flavor) -> bool {
-    let exe = panorama_runtime::host_exe(dir, flavor);
+    let exe = panorama_runtime::exe(dir, panorama_runtime::Role::Host, flavor);
     no_window(Command::new(&exe).arg("host-id").stdin(Stdio::null()).stderr(Stdio::null()))
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == id())
@@ -246,7 +242,7 @@ fn watch_brain(
     flavor: panorama_runtime::Flavor,
 ) {
     let init_source = panorama_runtime::read_current(current_file)
-        .and_then(|c| modified(&c.source));
+        .and_then(|c| panorama_runtime::source_mtime(&c.source));
     let mut source_stamp = init_source;
     let mut source_seen = init_source;
     let mut last_rejected: Option<PathBuf> = None;
@@ -255,7 +251,7 @@ fn watch_brain(
         std::thread::sleep(Duration::from_millis(1000));
 
         if let Some(c) = panorama_runtime::read_current(current_file) {
-            let now = modified(&c.source);
+            let now = panorama_runtime::source_mtime(&c.source);
             // a replaced binary must hold still for a tick so a half-written build is never launched
             let settled = now == source_seen;
             source_seen = now;
@@ -306,13 +302,18 @@ pub fn supervise_brain() {
         }
 
         let maybe = panorama_runtime::read_current(&current_file).and_then(|c| {
-            let exe = panorama_runtime::brain_exe(&c.dir, flavor);
+            let exe = panorama_runtime::exe(&c.dir, panorama_runtime::Role::Brain, flavor);
             if exe.exists() { Some((c.dir, exe)) } else { None }
         });
 
         let (exe, running_dir) = match maybe {
             Some((dir, e)) => (e, Some(dir)),
-            None => (std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sidecar")), None),
+            None => {
+                let parent = std::env::current_exe().ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .unwrap_or_else(|| PathBuf::from("."));
+                (panorama_runtime::exe_beside(&parent, panorama_runtime::Role::Brain, flavor), None)
+            }
         };
 
         let mut cmd = Command::new(&exe);

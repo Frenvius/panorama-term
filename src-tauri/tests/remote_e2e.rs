@@ -150,7 +150,7 @@ async fn desktop_pair_bridge_revoke_and_mobile_v1() {
     let triple = info.lines().find_map(|l| l.strip_prefix("host: ")).unwrap();
     let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("binaries")
-        .join(format!("sidecar-{triple}{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("panorama-brain-{triple}{}", std::env::consts::EXE_SUFFIX));
     let child = Command::new(bin)
         .env("HOME", &dir)
         .env("USERPROFILE", &dir)

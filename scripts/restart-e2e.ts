@@ -3,14 +3,14 @@ import { join } from 'node:path';
 const HOST_PORT = 9878;
 const BRAIN_PORT = 9877;
 const ext = process.platform === 'win32' ? '.exe' : '';
-const EXE = join(process.cwd(), 'sidecar-rs', 'target', 'debug', `sidecar${ext}`);
+const EXE = join(process.cwd(), 'sidecar-rs', 'target', 'debug', `panorama-host${ext}`);
 const TILE = 'e2e-restart';
 const CWD = process.cwd();
 
 const dec = new TextDecoder();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const host = Bun.spawn([EXE, 'host', '--daemon'], {
+const host = Bun.spawn([EXE, '--daemon'], {
   env: { ...process.env, PANORAMA_HOST_PORT: String(HOST_PORT), PANORAMA_SIDECAR_PORT: String(BRAIN_PORT) },
   stdout: 'pipe',
   stderr: 'pipe'

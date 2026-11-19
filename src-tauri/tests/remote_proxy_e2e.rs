@@ -107,12 +107,26 @@ async fn terminal_proxy_routes_flow_and_resize() {
     let output = Command::new("rustc").arg("-vV").output().unwrap();
     let info = String::from_utf8(output.stdout).unwrap();
     let triple = info.lines().find_map(|l| l.strip_prefix("host: ")).unwrap();
-    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("binaries")
-        .join(format!("sidecar-{triple}"));
+    let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    let bin_dir = dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::copy(
+        binaries.join(format!("panorama-host-{triple}{}", std::env::consts::EXE_SUFFIX)),
+        bin_dir.join(format!("panorama-host{}", std::env::consts::EXE_SUFFIX)),
+    ).unwrap();
+    std::fs::copy(
+        binaries.join(format!("panorama-brain-{triple}{}", std::env::consts::EXE_SUFFIX)),
+        bin_dir.join(format!("panorama-brain{}", std::env::consts::EXE_SUFFIX)),
+    ).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::Permissions::from_mode(0o755);
+        let _ = std::fs::set_permissions(bin_dir.join("panorama-host"), mode.clone());
+        let _ = std::fs::set_permissions(bin_dir.join("panorama-brain"), mode);
+    }
     let child = Command::new("setsid")
-        .arg(&bin)
-        .arg("host")
+        .arg(bin_dir.join(format!("panorama-host{}", std::env::consts::EXE_SUFFIX)))
         .env("HOME", &dir)
         .env("PANORAMA_CONFIG_DIR", &host_dir)
         .env("PANORAMA_HOST_PORT", host_port.to_string())

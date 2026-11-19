@@ -29,7 +29,7 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/sidecar"],
+    "externalBin": ["binaries/panorama-host", "binaries/panorama-brain", "binaries/panorama-cli"],
     "linux": {
       "appimage": {
         "bundleMediaFramework": true,
