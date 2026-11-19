@@ -4,13 +4,14 @@ import { listen } from '@tauri-apps/api/event';
 
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
-import type { ReorderMode, ReorderPlan } from '~/usecase/util/reorderLayout';
+import type { ReorderPlan } from '~/usecase/util/reorderLayout';
 import type { Layout } from '~/usecase/util/layoutHistory';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
+import { placeBeside } from '~/usecase/util/frameLayout';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
@@ -21,7 +22,8 @@ import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import { shouldPersist, listenPointerInteraction } from '~/usecase/util/storeSync';
-import { isReorderMode, planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
+import { planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
+import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import {
   CELL,
   SNAP_PX,
@@ -36,8 +38,6 @@ import {
   NOTE_HEIGHT,
   MAX_ZOOM_KEY,
   MAX_ZOOM_FLOOR,
-  FRAME_PAD_KEY,
-  REORDER_MODE_KEY,
   TILE_HEIGHT,
   FRAME_HEIGHT,
   INDICATOR_MS,
@@ -76,13 +76,6 @@ const saveClosed = (ws: string | null, stack: Tile[]): void => {
 
 const FOCUS_MS = 350;
 const REORDER_MS = 240;
-
-const reorderMode = (): ReorderMode => {
-  const mode = getSetting<unknown>(REORDER_MODE_KEY, 'default');
-  return isReorderMode(mode) ? mode : 'default';
-};
-
-const FRAME_PAD = 2 * CELL;
 
 const boundsOf = (rects: { x: number; y: number; width: number; height: number }[]) => {
   const x = Math.min(...rects.map((r) => r.x));
@@ -389,7 +382,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           ptySessionId: sessionId,
           cwd,
           autoTitle: cmd,
-          x: src ? src.x + src.width : 0,
+          x: src ? src.x + src.width + currentLayoutSpacing().gap : 0,
           y: src ? src.y : 0,
           width,
           height,
@@ -548,21 +541,26 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   }, []);
 
   const duplicateTile = React.useCallback((id: string) => {
+    const src = tilesRef.current.find((t) => t.id === id);
+    if (!src) return;
     const copyId = createId();
-    setTiles((prev) => {
-      const src = prev.find((t) => t.id === id);
-      if (!src) return prev;
-      const copy: Tile = {
+    const spot = placeBeside({ src, tiles: tilesRef.current, frames: framesRef.current, spacing: currentLayoutSpacing() });
+    if (spot.frame) {
+      const { id: frameId, rect } = spot.frame;
+      setFrames((prev) => prev.map((f) => (f.id === frameId ? { ...f, ...rect } : f)));
+    }
+    setTiles((prev) => [
+      ...prev,
+      {
         ...src,
         id: copyId,
-        x: src.x + 24,
-        y: src.y + 24,
+        x: spot.x,
+        y: spot.y,
         zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1,
         ptySessionId: undefined,
         content: undefined
-      };
-      return [...prev, copy];
-    });
+      }
+    ]);
     setActiveTile(copyId);
   }, []);
 
@@ -941,7 +939,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     if (!frame) return;
     const members = tilesRef.current.filter((t) => tileInFrame(frame, t));
     if (!members.length) return;
-    const box = frameBounds(members, getSetting(FRAME_PAD_KEY, 0));
+    const box = frameBounds(members, currentLayoutSpacing().pad);
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, ...box } : f)));
   }, []);
 
@@ -953,12 +951,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   }, [animateLayout]);
 
   const reorderFrame = React.useCallback(
-    (id: string) => applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, mode: reorderMode() })),
+    (id: string) => applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, spacing: currentLayoutSpacing() })),
     [applyReorder]
   );
 
   const reorderCanvas = React.useCallback(
-    () => applyReorder(planCanvasReorder({ tiles: tilesRef.current, frames: framesRef.current, mode: reorderMode() })),
+    () => applyReorder(planCanvasReorder({ tiles: tilesRef.current, frames: framesRef.current, spacing: currentLayoutSpacing() })),
     [applyReorder]
   );
 
@@ -966,7 +964,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const sel = selectedRef.current;
     const members = tilesRef.current.filter((t) => sel.has(t.id));
     if (!members.length) return;
-    const box = frameBounds(members, FRAME_PAD);
+    const box = frameBounds(members, currentLayoutSpacing().pad);
     setFrames((prev) => [...prev, { id: createId(), ...box, title: 'Frame', color: FRAME_COLOR }]);
     setSelected((prev) => (prev.size ? new Set() : prev));
   }, []);

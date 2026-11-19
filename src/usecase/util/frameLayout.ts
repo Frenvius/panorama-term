@@ -1,3 +1,4 @@
+import type { Spacing } from '~/usecase/util/reorderLayout';
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 
 import { frameOf } from '~/usecase/util/frame';
@@ -9,12 +10,9 @@ export interface Rect {
   height: number;
 }
 
-const FRAME_PADDING = 24;
 const RING_STEP = 40;
 const MAX_RINGS = 200;
-const GATHER_GAP = 24;
 const MAX_ROW_WIDTH = 2400;
-const SCAN_STEP = 24;
 
 const ringCoords = (ring: number): [number, number][] => {
   if (ring === 0) return [[0, 0]];
@@ -35,12 +33,12 @@ const centerInRect = (tile: Tile, rect: Rect): boolean => {
   return cx >= rect.x && cx < rect.x + rect.width && cy >= rect.y && cy < rect.y + rect.height;
 };
 
-export const frameAroundTiles = (tiles: Tile[]): Rect => {
+export const frameAroundTiles = (tiles: Tile[], pad: number): Rect => {
   if (tiles.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
-  const minX = Math.min(...tiles.map((t) => t.x)) - FRAME_PADDING;
-  const minY = Math.min(...tiles.map((t) => t.y)) - FRAME_PADDING;
-  const maxX = Math.max(...tiles.map((t) => t.x + t.width)) + FRAME_PADDING;
-  const maxY = Math.max(...tiles.map((t) => t.y + t.height)) + FRAME_PADDING;
+  const minX = Math.min(...tiles.map((t) => t.x)) - pad;
+  const minY = Math.min(...tiles.map((t) => t.y)) - pad;
+  const maxX = Math.max(...tiles.map((t) => t.x + t.width)) + pad;
+  const maxY = Math.max(...tiles.map((t) => t.y + t.height)) + pad;
   return {
     x: Math.round(minX),
     y: Math.round(minY),
@@ -80,35 +78,38 @@ export const findFreeRect = ({ width, height, near, obstacles, gap = 16 }: FindF
 interface PlanGroupFrameArgs {
   frames: Frame[];
   allTiles: Tile[];
+  spacing: Spacing;
   groupTiles: Tile[];
 }
 
 export const planGroupFrame = ({
   groupTiles,
   allTiles,
-  frames
+  frames,
+  spacing
 }: PlanGroupFrameArgs): { kind: 'wrap'; rect: Rect } | { kind: 'gather'; rect: Rect; moves: { id: string; x: number; y: number }[] } => {
-  const bbox = frameAroundTiles(groupTiles);
+  const { gap, pad } = spacing;
+  const bbox = frameAroundTiles(groupTiles, pad);
   const groupIds = new Set(groupTiles.map((t) => t.id));
   const outsideTiles = allTiles.filter((t) => !groupIds.has(t.id));
   const hasOutsideInBbox = outsideTiles.some((t) => centerInRect(t, bbox));
 
   if (!hasOutsideInBbox) return { kind: 'wrap', rect: bbox };
 
-  const rowContentMax = MAX_ROW_WIDTH - 2 * FRAME_PADDING;
+  const rowContentMax = MAX_ROW_WIDTH - 2 * pad;
   const relPos: { id: string; rx: number; ry: number }[] = [];
-  let rowX = FRAME_PADDING;
-  let rowY = FRAME_PADDING;
+  let rowX = pad;
+  let rowY = pad;
   let rowMaxH = 0;
 
   for (const tile of groupTiles) {
-    if (rowX > FRAME_PADDING && rowX + tile.width - FRAME_PADDING > rowContentMax) {
-      rowY += rowMaxH + GATHER_GAP;
-      rowX = FRAME_PADDING;
+    if (rowX > pad && rowX + tile.width - pad > rowContentMax) {
+      rowY += rowMaxH + gap;
+      rowX = pad;
       rowMaxH = 0;
     }
     relPos.push({ id: tile.id, rx: rowX, ry: rowY });
-    rowX += tile.width + GATHER_GAP;
+    rowX += tile.width + gap;
     rowMaxH = Math.max(rowMaxH, tile.height);
   }
 
@@ -116,9 +117,9 @@ export const planGroupFrame = ({
   for (let i = 0; i < relPos.length; i++) {
     const p = relPos[i]!;
     const tile = groupTiles[i]!;
-    frameW = Math.max(frameW, p.rx + tile.width + FRAME_PADDING);
+    frameW = Math.max(frameW, p.rx + tile.width + pad);
   }
-  const frameH = rowY + rowMaxH + FRAME_PADDING;
+  const frameH = rowY + rowMaxH + pad;
 
   const nearTile = groupTiles[0]!;
   const obstacles: Rect[] = [
@@ -126,7 +127,13 @@ export const planGroupFrame = ({
     ...frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
   ];
 
-  const { x: fx, y: fy } = findFreeRect({ width: frameW, height: frameH, near: { x: nearTile.x, y: nearTile.y }, obstacles });
+  const { x: fx, y: fy } = findFreeRect({
+    gap,
+    obstacles,
+    width: frameW,
+    height: frameH,
+    near: { x: nearTile.x, y: nearTile.y }
+  });
   const rect: Rect = { x: fx, y: fy, width: frameW, height: frameH };
 
   const moves = relPos.map((p) => ({ id: p.id, x: fx + p.rx, y: fy + p.ry }));
@@ -137,43 +144,50 @@ export const planGroupFrame = ({
 interface PlaceTileInFrameArgs {
   frame: Frame;
   width: number;
-  height: number;
   tiles: Tile[];
+  height: number;
   frames: Frame[];
+  spacing: Spacing;
 }
+
+const edgeCandidates = (start: number, end: number, edges: number[]): number[] =>
+  [...new Set([start, ...edges])].filter((v) => v >= start && v <= end).sort((a, b) => a - b);
 
 export const placeTileInFrame = ({
   frame,
   width,
   height,
   tiles,
-  frames
+  frames,
+  spacing
 }: PlaceTileInFrameArgs): { x: number; y: number; frame: Rect | null; fitted: boolean } => {
+  const { gap, pad } = spacing;
   const memberTiles = tiles.filter((t) => frameOf(frames, t)?.id === frame.id);
   const otherFrames = frames.filter((f) => f.id !== frame.id);
 
-  const interiorX0 = frame.x + FRAME_PADDING;
-  const interiorY0 = frame.y + FRAME_PADDING;
-  const interiorX1 = frame.x + frame.width - FRAME_PADDING - width;
-  const interiorY1 = frame.y + frame.height - FRAME_PADDING - height;
-
-  if (interiorX1 >= interiorX0 && interiorY1 >= interiorY0) {
-    for (let sy = interiorY0; sy <= interiorY1; sy += SCAN_STEP) {
-      for (let sx = interiorX0; sx <= interiorX1; sx += SCAN_STEP) {
-        const overlaps = memberTiles.some((t) => rectsOverlap({ x: sx, y: sy, width, height }, t));
-        if (!overlaps) return { x: sx, y: sy, frame: null, fitted: true };
-      }
+  const xs = edgeCandidates(
+    frame.x + pad,
+    frame.x + frame.width - pad - width,
+    memberTiles.map((t) => t.x + t.width + gap)
+  );
+  const ys = edgeCandidates(
+    frame.y + pad,
+    frame.y + frame.height - pad - height,
+    memberTiles.map((t) => t.y + t.height + gap)
+  );
+  for (const sy of ys) {
+    for (const sx of xs) {
+      const halo = { x: sx - gap, y: sy - gap, width: width + 2 * gap, height: height + 2 * gap };
+      if (!memberTiles.some((t) => rectsOverlap(halo, t))) return { x: sx, y: sy, frame: null, fitted: true };
     }
   }
 
   const nonMemberTiles = tiles.filter((t) => frameOf(frames, t)?.id !== frame.id);
 
-  const contentRight =
-    memberTiles.length > 0 ? Math.max(...memberTiles.map((t) => t.x + t.width)) : frame.x + FRAME_PADDING;
-  const tileX = contentRight + GATHER_GAP;
-  const tileY = frame.y + FRAME_PADDING;
-  const fitsVertically = tileY + height <= frame.y + frame.height - FRAME_PADDING;
-  const newFrameWidth = tileX + width + FRAME_PADDING - frame.x;
+  const tileX = memberTiles.length > 0 ? Math.max(...memberTiles.map((t) => t.x + t.width)) + gap : frame.x + pad;
+  const tileY = frame.y + pad;
+  const fitsVertically = tileY + height <= frame.y + frame.height - pad;
+  const newFrameWidth = tileX + width + pad - frame.x;
 
   if (fitsVertically && newFrameWidth > frame.width) {
     const addedRect: Rect = { x: frame.x + frame.width, y: frame.y, width: newFrameWidth - frame.width, height: frame.height };
@@ -185,12 +199,10 @@ export const placeTileInFrame = ({
     }
   }
 
-  const contentBottom =
-    memberTiles.length > 0 ? Math.max(...memberTiles.map((t) => t.y + t.height)) : frame.y + FRAME_PADDING;
-  const tileY3 = contentBottom + GATHER_GAP;
-  const tileX3 = frame.x + FRAME_PADDING;
-  const fitsHorizontally = tileX3 + width <= frame.x + frame.width - FRAME_PADDING;
-  const newFrameHeight = tileY3 + height + FRAME_PADDING - frame.y;
+  const tileY3 = memberTiles.length > 0 ? Math.max(...memberTiles.map((t) => t.y + t.height)) + gap : frame.y + pad;
+  const tileX3 = frame.x + pad;
+  const fitsHorizontally = tileX3 + width <= frame.x + frame.width - pad;
+  const newFrameHeight = tileY3 + height + pad - frame.y;
 
   if (fitsHorizontally && newFrameHeight > frame.height) {
     const addedRect: Rect = { x: frame.x, y: frame.y + frame.height, width: frame.width, height: newFrameHeight - frame.height };
@@ -207,10 +219,39 @@ export const placeTileInFrame = ({
     ...frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
   ];
   const { x: fx, y: fy } = findFreeRect({
+    gap,
     width,
     height,
-    near: { x: frame.x + frame.width + GATHER_GAP, y: frame.y },
-    obstacles: allObstacles
+    obstacles: allObstacles,
+    near: { x: frame.x + frame.width + gap, y: frame.y }
   });
   return { x: fx, y: fy, frame: null, fitted: false };
+};
+
+interface PlaceBesideArgs {
+  src: Tile;
+  tiles: Tile[];
+  frames: Frame[];
+  spacing: Spacing;
+}
+
+export const placeBeside = ({
+  src,
+  tiles,
+  frames,
+  spacing
+}: PlaceBesideArgs): { x: number; y: number; frame: { id: string; rect: Rect } | null } => {
+  const frame = frameOf(frames, src);
+  if (frame) {
+    const placed = placeTileInFrame({ frame, tiles, frames, spacing, width: src.width, height: src.height });
+    return { x: placed.x, y: placed.y, frame: placed.frame ? { id: frame.id, rect: placed.frame } : null };
+  }
+  const { x, y } = findFreeRect({
+    gap: spacing.gap,
+    width: src.width,
+    height: src.height,
+    obstacles: [...tiles, ...frames],
+    near: { x: src.x + src.width + spacing.gap, y: src.y }
+  });
+  return { x, y, frame: null };
 };

@@ -6,6 +6,7 @@ import type { ProjectsPanelActions } from '~/components/commons/ProjectsPanel/ty
 import React from 'react';
 
 import { findFreeRect } from '~/usecase/util/frameLayout';
+import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { fixGroupFrame, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
 import { projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
@@ -51,7 +52,8 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       ...ops.tiles.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
       ...ops.frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
     ];
-    const { x, y } = findFreeRect({ width: FRAME_WIDTH, height: FRAME_HEIGHT, near, obstacles });
+    const gap = currentLayoutSpacing().gap;
+    const { x, y } = findFreeRect({ gap, near, obstacles, width: FRAME_WIDTH, height: FRAME_HEIGHT });
     ops.createFrame({ x, y, width: FRAME_WIDTH, height: FRAME_HEIGHT, title: 'Frame', color: FRAME_COLOR });
   }, []);
 

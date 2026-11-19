@@ -12,6 +12,7 @@ import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { touchTile } from '~/usecase/util/tileRecency';
 import { placeTileInFrame } from '~/usecase/util/frameLayout';
+import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { toStored, toRuntime } from '~/usecase/util/workspaceCanvas';
 import { workspaceService } from '~/usecase/service/workspace.service';
@@ -103,10 +104,11 @@ const saveRecentProjects = (projects: string[]): void => {
 };
 
 const nextTileSlot = (existing: Tile[], width: number, height: number): { x: number; y: number } => {
+  const gap = currentLayoutSpacing().gap;
   const originX = -Math.round(TILE_WIDTH / 2 / CELL) * CELL;
   const originY = -Math.round(TILE_HEIGHT / 2 / CELL) * CELL;
-  const stepX = Math.ceil((TILE_WIDTH + CELL * 2) / CELL) * CELL;
-  const stepY = Math.ceil((TILE_HEIGHT + CELL * 2) / CELL) * CELL;
+  const stepX = Math.ceil((TILE_WIDTH + gap) / CELL) * CELL;
+  const stepY = Math.ceil((TILE_HEIGHT + gap) / CELL) * CELL;
   for (let i = 0; i < existing.length + 1; i++) {
     const col = i % 3;
     const row = Math.floor(i / 3);
@@ -159,7 +161,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     const group = buildProjectGroups({ frames, tiles, projects }).find((g) => g.kind === 'frame' && g.path?.toLowerCase() === key);
     const frame = group?.frameId ? frames.find((f) => f.id === group.frameId) : undefined;
     if (!frame) return null;
-    const placed = placeTileInFrame({ frame, width, height, tiles, frames });
+    const placed = placeTileInFrame({ frame, width, tiles, height, frames, spacing: currentLayoutSpacing() });
     if (placed.frame) {
       const next = withFramePatched(frames, frame.id, placed.frame);
       framesRef.current = next;
@@ -845,7 +847,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const height = src?.height ?? TILE_HEIGHT;
       const slot =
         projectFrameSlot(targetProj || undefined, width, height) ??
-        (src ? { x: src.x + src.width, y: src.y } : nextTileSlot(prevTiles, width, height));
+        (src ? { x: src.x + src.width + currentLayoutSpacing().gap, y: src.y } : nextTileSlot(prevTiles, width, height));
       const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
       const tile: Tile = {
         id,

@@ -1,6 +1,7 @@
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 
+import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { planGroupFrame, placeTileInFrame, findFreeRect } from '~/usecase/util/frameLayout';
 import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
 
@@ -21,17 +22,18 @@ interface FixGroupFrameArgs {
 export const fixGroupFrame = ({ ops, group, near }: FixGroupFrameArgs): string => {
   const { tiles, frames, createFrame, placeTiles } = ops;
   const groupTiles = [...group.tiles, ...group.outside];
+  const spacing = currentLayoutSpacing();
 
   if (groupTiles.length === 0) {
     const obstacles = [
       ...tiles.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
       ...frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
     ];
-    const { x, y } = findFreeRect({ width: FRAME_WIDTH, height: FRAME_HEIGHT, near, obstacles });
+    const { x, y } = findFreeRect({ near, obstacles, gap: spacing.gap, width: FRAME_WIDTH, height: FRAME_HEIGHT });
     return createFrame({ x, y, width: FRAME_WIDTH, height: FRAME_HEIGHT, title: group.title, color: FRAME_COLOR, path: group.path ?? undefined });
   }
 
-  const result = planGroupFrame({ groupTiles, allTiles: tiles, frames });
+  const result = planGroupFrame({ frames, spacing, groupTiles, allTiles: tiles });
 
   if (result.kind === 'gather') {
     placeTiles(result.moves);
@@ -52,7 +54,14 @@ export const moveTileIntoFrame = ({ ops, tile, frameId }: MoveTileIntoFrameArgs)
   if (!frame) return false;
 
   const tilesExcludingThis = tiles.filter((t) => t.id !== tile.id);
-  const result = placeTileInFrame({ frame, width: tile.width, height: tile.height, tiles: tilesExcludingThis, frames });
+  const result = placeTileInFrame({
+    frame,
+    frames,
+    width: tile.width,
+    height: tile.height,
+    tiles: tilesExcludingThis,
+    spacing: currentLayoutSpacing()
+  });
 
   if (result.frame !== null) {
     patchFrame(frameId, { x: result.frame.x, y: result.frame.y, width: result.frame.width, height: result.frame.height });
@@ -76,7 +85,7 @@ export const spawnInGroup = ({ ops, group, width, height }: SpawnInGroupArgs): {
   const frame = frames.find((f) => f.id === group.frameId);
   if (!frame) return null;
 
-  const result = placeTileInFrame({ frame, width, height, tiles, frames });
+  const result = placeTileInFrame({ frame, width, tiles, height, frames, spacing: currentLayoutSpacing() });
 
   if (result.frame !== null) {
     patchFrame(group.frameId, { x: result.frame.x, y: result.frame.y, width: result.frame.width, height: result.frame.height });

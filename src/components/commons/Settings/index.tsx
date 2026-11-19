@@ -6,7 +6,16 @@ import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
 import { isReorderMode, type ReorderMode } from '~/usecase/util/reorderLayout';
-import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, REORDER_MODE_KEY, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import {
+  ZOOM_MAX,
+  MAX_ZOOM_KEY,
+  FRAME_PAD_KEY,
+  MAX_ZOOM_FLOOR,
+  REORDER_MODE_KEY,
+  FRAME_PAD_MAX,
+  FRAME_PAD_DEFAULT,
+  IDLE_COMPACTION_KEY
+} from '~/usecase/util/constants';
 import type { FontUse, PluginChoice, ThemeKind } from '~/domain/interfaces/plugin.interface';
 import { usePlugins } from '~/usecase/hooks/usePlugins';
 import { enabledManifests } from '~/usecase/util/plugins';
@@ -203,7 +212,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const [target, setTarget] = React.useState(() => getSetting(TERMINAL_TARGET_KEY, 'auto'));
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
-  const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
+  const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, FRAME_PAD_DEFAULT));
   const [reorderMode, setReorderMode] = React.useState<ReorderMode>(() => {
     const mode = getSetting<unknown>(REORDER_MODE_KEY, 'default');
     return isReorderMode(mode) ? mode : 'default';
@@ -320,7 +329,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   };
 
   const changeFramePad = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = Math.max(0, Number(e.target.value) || 0);
+    const value = Number(e.target.value);
     setFramePad(value);
     void setSetting(FRAME_PAD_KEY, value);
   };
@@ -371,13 +380,6 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                 <p className={styles.hint}>Above 100% terminal text may look blurry.</p>
               </div>
               <div className={styles.group}>
-                <div className={styles.sliderHead}>
-                  <p className={styles.groupLabel}>Frame fit padding</p>
-                  <input min={0} type="number" value={framePad} onChange={changeFramePad} className={styles.numberInput} />
-                </div>
-                <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
-              </div>
-              <div className={styles.group}>
                 <p className={styles.groupLabel}>Reorder layout</p>
                 <div className={styles.options}>
                   <RadioOption
@@ -393,6 +395,25 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                     onSelect={() => selectReorderMode('compact')}
                   />
                 </div>
+              </div>
+              <div className={styles.group}>
+                <div className={styles.sliderHead}>
+                  <p className={styles.groupLabel}>Spaced gap</p>
+                  <span className={styles.sliderValue}>{framePad}px</span>
+                </div>
+                <input
+                  min={0}
+                  step={2}
+                  type="range"
+                  value={framePad}
+                  max={FRAME_PAD_MAX}
+                  onChange={changeFramePad}
+                  className={styles.slider}
+                  disabled={reorderMode === 'compact'}
+                />
+                <p className={styles.hint}>
+                  Space in px between tiles and inside frames in Spaced mode: reorder, fit, new and moved tiles. Compact always uses 0.
+                </p>
               </div>
               <div className={styles.group}>
                 <p className={styles.groupLabel}>Minimap</p>

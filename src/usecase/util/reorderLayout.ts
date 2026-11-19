@@ -22,18 +22,17 @@ interface Box extends Rect {
   lead: number;
 }
 
-interface Spacing {
+export interface Spacing {
   gap: number;
   pad: number;
   barSpace: number;
 }
 
-const SPACING: Record<ReorderMode, Spacing> = {
-  default: { gap: CELL, pad: CELL, barSpace: FRAME_BAR_SPACE },
-  compact: { gap: 0, pad: 0, barSpace: 0 }
-};
 
 export const isReorderMode = (value: unknown): value is ReorderMode => value === 'default' || value === 'compact';
+
+export const layoutSpacing = (mode: ReorderMode, spacedPad: number): Spacing =>
+  mode === 'compact' ? { gap: 0, pad: 0, barSpace: 0 } : { gap: spacedPad, pad: spacedPad, barSpace: FRAME_BAR_SPACE };
 
 const isMovable = (tile: Tile): boolean => !tile.pinned && !tile.runCwd;
 
@@ -116,25 +115,24 @@ interface PlanFrameReorderArgs {
   id: string;
   tiles: Tile[];
   frames: Frame[];
-  mode: ReorderMode;
+  spacing: Spacing;
 }
 
-export const planFrameReorder = ({ id, tiles, frames, mode }: PlanFrameReorderArgs): ReorderPlan | null => {
+export const planFrameReorder = ({ id, tiles, frames, spacing }: PlanFrameReorderArgs): ReorderPlan | null => {
   const frame = frames.find((f) => f.id === id);
   if (!frame) return null;
   const members = (groupByFrame(frames, tiles).members.get(id) ?? []).filter(isMovable);
   if (!members.length) return null;
-  return planFrame(frame, members, SPACING[mode]);
+  return planFrame(frame, members, spacing);
 };
 
 interface PlanCanvasReorderArgs {
   tiles: Tile[];
   frames: Frame[];
-  mode: ReorderMode;
+  spacing: Spacing;
 }
 
-export const planCanvasReorder = ({ tiles, frames, mode }: PlanCanvasReorderArgs): ReorderPlan | null => {
-  const spacing = SPACING[mode];
+export const planCanvasReorder = ({ tiles, frames, spacing }: PlanCanvasReorderArgs): ReorderPlan | null => {
   const { members, loose } = groupByFrame(frames, tiles);
   const tileRects = new Map<string, Rect>();
   const frameRects = new Map<string, Rect>();
