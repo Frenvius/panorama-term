@@ -1,9 +1,8 @@
 import React from 'react';
-import { X, Trash2, Shrink, Palette, PenLine } from 'lucide-react';
+import { X, Trash2, Shrink, Palette, PenLine, LayoutGrid } from 'lucide-react';
 
 import type { Tile, View, Frame as FrameData, FrameMember } from '~/domain/interfaces/canvas.interface';
 import ContextMenu from '~/components/commons/ContextMenu';
-import { CELL } from '~/usecase/util/constants';
 
 import styles from '~/components/Canvas/Frame/styles.module.scss';
 
@@ -13,7 +12,8 @@ interface FrameBarProps {
   tiles: Tile[];
   recede: boolean;
   onFit: (id: string) => void;
-  onSnap: (id: string) => void;
+  onReorder: (id: string) => void;
+  onDragEnd: (id: string, memberIds: string[]) => void;
   onRemove: (id: string) => void;
   onRemoveWithTiles: (id: string) => void;
   onRename: (id: string, title: string) => void;
@@ -29,15 +29,13 @@ interface DragState {
   members: { id: string; sx: number; sy: number }[];
 }
 
-const snap = (v: number): number => Math.round(v / CELL) * CELL;
-
 const inside = (f: FrameData, t: Tile): boolean => {
   const cx = t.x + t.width / 2;
   const cy = t.y + t.height / 2;
   return cx >= f.x && cx <= f.x + f.width && cy >= f.y && cy <= f.y + f.height;
 };
 
-const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
+const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onReorder, onDragEnd, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
   const k = view.k;
   const [editing, setEditing] = React.useState(false);
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
@@ -63,14 +61,11 @@ const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename,
     const dy = (e.clientY - d.sy) / k;
     onDrag(frame.id, d.fx + dx, d.fy + dy, d.members.map((m) => ({ id: m.id, x: m.sx + dx, y: m.sy + dy })));
   };
-  const endDrag = (e: React.PointerEvent) => {
+  const endDrag = () => {
     const d = drag.current;
     if (!d) return;
     drag.current = null;
-    const dx = (e.clientX - d.sx) / k;
-    const dy = (e.clientY - d.sy) / k;
-    onDrag(frame.id, snap(d.fx + dx), snap(d.fy + dy), d.members.map((m) => ({ id: m.id, x: snap(m.sx + dx), y: snap(m.sy + dy) })));
-    onSnap(frame.id);
+    onDragEnd(frame.id, d.members.map((m) => m.id));
   };
 
   const stop = (e: React.PointerEvent) => e.stopPropagation();
@@ -79,6 +74,7 @@ const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename,
   const remove = () => onRemove(frame.id);
   const removeWithTiles = () => onRemoveWithTiles(frame.id);
   const fit = () => onFit(frame.id);
+  const reorder = () => onReorder(frame.id);
 
   const startRename = () => setEditing(true);
   const onBarDoubleClick = (e: React.MouseEvent) => {
@@ -105,6 +101,7 @@ const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename,
 
   return (
     <div
+      data-frame={frame.id}
       className={styles.barLayer}
       style={{
         top: frame.y * k + view.y,
@@ -155,6 +152,7 @@ const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onSnap, onRename,
             { label: 'Rename', icon: <PenLine size={15} strokeWidth={1.75} />, onSelect: startRename },
             { label: 'Change color', icon: <Palette size={15} strokeWidth={1.75} />, onSelect: openColor },
             { label: 'Fit to contents', icon: <Shrink size={15} strokeWidth={1.75} />, onSelect: fit },
+            { label: 'Reorder', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorder },
             'separator',
             { label: 'Delete frame', icon: <X size={15} strokeWidth={1.75} />, onSelect: remove },
             { label: 'Delete frame and tiles', icon: <Trash2 size={15} strokeWidth={1.75} />, danger: true, onSelect: removeWithTiles }

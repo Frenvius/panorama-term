@@ -39,6 +39,21 @@
   &:active {
     cursor: grabbing;
   }
+
+  &[data-reordering] {
+    [data-tile],
+    [data-frame] {
+      transition:
+        top 240ms ease,
+        left 240ms ease,
+        width 240ms ease,
+        height 240ms ease;
+
+      @media (prefers-reduced-motion: reduce) {
+        transition: none;
+      }
+    }
+  }
 }
 
 .backdrop {

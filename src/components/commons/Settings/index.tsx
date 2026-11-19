@@ -5,7 +5,8 @@ import { X, Bot, Puzzle, Palette, Keyboard, RotateCcw, Smartphone, SquareTermina
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
-import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import { isReorderMode, type ReorderMode } from '~/usecase/util/reorderLayout';
+import { ZOOM_MAX, MAX_ZOOM_KEY, FRAME_PAD_KEY, MAX_ZOOM_FLOOR, REORDER_MODE_KEY, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 import type { FontUse, PluginChoice, ThemeKind } from '~/domain/interfaces/plugin.interface';
 import { usePlugins } from '~/usecase/hooks/usePlugins';
 import { enabledManifests } from '~/usecase/util/plugins';
@@ -203,6 +204,10 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const [theme, setTheme] = React.useState<ThemePref>(getThemePref);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, 0));
+  const [reorderMode, setReorderMode] = React.useState<ReorderMode>(() => {
+    const mode = getSetting<unknown>(REORDER_MODE_KEY, 'default');
+    return isReorderMode(mode) ? mode : 'default';
+  });
   const [idleCompact, setIdleCompact] = React.useState(() => getSetting(IDLE_COMPACTION_KEY, true));
   const [headerParts, setHeaderParts] = React.useState(getHeaderParts);
   const [minimapPinned, setPinned] = React.useState(getMinimapPinned);
@@ -249,6 +254,11 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
   const selectTarget = (id: string) => {
     setTarget(id);
     void setSetting(TERMINAL_TARGET_KEY, id);
+  };
+
+  const selectReorderMode = (mode: ReorderMode) => {
+    setReorderMode(mode);
+    void setSetting(REORDER_MODE_KEY, mode);
   };
 
   const toggleIdleCompact = () => {
@@ -366,6 +376,23 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
                   <input min={0} type="number" value={framePad} onChange={changeFramePad} className={styles.numberInput} />
                 </div>
                 <p className={styles.hint}>Space in px kept around tiles when fitting a frame to its contents.</p>
+              </div>
+              <div className={styles.group}>
+                <p className={styles.groupLabel}>Reorder layout</p>
+                <div className={styles.options}>
+                  <RadioOption
+                    label="Spaced"
+                    selected={reorderMode === 'default'}
+                    description="Leaves a gap between tiles and padding inside frames."
+                    onSelect={() => selectReorderMode('default')}
+                  />
+                  <RadioOption
+                    label="Compact"
+                    selected={reorderMode === 'compact'}
+                    description="Packs tiles edge to edge and wraps frames tightly around them."
+                    onSelect={() => selectReorderMode('compact')}
+                  />
+                </div>
               </div>
               <div className={styles.group}>
                 <p className={styles.groupLabel}>Minimap</p>

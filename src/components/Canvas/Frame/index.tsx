@@ -37,6 +37,7 @@ const Frame = ({ frame, view, onResize, onSnap }: FrameProps) => {
 
   return (
     <div
+      data-frame={frame.id}
       className={styles.frame}
       style={{
         top: frame.y * k + view.y,

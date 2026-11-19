@@ -125,3 +125,43 @@ export const computeDragSnap = (tile: SnapRect, others: SnapRect[], threshold: n
 
   return { x: bestX, y: bestY };
 };
+
+const EDGE_EPS = 0.5;
+
+const toGrid = (value: number, cell: number): number => Math.round(value / cell) * cell;
+
+const onEdge = (value: number, edges: number[]): boolean => edges.some((edge) => Math.abs(edge - value) < EDGE_EPS);
+
+const settleAxis = (start: number, size: number, edges: number[], opts: { cell: number; min: number }): [number, number] => {
+  const end = start + size;
+  const keepStart = onEdge(start, edges);
+  const keepEnd = onEdge(end, edges);
+  const settledSize = keepStart && keepEnd ? size : Math.max(opts.min, toGrid(size, opts.cell));
+  if (keepStart) return [start, settledSize];
+  if (keepEnd) return [end - settledSize, settledSize];
+  return [toGrid(start, opts.cell), settledSize];
+};
+
+interface SettleRectArgs {
+  rect: SnapRect;
+  others: SnapRect[];
+  cell: number;
+  minW: number;
+  minH: number;
+}
+
+export const settleRect = ({ rect, others, cell, minW, minH }: SettleRectArgs): SnapRect => {
+  const xEdges = others.flatMap((o) => [o.x, o.x + o.width]);
+  const yEdges = others.flatMap((o) => [o.y, o.y + o.height]);
+  const [x, width] = settleAxis(rect.x, rect.width, xEdges, { cell, min: minW });
+  const [y, height] = settleAxis(rect.y, rect.height, yEdges, { cell, min: minH });
+  return { x, y, width, height };
+};
+
+const axisOffset = (start: number, size: number, edges: number[], cell: number): number =>
+  onEdge(start, edges) || onEdge(start + size, edges) ? 0 : toGrid(start, cell) - start;
+
+export const settleOffset = (rect: SnapRect, others: SnapRect[], cell: number): { dx: number; dy: number } => ({
+  dx: axisOffset(rect.x, rect.width, others.flatMap((o) => [o.x, o.x + o.width]), cell),
+  dy: axisOffset(rect.y, rect.height, others.flatMap((o) => [o.y, o.y + o.height]), cell)
+});

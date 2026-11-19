@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
+import type { ReorderMode, ReorderPlan } from '~/usecase/util/reorderLayout';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { clearAlert } from '~/usecase/util/alerts';
@@ -13,11 +14,12 @@ import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { linkNote, unlinkNote, deleteNote, linkTerm, unlinkTerm } from '~/adapter/notes/notes.client';
-import { computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap';
+import { settleRect, settleOffset, computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap';
 import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import { shouldPersist, listenPointerInteraction } from '~/usecase/util/storeSync';
+import { isReorderMode, planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
 import {
   CELL,
   SNAP_PX,
@@ -33,6 +35,7 @@ import {
   MAX_ZOOM_KEY,
   MAX_ZOOM_FLOOR,
   FRAME_PAD_KEY,
+  REORDER_MODE_KEY,
   TILE_HEIGHT,
   FRAME_HEIGHT,
   INDICATOR_MS,
@@ -70,8 +73,22 @@ const saveClosed = (ws: string | null, stack: Tile[]): void => {
 };
 
 const FOCUS_MS = 350;
+const REORDER_MS = 240;
+
+const reorderMode = (): ReorderMode => {
+  const mode = getSetting<unknown>(REORDER_MODE_KEY, 'default');
+  return isReorderMode(mode) ? mode : 'default';
+};
 
 const FRAME_PAD = 2 * CELL;
+
+const boundsOf = (rects: { x: number; y: number; width: number; height: number }[]) => {
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  const width = Math.max(...rects.map((r) => r.x + r.width)) - x;
+  const height = Math.max(...rects.map((r) => r.y + r.height)) - y;
+  return { x, y, width, height };
+};
 
 const frameBounds = (members: Tile[], pad: number): { x: number; y: number; width: number; height: number } => {
   const x = Math.min(...members.map((t) => t.x)) - pad;
@@ -553,11 +570,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       const dy = rawY - moving.y;
       const members = prev.filter((t) => sel.has(t.id) && !t.pinned);
       if (!members.length) return;
-      const minX = Math.min(...members.map((t) => t.x));
-      const minY = Math.min(...members.map((t) => t.y));
-      const maxX = Math.max(...members.map((t) => t.x + t.width));
-      const maxY = Math.max(...members.map((t) => t.y + t.height));
-      const box = { x: minX + dx, y: minY + dy, width: maxX - minX, height: maxY - minY };
+      const bounds = boundsOf(members);
+      const box = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
       const rest = [...prev.filter((t) => !sel.has(t.id)), ...framesRef.current];
       const snap = computeDragSnap(box, rest, SNAP_PX / viewRef.current.k);
       const fdx = dx + (snap.x ?? box.x) - box.x;
@@ -608,16 +622,19 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     resizeRaw.current = null;
     const sel = selectedRef.current;
     const group = sel.has(id) && sel.size > 1 ? sel : new Set([id]);
-    setTiles((prev) =>
-      prev.map((t) => {
-        if (!group.has(t.id)) return t;
-        const x = Math.round(t.x / CELL) * CELL;
-        const y = Math.round(t.y / CELL) * CELL;
-        const width = Math.max(TILE_MIN_WIDTH, Math.round(t.width / CELL) * CELL);
-        const height = Math.max(TILE_MIN_HEIGHT, Math.round(t.height / CELL) * CELL);
-        return { ...t, x, y, width, height };
-      })
-    );
+    setTiles((prev) => {
+      const members = prev.filter((t) => group.has(t.id) && (group.size === 1 || !t.pinned));
+      if (!members.length) return prev;
+      const others = [...prev.filter((t) => !group.has(t.id)), ...framesRef.current];
+      if (members.length === 1) {
+        const rect = settleRect({ rect: members[0]!, others, cell: CELL, minW: TILE_MIN_WIDTH, minH: TILE_MIN_HEIGHT });
+        return prev.map((t) => (t.id === members[0]!.id ? { ...t, ...rect } : t));
+      }
+      const { dx, dy } = settleOffset(boundsOf(members), others, CELL);
+      if (!dx && !dy) return prev;
+      const ids = new Set(members.map((t) => t.id));
+      return prev.map((t) => (ids.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t));
+    });
   }, []);
 
   const resetZoom = React.useCallback(() => {
@@ -786,6 +803,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     ]);
   }, []);
 
+  const framePosRef = React.useRef<{ id: string; x: number; y: number } | null>(null);
+
   const dragFrame = React.useCallback((id: string, x: number, y: number, members: FrameMember[]) => {
     const frame = framesRef.current.find((f) => f.id === id);
     if (!frame) return;
@@ -796,6 +815,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const fy = snap.y ?? y;
     const ddx = fx - x;
     const ddy = fy - y;
+    framePosRef.current = { id, x: fx, y: fy };
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x: fx, y: fy } : f)));
     if (members.length === 0) return;
     const pos = new Map(members.map((m) => [m.id, m]));
@@ -830,16 +850,26 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
 
   const snapFrame = React.useCallback((id: string) => {
     resizeRaw.current = null;
-    setFrames((prev) =>
-      prev.map((f) => {
-        if (f.id !== id) return f;
-        const x = Math.round(f.x / CELL) * CELL;
-        const y = Math.round(f.y / CELL) * CELL;
-        const width = Math.max(FRAME_MIN_WIDTH, Math.round(f.width / CELL) * CELL);
-        const height = Math.max(FRAME_MIN_HEIGHT, Math.round(f.height / CELL) * CELL);
-        return { ...f, x, y, width, height };
-      })
-    );
+    setFrames((prev) => {
+      const frame = prev.find((f) => f.id === id);
+      if (!frame) return prev;
+      const others = [...tilesRef.current, ...prev.filter((f) => f.id !== id)];
+      const rect = settleRect({ rect: frame, others, cell: CELL, minW: FRAME_MIN_WIDTH, minH: FRAME_MIN_HEIGHT });
+      return prev.map((f) => (f.id === id ? { ...f, ...rect } : f));
+    });
+  }, []);
+
+  const settleFrameDrag = React.useCallback((id: string, memberIds: string[]) => {
+    const dropped = framePosRef.current;
+    framePosRef.current = null;
+    const frame = framesRef.current.find((f) => f.id === id);
+    if (!frame) return;
+    const members = new Set(memberIds);
+    const others = [...tilesRef.current.filter((t) => !members.has(t.id)), ...framesRef.current.filter((f) => f.id !== id)];
+    const { dx, dy } = settleOffset(dropped?.id === id ? { ...frame, x: dropped.x, y: dropped.y } : frame, others, CELL);
+    if (!dx && !dy) return;
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, x: f.x + dx, y: f.y + dy } : f)));
+    setTiles((prev) => prev.map((t) => (members.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t)));
   }, []);
 
   const createFrame = React.useCallback((frame: Omit<Frame, 'id'>): string => {
@@ -890,6 +920,30 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const box = frameBounds(members, getSetting(FRAME_PAD_KEY, 0));
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, ...box } : f)));
   }, []);
+
+  const reorderTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const applyReorder = React.useCallback((plan: ReorderPlan | null) => {
+    if (!plan) return;
+    const bg = bgRef.current;
+    if (bg) {
+      clearTimeout(reorderTimer.current);
+      bg.dataset.reordering = 'true';
+      reorderTimer.current = setTimeout(() => delete bg.dataset.reordering, REORDER_MS);
+    }
+    setFrames((prev) => prev.map((f) => (plan.frames.has(f.id) ? { ...f, ...plan.frames.get(f.id) } : f)));
+    setTiles((prev) => prev.map((t) => (plan.tiles.has(t.id) ? { ...t, ...plan.tiles.get(t.id) } : t)));
+  }, []);
+
+  const reorderFrame = React.useCallback(
+    (id: string) => applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, mode: reorderMode() })),
+    [applyReorder]
+  );
+
+  const reorderCanvas = React.useCallback(
+    () => applyReorder(planCanvasReorder({ tiles: tilesRef.current, frames: framesRef.current, mode: reorderMode() })),
+    [applyReorder]
+  );
 
   const frameSelection = React.useCallback(() => {
     const sel = selectedRef.current;
@@ -1014,6 +1068,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     closeTile,
     reopenTile,
     snapFrame,
+    settleFrameDrag,
     activeTile,
     setTileCwd,
     setTileOscTitle,
@@ -1025,6 +1080,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     recolorFrame,
     removeFrameWithTiles,
     fitFrame,
+    reorderFrame,
+    reorderCanvas,
     frameSelection,
     activateTile,
     indicatorRef,

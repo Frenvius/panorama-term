@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { Group, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
+import { Group, LayoutGrid, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
 
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
@@ -132,6 +132,7 @@ const Canvas = () => {
     closeTile,
     reopenTile,
     snapFrame,
+    settleFrameDrag,
     activeTile,
     resetZoom,
     resizeTile,
@@ -144,6 +145,8 @@ const Canvas = () => {
     recolorFrame,
     removeFrameWithTiles,
     fitFrame,
+    reorderFrame,
+    reorderCanvas,
     frameSelection,
     activateTile,
     setTileCwd,
@@ -337,6 +340,11 @@ const Canvas = () => {
     }
     if (cmd === 'tile.reopen') {
       reopenTile();
+      return true;
+    }
+    if (cmd === 'canvas.reorder') {
+      if (fsIdRef.current) return false;
+      reorderCanvas();
       return true;
     }
     if (cmd === 'tile.focus') {
@@ -1136,8 +1144,9 @@ const Canvas = () => {
               tiles={tiles}
               recede={receded.has(f.id)}
               onFit={fitFrame}
+              onReorder={reorderFrame}
               onDrag={dragFrame}
-              onSnap={snapFrame}
+              onDragEnd={settleFrameDrag}
               onRemove={removeFrame}
               onRename={renameFrame}
               onRecolor={recolorFrame}
@@ -1242,6 +1251,7 @@ const Canvas = () => {
             { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
             { label: 'New note', icon: <StickyNote size={15} strokeWidth={1.75} />, onSelect: newNote },
             { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame },
+            { label: 'Reorder canvas', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorderCanvas },
             ...(selected.size
               ? [{ label: 'Frame selection', icon: <Group size={15} strokeWidth={1.75} />, onSelect: frameSelection }]
               : [])
