@@ -2,6 +2,7 @@ import React from 'react';
 import { emit, listen } from '@tauri-apps/api/event';
 
 import { stripSpinner } from '~/usecase/util/title';
+import { getNotifToasts } from '~/usecase/util/notifPlacement';
 
 import type { Tile } from '~/domain/interfaces/canvas.interface';
 import type { NotifyKind, NotifyPayload, NotifyTarget } from '~/domain/interfaces/notify.interface';
@@ -81,7 +82,7 @@ export const useNotifyBridge = ({ tiles, wsId, tabId, activeTile, onOpen, onAler
         title: detail.title || tileTitle(tile),
         text: detail.text
       };
-      void emit('notif:show', payload);
+      if (getNotifToasts()) void emit('notif:show', payload);
       onAlertRef.current(detail.tileId, detail.kind, target.tabId);
     };
     const onNotifyClear = (e: Event) => {

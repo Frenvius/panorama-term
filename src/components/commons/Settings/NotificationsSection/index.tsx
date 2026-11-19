@@ -2,21 +2,28 @@ import type { MonitorInfo } from '~/usecase/util/notifPlacement';
 
 import React from 'react';
 
-import { listMonitors, monitorLabel, getNotifPlacement, setNotifPlacement, type NotifCorner } from '~/usecase/util/notifPlacement';
+import { listMonitors, monitorLabel, getNotifToasts, setNotifToasts, getNotifPlacement, setNotifPlacement, type NotifCorner } from '~/usecase/util/notifPlacement';
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
 import Select from '~/components/commons/Settings/Select';
+import Switch from '~/components/commons/Settings/Switch';
 import CornerPicker from '~/components/commons/Settings/CornerPicker';
 
 const NotificationsSection = () => {
   const [placement, setPlacement] = React.useState(getNotifPlacement);
   const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
+  const [toasts, setToasts] = React.useState(getNotifToasts);
 
   React.useEffect(() => {
     void listMonitors()
       .then(setMonitors)
       .catch(() => {});
   }, []);
+
+  const toggleToasts = () => {
+    setToasts(!toasts);
+    setNotifToasts(!toasts);
+  };
 
   const selectCorner = (corner: NotifCorner) => {
     const next = { ...placement, corner };
@@ -47,6 +54,13 @@ const NotificationsSection = () => {
   return (
     <>
       <Group label="Toasts">
+        <Row
+          settingId="notifications.toasts"
+          label="Show toasts"
+          description="Pop up a toast when an agent finishes or needs your attention. Tile badges stay either way."
+        >
+          <Switch checked={toasts} onChange={toggleToasts} label="Show toasts" />
+        </Row>
         <Row settingId="notifications.corner" label="Position">
           <CornerPicker value={placement.corner} onChange={selectCorner} label="Toast position" />
         </Row>

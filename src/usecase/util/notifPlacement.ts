@@ -21,6 +21,7 @@ export const NOTIF_PLACEMENT_EVENT = 'notif:placement';
 
 const CORNER_KEY = 'notifCorner';
 const MONITOR_KEY = 'notifMonitor';
+const TOASTS_KEY = 'notifToasts';
 
 export const NOTIF_CORNERS: { id: NotifCorner; label: string }[] = [
   { id: 'top-left', label: 'Top left' },
@@ -39,6 +40,10 @@ export const setNotifPlacement = (placement: NotifPlacement): void => {
   void setSetting(MONITOR_KEY, placement.monitor);
   void emit(NOTIF_PLACEMENT_EVENT, placement);
 };
+
+export const getNotifToasts = (): boolean => getSetting(TOASTS_KEY, true);
+
+export const setNotifToasts = (on: boolean): void => void setSetting(TOASTS_KEY, on);
 
 export const listMonitors = (): Promise<MonitorInfo[]> => invoke<MonitorInfo[]>('list_monitors');
 

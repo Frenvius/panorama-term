@@ -49,7 +49,7 @@ const SECTION_META: Record<SettingsSection, SectionMeta> = {
   canvas: { title: 'Canvas', subtitle: 'Canvas behavior and navigation aids.', hasReset: true },
   appearance: { title: 'Appearance', subtitle: 'Theme applies across the whole app.', hasReset: true },
   terminal: { title: 'Terminal', subtitle: 'Changes apply to new terminals.', hasReset: true },
-  notifications: { title: 'Notifications', subtitle: 'Toast display position and monitor.', hasReset: true },
+  notifications: { title: 'Notifications', subtitle: 'Toasts, their position and monitor.', hasReset: true },
   agents: { title: 'Agents', subtitle: 'Model picker and Claude Code settings.', hasReset: true },
   orchestration: { title: 'Orchestration', subtitle: 'Agents and models used for multi-agent runs.', hasReset: true },
   aiActions: { title: 'AI actions', subtitle: 'Provider and model for AI-powered actions.', hasReset: true },
