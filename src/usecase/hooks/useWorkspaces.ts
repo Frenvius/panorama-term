@@ -1,6 +1,7 @@
+import type { TabMeta, TabMode, CanvasState, WorkspaceMeta } from '~/domain/interfaces/workspace.interface';
+
 import React from 'react';
 
-import type { TabMeta, CanvasState, WorkspaceMeta } from '~/domain/interfaces/workspace.interface';
 import { clearTabAlerts } from '~/usecase/util/alerts';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { toStored, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
@@ -87,13 +88,29 @@ export const useWorkspaces = () => {
     [activeId, loadTabs]
   );
 
-  const createTab = React.useCallback(async () => {
-    if (!activeId) return;
-    const tab = await workspaceService.createTab(activeId);
-    if (!tab) return;
-    await workspaceService.setActiveTab(activeId, tab.id);
-    await loadTabs(activeId, tab.id);
-  }, [activeId, loadTabs]);
+  const createTab = React.useCallback(
+    async (mode: TabMode = 'canvas', name?: string) => {
+      if (!activeId) return;
+      const tab = await workspaceService.createTab(activeId, name, mode);
+      if (!tab) return;
+      await workspaceService.setActiveTab(activeId, tab.id);
+      await loadTabs(activeId, tab.id);
+    },
+    [activeId, loadTabs]
+  );
+
+  const setTabMode = React.useCallback(
+    async (tabId: string, mode: TabMode) => {
+      if (!activeId) return;
+      await workspaceService.setTabMode(activeId, tabId, mode);
+      if (tabId === activeTabId) {
+        await loadTabs(activeId, tabId);
+      } else {
+        await refreshTabsMeta(activeId);
+      }
+    },
+    [activeId, activeTabId, loadTabs, refreshTabsMeta]
+  );
 
   const deleteTab = React.useCallback(
     async (tabId: string) => {
@@ -135,12 +152,17 @@ export const useWorkspaces = () => {
 
   const saveActiveState = React.useCallback(
     (state: CanvasState) => {
+      setActiveState(state);
       if (activeId && activeTabId) void workspaceService.saveTabState(activeId, activeTabId, state);
     },
     [activeId, activeTabId]
   );
 
   const tabKey = `${activeId ?? 'none'}/${activeTabId ?? 'none'}`;
+  const activeTabMode: TabMode = React.useMemo(
+    () => tabs.find((t) => t.id === activeTabId)?.mode ?? 'canvas',
+    [tabs, activeTabId]
+  );
 
   return React.useMemo(
     () => ({
@@ -150,10 +172,12 @@ export const useWorkspaces = () => {
       workspaces,
       activeState,
       activeTabId,
+      activeTabMode,
       switchTab,
       createTab,
       deleteTab,
       renameTab,
+      setTabMode,
       switchWorkspace,
       createWorkspace,
       deleteWorkspace,
@@ -169,10 +193,12 @@ export const useWorkspaces = () => {
       workspaces,
       activeState,
       activeTabId,
+      activeTabMode,
       switchTab,
       createTab,
       deleteTab,
       renameTab,
+      setTabMode,
       switchWorkspace,
       createWorkspace,
       deleteWorkspace,

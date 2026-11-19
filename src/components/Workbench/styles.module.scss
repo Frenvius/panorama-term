@@ -1,7 +1,7 @@
 .overlay {
   position: absolute;
   top: 47px;
-  right: 9px;
+  right: calc(9px + var(--dock-right-inset, 0px));
   bottom: 25px;
   left: calc(9px + var(--nav-inset, 0px) + var(--bench-offset, 0px));
   z-index: 106;

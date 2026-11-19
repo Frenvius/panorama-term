@@ -39,3 +39,24 @@ test('concurrent tab save and tab switch keep both writes and never cross tabs',
   expect((await workspaceService.loadTabState(wsId, tab1!))!.tiles).toHaveLength(1);
   expect((await workspaceService.loadTabState(wsId, tab2.id))!.tiles).toHaveLength(0);
 });
+
+test('createTab with project mode and setTabMode persist across reloads', async () => {
+  const { activeId } = await workspaceService.list();
+  const wsId = activeId!;
+
+  const projectTab = (await workspaceService.createTab(wsId, 'Project Tab', 'project'))!;
+  expect(projectTab.mode).toBe('project');
+
+  const tabsAfterCreate = (await workspaceService.getTabs(wsId)).tabs;
+  expect(tabsAfterCreate.find((t) => t.id === projectTab.id)?.mode).toBe('project');
+
+  await workspaceService.setTabMode(wsId, projectTab.id, 'canvas');
+  expect((await workspaceService.getTabs(wsId)).tabs.find((t) => t.id === projectTab.id)?.mode).toBe('canvas');
+
+  await workspaceService.setTabMode(wsId, projectTab.id, 'project');
+
+  (workspaceService as unknown as { cachedFiles: Map<string, unknown> }).cachedFiles.clear();
+
+  const reloadedTabs = (await workspaceService.getTabs(wsId)).tabs;
+  expect(reloadedTabs.find((t) => t.id === projectTab.id)?.mode).toBe('project');
+});

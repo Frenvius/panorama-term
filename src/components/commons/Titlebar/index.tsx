@@ -5,6 +5,7 @@ import { X, Copy, Minus, Square, Settings as SettingsIcon, Maximize2, Minimize2 
 import { IS_MAC } from '~/usecase/util/platform';
 import TabsBar from '~/components/commons/TabsBar';
 import Settings from '~/components/commons/Settings';
+import ModeSwitch from '~/components/commons/ModeSwitch';
 import WorkspaceBar from '~/components/commons/WorkspaceBar';
 import UpdateIndicator from '~/components/commons/UpdateIndicator';
 import { onSettingsRequest, type SettingsSection } from '~/usecase/util/settingsNav';
@@ -115,6 +116,7 @@ const Titlebar = () => {
         <TabsBar />
         <div className={IS_MAC ? `${styles.controls} ${styles.macControls}` : styles.controls}>
           <UpdateIndicator />
+          <ModeSwitch />
           {IS_MAC && fullscreenButton}
           {IS_MAC && settingsButton}
           {!IS_MAC && (

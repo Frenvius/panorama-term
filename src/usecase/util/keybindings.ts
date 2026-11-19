@@ -14,6 +14,11 @@ export type CommandId =
   | 'view.resetZoom'
   | 'view.navigator'
   | 'view.palette'
+  | 'view.toggleMode'
+  | 'view.inspector'
+  | 'view.resetPanels'
+  | 'panel.splitRight'
+  | 'panel.splitDown'
   | 'diff.close'
   | 'diff.prevChunk'
   | 'diff.nextChunk'
@@ -41,8 +46,13 @@ export const KEYBINDINGS: Command[] = [
   { id: 'editor.find', label: 'Find in file', group: 'Editor', defaultCombo: 'mod+f' },
   { id: 'editor.preview', label: 'Toggle Markdown preview', group: 'Editor', defaultCombo: 'mod+shift+v' },
   { id: 'view.resetZoom', label: 'Reset zoom', group: 'View', defaultCombo: 'mod+0' },
-  { id: 'view.navigator', label: 'Toggle navigator', group: 'View', defaultCombo: 'mod+b' },
+  { id: 'view.navigator', label: 'Toggle left sidebar', group: 'View', defaultCombo: 'mod+b' },
   { id: 'view.palette', label: 'Command bar', group: 'View', defaultCombo: 'shift shift' },
+  { id: 'view.toggleMode', label: 'Switch tab mode', group: 'View', defaultCombo: 'mod+shift+m' },
+  { id: 'panel.splitRight', label: 'Split panel right', group: 'Project view', defaultCombo: 'mod+\\' },
+  { id: 'panel.splitDown', label: 'Split panel down', group: 'Project view', defaultCombo: 'mod+shift+\\' },
+  { id: 'view.inspector', label: 'Toggle right sidebar', group: 'Project view', defaultCombo: 'mod+alt+b' },
+  { id: 'view.resetPanels', label: 'Reset panel layout', group: 'View', defaultCombo: '' },
   { id: 'diff.close', label: 'Close viewer', group: 'Diff viewer', defaultCombo: 'escape' },
   { id: 'diff.prevChunk', label: 'Previous difference', group: 'Diff viewer', defaultCombo: 'alt+arrowup' },
   { id: 'diff.nextChunk', label: 'Next difference', group: 'Diff viewer', defaultCombo: 'alt+arrowdown' },

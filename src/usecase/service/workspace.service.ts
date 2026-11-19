@@ -1,12 +1,14 @@
-import { storeList, storeRead, storeWrite, storeDelete, storeWriteMany } from '~/adapter/store/store.client';
-import {
+import type {
   TabMeta,
+  TabMode,
   TabState,
   CanvasState,
   WorkspaceFile,
   WorkspaceMeta,
   WorkspaceIndex
 } from '~/domain/interfaces/workspace.interface';
+
+import { storeList, storeRead, storeWrite, storeDelete, storeWriteMany } from '~/adapter/store/store.client';
 
 const INDEX_FILE = 'workspaces.json';
 const WS_DIR = 'workspaces';
@@ -23,7 +25,7 @@ const sanitizeCoord = (v: unknown): number => (typeof v === 'number' && Number.i
 
 const emptyState = (): CanvasState => ({ version: 1, tiles: [], viewport: { zoom: 1, centerX: 0, centerY: 0 } });
 
-const emptyTab = (name: string): TabState => ({ id: newTabId(), name, state: emptyState() });
+const emptyTab = (name: string, mode: TabMode = 'canvas'): TabState => ({ id: newTabId(), name, mode, state: emptyState() });
 
 const wsFile = (id: string): string => `${WS_DIR}/${id}.json`;
 
@@ -57,10 +59,11 @@ const migrate = (raw: unknown): WorkspaceFile | null => {
     tabs = (r.tabs as TabState[]).map((t) => ({
       id: t.id ?? newTabId(),
       name: t.name ?? 'Tab',
+      mode: t.mode === 'project' ? 'project' : 'canvas',
       state: normalizeState(t.state ?? null)
     }));
   } else {
-    tabs = [{ id: newTabId(), name: 'Tab 1', state: normalizeState((r.state as CanvasState) ?? null) }];
+    tabs = [{ id: newTabId(), name: 'Tab 1', mode: 'canvas', state: normalizeState((r.state as CanvasState) ?? null) }];
   }
 
   let activeTabId = r.activeTabId as string | undefined;
@@ -230,7 +233,7 @@ class Service {
   async getTabs(workspaceId: string): Promise<{ activeTabId: string | null; tabs: TabMeta[] }> {
     const file = await this.readWorkspace(workspaceId);
     if (!file) return { activeTabId: null, tabs: [] };
-    return { activeTabId: file.activeTabId, tabs: file.tabs.map((t) => ({ id: t.id, name: t.name })) };
+    return { activeTabId: file.activeTabId, tabs: file.tabs.map((t) => ({ id: t.id, name: t.name, mode: t.mode ?? 'canvas' })) };
   }
 
   async peekTabs(workspaceId: string): Promise<TabState[]> {
@@ -271,14 +274,25 @@ class Service {
     });
   }
 
-  createTab(workspaceId: string, name?: string): Promise<TabMeta | null> {
+  createTab(workspaceId: string, name?: string, mode: TabMode = 'canvas'): Promise<TabMeta | null> {
     return this.serial(async () => {
       const file = await this.readWorkspace(workspaceId);
       if (!file) return null;
-      const tab = emptyTab(name?.trim() || nextTabName(file.tabs));
+      const tab = emptyTab(name?.trim() || nextTabName(file.tabs), mode);
       file.tabs.push(tab);
       await this.writeWorkspace(file);
-      return { id: tab.id, name: tab.name };
+      return { id: tab.id, name: tab.name, mode: tab.mode };
+    });
+  }
+
+  setTabMode(workspaceId: string, tabId: string, mode: TabMode): Promise<void> {
+    return this.serial(async () => {
+      const file = await this.readWorkspace(workspaceId);
+      if (!file) return;
+      const tab = this.tabOf(file, tabId);
+      if (!tab) return;
+      tab.mode = mode;
+      await this.writeWorkspace(file);
     });
   }
 

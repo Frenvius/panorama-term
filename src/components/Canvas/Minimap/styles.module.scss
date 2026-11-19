@@ -11,7 +11,7 @@
   transition: opacity 150ms ease;
 
   &[data-corner='bottom-right'] {
-    right: 14px;
+    right: calc(14px + var(--dock-right-inset, 0px));
     bottom: 12px;
   }
 
@@ -22,7 +22,7 @@
 
   &[data-corner='top-right'] {
     top: 12px;
-    right: 14px;
+    right: calc(14px + var(--dock-right-inset, 0px));
   }
 
   &[data-corner='top-left'] {

@@ -1,3 +1,7 @@
+import type { TabMode, ProjectViewState } from '~/domain/interfaces/projectView.interface';
+
+export type { TabMode, ProjectViewState };
+
 export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser';
 
 export interface Tile {
@@ -34,6 +38,7 @@ export interface Frame {
   height: number;
   title: string;
   color: string;
+  path?: string;
 }
 
 export interface Viewport {
@@ -47,17 +52,20 @@ export interface CanvasState {
   tiles: Tile[];
   viewport: Viewport;
   frames?: Frame[];
+  projectView?: ProjectViewState;
 }
 
 export interface TabState {
   id: string;
   name: string;
+  mode?: TabMode;
   state: CanvasState;
 }
 
 export interface TabMeta {
   id: string;
   name: string;
+  mode?: TabMode;
 }
 
 export interface WorkspaceMeta {

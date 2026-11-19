@@ -129,10 +129,41 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
   const lastTermSize = React.useRef<{ width: number; height: number } | null>(null);
   const mouseRef = React.useRef<{ x: number; y: number } | null>(null);
 
+  const onPersistRef = React.useRef(onPersist);
+  onPersistRef.current = onPersist;
+  const pendingSaveRef = React.useRef(false);
+
   React.useEffect(() => {
-    const id = setTimeout(() => onPersist(toStored({ tiles, view, frames })), 400);
+    pendingSaveRef.current = true;
+    const id = setTimeout(() => {
+      pendingSaveRef.current = false;
+      onPersistRef.current(
+        toStored({
+          tiles: tilesRef.current,
+          view: viewRef.current,
+          frames: framesRef.current,
+          projectView: initial.current.projectView
+        })
+      );
+    }, 400);
     return () => clearTimeout(id);
-  }, [tiles, view, frames, onPersist]);
+  }, [tiles, view, frames]);
+
+  React.useEffect(
+    () => () => {
+      if (!pendingSaveRef.current) return;
+      pendingSaveRef.current = false;
+      onPersistRef.current(
+        toStored({
+          tiles: tilesRef.current,
+          view: viewRef.current,
+          frames: framesRef.current,
+          projectView: initial.current.projectView
+        })
+      );
+    },
+    []
+  );
 
   React.useEffect(() => {
     if (gridRef.current) drawGrid(gridRef.current, view);
@@ -243,7 +274,10 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     });
   }, []);
 
-  const addTile = React.useCallback((at?: { x: number; y: number }) => placeTerm({ id: createId() }, at), [placeTerm]);
+  const addTile = React.useCallback(
+    (at?: { x: number; y: number }, cwd?: string) => placeTerm({ id: createId(), ...(cwd ? { cwd } : {}) }, at),
+    [placeTerm]
+  );
 
   const openRemoteTile = React.useCallback((id: string, cwd: string) => placeTerm({ id, cwd }), [placeTerm]);
 
@@ -762,6 +796,24 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     );
   }, []);
 
+  const createFrame = React.useCallback((frame: Omit<Frame, 'id'>): string => {
+    const id = createId();
+    setFrames((prev) => [...prev, { ...frame, id }]);
+    return id;
+  }, []);
+
+  const patchFrame = React.useCallback((id: string, patch: Partial<Omit<Frame, 'id'>>) => {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  }, []);
+
+  const placeTiles = React.useCallback((moves: { id: string; x: number; y: number }[]) => {
+    const posMap = new Map(moves.map((m) => [m.id, m]));
+    setTiles((prev) => prev.map((t) => {
+      const m = posMap.get(t.id);
+      return m ? { ...t, x: m.x, y: m.y } : t;
+    }));
+  }, []);
+
   const renameFrame = React.useCallback((id: string, title: string) => {
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, title } : f)));
   }, []);
@@ -902,6 +954,9 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
     addRunView,
     patchTile,
     addFrame,
+    createFrame,
+    patchFrame,
+    placeTiles,
     duplicateTile,
     moveTile,
     snapTile,
