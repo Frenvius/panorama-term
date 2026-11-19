@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.1]
+
+### Added
+- Remote desktop: control a workspace running on another computer over the LAN, Tailscale or the relay. Actions that only make sense on the host, such as "Reveal in explorer", are disabled while connected remotely.
+- Project mode: each tab can switch between Canvas and Project mode. Project mode shows terminals, notes and files as tabbed panels that split right or down, with Files, Source Control, Docker and Project Notes panels docked on the left or right.
+- A Projects panel lists your project folders. Frames on the canvas can be linked to a project folder, and new terminals and notes open inside them.
+- The macOS app is now signed with a Developer ID and notarized by Apple, so it opens without the "unidentified developer" warning. After this update, macOS asks once more for permissions you already granted.
+
+### Fixed
+- The AgentBar no longer covers the last lines of terminal output.
+- Mouse selection in the terminal lines up with the drawn cells.
+- Agent project names are read correctly from Windows paths, also when viewed from another computer.
+
 ## [0.3.0]
 
 ### Added
