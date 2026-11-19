@@ -1,23 +1,23 @@
 {
-  "version": "0.4.0",
-  "notes": "### Added\n- Project mode: each tab can switch between Canvas and Project mode. Project mode shows terminals, notes and files as tabbed panels that split right or down, with Files, Source Control, Docker and Project Notes panels docked on the left or right.\n- A Projects panel lists your project folders. Frames on the canvas can be linked to a project folder, and new terminals and notes open inside them.\n- The macOS app is now signed with a Developer ID and notarized by Apple, so it opens without the \"unidentified developer\" warning. After this update, macOS asks once more for permissions you already granted.",
-  "pub_date": "2026-11-19T02:28:33Z",
+  "version": "0.3.0",
+  "notes": "### Added\n- Plugins: folders with a `plugin.json` in the config folder are discovered automatically and listed in Settings > Plugins, with errors shown and an on/off switch per plugin.\n- Plugins can add dark and light themes, including the terminal colors. Settings > Appearance picks one theme per mode, and System switches between them.\n- Plugins can add fonts. Settings > Appearance picks the interface, code and terminal font, and the terminal measures the chosen font so columns stay aligned.\n- Plugins can add syntax coloring for new languages or map more file extensions to a known one, in the editor, the diff viewer and Markdown code blocks.\n- Themes can show a still or animated background behind the canvas and make tiles partly transparent. The background hides while a tile is fullscreen or when the system asks to reduce motion.\n- The AgentBar shows a chip with the agent's background shells and their live output.\n- The Windows app and installer are now digitally signed, so Windows shows a verified publisher instead of \"Unknown publisher\".\n\n### Fixed\n- The titlebar and status bar stay clickable while a tile is fullscreen.\n- Linux (AppImage): color emoji no longer crash the window on systems that only ship COLRv1 emoji fonts, such as Fedora.\n- Linux (AppImage): notification sounds no longer crash the window.\n- Linux (AppImage): terminals and programs launched from Panorama no longer pick up the AppImage's bundled libraries.",
+  "pub_date": "2026-11-17T17:46:47Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.0/Panorama_0.4.0_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGs5aFJuMjV4L016UDFOTHh4YWNBSzdEQUtoRnYvQWswNHRFcDNINjdQL1Qzblg5QlhFcTZRRFlxSSs1TDdjdGJxUzkySSt6dlJZMmpCQ0tkc0hvMVFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU0OTA2CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4wCkdZZHA3ZTJWK1BGaUVFNGVvQlVBOXRNYUJIR211WjVHMWR2TmFqNlNoUU9IK3VRQVhyQzhLdHdnT3ZjeTArMzQ1YjdyZnNFTGVJcEJ3UWlqOTBKdkFBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.0/Panorama_0.3.0_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNiQXY3dWdEbGZrVENYdEEyQklFSjRyNnJ1VDVPcDhpZG8wMkxIVXFsVnV4ZEh0Q1F3enNnRVlCMlJPakRlNXlmVGtJUnkwQ3Q2R2hHeS9FYS85UEFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTM3NTI0CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4wCjRiOFBqU2ZMMEZ2TVZZNkcxaXRuZTlqTUFUTWs3YWEyekZHcFIxVk9PSjVobi8weW1EQTNQN2pPUFE5STlKbWtkbjhIbStyY0dxbEt0LzY3RFd4d0RBPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.0/Panorama_0.4.0_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGl1Yk02eHVKWDk4d2FIOVRyTmtycUR4cWppRURMZVBQd2ZxcHpjNTNJemJkY1Jpc1I4TE9JSDNMQ0xWQkRPY2M1WDM0UkdXR1NmT3ZuZUw4cThzaEFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU1MjUxCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4wCnlmalREMlpYWHExVzJUWStIYkhXL3ZkZytWRUE4RHV3MmRyc3JWSFNoVFB0SktVSDVyYkpOS2ZieGx1SzN2bnYycDFxN3NNWks0cjdZSEJKQzFXMEFnPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.0/Panorama_0.3.0_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHJnT3JiK0d0b3N3c0ZDYUwrWVA2eERlRkIwRHY0OUhCeU52cFFrWnJNanFIcDA4c2pSUHhqTzNabG9KanV5WG9KUWNMdUFtMnBDOU9KRDNwVzJmakFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTM3NDYyCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4wCnhjZnJqMGVrV29VNjQ1Y1h4d1VWZjFneldBZXBlRHdDTzNMNnNHcTJNaWtDanVRdjlzTDZsdDgvNmR5YXNVcFFBdzRMUUdXUFo0c25ubW82Vjg3bkFnPT0K"
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.0/Panorama_0.4.0_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG0wcjEwRndJZS9JRDNCUlVqMHU5c3NKcitzS051OVgycEZJVjRxcTFQY0RVWFVoamxmc2ROUUhuUnNHbjloYU5EMFJKYTQ0Z0RldXNwTEZDZVB0NkFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU0OTAzCWZpbGU6UGFub3JhbWFfMC40LjBfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjQuMApDZ0owb1F2b3g5VTl6RzZ1WGpmWXBJTkFldWlOekpDVXpJRkltcWJ0Tk5Bb0xCVjkyVHlxYVBrUGFyY2tuSVEzdzhqZEpzT0R2Zi9qeVdmdllVUjJEdz09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.0/Panorama_0.3.0_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGo1SUQyTDJrL3ZYUFhURmZHT2lySHdBaG5leXFTcXZNQ0Z6WGppaGFvSjhkNmZzeWxHczZOYVVhRWk5dEtRR1JBNlYyOUp2T253T056TVZEUDU1c2dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTM3NTI5CWZpbGU6UGFub3JhbWFfMC4zLjBfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjMuMApheFlFdWtBdjJrc1VPN3VpQ3hPcmJqNTY1OHFkQTJCRFlSbjRqVE5hVnFKclNBNWdDWEs3d2tJQXVmMUlLSDUvN2I1SXRkc25UeXdzRUZ6TVlCdFNCUT09Cg=="
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.0/Panorama_0.4.0_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG1uZzFGNnhKekhnbUFMOVE1MG4xVGRscGl3Tk0rTW1YVXQzUEdQcWhtY2I2NDFOY0xuenBnaTE0RkJ0VFBpa2M1YlJzN0Y0Uk1GMytUVXQ4S2g1Umc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU0OTMwCWZpbGU6UGFub3JhbWFfMC40LjBfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wCkVEN21SaXhncHZvdDhjZVVKa3hxT1h0aGJKVzVFWGFiSDYzbWlBRndzM1lNQUIyTG5maUkyRkdqNHpBdmZ5RFlPcjl5c1BVYmRXSGRRbHJGN0paeUF3PT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.0/Panorama_0.3.0_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGk5amdwdTBXTnJrK3VCaTZpK0llSEdNZTAxRmRvMjE3L1d0c0dXZUgwNXI0UTNPUGhVcGZkYmdZWmVXY3pKaGdhL2FIVVhNSFp5bFVtVmhteFJGYXdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTM3NTg0CWZpbGU6UGFub3JhbWFfMC4zLjBfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMy4wClNOQmhtWmI4MmltUjA4WkNFcnhhcU04Q20valFNRlU2bVUyWkVYM3g3TkIrdUhmL2xnUDFORUJ2VXlxazVzcmZjRHkzQnlhek1EK2M4YlBwdzdiUEFnPT0K"
     }
   }
 }
