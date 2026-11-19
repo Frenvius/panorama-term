@@ -1,0 +1,42 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sidecar-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            sidecar-rs
+            sidecar-rs/runtime
+          shared-key: ci-sidecar-windows
+
+      - name: Runtime tests
+        run: cargo test --manifest-path sidecar-rs/runtime/Cargo.toml
+
+      - name: Sidecar tests
+        run: cargo test --manifest-path sidecar-rs/Cargo.toml
+
+      - name: Build sidecar binaries
+        run: bun scripts/sidecar.ts
+
+      - name: Update over running binaries
+        run: bun scripts/update-e2e.ts
