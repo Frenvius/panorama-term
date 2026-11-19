@@ -113,7 +113,6 @@ async fn terminal_proxy_routes_flow_and_resize() {
     let child = Command::new("setsid")
         .arg(&bin)
         .arg("host")
-        .env("PANORAMA_BRAIN_BIN", &bin)
         .env("HOME", &dir)
         .env("PANORAMA_CONFIG_DIR", &host_dir)
         .env("PANORAMA_HOST_PORT", host_port.to_string())

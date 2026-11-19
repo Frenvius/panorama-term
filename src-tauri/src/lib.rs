@@ -88,52 +88,20 @@ fn host_alive() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
-// the host never runs from the installed binary, so an update can replace it without killing live PTYs
-fn host_bin(brain: &Path) -> PathBuf {
-    let dir_name = if cfg!(debug_assertions) { "panorama-host-dev" } else { "panorama-host" };
-    let dir = std::env::temp_dir().join(host_dir_name(dir_name, std::env::var("PANORAMA_HOST_PORT").ok().as_deref()));
-    if std::fs::create_dir_all(&dir).is_err() {
-        return brain.to_path_buf();
+fn panorama_base_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PANORAMA_CONFIG_DIR") {
+        return Some(PathBuf::from(dir));
     }
-    let dst = dir.join("panorama-host.exe");
-    for _ in 0..20 {
-        if std::fs::copy(brain, &dst).is_ok() {
-            copy_conpty(brain, &dir);
-            return dst;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    brain.to_path_buf()
-}
-
-fn host_dir_name(default: &str, port: Option<&str>) -> String {
-    match port.and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0) {
-        Some(port) => format!("{default}-{port}"),
-        None => default.to_string(),
-    }
-}
-
-// portable-pty loads conpty.dll from the host exe's own directory, and conpty.dll starts the
-// OpenConsole.exe next to it; without them the host falls back to the inbox ConPTY
-fn copy_conpty(brain: &Path, dir: &Path) {
-    let Some(src) = brain.parent() else { return };
-    for file in ["conpty.dll", "OpenConsole.exe"] {
-        let from = src.join(file);
-        if !from.exists() {
-            continue;
-        }
-        if let Err(e) = std::fs::copy(&from, dir.join(file)) {
-            eprintln!("[panorama] failed to copy {file}: {e}");
-        }
-    }
+    let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
+    Some(dirs::home_dir()?.join(name))
 }
 
 fn host_record() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("PANORAMA_CONFIG_DIR") {
-        return Some(PathBuf::from(dir).join("host.json"));
-    }
-    let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
-    Some(dirs::home_dir()?.join(name).join("host.json"))
+    Some(panorama_base_dir()?.join("host.json"))
+}
+
+fn runtime_root() -> Option<PathBuf> {
+    Some(panorama_runtime::root(&panorama_base_dir()?))
 }
 
 fn outdated_host_pid(bin: &Path) -> Option<u32> {
@@ -186,26 +154,102 @@ fn remove_retired_files(dir: &Path) {
     }
 }
 
-fn spawn_sidecar() {
-    let bin = sidecar_bin();
-    if let Some(dir) = bin.parent() {
-        remove_retired_files(dir);
-    }
-    if host_alive() {
-        match outdated_host_pid(&bin) {
-            Some(pid) => stop_host(pid),
-            None => return,
+fn gc_extra_keep() -> Vec<PathBuf> {
+    host_record()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("exe")?.as_str().map(PathBuf::from))
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+        .into_iter()
+        .collect()
+}
+
+fn is_named_copy(name: &str, base: &str) -> bool {
+    name == base
+        || name
+            .strip_prefix(base)
+            .and_then(|tail| tail.strip_prefix('-'))
+            .is_some_and(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn is_legacy_host_dir(name: &str) -> bool {
+    is_named_copy(name, if cfg!(debug_assertions) { "panorama-host-dev" } else { "panorama-host" })
+}
+
+fn is_legacy_brain_copy(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(std::env::consts::EXE_SUFFIX) else { return false };
+    is_named_copy(stem, if cfg!(debug_assertions) { "panorama-brain" } else { "panorama-brain-release" })
+}
+
+// the other flavor may still run an older build whose host lives in these temp copies
+fn cleanup_legacy_temp() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        if path.is_dir() && is_legacy_host_dir(&name) {
+            let exe = path.join(format!("panorama-host{}", std::env::consts::EXE_SUFFIX));
+            if std::fs::remove_file(&exe).is_ok() || !exe.exists() {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if path.is_file() && is_legacy_brain_copy(&name) {
+            let _ = std::fs::remove_file(&path);
         }
     }
-    if !bin.exists() {
-        eprintln!("[panorama] sidecar binary missing: {}", bin.display());
+}
+
+fn start_gc_thread(root: PathBuf) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(10));
+        panorama_runtime::gc(&root, &gc_extra_keep());
+        cleanup_legacy_temp();
+    });
+}
+
+fn spawn_sidecar() {
+    let source = sidecar_bin();
+    if let Some(dir) = source.parent() {
+        remove_retired_files(dir);
+    }
+    if !source.exists() {
+        eprintln!("[panorama] sidecar binary missing: {}", source.display());
         return;
     }
-    let host = host_bin(&bin);
+
+    let Some(root) = runtime_root() else {
+        eprintln!("[panorama] could not determine runtime root");
+        return;
+    };
+
+    let flavor = panorama_runtime::Flavor::current();
+
+    let host = match panorama_runtime::prepare(&source, &root, flavor) {
+        Ok(dir) => {
+            let cf = panorama_runtime::current_file(&root, host_port());
+            if let Err(e) = panorama_runtime::publish(&cf, &dir, &source) {
+                eprintln!("[panorama] publish failed: {e}");
+            }
+            panorama_runtime::host_exe(&dir, flavor)
+        }
+        Err(e) => {
+            eprintln!("[panorama] runtime prepare failed: {e}, running source binary directly");
+            source.clone()
+        }
+    };
+
+    if host_alive() {
+        match outdated_host_pid(&host) {
+            Some(pid) => stop_host(pid),
+            None => {
+                start_gc_thread(root);
+                return;
+            }
+        }
+    }
+
     let make = || {
         let mut cmd = Command::new(&host);
         cmd.arg("host")
-            .env("PANORAMA_BRAIN_BIN", &bin)
             .env("PANORAMA_HOST_PORT", host_port().to_string())
             .env("PANORAMA_SIDECAR_PORT", sidecar_port().to_string())
             .stdin(Stdio::null())
@@ -225,14 +269,14 @@ fn spawn_sidecar() {
         let base = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
         let mut cmd = make();
         cmd.creation_flags(base | CREATE_BREAKAWAY_FROM_JOB);
-        if cmd.spawn().is_ok() {
-            return;
+        if cmd.spawn().is_err() {
+            let mut fallback = make();
+            fallback.creation_flags(base);
+            if let Err(e) = fallback.spawn() {
+                eprintln!("[panorama] failed to spawn sidecar: {e}");
+            }
         }
-        let mut fallback = make();
-        fallback.creation_flags(base);
-        if let Err(e) = fallback.spawn() {
-            eprintln!("[panorama] failed to spawn sidecar: {e}");
-        }
+        start_gc_thread(root);
         return;
     }
 
@@ -242,6 +286,7 @@ fn spawn_sidecar() {
         if let Err(e) = cmd.spawn() {
             eprintln!("[panorama] failed to spawn sidecar: {e}");
         }
+        start_gc_thread(root);
     }
 }
 
@@ -1036,8 +1081,24 @@ mod instance_tests {
         assert_eq!(configured_port(Some("19877"), SIDECAR_PORT), 19877);
         assert_eq!(configured_port(Some("bad"), HOST_PORT), HOST_PORT);
         assert_eq!(configured_port(Some("0"), HOST_PORT), HOST_PORT);
-        assert_eq!(host_dir_name("panorama-host-dev", None), "panorama-host-dev");
-        assert_eq!(host_dir_name("panorama-host-dev", Some("19878")), "panorama-host-dev-19878");
-        assert_eq!(host_dir_name("panorama-host-dev", Some("bad")), "panorama-host-dev");
+    }
+
+    #[test]
+    fn legacy_temp_cleanup_only_matches_own_flavor() {
+        let exe = std::env::consts::EXE_SUFFIX;
+        let (host, other_host, brain, other_brain) = if cfg!(debug_assertions) {
+            ("panorama-host-dev", "panorama-host", "panorama-brain", "panorama-brain-release")
+        } else {
+            ("panorama-host", "panorama-host-dev", "panorama-brain-release", "panorama-brain")
+        };
+        assert!(is_legacy_host_dir(host));
+        assert!(is_legacy_host_dir(&format!("{host}-19878")));
+        assert!(!is_legacy_host_dir(other_host));
+        assert!(!is_legacy_host_dir(&format!("{other_host}-19878")));
+        assert!(!is_legacy_host_dir(&format!("{host}-x")));
+        assert!(is_legacy_brain_copy(&format!("{brain}{exe}")));
+        assert!(is_legacy_brain_copy(&format!("{brain}-19878{exe}")));
+        assert!(!is_legacy_brain_copy(&format!("{other_brain}{exe}")));
+        assert!(!is_legacy_brain_copy(&format!("{other_brain}-19878{exe}")));
     }
 }

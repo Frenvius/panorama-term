@@ -22,6 +22,7 @@ objc2-foundation = "0.3"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+panorama-runtime = { path = "../sidecar-rs/runtime" }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

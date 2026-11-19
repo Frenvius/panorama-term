@@ -1,0 +1,11 @@
+[package]
+name = "panorama-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "panorama_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"

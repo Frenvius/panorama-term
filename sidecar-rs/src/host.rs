@@ -200,34 +200,12 @@ pub fn id() -> String {
 fn record_identity() {
     let Some(dir) = crate::panorama_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
-    let body = serde_json::json!({ "id": id(), "pid": std::process::id() }).to_string();
-    let _ = std::fs::write(dir.join("host.json"), body);
-}
-
-pub fn brain_bin() -> PathBuf {
-    std::env::var("PANORAMA_BRAIN_BIN")
+    let exe = std::env::current_exe()
         .ok()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .unwrap_or_else(|| PathBuf::from("sidecar"))
-}
-
-fn brain_run_copy(bin: &Path) -> PathBuf {
-    let name = brain_run_name(cfg!(debug_assertions), std::env::var("PANORAMA_HOST_PORT").ok().as_deref());
-    let dst = std::env::temp_dir().join(name);
-    if std::fs::copy(bin, &dst).is_ok() {
-        dst
-    } else {
-        bin.to_path_buf()
-    }
-}
-
-fn brain_run_name(debug: bool, port: Option<&str>) -> String {
-    let base = if debug { "panorama-brain" } else { "panorama-brain-release" };
-    match port.and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0) {
-        Some(port) => format!("{base}-{port}.exe"),
-        None => format!("{base}.exe"),
-    }
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let body = serde_json::json!({ "id": id(), "pid": std::process::id(), "exe": exe }).to_string();
+    let _ = std::fs::write(dir.join("host.json"), body);
 }
 
 fn brain_alive() -> bool {
@@ -252,45 +230,91 @@ fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn same_host(bin: &Path) -> bool {
-    no_window(Command::new(bin).arg("host-id").stdin(Stdio::null()).stderr(Stdio::null()))
+fn same_host(dir: &Path, flavor: panorama_runtime::Flavor) -> bool {
+    let exe = panorama_runtime::host_exe(dir, flavor);
+    no_window(Command::new(&exe).arg("host-id").stdin(Stdio::null()).stderr(Stdio::null()))
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == id())
         .unwrap_or(false)
 }
 
-fn watch_brain(child: &mut Child, bin: &Path, mut stamp: Option<SystemTime>) {
-    let mut seen = stamp;
+fn watch_brain(
+    child: &mut Child,
+    running_dir: Option<PathBuf>,
+    current_file: &Path,
+    root: &Path,
+    flavor: panorama_runtime::Flavor,
+) {
+    let init_source = panorama_runtime::read_current(current_file)
+        .and_then(|c| modified(&c.source));
+    let mut source_stamp = init_source;
+    let mut source_seen = init_source;
+    let mut last_rejected: Option<PathBuf> = None;
+
     while matches!(child.try_wait(), Ok(None)) {
         std::thread::sleep(Duration::from_millis(1000));
-        let now = modified(bin);
-        // a replaced binary must hold still for a tick so a half-written build is never launched
-        let settled = now == seen;
-        seen = now;
-        if now == stamp || !settled {
-            continue;
+
+        if let Some(c) = panorama_runtime::read_current(current_file) {
+            let now = modified(&c.source);
+            // a replaced binary must hold still for a tick so a half-written build is never launched
+            let settled = now == source_seen;
+            source_seen = now;
+            if now != source_stamp && settled {
+                source_stamp = now;
+                match panorama_runtime::prepare(&c.source, root, flavor) {
+                    Ok(new_dir) => {
+                        if let Err(e) = panorama_runtime::publish(current_file, &new_dir, &c.source) {
+                            eprintln!("[host] publish failed: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("[host] prepare failed: {e}"),
+                }
+            }
         }
-        stamp = now;
-        // a binary with different host code keeps the old brain until the app replaces this host
-        if same_host(bin) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return;
+
+        if let Some(c) = panorama_runtime::read_current(current_file) {
+            let dir_changed = running_dir.as_deref() != Some(c.dir.as_path());
+            if dir_changed {
+                let is_rejected = last_rejected.as_deref() == Some(c.dir.as_path());
+                if !is_rejected {
+                    // a binary with different host code keeps the old brain until the app replaces this host
+                    if same_host(&c.dir, flavor) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return;
+                    } else {
+                        last_rejected = Some(c.dir);
+                    }
+                }
+            }
         }
     }
 }
 
 pub fn supervise_brain() {
-    let bin = brain_bin();
+    let Some(pdir) = crate::panorama_dir() else { return };
+    let root = panorama_runtime::root(&pdir);
     let host_p = crate::host_port().to_string();
     let brain_p = crate::port().to_string();
+    let flavor = panorama_runtime::Flavor::current();
+    let current_file = panorama_runtime::current_file(&root, crate::host_port());
+
     std::thread::spawn(move || loop {
         if brain_alive() {
             std::thread::sleep(Duration::from_millis(1000));
             continue;
         }
-        let stamp = modified(&bin);
-        let exe = brain_run_copy(&bin);
+
+        let maybe = panorama_runtime::read_current(&current_file).and_then(|c| {
+            let exe = panorama_runtime::brain_exe(&c.dir, flavor);
+            if exe.exists() { Some((c.dir, exe)) } else { None }
+        });
+
+        let (exe, running_dir) = match maybe {
+            Some((dir, e)) => (e, Some(dir)),
+            None => (std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sidecar")), None),
+        };
+
         let mut cmd = Command::new(&exe);
         cmd.arg(crate::DAEMON_ARG)
             .env("PANORAMA_HOST_PORT", &host_p)
@@ -299,7 +323,7 @@ pub fn supervise_brain() {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         match no_window(&mut cmd).spawn() {
-            Ok(mut child) => watch_brain(&mut child, &bin, stamp),
+            Ok(mut child) => watch_brain(&mut child, running_dir, &current_file, &root, flavor),
             Err(e) => eprintln!("[host] failed to spawn brain: {e}"),
         }
         std::thread::sleep(Duration::from_millis(1000));
@@ -855,17 +879,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn brain_copy_name_is_isolated_by_valid_host_port() {
-        for (debug, base) in [(true, "panorama-brain"), (false, "panorama-brain-release")] {
-            for port in [None, Some(""), Some("bad"), Some("0"), Some("65536")] {
-                assert_eq!(brain_run_name(debug, port), format!("{base}.exe"));
-            }
-            assert_eq!(brain_run_name(debug, Some("19878")), format!("{base}-19878.exe"));
-            assert_ne!(brain_run_name(debug, Some("19878")), brain_run_name(debug, Some("19978")));
-        }
-    }
 
     #[test]
     fn frame_codec_round_trip() {

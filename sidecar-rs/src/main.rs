@@ -424,12 +424,7 @@ fn respawn_detached(extra: &[&str]) {
     }
 }
 fn hook_exe() -> Option<PathBuf> {
-    // release brains run from a temp copy; hooks target the installed binary so that copy is never held open
-    if cfg!(debug_assertions) {
-        std::env::current_exe().ok()
-    } else {
-        Some(host::brain_bin())
-    }
+    std::env::current_exe().ok()
 }
 
 const DEFAULT_FG: u32 = 0xC7_D0_E0;
@@ -2100,7 +2095,7 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
     if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex.cmd");
-    let exe = host::brain_bin();
+    let exe = std::env::current_exe().ok()?;
     let body = format!("@echo off\r\n\"{}\" codex-launch %*\r\nexit /b %ERRORLEVEL%\r\n", exe.display());
     let ps_wrapper = wrapper.with_extension("ps1");
     let ps_body = format!("& '{}' codex-launch @args\r\n", exe.display().to_string().replace('\'', "''"));
@@ -2121,7 +2116,7 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
     if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex");
-    let exe = host::brain_bin();
+    let exe = std::env::current_exe().ok()?;
     let body = format!("#!/bin/sh\nexec \"{}\" codex-launch \"$@\"\n", exe.display());
     std::fs::create_dir_all(wrapper.parent()?).ok()?;
     if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
@@ -2149,7 +2144,7 @@ fn codex_launch_args(args: &[String], hook_exe: &Path) -> Vec<String> {
 
 fn codex_launch_cmd() {
     let Some(original) = std::env::var_os("PANORAMA_CODEX_ORIGINAL") else { std::process::exit(1) };
-    let exe = host::brain_bin();
+    let Ok(exe) = std::env::current_exe() else { std::process::exit(1) };
     let args: Vec<String> = std::env::args().skip(2).collect();
     let status = std::process::Command::new(original).args(codex_launch_args(&args, &exe)).status();
     std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
@@ -2815,7 +2810,16 @@ fn uninstall_claude_hook() {
     else {
         return;
     };
-    let Some(exe) = hook_exe() else {
+    // legacy hook entries point at the installed binary, not the runtime copy
+    let exe = panorama_dir()
+        .map(|d| panorama_runtime::root(&d))
+        .and_then(|r| {
+            let cf = panorama_runtime::current_file(&r, host_port());
+            panorama_runtime::read_current(&cf)
+        })
+        .map(|c| c.source)
+        .or_else(hook_exe);
+    let Some(exe) = exe else {
         return;
     };
     let file = Path::new(&home).join(".claude").join("settings.json");

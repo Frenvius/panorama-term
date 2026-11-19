@@ -2677,6 +2677,7 @@ dependencies = [
  "notify",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "panorama-runtime",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -2693,6 +2694,13 @@ dependencies = [
  "url",
  "windows-sys 0.59.0",
  "x25519-dalek",
+]
+
+[[package]]
+name = "panorama-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
