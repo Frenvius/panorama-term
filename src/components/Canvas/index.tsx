@@ -147,6 +147,8 @@ const Canvas = () => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    undoLayout,
+    redoLayout,
     frameSelection,
     activateTile,
     setTileCwd,
@@ -347,6 +349,8 @@ const Canvas = () => {
       reorderCanvas();
       return true;
     }
+    if (cmd === 'canvas.undo') return !fsIdRef.current && undoLayout();
+    if (cmd === 'canvas.redo' || cmd === 'canvas.redoAlt') return !fsIdRef.current && redoLayout();
     if (cmd === 'tile.focus') {
       const id = activeTileRef.current;
       if (!id) return false;

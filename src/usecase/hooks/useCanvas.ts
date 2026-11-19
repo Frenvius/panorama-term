@@ -5,7 +5,9 @@ import { listen } from '@tauri-apps/api/event';
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import type { ReorderMode, ReorderPlan } from '~/usecase/util/reorderLayout';
+import type { Layout } from '~/usecase/util/layoutHistory';
 import { drawGrid } from '~/usecase/util/gridUtils';
+import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
@@ -166,10 +168,32 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     return listenPointerInteraction(window, down, () => setInteracting(false));
   }, []);
 
+  const reorderTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const animateLayout = React.useCallback(() => {
+    const bg = bgRef.current;
+    if (!bg) return;
+    clearTimeout(reorderTimer.current);
+    bg.dataset.reordering = 'true';
+    reorderTimer.current = setTimeout(() => delete bg.dataset.reordering, REORDER_MS);
+  }, []);
+
+  const restoreLayout = React.useCallback(
+    (layout: Layout) => {
+      animateLayout();
+      setTiles(layout.tiles);
+      setFrames(layout.frames);
+    },
+    [animateLayout]
+  );
+
+  const history = useLayoutHistory({ tiles, frames, interacting, scope: `${wsId}/${tabId}`, apply: restoreLayout });
+
   const applied = React.useRef({ tiles, frames });
   React.useEffect(() => {
     if (!seed) return;
     const next = toRuntime(seed);
+    history.rebase(next);
     applied.current = { tiles: next.tiles, frames: next.frames };
     initial.current = { ...initial.current, projectView: next.projectView };
     setTiles(next.tiles);
@@ -921,19 +945,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, ...box } : f)));
   }, []);
 
-  const reorderTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
   const applyReorder = React.useCallback((plan: ReorderPlan | null) => {
     if (!plan) return;
-    const bg = bgRef.current;
-    if (bg) {
-      clearTimeout(reorderTimer.current);
-      bg.dataset.reordering = 'true';
-      reorderTimer.current = setTimeout(() => delete bg.dataset.reordering, REORDER_MS);
-    }
+    animateLayout();
     setFrames((prev) => prev.map((f) => (plan.frames.has(f.id) ? { ...f, ...plan.frames.get(f.id) } : f)));
     setTiles((prev) => prev.map((t) => (plan.tiles.has(t.id) ? { ...t, ...plan.tiles.get(t.id) } : t)));
-  }, []);
+  }, [animateLayout]);
 
   const reorderFrame = React.useCallback(
     (id: string) => applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, mode: reorderMode() })),
@@ -1082,6 +1099,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    undoLayout: history.undo,
+    redoLayout: history.redo,
     frameSelection,
     activateTile,
     indicatorRef,
