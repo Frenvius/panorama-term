@@ -11,6 +11,7 @@ import { clearAlert } from '~/usecase/util/alerts';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { touchTile } from '~/usecase/util/tileRecency';
+import { placeTileInFrame } from '~/usecase/util/frameLayout';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { toStored, toRuntime } from '~/usecase/util/workspaceCanvas';
 import { workspaceService } from '~/usecase/service/workspace.service';
@@ -22,6 +23,7 @@ import {
   closePanelGroup,
   DEFAULT_PROJECT,
   splitPanelGroup,
+  projectRootPath,
   updateSplitRatio,
   tileMatchesProject,
   normalizeProjectPath,
@@ -146,6 +148,31 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   tilesRef.current = tiles;
   const projectViewRef = React.useRef(projectView);
   projectViewRef.current = projectView;
+
+  const projectFrameSlot = React.useCallback((projectPath: string | undefined, width: number, height: number) => {
+    const norm = projectPath ? normalizeProjectPath(projectPath) : '';
+    if (!norm || norm === DEFAULT_PROJECT) return null;
+    const tiles = tilesRef.current;
+    const frames = framesRef.current;
+    const projects = [...projectViewRef.current.projects, norm];
+    const key = norm.toLowerCase();
+    const group = buildProjectGroups({ frames, tiles, projects }).find((g) => g.kind === 'frame' && g.path?.toLowerCase() === key);
+    const frame = group?.frameId ? frames.find((f) => f.id === group.frameId) : undefined;
+    if (!frame) return null;
+    const placed = placeTileInFrame({ frame, width, height, tiles, frames });
+    if (placed.frame) {
+      const next = withFramePatched(frames, frame.id, placed.frame);
+      framesRef.current = next;
+      setFrames(next);
+    }
+    return { x: placed.x, y: placed.y };
+  }, []);
+
+  const projectSlot = React.useCallback(
+    (projectPath: string | undefined, width: number, height: number) =>
+      projectFrameSlot(projectPath, width, height) ?? nextTileSlot(tilesRef.current, width, height),
+    [projectFrameSlot]
+  );
 
   const syncedFrames = React.useRef(frames);
   React.useEffect(() => {
@@ -327,7 +354,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const id = createId();
         spawnedTileId = id;
         const prevTiles = tilesRef.current;
-        const slot = nextTileSlot(prevTiles, TILE_WIDTH, TILE_HEIGHT);
+        const slot = projectSlot(canonical, TILE_WIDTH, TILE_HEIGHT);
         const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
         const newTile: Tile = {
           id,
@@ -366,7 +393,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         return next;
       });
     },
-    [pushRecentProjects]
+    [pushRecentProjects, projectSlot]
   );
 
   const removeProject = React.useCallback((path: string) => {
@@ -479,7 +506,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const id = createId();
       spawnedTileId = id;
       const prevTiles = tilesRef.current;
-      const slot = nextTileSlot(prevTiles, TILE_WIDTH, TILE_HEIGHT);
+      const slot = projectSlot(activeProj, TILE_WIDTH, TILE_HEIGHT);
       const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
       const newTile: Tile = {
         id,
@@ -517,7 +544,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       projectViewRef.current = next;
       return next;
     });
-  }, []);
+  }, [projectSlot]);
 
   const moveTile = React.useCallback((opts: MoveTileOpts) => {
     setProjectView((prev) => {
@@ -607,11 +634,12 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
   const addTerminal = React.useCallback((projectPath?: string, groupId?: string, at?: { x: number; y: number }): string => {
     const rawTarget = projectPath ?? projectViewRef.current.activeProject ?? undefined;
-    const targetProject = rawTarget ? normalizeProjectPath(rawTarget) : DEFAULT_PROJECT;
+    const startDir = rawTarget ? normalizeProjectPath(rawTarget) : '';
+    const targetProject = rawTarget ? projectRootPath(rawTarget) : DEFAULT_PROJECT;
     const realPath = targetProject === DEFAULT_PROJECT ? undefined : targetProject;
     const id = createId();
     const prevTiles = tilesRef.current;
-    const slot = at ?? nextTileSlot(prevTiles, TILE_WIDTH, TILE_HEIGHT);
+    const slot = at ?? projectSlot(realPath, TILE_WIDTH, TILE_HEIGHT);
     const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
     const tile: Tile = {
       id,
@@ -621,7 +649,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       width: TILE_WIDTH,
       height: TILE_HEIGHT,
       zIndex,
-      ...(realPath ? { cwd: realPath, workspacePath: realPath, autoTitle: realPath } : {})
+      ...(realPath ? { cwd: startDir, workspacePath: realPath, autoTitle: startDir } : {})
     };
     const nextTiles = [...prevTiles, tile];
     tilesRef.current = nextTiles;
@@ -648,7 +676,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     });
 
     return id;
-  }, []);
+  }, [projectSlot]);
 
   const addNote = React.useCallback((projectPath?: string, groupId?: string, at?: { x: number; y: number }): string => {
     const rawTarget = projectPath ?? projectViewRef.current.activeProject ?? undefined;
@@ -656,7 +684,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     const realPath = targetProject === DEFAULT_PROJECT ? undefined : targetProject;
     const id = createId();
     const prevTiles = tilesRef.current;
-    const slot = at ?? nextTileSlot(prevTiles, NOTE_WIDTH, NOTE_HEIGHT);
+    const slot = at ?? projectSlot(realPath, NOTE_WIDTH, NOTE_HEIGHT);
     const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
     const tile: Tile = {
       id,
@@ -695,11 +723,11 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     });
 
     return id;
-  }, []);
+  }, [projectSlot]);
 
   const placeFileTile = React.useCallback(
     (root: string, filePath: string, type: 'editor' | 'code', sideSplit?: boolean) => {
-      const normRoot = normalizeProjectPath(root) || projectViewRef.current.activeProject || '';
+      const normRoot = projectRootPath(root) || projectViewRef.current.activeProject || '';
       const existingTile = tilesRef.current.find((t) => {
         if (t.type !== type || t.filePath !== filePath) return false;
         if (type === 'code' && t.cwd) {
@@ -737,7 +765,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
       const id = createId();
       const prevTiles = tilesRef.current;
-      const slot = nextTileSlot(prevTiles, TILE_WIDTH, TILE_HEIGHT);
+      const slot = projectSlot(normRoot, TILE_WIDTH, TILE_HEIGHT);
       const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
       const newTile: Tile = {
         id,
@@ -782,7 +810,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         });
       }
     },
-    [activateTile]
+    [activateTile, projectSlot]
   );
 
   const openFile = React.useCallback(
@@ -811,9 +839,13 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const targetProj =
         (src ? tileProject(src, projectViewRef.current.projects) : null) ??
         projectViewRef.current.activeProject ??
-        normalizeProjectPath(cwd);
+        projectRootPath(cwd);
       const id = createId();
-      const slot = nextTileSlot(prevTiles, TILE_WIDTH, TILE_HEIGHT);
+      const width = src?.width ?? TILE_WIDTH;
+      const height = src?.height ?? TILE_HEIGHT;
+      const slot =
+        projectFrameSlot(targetProj || undefined, width, height) ??
+        (src ? { x: src.x + src.width, y: src.y } : nextTileSlot(prevTiles, width, height));
       const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
       const tile: Tile = {
         id,
@@ -823,10 +855,10 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         cwd,
         workspacePath: targetProj || undefined,
         autoTitle: cmd,
-        x: src ? src.x + src.width : slot.x,
-        y: src ? src.y : slot.y,
-        width: src?.width ?? TILE_WIDTH,
-        height: src?.height ?? TILE_HEIGHT,
+        x: slot.x,
+        y: slot.y,
+        width,
+        height,
         zIndex
       };
       const nextTiles = [...prevTiles, tile];
@@ -863,7 +895,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         });
       }
     },
-    [activateTile]
+    [activateTile, projectFrameSlot]
   );
 
   const closeTile = React.useCallback(

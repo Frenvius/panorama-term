@@ -23,6 +23,14 @@ export const normalizeProjectPath = (raw: string): string => {
   return trimmed.replace(/\/+$/, '');
 };
 
+const WORKTREE_SEGMENT = '/.claude/worktrees/';
+
+export const projectRootPath = (raw: string): string => {
+  const norm = normalizeProjectPath(raw);
+  const idx = norm.toLowerCase().indexOf(WORKTREE_SEGMENT);
+  return idx > 0 ? norm.slice(0, idx) : norm;
+};
+
 export const projectName = (projectPath: string): string => {
   const norm = normalizeProjectPath(projectPath);
   if (norm === DEFAULT_PROJECT) return 'Workspace';
@@ -45,7 +53,7 @@ export const tileProject = (tile: Tile, projects: string[]): string | null => {
   if (projects.length === 0) return null;
   const normalizedProjects = projects.map(normalizeProjectPath).filter(Boolean);
   if (tile.workspacePath) {
-    const wsNorm = normalizeProjectPath(tile.workspacePath).toLowerCase();
+    const wsNorm = projectRootPath(tile.workspacePath).toLowerCase();
     const exact = normalizedProjects.find((p) => p.toLowerCase() === wsNorm);
     if (exact) return exact;
   }
@@ -422,7 +430,7 @@ export const syncProjectViewWithTiles = (
 
   const addProject = (raw: string | undefined) => {
     if (!raw) return;
-    const norm = normalizeProjectPath(raw);
+    const norm = projectRootPath(raw);
     if (!norm) return;
     const key = norm.toLowerCase();
     if (seen.has(key)) return;

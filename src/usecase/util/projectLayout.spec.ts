@@ -9,6 +9,7 @@ import {
   closePanelGroup,
   splitPanelGroup,
   collectGroupIds,
+  projectRootPath,
   updateSplitRatio,
   tileMatchesProject,
   normalizeProjectPath,
@@ -36,6 +37,22 @@ describe('project path helpers', () => {
     expect(normalizeProjectPath('/Users/dev/project///')).toBe('/Users/dev/project');
     expect(normalizeProjectPath('/')).toBe('/');
     expect(normalizeProjectPath('   ')).toBe('');
+  });
+
+  test('projectRootPath maps a Claude worktree to its project root', () => {
+    expect(projectRootPath('D:\\repo\\.claude\\worktrees\\pelican')).toBe('D:/repo');
+    expect(projectRootPath('D:/repo/.claude/worktrees/pelican/src')).toBe('D:/repo');
+    expect(projectRootPath('D:/repo/.claude')).toBe('D:/repo/.claude');
+  });
+
+  test('worktree tiles belong to the root project', () => {
+    const tiles = [
+      makeTile('a', { workspacePath: 'D:/repo', cwd: 'D:/repo' }),
+      makeTile('b', { workspacePath: 'D:/repo/.claude/worktrees/pelican', cwd: 'D:/repo/.claude/worktrees/pelican' })
+    ];
+    const view = syncProjectViewWithTiles(undefined, tiles);
+    expect(view.projects).toEqual(['D:/repo']);
+    expect(tileProject(tiles[1], view.projects)).toBe('D:/repo');
   });
 
   test('projectName extracts folder basename', () => {
