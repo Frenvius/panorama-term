@@ -177,8 +177,20 @@ fn sidecar_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+fn remove_retired_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().contains(".old-") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn spawn_sidecar() {
     let bin = sidecar_bin();
+    if let Some(dir) = bin.parent() {
+        remove_retired_files(dir);
+    }
     if host_alive() {
         match outdated_host_pid(&bin) {
             Some(pid) => stop_host(pid),
