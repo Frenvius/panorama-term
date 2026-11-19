@@ -105,6 +105,71 @@
   animation: tabs-rise 140ms ease-out;
 }
 
+.panel {
+  height: 100%;
+  pointer-events: auto;
+
+  .row {
+    position: static;
+    height: 100%;
+    align-items: center;
+  }
+
+  .tab {
+    gap: 4px;
+    max-width: 160px;
+    height: 22px;
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 400;
+    color: color-mix(in srgb, var(--note-text) 70%, transparent);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    opacity: 1;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease;
+
+    &:hover {
+      color: var(--note-text);
+      background: color-mix(in srgb, var(--note-text) 8%, transparent);
+    }
+  }
+
+  .current {
+    font-weight: 600;
+    color: var(--note-text);
+    background: color-mix(in srgb, var(--note-text) 14%, transparent);
+    border-color: color-mix(in srgb, var(--note-text) 22%, transparent);
+  }
+
+  .add {
+    min-width: 22px;
+    padding: 0;
+  }
+
+  .close {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    opacity: 0.7;
+
+    &:hover {
+      color: var(--danger);
+      background: color-mix(in srgb, var(--note-text) 12%, transparent);
+      opacity: 1;
+    }
+  }
+
+  .armed,
+  .armed:hover {
+    color: #fff;
+    background: var(--danger);
+  }
+}
+
 @keyframes tabs-rise {
   from {
     opacity: 0.4;

@@ -15,10 +15,11 @@ interface NoteTabsProps {
   raised: boolean;
   actions: NoteTabActions;
   style: React.CSSProperties;
+  variant?: 'folder' | 'panel';
   tabs: { name: string; empty: boolean }[];
 }
 
-const NoteTabs = ({ tabs, current, raised, style, actions }: NoteTabsProps) => {
+const NoteTabs = ({ tabs, current, raised, style, actions, variant = 'folder' }: NoteTabsProps) => {
   const [editing, setEditing] = React.useState<number | null>(null);
   const [draft, setDraft] = React.useState('');
   const [armed, setArmed] = React.useState<number | null>(null);
@@ -55,8 +56,10 @@ const NoteTabs = ({ tabs, current, raised, style, actions }: NoteTabsProps) => {
 
   const disarm = () => setArmed(null);
 
+  const wrapClass = variant === 'panel' ? `${styles.wrap} ${styles.panel}` : raised ? `${styles.wrap} ${styles.raised}` : styles.wrap;
+
   return (
-    <div className={raised ? `${styles.wrap} ${styles.raised}` : styles.wrap} style={style}>
+    <div className={wrapClass} style={style}>
       <div className={styles.row} role="tablist" onPointerDown={stop}>
         {multi &&
           tabs.map((t, i) => (

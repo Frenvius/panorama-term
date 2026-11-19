@@ -417,14 +417,14 @@ const PanelToolbar = (props: PanelToolbarProps) => {
   const noteTabsStyle: React.CSSProperties = {
     position: 'relative',
     flex: 1,
-    minWidth: 120,
-    height: 24,
-    ['--note-body' as string]: tint?.body,
-    ['--note-text' as string]: tint?.text
+    minWidth: 120
   };
 
+  const toolbarClass = tint ? `${styles.toolbar} ${styles.noteToolbar}` : styles.toolbar;
+  const toolbarStyle = tint ? { ['--note-body' as string]: tint.body, ['--note-text' as string]: tint.text } : undefined;
+
   return (
-    <div className={styles.toolbar}>
+    <div className={toolbarClass} style={toolbarStyle}>
       {isTerm && (
         <>
           {(tile.runCwd || tile.cwd) && (
@@ -715,6 +715,7 @@ const PanelToolbar = (props: PanelToolbarProps) => {
           <NoteTabs
             current={noteTab}
             raised={true}
+            variant="panel"
             actions={noteTabActions}
             style={noteTabsStyle}
             tabs={sections.map((s) => ({ name: s.name, empty: !s.text.trim() }))}
@@ -742,7 +743,6 @@ const PanelToolbar = (props: PanelToolbarProps) => {
             onClick={handlers.onToggleRaw}
             aria-label={tile.renderOnly ? 'Show markdown on edit' : 'Rendered only'}
             data-tooltip={tile.renderOnly ? 'Rendered' : 'Live edit'}
-            style={tint ? { ['--note-body' as string]: tint.body, ['--note-text' as string]: tint.text } : undefined}
           >
             <span className={styles.rawGlyph}>M</span>
           </button>

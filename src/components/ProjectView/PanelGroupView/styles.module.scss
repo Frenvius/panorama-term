@@ -226,6 +226,29 @@
   border-bottom: 1px solid var(--border-1);
 }
 
+.noteToolbar {
+  color: var(--note-text);
+  background: var(--note-body);
+  border-bottom-color: color-mix(in srgb, var(--note-text) 18%, transparent);
+
+  .toolBtn {
+    color: color-mix(in srgb, var(--note-text) 75%, transparent);
+
+    &:hover {
+      color: var(--note-text);
+      background: color-mix(in srgb, var(--note-text) 12%, transparent);
+    }
+  }
+
+  .colorDot {
+    border-color: color-mix(in srgb, var(--note-text) 35%, transparent);
+  }
+
+  .colorDotActive {
+    box-shadow: 0 0 0 2px var(--note-text);
+  }
+}
+
 .toolbarSpacer {
   flex: 1;
 }
