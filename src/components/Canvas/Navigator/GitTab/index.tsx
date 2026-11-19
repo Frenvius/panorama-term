@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import React from 'react';
 import {
   Eye,
@@ -648,7 +649,8 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
       {
         label: 'Show in Explorer',
         icon: <FolderOpen size={15} strokeWidth={1.75} />,
-        onSelect: () => revealPath(absDir(file))
+        onSelect: () => revealPath(absDir(file)),
+        disabled: isRemote()
       },
       'separator',
       gitEntry(repo, [rel])

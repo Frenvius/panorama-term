@@ -1,3 +1,5 @@
+#[path = "../../sidecar-rs/src/config_dir.rs"]
+mod config_dir;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -5,8 +7,10 @@ use std::time::Duration;
 
 use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub mod remote;
+pub mod service_bridge;
 mod git;
-mod store;
+pub mod store;
 mod docker;
 mod notes;
 mod plugins;
@@ -58,20 +62,36 @@ where
 
 const SIDECAR_PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
 const HOST_PORT: u16 = if cfg!(debug_assertions) { 9878 } else { 9778 };
+fn configured_port(value: Option<&str>, default: u16) -> u16 {
+    value.and_then(|v| v.parse::<u16>().ok()).filter(|p| *p != 0).unwrap_or(default)
+}
+
+fn sidecar_port() -> u16 {
+    configured_port(std::env::var("PANORAMA_SIDECAR_PORT").ok().as_deref(), SIDECAR_PORT)
+}
+
+fn host_port() -> u16 {
+    configured_port(std::env::var("PANORAMA_HOST_PORT").ok().as_deref(), HOST_PORT)
+}
+
+use remote::{
+    local_sidecar_endpoint, remote_bootstrap, remote_connect, remote_disconnect, remote_forget,
+    remote_invoke, remote_invoke_bytes, remote_pair, remote_status, sidecar_endpoint,
+};
 const NOTIF_WIDTH: f64 = 448.0;
 // The overlay swallows clicks even on transparent pixels, so it must not cover the main
 // window's 24px status bar.
 const NOTIF_BOTTOM_GAP: f64 = 24.0;
 
 fn host_alive() -> bool {
-    let addr = format!("127.0.0.1:{HOST_PORT}").parse().unwrap();
+    let addr = format!("127.0.0.1:{}", host_port()).parse().unwrap();
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
 // the host never runs from the installed binary, so an update can replace it without killing live PTYs
 fn host_bin(brain: &Path) -> PathBuf {
     let dir_name = if cfg!(debug_assertions) { "panorama-host-dev" } else { "panorama-host" };
-    let dir = std::env::temp_dir().join(dir_name);
+    let dir = std::env::temp_dir().join(host_dir_name(dir_name, std::env::var("PANORAMA_HOST_PORT").ok().as_deref()));
     if std::fs::create_dir_all(&dir).is_err() {
         return brain.to_path_buf();
     }
@@ -84,6 +104,13 @@ fn host_bin(brain: &Path) -> PathBuf {
         std::thread::sleep(Duration::from_millis(100));
     }
     brain.to_path_buf()
+}
+
+fn host_dir_name(default: &str, port: Option<&str>) -> String {
+    match port.and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0) {
+        Some(port) => format!("{default}-{port}"),
+        None => default.to_string(),
+    }
 }
 
 // portable-pty loads conpty.dll from the host exe's own directory, and conpty.dll starts the
@@ -102,6 +129,9 @@ fn copy_conpty(brain: &Path, dir: &Path) {
 }
 
 fn host_record() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PANORAMA_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("host.json"));
+    }
     let name = if cfg!(debug_assertions) { ".panorama-dev" } else { ".panorama" };
     Some(dirs::home_dir()?.join(name).join("host.json"))
 }
@@ -164,8 +194,8 @@ fn spawn_sidecar() {
         let mut cmd = Command::new(&host);
         cmd.arg("host")
             .env("PANORAMA_BRAIN_BIN", &bin)
-            .env("PANORAMA_HOST_PORT", HOST_PORT.to_string())
-            .env("PANORAMA_SIDECAR_PORT", SIDECAR_PORT.to_string())
+            .env("PANORAMA_HOST_PORT", host_port().to_string())
+            .env("PANORAMA_SIDECAR_PORT", sidecar_port().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -210,16 +240,15 @@ fn write_temp_image(request: tauri::ipc::Request<'_>) -> Result<String, String> 
         .get("x-image-name")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let safe: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        .collect();
-    if safe.is_empty() {
-        return Err("invalid file name".into());
-    }
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected raw image body".into());
     };
+    save_temp_image(name, bytes)
+}
+
+fn save_temp_image(name: &str, bytes: &[u8]) -> Result<String, String> {
+    let safe: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
+    if safe.is_empty() || safe != name || safe == "." || safe == ".." || bytes.len() > 5 * 1024 * 1024 { return Err("invalid image".into()); }
     let path = std::env::temp_dir().join("panorama-paste").join(safe);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -232,7 +261,7 @@ fn write_temp_image(request: tauri::ipc::Request<'_>) -> Result<String, String> 
 fn read_temp_image(path: String) -> Result<tauri::ipc::Response, String> {
     let base = std::env::temp_dir().join("panorama-paste");
     let target = PathBuf::from(&path);
-    if !target.starts_with(&base) {
+    if target.parent() != Some(base.as_path()) {
         return Err("path not allowed".into());
     }
     let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
@@ -857,12 +886,18 @@ pub fn run() {
         );
     }
 
+    let mut context = tauri::generate_context!();
+    if let Ok(id) = std::env::var("PANORAMA_INSTANCE_ID") {
+        context.config_mut().identifier = id;
+    }
     builder
         .setup(|app| {
             if let Err(err) = store::init() {
                 eprintln!("[store] init failed: {err}");
             }
+            store::set_app(app.handle().clone());
             spawn_sidecar();
+            service_bridge::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             if let Some(main) = app.get_webview_window("main") {
                 compact_traffic_lights(main.ns_window());
@@ -887,6 +922,16 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            sidecar_endpoint,
+            local_sidecar_endpoint,
+            remote_bootstrap,
+            remote_pair,
+            remote_connect,
+            remote_disconnect,
+            remote_forget,
+            remote_status,
+            remote_invoke,
+            remote_invoke_bytes,
             write_temp_image,
             read_temp_image,
             has_clipboard_image,
@@ -965,6 +1010,22 @@ pub fn run() {
             ide::detect_ides,
             ide::open_in_ide
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+    #[test]
+    fn ports_use_defaults_and_overrides() {
+        assert_eq!(configured_port(None, SIDECAR_PORT), if cfg!(debug_assertions) { 9877 } else { 9777 });
+        assert_eq!(configured_port(None, HOST_PORT), if cfg!(debug_assertions) { 9878 } else { 9778 });
+        assert_eq!(configured_port(Some("19877"), SIDECAR_PORT), 19877);
+        assert_eq!(configured_port(Some("bad"), HOST_PORT), HOST_PORT);
+        assert_eq!(configured_port(Some("0"), HOST_PORT), HOST_PORT);
+        assert_eq!(host_dir_name("panorama-host-dev", None), "panorama-host-dev");
+        assert_eq!(host_dir_name("panorama-host-dev", Some("19878")), "panorama-host-dev-19878");
+        assert_eq!(host_dir_name("panorama-host-dev", Some("bad")), "panorama-host-dev");
+    }
 }

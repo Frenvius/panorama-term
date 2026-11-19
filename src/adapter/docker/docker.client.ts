@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '~/adapter/transport';
 
 import type { DockerAction, DockerContainer } from '~/domain/interfaces/docker.interface';
 

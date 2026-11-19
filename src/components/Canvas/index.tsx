@@ -151,7 +151,7 @@ const Canvas = () => {
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown
-  } = useCanvas({ seed: activeState, wsId: activeId, onPersist: saveActiveState });
+  } = useCanvas({ seed: activeState, wsId: activeId, tabId: activeTabId, onPersist: saveActiveState });
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);

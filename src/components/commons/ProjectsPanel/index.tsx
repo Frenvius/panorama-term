@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
@@ -618,7 +619,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
     {
       label: 'Reveal in explorer',
       icon: <FolderOpen size={15} strokeWidth={1.75} />,
-      disabled: !tile.cwd,
+      disabled: !tile.cwd || isRemote(),
       onSelect: () => { if (tile.cwd) revealPath(tile.cwd); }
     },
     {

@@ -3,6 +3,22 @@ export interface Cell {
   col: number;
 }
 
+export const cellAtPoint = (
+  x: number,
+  y: number,
+  scaleX: number,
+  scaleY: number,
+  cellW: number,
+  cellH: number,
+  cols: number,
+  rows: number,
+  shiftRows: number
+): Cell => {
+  const col = Math.floor(x / scaleX / cellW);
+  const row = Math.floor(y / scaleY / cellH) + shiftRows;
+  return { col: Math.max(0, Math.min(cols - 1, col)), row: Math.max(0, Math.min(rows - 1, row)) };
+};
+
 export interface Selection {
   a: Cell;
   b: Cell;

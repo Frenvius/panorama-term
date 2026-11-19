@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import React from 'react';
 import { listen } from '@tauri-apps/api/event';
 
@@ -16,6 +17,7 @@ import { computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap'
 import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
+import { shouldPersist, listenPointerInteraction } from '~/usecase/util/storeSync';
 import {
   CELL,
   SNAP_PX,
@@ -89,13 +91,23 @@ const EMPTY: RuntimeCanvas = { tiles: [], frames: [], view: { x: 0, y: 0, k: 1 }
 interface UseCanvasArgs {
   seed: CanvasState | null;
   wsId: string | null;
+  tabId: string | null;
   onPersist: (state: CanvasState) => void;
 }
 
-export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
+export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const wsIdRef = React.useRef(wsId);
   wsIdRef.current = wsId;
+  const viewKey = `panorama:view:${wsId}/${tabId}`;
   const initial = React.useRef(seed ? toRuntime(seed) : EMPTY);
+  const savedView = React.useRef(false);
+  if (isRemote() && !savedView.current) {
+    savedView.current = true;
+    try {
+      const viewport = JSON.parse(getPref(viewKey) || 'null');
+      if (viewport && seed) initial.current = toRuntime({ ...seed, viewport });
+    } catch {}
+  }
   const [frames, setFrames] = React.useState<Frame[]>(initial.current.frames);
   const [tiles, setTiles] = React.useState<Tile[]>(initial.current.tiles);
   const [view, setView] = React.useState<View>(initial.current.view);
@@ -129,38 +141,72 @@ export const useCanvas = ({ seed, wsId, onPersist }: UseCanvasArgs) => {
   const lastTermSize = React.useRef<{ width: number; height: number } | null>(null);
   const mouseRef = React.useRef<{ x: number; y: number } | null>(null);
 
+  const [interacting, setInteracting] = React.useState(false);
+  React.useEffect(() => {
+    const down = (event: PointerEvent) => {
+      if (event.target instanceof Node && bgRef.current?.contains(event.target)) setInteracting(true);
+    };
+    return listenPointerInteraction(window, down, () => setInteracting(false));
+  }, []);
+
+  const applied = React.useRef({ tiles, frames });
+  React.useEffect(() => {
+    if (!seed) return;
+    const next = toRuntime(seed);
+    applied.current = { tiles: next.tiles, frames: next.frames };
+    initial.current = { ...initial.current, projectView: next.projectView };
+    setTiles(next.tiles);
+    setFrames(next.frames);
+  }, [seed]);
+
+  React.useEffect(
+    () => () => {
+      if (isRemote()) {
+        const viewport = toStored({ tiles: [], frames: [], view: viewRef.current }).viewport;
+        setPref(viewKey, JSON.stringify(viewport));
+      }
+    },
+    [viewKey]
+  );
+
+  React.useEffect(() => {
+    if (!isRemote()) return;
+    const id = setTimeout(() => {
+      const viewport = toStored({ tiles: [], frames: [], view }).viewport;
+      setPref(viewKey, JSON.stringify(viewport));
+    }, 400);
+    return () => clearTimeout(id);
+  }, [view, viewKey]);
+
   const onPersistRef = React.useRef(onPersist);
   onPersistRef.current = onPersist;
   const pendingSaveRef = React.useRef(false);
 
+  const persistNow = () => {
+    pendingSaveRef.current = false;
+    applied.current = { tiles: tilesRef.current, frames: framesRef.current };
+    onPersistRef.current(
+      toStored({
+        tiles: tilesRef.current,
+        view: viewRef.current,
+        frames: framesRef.current,
+        projectView: initial.current.projectView
+      })
+    );
+  };
+  const persistNowRef = React.useRef(persistNow);
+  persistNowRef.current = persistNow;
+
   React.useEffect(() => {
+    if (interacting || !shouldPersist(applied.current, { tiles, frames }, isRemote())) return;
     pendingSaveRef.current = true;
-    const id = setTimeout(() => {
-      pendingSaveRef.current = false;
-      onPersistRef.current(
-        toStored({
-          tiles: tilesRef.current,
-          view: viewRef.current,
-          frames: framesRef.current,
-          projectView: initial.current.projectView
-        })
-      );
-    }, 400);
+    const id = setTimeout(() => persistNowRef.current(), 400);
     return () => clearTimeout(id);
-  }, [tiles, view, frames]);
+  }, [tiles, view, frames, interacting]);
 
   React.useEffect(
     () => () => {
-      if (!pendingSaveRef.current) return;
-      pendingSaveRef.current = false;
-      onPersistRef.current(
-        toStored({
-          tiles: tilesRef.current,
-          view: viewRef.current,
-          frames: framesRef.current,
-          projectView: initial.current.projectView
-        })
-      );
+      if (pendingSaveRef.current) persistNowRef.current();
     },
     []
   );

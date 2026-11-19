@@ -1,6 +1,23 @@
 import { expect, test } from 'bun:test';
 
-import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
+import { cellAtPoint, urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
+
+test('cellAtPoint uses drawn cell dimensions, including with leftover box space', () => {
+  expect(cellAtPoint(81, 61, 1, 1, 10, 15, 10, 6, 0)).toEqual({ row: 4, col: 8 });
+});
+
+test('cellAtPoint accounts for zoom on both axes', () => {
+  for (const scale of [0.5, 2]) {
+    expect(cellAtPoint(81 * scale, 61 * scale, scale, scale, 10, 15, 10, 6, 0)).toEqual({ row: 4, col: 8 });
+  }
+  expect(cellAtPoint(40.5, 122, 0.5, 2, 10, 15, 10, 6, 0)).toEqual({ row: 4, col: 8 });
+});
+
+test('cellAtPoint applies the row shift and clamps to the frame', () => {
+  expect(cellAtPoint(21, 16, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 3, col: 2 });
+  expect(cellAtPoint(-10, -100, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 0, col: 0 });
+  expect(cellAtPoint(500, 500, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 5, col: 9 });
+});
 
 const lines = ['hello world   ', 'foo bar', 'last line here'];
 

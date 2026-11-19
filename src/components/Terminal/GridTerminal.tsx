@@ -1,6 +1,7 @@
 import React from 'react';
 
 import AgentBar from '~/components/Terminal/AgentBar';
+import { TERM_ROW_PX } from '~/components/Terminal/AgentBar/cover';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import ResumePanel from '~/components/Terminal/ResumePanel';
 import { termMetrics } from '~/usecase/util/fonts';
@@ -20,7 +21,7 @@ import { emitPromptRestore } from '~/usecase/util/promptRestore';
 import { reportAgentEvent, reportShellLines } from '~/usecase/util/tileActivity';
 import { notifyClaude, clearNotify } from '~/components/commons/Notifications/bridge';
 import { openUrl } from '~/adapter/shell/shell.client';
-import { urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
+import { cellAtPoint, urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
 import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, sendPtyVisible, openPtyConnection, sendPtyDismissAgent } from '~/adapter/pty/pty.client';
 
@@ -54,7 +55,7 @@ interface ResumeTarget {
   agent: string;
 }
 
-const CELL_H = 15;
+const CELL_H = TERM_ROW_PX;
 const WHEEL_LINE_PX = 100 / 3;
 const PAINT_MS = 60;
 const CLICK_MS = 400;
@@ -222,6 +223,14 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const termRef = React.useRef<HTMLDivElement>(null);
   const rowsRefEl = React.useRef<HTMLDivElement>(null);
   const overlayRef = React.useRef<HTMLDivElement>(null);
+  const shiftRowsRef = React.useRef(0);
+  const shiftRows = React.useCallback((rows: number) => {
+    shiftRowsRef.current = rows;
+    const transform = rows ? `translateY(-${rows * CELL_H}px)` : '';
+    for (const el of [rowsRefEl.current, overlayRef.current, cursorRef.current]) {
+      if (el) el.style.transform = transform;
+    }
+  }, []);
   const cursorRef = React.useRef<HTMLDivElement>(null);
   const rowCacheRef = React.useRef<string[]>([]);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
@@ -587,10 +596,18 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     const frame = frameRef.current;
     if (!el || !frame) return null;
     const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null;
-    const col = Math.floor(((e.clientX - rect.left) / rect.width) * frame.cols);
-    const row = Math.floor(((e.clientY - rect.top) / rect.height) * frame.rows);
-    return { col: Math.max(0, Math.min(frame.cols - 1, col)), row: Math.max(0, Math.min(frame.rows - 1, row)) };
+    if (rect.width === 0 || rect.height === 0 || el.offsetWidth === 0 || el.offsetHeight === 0) return null;
+    return cellAtPoint(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      rect.width / el.offsetWidth,
+      rect.height / el.offsetHeight,
+      termMetrics.cellW,
+      CELL_H,
+      frame.cols,
+      frame.rows,
+      shiftRowsRef.current
+    );
   };
 
   const selectedText = (): string => {
@@ -917,6 +934,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             getStructured={getStructured}
             focusTerminal={focusTerminal}
             onAgentActive={onAgentActive}
+            onShiftRows={shiftRows}
           />
         </div>
       )}

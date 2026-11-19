@@ -21,6 +21,7 @@ import { cloneDraft, removeChip, EMPTY_DRAFT, partsToDraft, draftToParts, isDraf
 
 import type { AgentSlashCommand } from './constants';
 import type { AgentModel, ClaudeState, AgentCommand, CatalogModel } from '~/domain/interfaces/pty.interface';
+import { coverLayout } from './cover';
 import type { ContentPart, ParsedStatus, SuggestTrigger, AgentBarProps, PromptSuggestion, AgentSuggestHandle } from './types';
 
 import styles from './styles.module.scss';
@@ -60,14 +61,6 @@ const claudeModels = (options?: string[]) =>
 const sameStatus = (a: ParsedStatus, b: ParsedStatus): boolean =>
   a.mode === b.mode && a.model === b.model && a.effort === b.effort && a.focused === b.focused && a.progress === b.progress && a.contextInfo === b.contextInfo;
 
-const TERM_ROW_PX = 15;
-const TERM_TOP_INSET_PX = 4;
-const BAR_BOTTOM_INSET_PX = 4;
-
-const coverStyle = (inputTop: number | null): React.CSSProperties => ({
-  minHeight: inputTop === null ? '0px' : `calc(100% - ${TERM_TOP_INSET_PX + BAR_BOTTOM_INSET_PX + inputTop * TERM_ROW_PX}px)`
-});
-
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const progressColor = (p: number): string =>
@@ -106,7 +99,7 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   return out;
 };
 
-const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive }: AgentBarProps) => {
+const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive, onShiftRows }: AgentBarProps) => {
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
@@ -125,6 +118,11 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const [preview, setPreview] = React.useState<string | null>(null);
   const [spentSuggestion, setSpentSuggestion] = React.useState('');
   const [inputTop, setInputTop] = React.useState<number | null>(null);
+
+  const barRef = React.useRef<HTMLDivElement>(null);
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const [coverSize, setCoverSize] = React.useState({ tile: 0, natural: 0 });
+  const [gridRows, setGridRows] = React.useState(0);
 
   const editorRef = React.useRef<HTMLDivElement>(null);
   const modelRef = React.useRef<HTMLDivElement>(null);
@@ -323,6 +321,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
       }
       if (!seenRef.current) return;
 
+      setGridRows(lines.length);
       setInputTop(inputTopRow(lines));
       const footer = readFooter(lines);
       const nextStatus = currentType === 'codex' || liveState?.agent === 'codex' || detectAgentIdentity(bufferText) === 'codex'
@@ -1170,7 +1169,37 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const meta = getAgentMetadata();
   const subagents = agentType === 'claude' ? structured?.subagents ?? [] : [];
   const viewing = agentType === 'claude' ? structured?.viewing ?? '' : '';
-  const barStyle = hidden ? { display: 'none' } : coverStyle(subagents.length > 0 ? inputTop : null);
+  const visibleBar = !!agentType && agentType !== 'opencode' && !hidden;
+  const cover = coverLayout(coverSize.tile, coverSize.natural, gridRows, inputTop);
+  const shiftRows = visibleBar ? cover.shiftRows : 0;
+
+  React.useLayoutEffect(() => {
+    const bar = barRef.current;
+    const content = contentRef.current;
+    const tile = bar?.parentElement;
+    if (!visibleBar || !bar || !content || !tile) return;
+    // Layout sizes (offsetHeight), not getBoundingClientRect: tiles are scaled by the canvas zoom,
+    // while the terminal rows (TERM_ROW_PX) are counted in unscaled pixels.
+    const measure = () => {
+      const style = getComputedStyle(bar);
+      const natural = content.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+      const height = tile.offsetHeight;
+      setCoverSize((prev) => prev.tile === height && prev.natural === natural ? prev : { tile: height, natural });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    observer.observe(tile);
+    measure();
+    return () => observer.disconnect();
+  }, [visibleBar]);
+
+  React.useLayoutEffect(() => {
+    onShiftRows?.(shiftRows);
+  }, [onShiftRows, shiftRows]);
+
+  React.useEffect(() => () => onShiftRows?.(0), [onShiftRows]);
+
+  const barStyle = hidden ? { display: 'none' } : { minHeight: cover.minHeightPx ?? undefined };
 
   if (!agentType || agentType === 'opencode') return null;
 
@@ -1182,158 +1211,161 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
         </button>
       )}
       <div
+        ref={barRef}
         className={styles.bar}
         data-agent={agentType}
         style={barStyle}
         onClick={focusEditor}
       >
-        <div className={styles.row}>
-          <div className={styles.logo} aria-hidden="true">
-            {meta.logo}
-          </div>
-          <div
-            ref={editorRef}
-            role="textbox"
-            contentEditable
-            spellCheck={false}
-            aria-multiline="true"
-            aria-label="Prompt input"
-            className={styles.editor}
-            suppressContentEditableWarning
-            data-placeholder={ghost || meta.placeholder}
-            data-empty={isEmpty ? 'true' : undefined}
-            onInput={handleInput}
-            onPaste={handlePaste}
-            onClick={handleEditorClick}
-            onKeyDown={onKeyDown}
-          />
-          {(agentType === 'pi' || agentType === 'kimi') && (
-            <PiActions
-              models={piModels}
-              model={structured?.model ?? parsed.model}
-              effort={effort}
-              efforts={structured?.efforts}
-              contextWindow={structured?.contextWindow}
-              onPick={agentType === 'kimi' ? kimiPick : piPick}
+        <div ref={contentRef} className={styles.content}>
+          <div className={styles.row}>
+            <div className={styles.logo} aria-hidden="true">
+              {meta.logo}
+            </div>
+            <div
+              ref={editorRef}
+              role="textbox"
+              contentEditable
+              spellCheck={false}
+              aria-multiline="true"
+              aria-label="Prompt input"
+              className={styles.editor}
+              suppressContentEditableWarning
+              data-placeholder={ghost || meta.placeholder}
+              data-empty={isEmpty ? 'true' : undefined}
+              onInput={handleInput}
+              onPaste={handlePaste}
+              onClick={handleEditorClick}
+              onKeyDown={onKeyDown}
             />
-          )}
-          {agentType === 'claude' && (
-            <div className={styles.actions}>
-              {efforts.length > 0 && (
-                <div className={styles.action} ref={effortRef}>
-                  <button
-                    type="button"
-                    title={effort ? `Effort: ${effort}` : 'Set effort'}
-                    className={styles.effort}
-                    style={effortColor ? { color: effortColor } : undefined}
-                    onClick={toggleEffortMenu}
-                  >
-                    <Brain size={14} />
+            {(agentType === 'pi' || agentType === 'kimi') && (
+              <PiActions
+                models={piModels}
+                model={structured?.model ?? parsed.model}
+                effort={effort}
+                efforts={structured?.efforts}
+                contextWindow={structured?.contextWindow}
+                onPick={agentType === 'kimi' ? kimiPick : piPick}
+              />
+            )}
+            {agentType === 'claude' && (
+              <div className={styles.actions}>
+                {efforts.length > 0 && (
+                  <div className={styles.action} ref={effortRef}>
+                    <button
+                      type="button"
+                      title={effort ? `Effort: ${effort}` : 'Set effort'}
+                      className={styles.effort}
+                      style={effortColor ? { color: effortColor } : undefined}
+                      onClick={toggleEffortMenu}
+                    >
+                      <Brain size={14} />
+                    </button>
+                    {effortMenu && (
+                      <div className={styles.menu}>
+                        {efforts.map((l) => (
+                          <button
+                            key={l.id}
+                            type="button"
+                            style={{ color: l.color }}
+                            onClick={pickEffort(l.id)}
+                            className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
+                          >
+                            {l.id}
+                            <span className={styles.menuSub}>{effortDesc(l, currentEntry)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className={styles.action} ref={modelRef}>
+                  <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
+                    {modelLabel(currentEntry, is1M)}
+                    <ChevronDown size={11} />
                   </button>
-                  {effortMenu && (
-                    <div className={styles.menu}>
-                      {efforts.map((l) => (
-                        <button
-                          key={l.id}
-                          type="button"
-                          style={{ color: l.color }}
-                          onClick={pickEffort(l.id)}
-                          className={l.id === effort ? `${styles.menuItem} ${styles.menuActive}` : styles.menuItem}
-                        >
-                          {l.id}
-                          <span className={styles.menuSub}>{effortDesc(l, currentEntry)}</span>
-                        </button>
-                      ))}
-                    </div>
+                  {modelMenu && (
+                    <ModelMenu catalog={modelCatalog} current={currentModelId} onFast={toggleFast} onPick={pickModel} />
                   )}
                 </div>
-              )}
-              <div className={styles.action} ref={modelRef}>
-                <button type="button" className={styles.model} title="Switch model" onClick={toggleModelMenu}>
-                  {modelLabel(currentEntry, is1M)}
-                  <ChevronDown size={11} />
-                </button>
-                {modelMenu && (
-                  <ModelMenu catalog={modelCatalog} current={currentModelId} onFast={toggleFast} onPick={pickModel} />
-                )}
               </div>
+            )}
+          </div>
+          <div className={styles.hints}>
+            {pending > 0
+              ? pending > 1
+                ? `Sending prompt... ${pending - 1} queued`
+                : 'Sending prompt...'
+              : suggest
+                ? 'Enter select & send - Tab complete - Esc close'
+                : ghost
+                  ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
+                  : 'Enter send - Shift+Enter newline - Tab terminal'}
+          </div>
+          {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
+          {shells.length > 0 && <Shells open={shellsOpen} shells={shells} />}
+          {hasStatus && (
+            <div className={styles.footer}>
+              {parsed.mode && (
+                <span className={`${styles.chip} ${styles.chipMode} ${MODE_CLASS[modeKey(parsed.mode)]}`}>
+                  <Sparkles size={10} />
+                  <span className={styles.chipLabel}>{parsed.mode}</span>
+                </span>
+              )}
+              {parsed.model && (
+                <span className={styles.chip}>
+                  <span className={styles.chipLabel}>{parsed.model}</span>
+                  {parsed.contextInfo && <span className={styles.chipSub}>{parsed.contextInfo}</span>}
+                </span>
+              )}
+              {effort && (
+                <span className={styles.chip} style={effortColor ? { color: effortColor } : undefined}>
+                  <Brain size={9} />
+                  <span className={styles.chipLabel}>{effort}</span>
+                </span>
+              )}
+              {parsed.focused && (
+                <span className={`${styles.chip} ${styles.chipFocus}`}>
+                  <span className={styles.dot} />
+                  <span className={styles.chipLabel}>focus</span>
+                </span>
+              )}
+              {shells.length > 0 && (
+                <button
+                  type="button"
+                  data-shells
+                  aria-pressed={shellsOpen}
+                  className={`${styles.chip} ${styles.chipShells}`}
+                  title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
+                  onClick={toggleShells}
+                >
+                  <span className={styles.shellDot} />
+                  <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
+                </button>
+              )}
+              {(parsed.progress != null || structured?.costUsd != null) && (
+                <span className={styles.meter}>
+                  {structured?.costUsd != null && (
+                    <span className={`${styles.chip} ${styles.cost}`}>
+                      <span className={styles.chipLabel}>{formatCost(structured.costUsd)}</span>
+                    </span>
+                  )}
+                  {parsed.progress != null && (
+                    <>
+                      <span className={styles.track}>
+                        <span
+                          className={styles.fill}
+                          style={{ width: `${Math.min(100, Math.max(0, parsed.progress))}%`, background: progressColor(parsed.progress) }}
+                        />
+                      </span>
+                      <span className={styles.progressLabel}>{parsed.progress}%</span>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           )}
         </div>
-        <div className={styles.hints}>
-          {pending > 0
-            ? pending > 1
-              ? `Sending prompt... ${pending - 1} queued`
-              : 'Sending prompt...'
-            : suggest
-              ? 'Enter select & send - Tab complete - Esc close'
-              : ghost
-                ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
-                : 'Enter send - Shift+Enter newline - Tab terminal'}
-        </div>
-        {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
-        {shells.length > 0 && <Shells open={shellsOpen} shells={shells} />}
-        {hasStatus && (
-          <div className={styles.footer}>
-            {parsed.mode && (
-              <span className={`${styles.chip} ${styles.chipMode} ${MODE_CLASS[modeKey(parsed.mode)]}`}>
-                <Sparkles size={10} />
-                <span className={styles.chipLabel}>{parsed.mode}</span>
-              </span>
-            )}
-            {parsed.model && (
-              <span className={styles.chip}>
-                <span className={styles.chipLabel}>{parsed.model}</span>
-                {parsed.contextInfo && <span className={styles.chipSub}>{parsed.contextInfo}</span>}
-              </span>
-            )}
-            {effort && (
-              <span className={styles.chip} style={effortColor ? { color: effortColor } : undefined}>
-                <Brain size={9} />
-                <span className={styles.chipLabel}>{effort}</span>
-              </span>
-            )}
-            {parsed.focused && (
-              <span className={`${styles.chip} ${styles.chipFocus}`}>
-                <span className={styles.dot} />
-                <span className={styles.chipLabel}>focus</span>
-              </span>
-            )}
-            {shells.length > 0 && (
-              <button
-                type="button"
-                data-shells
-                aria-pressed={shellsOpen}
-                className={`${styles.chip} ${styles.chipShells}`}
-                title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
-                onClick={toggleShells}
-              >
-                <span className={styles.shellDot} />
-                <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
-              </button>
-            )}
-            {(parsed.progress != null || structured?.costUsd != null) && (
-              <span className={styles.meter}>
-                {structured?.costUsd != null && (
-                  <span className={`${styles.chip} ${styles.cost}`}>
-                    <span className={styles.chipLabel}>{formatCost(structured.costUsd)}</span>
-                  </span>
-                )}
-                {parsed.progress != null && (
-                  <>
-                    <span className={styles.track}>
-                      <span
-                        className={styles.fill}
-                        style={{ width: `${Math.min(100, Math.max(0, parsed.progress))}%`, background: progressColor(parsed.progress) }}
-                      />
-                    </span>
-                    <span className={styles.progressLabel}>{parsed.progress}%</span>
-                  </>
-                )}
-              </span>
-            )}
-          </div>
-        )}
         {suggest && (
           <Suggest
             ref={suggestRef}

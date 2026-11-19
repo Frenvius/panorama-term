@@ -19,7 +19,7 @@ export const useMobileAccess = () => {
   const [pairing, setPairing] = React.useState<MobilePairing | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
-  const track = React.useCallback(<T,>(task: Promise<T>, apply: (value: T) => void) => {
+  const track = React.useCallback(<T>(task: Promise<T>, apply: (value: T) => void) => {
     task
       .then((value) => {
         setError(null);
@@ -68,8 +68,8 @@ export const useMobileAccess = () => {
     track(setMobileEnabled(!state.enabled), setState);
   };
 
-  const pair = () => {
-    track(startMobilePairing(), (next) => {
+  const pair = (desktop = false) => {
+    track(startMobilePairing(desktop), (next) => {
       setPairing(next);
       track(fetchMobileState(), setState);
     });

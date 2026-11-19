@@ -40,7 +40,6 @@ $accent: #d97757;
   display: flex;
   cursor: default;
   flex-direction: column;
-  gap: 2px;
   padding: 6px 8px 5px;
   color: var(--text-1);
   background: var(--surface-2);
@@ -53,6 +52,12 @@ $accent: #d97757;
     padding-top: 8px;
     padding-bottom: 7px;
   }
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .row {

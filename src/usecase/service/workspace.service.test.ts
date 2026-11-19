@@ -40,6 +40,27 @@ test('concurrent tab save and tab switch keep both writes and never cross tabs',
   expect((await workspaceService.loadTabState(wsId, tab2.id))!.tiles).toHaveLength(0);
 });
 
+test('invalidating a changed workspace reloads the new snapshot', async () => {
+  const { activeId } = await workspaceService.list();
+  const key = `workspaces/${activeId}.json`;
+  const file = clone(db.get(key)) as { meta: { name: string } };
+  file.meta.name = 'Changed remotely';
+  db.set(key, file);
+  expect((await workspaceService.list()).workspaces[0]!.name).not.toBe('Changed remotely');
+  await workspaceService.invalidate([key]);
+  expect((await workspaceService.list()).workspaces[0]!.name).toBe('Changed remotely');
+});
+
+test('resync invalidates every cached workspace', async () => {
+  const { activeId } = await workspaceService.list();
+  const key = `workspaces/${activeId}.json`;
+  const file = clone(db.get(key)) as { meta: { name: string } };
+  file.meta.name = 'After resync';
+  db.set(key, file);
+  await workspaceService.invalidate(['*']);
+  expect((await workspaceService.list()).workspaces[0]!.name).toBe('After resync');
+});
+
 test('createTab with project mode and setTabMode persist across reloads', async () => {
   const { activeId } = await workspaceService.list();
   const wsId = activeId!;

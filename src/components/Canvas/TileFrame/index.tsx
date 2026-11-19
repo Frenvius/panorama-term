@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
 import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
@@ -554,6 +555,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ? { label: 'No IDEs found', icon: <Code2 size={15} strokeWidth={1.75} />, disabled: true }
     : {
         label: 'Open in IDE',
+        disabled: isRemote(),
         icon: <Code2 size={15} strokeWidth={1.75} />,
         submenu: ides.map((ide) => ({
           label: ide.recommended ? `${ide.label}  (recommended)` : ide.label,
@@ -635,7 +637,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
         pinItem,
         'separator',
         { label: 'Copy title', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyTitle },
-        { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: reveal, disabled: !tile.cwd },
+        { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: reveal, disabled: !tile.cwd || isRemote() },
         { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: copyPath, disabled: !tile.cwd },
         ideItem,
         'separator',

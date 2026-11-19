@@ -1,3 +1,4 @@
+import React from 'react';
 import { X } from 'lucide-react';
 
 import QrCode from '~/components/commons/QrCode';
@@ -14,12 +15,13 @@ const minutesLeft = (expiresAt: number): number => Math.max(1, Math.ceil((expire
 
 const MobileSection = () => {
   const { state, pairing, error, toggleEnabled, toggleRemote, pair, cancelPairing, revoke } = useMobileAccess();
+  const [desktop, setDesktop] = React.useState(false);
 
   return (
     <div className={settingsStyles.pane}>
       <div className={settingsStyles.paneHead}>
         <h2 className={settingsStyles.title}>Mobile</h2>
-        <p className={settingsStyles.subtitle}>Watch and steer terminals from the Panorama phone app.</p>
+        <p className={settingsStyles.subtitle}>Manage phone and desktop connections to this computer.</p>
       </div>
       {error && <p className={styles.error}>{error}</p>}
       {state && (
@@ -27,9 +29,9 @@ const MobileSection = () => {
           <div className={settingsStyles.options}>
             <ToggleOption
               checked={state.enabled}
-              label="Allow phone connections"
+              label="Allow device connections"
               onToggle={toggleEnabled}
-              description={`Listen on port ${state.port} for paired phones on this network. Traffic is end-to-end encrypted.`}
+              description={`Listen on port ${state.port} for paired devices on this network. Traffic is end-to-end encrypted.`}
             />
             {state.enabled && (
               <ToggleOption
@@ -45,13 +47,26 @@ const MobileSection = () => {
           )}
           {state.enabled && (
             <div className={settingsStyles.group}>
-              <p className={settingsStyles.groupLabel}>Pair a phone</p>
+              <p className={settingsStyles.groupLabel}>Pair a device</p>
               {pairing ? (
                 <div className={styles.pairing}>
                   <QrCode size={QR_SIZE} value={pairing.uri} />
                   <div className={styles.pairingInfo}>
-                    <p className={settingsStyles.hint}>Scan with the Panorama app, or type the code.</p>
+                    <p className={settingsStyles.hint}>
+                      {desktop
+                        ? 'Copy this URI into Remote host settings on the other desktop. It grants full access to this computer.'
+                        : 'Scan with the Panorama app, or type the code.'}
+                    </p>
                     <span className={styles.code}>{pairing.code}</span>
+                    {desktop && (
+                      <textarea
+                        className={styles.uri}
+                        readOnly
+                        value={pairing.uri}
+                        aria-label="Desktop pairing URI"
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                    )}
                     <p className={settingsStyles.hint}>Expires in {minutesLeft(pairing.expiresAt)} min.</p>
                     <ul className={styles.addresses}>
                       {state.addresses.map((address) => (
@@ -64,9 +79,28 @@ const MobileSection = () => {
                   </div>
                 </div>
               ) : (
-                <button type="button" className={styles.button} onClick={pair}>
-                  Show pairing code
-                </button>
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.button}
+                    onClick={() => {
+                      setDesktop(false);
+                      pair(false);
+                    }}
+                  >
+                    Pair a phone
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.button}
+                    onClick={() => {
+                      setDesktop(true);
+                      pair(true);
+                    }}
+                  >
+                    Pair a desktop
+                  </button>
+                </div>
               )}
               <p className={settingsStyles.hint}>
                 The phone must reach this computer on the same network or over Tailscale. Windows may ask to allow
@@ -75,9 +109,9 @@ const MobileSection = () => {
             </div>
           )}
           <div className={settingsStyles.group}>
-            <p className={settingsStyles.groupLabel}>Paired phones</p>
+            <p className={settingsStyles.groupLabel}>Paired devices</p>
             {state.devices.length === 0 ? (
-              <p className={settingsStyles.hint}>No phones paired yet.</p>
+              <p className={settingsStyles.hint}>No devices paired yet.</p>
             ) : (
               <div className={styles.devices}>
                 {state.devices.map((device) => (
@@ -85,7 +119,7 @@ const MobileSection = () => {
                     <span className={styles.deviceText}>
                       <span className={settingsStyles.optionLabel}>{device.name}</span>
                       <span className={settingsStyles.optionDesc}>
-                        Paired {new Date(device.pairedAt).toLocaleDateString()}
+                        {device.desktop ? 'Desktop' : 'Phone'} · Paired {new Date(device.pairedAt).toLocaleDateString()}
                       </span>
                     </span>
                     <button

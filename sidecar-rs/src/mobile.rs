@@ -8,19 +8,39 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use crypto_secretbox::aead::{Aead, KeyInit};
-use crypto_secretbox::{Nonce, XSalsa20Poly1305};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha512};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+pub(crate) mod desktop_tunnel;
+mod tunnel;
+mod wire;
+#[cfg(test)]
+use crypto_secretbox::{
+    aead::{Aead, KeyInit},
+    XSalsa20Poly1305,
+};
+#[cfg(test)]
+use sha2::{Digest, Sha512};
+#[cfg(test)]
+use wire::{nonce, DIR_CLIENT};
+use wire::{session_key, Channel};
+use crate::local_origins::LOCAL_ORIGINS;
+
+mod desktop_routes;
 mod presence;
 mod prompt;
 mod relay;
+mod pacer;
+pub(crate) fn remote_pty_message_allowed(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|message| message.get("t").and_then(|t| t.as_str()).map(str::to_owned))
+        .is_some()
+}
 
 pub use prompt::{wait as wait_prompt, Wait as PromptWait};
 
@@ -39,19 +59,10 @@ const SNIPPET_ROWS: usize = 60;
 const MAX_MESSAGE: usize = 1 << 20;
 const KIND_JSON: u8 = 0;
 const KIND_FRAME: u8 = 1;
-const DIR_CLIENT: u8 = 0;
-const DIR_SERVER: u8 = 1;
 const PUSH_URL: &str = "https://exp.host/--/api/v2/push/send";
 const PUSH_CHANNEL: &str = "agent";
 const PUSH_TIMEOUT: Duration = Duration::from_secs(10);
 const PUSH_TOKEN_PREFIXES: &[&str] = &["ExponentPushToken[", "ExpoPushToken["];
-const LOCAL_ORIGINS: &[&str] = &[
-    "tauri://localhost",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "http://localhost:1471",
-    "http://127.0.0.1:1471",
-];
 
 type Tx = Pin<Box<dyn Sink<Message, Error = WsError> + Send>>;
 type Rx = Pin<Box<dyn Stream<Item = Result<Message, WsError>> + Send>>;
@@ -65,6 +76,7 @@ struct Device {
     public_key: [u8; 32],
     paired_at: u64,
     push_token: Option<String>,
+    desktop: bool,
 }
 
 struct State {
@@ -72,7 +84,7 @@ struct State {
     remote: bool,
     secret: StaticSecret,
     devices: Vec<Device>,
-    pairing: Option<(String, Instant)>,
+    pairing: Option<(String, Instant, bool)>,
     listener: Option<tokio::task::AbortHandle>,
     relay: Option<tokio::task::AbortHandle>,
 }
@@ -149,6 +161,7 @@ fn load_state() -> State {
                         public_key: decode_fixed(d["publicKey"].as_str()?)?,
                         paired_at: d["pairedAt"].as_u64().unwrap_or(0),
                         push_token: d["pushToken"].as_str().map(str::to_string),
+                        desktop: d["desktop"].as_bool().unwrap_or(false),
                     })
                 })
                 .collect()
@@ -186,6 +199,7 @@ fn save_state(st: &State) {
                 "publicKey": b64().encode(d.public_key),
                 "pairedAt": d.paired_at,
                 "pushToken": d.push_token,
+                "desktop": d.desktop,
             })
         })
         .collect();
@@ -304,7 +318,7 @@ fn state_json(st: &State) -> Value {
     let devices: Vec<Value> = st
         .devices
         .iter()
-        .map(|d| json!({ "id": d.id, "name": d.name, "pairedAt": d.paired_at }))
+        .map(|d| json!({ "id": d.id, "name": d.name, "pairedAt": d.paired_at, "desktop": d.desktop }))
         .collect();
     json!({
         "enabled": st.enabled,
@@ -340,7 +354,7 @@ fn set_remote(on: bool) -> Value {
     state_json(&st)
 }
 
-fn start_pairing() -> Value {
+fn start_pairing(desktop: bool) -> Value {
     let mut st = state();
     if !st.enabled {
         st.enabled = true;
@@ -348,7 +362,7 @@ fn start_pairing() -> Value {
     }
     start_listener(&mut st);
     let code = hex(&random_bytes::<8>());
-    st.pairing = Some((code.clone(), Instant::now() + PAIRING_TTL));
+    st.pairing = Some((code.clone(), Instant::now() + PAIRING_TTL, desktop));
     let hosts = lan_addresses().join(",");
     let uri = format!(
         "panorama-mobile://pair?v={PROTOCOL_VERSION}&k={}&c={code}&n={}&h={}",
@@ -384,7 +398,7 @@ pub fn local_route(path: &str, query: &HashMap<String, String>, origin: Option<&
         "state" => state_json(&state()),
         "enable" => set_enabled(query.get("on").map(|v| v == "1").unwrap_or(false)),
         "remote" => set_remote(query.get("on").map(|v| v == "1").unwrap_or(false)),
-        "pair" => start_pairing(),
+        "pair" => start_pairing(query.get("desktop").map(|v| v == "1").unwrap_or(false)),
         "cancel" => {
             let mut st = state();
             st.pairing = None;
@@ -398,66 +412,6 @@ pub fn local_route(path: &str, query: &HashMap<String, String>, origin: Option<&
 
 pub fn cors_origin(origin: Option<&str>) -> &str {
     origin.filter(|o| LOCAL_ORIGINS.contains(o)).unwrap_or("null")
-}
-
-struct Channel {
-    cipher: XSalsa20Poly1305,
-    send_ctr: u64,
-    recv_ctr: u64,
-}
-
-fn nonce(dir: u8, ctr: u64) -> Nonce {
-    let mut n = [0u8; 24];
-    n[0] = dir;
-    n[1..9].copy_from_slice(&ctr.to_le_bytes());
-    Nonce::from(n)
-}
-
-impl Channel {
-    fn new(key: &[u8; 32]) -> Self {
-        Self {
-            cipher: XSalsa20Poly1305::new(key.into()),
-            send_ctr: 0,
-            recv_ctr: 0,
-        }
-    }
-
-    fn seal(&mut self, plain: &[u8]) -> Vec<u8> {
-        let sealed = self
-            .cipher
-            .encrypt(&nonce(DIR_SERVER, self.send_ctr), plain)
-            .expect("secretbox encrypt");
-        self.send_ctr += 1;
-        sealed
-    }
-
-    fn open(&mut self, sealed: &[u8]) -> Option<Vec<u8>> {
-        let plain = self.cipher.decrypt(&nonce(DIR_CLIENT, self.recv_ctr), sealed).ok()?;
-        self.recv_ctr += 1;
-        Some(plain)
-    }
-}
-
-fn session_key(
-    secret: &StaticSecret,
-    client_pk: &[u8; 32],
-    client_nonce: &[u8; 24],
-    server_nonce: &[u8; 24],
-) -> Option<[u8; 32]> {
-    let shared = secret.diffie_hellman(&PublicKey::from(*client_pk));
-    if !shared.was_contributory() {
-        return None;
-    }
-    let mut h = Sha512::new();
-    h.update(shared.as_bytes());
-    h.update(client_pk);
-    h.update(PublicKey::from(secret).as_bytes());
-    h.update(client_nonce);
-    h.update(server_nonce);
-    let digest = h.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&digest[..32]);
-    Some(key)
 }
 
 fn parse_json(plain: &[u8]) -> Option<Value> {
@@ -474,13 +428,24 @@ async fn send_json(tx: &mut Tx, chan: &mut Channel, v: &Value) -> Result<(), ()>
     tx.send(Message::Binary(chan.seal(&plain))).await.map_err(|_| ())
 }
 
-async fn send_frame(tx: &mut Tx, chan: &mut Channel, tile_id: &str, frame: &[u8]) -> Result<(), ()> {
+async fn send_frame(tx: &mut Tx, chan: &mut Channel, tile_id: &str, frame: &[u8], pacer: &mut Option<pacer::Pacer>) -> Result<(), ()> {
     let id = tile_id.as_bytes();
     let mut plain = Vec::with_capacity(3 + id.len() + frame.len());
     plain.push(KIND_FRAME);
     plain.extend_from_slice(&(id.len() as u16).to_le_bytes());
     plain.extend_from_slice(id);
     plain.extend_from_slice(frame);
+    pace(pacer, plain.len()).await;
+    tx.send(Message::Binary(chan.seal(&plain))).await.map_err(|_| ())
+}
+
+async fn pace(pacer: &mut Option<pacer::Pacer>, size: usize) {
+    if size > 16 * 1024 { if let Some(pacer) = pacer { pacer.take(size).await; } }
+}
+async fn send_paced_json(tx: &mut Tx, chan: &mut Channel, v: &Value, pacer: &mut Option<pacer::Pacer>) -> Result<(), ()> {
+    let mut plain = vec![KIND_JSON];
+    plain.extend_from_slice(v.to_string().as_bytes());
+    pace(pacer, plain.len()).await;
     tx.send(Message::Binary(chan.seal(&plain))).await.map_err(|_| ())
 }
 
@@ -488,15 +453,31 @@ fn codes_match(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn pair_device(public_key: [u8; 32], code: &str, name: &str) -> Option<String> {
+fn pairing_allowed(
+    expected: &str,
+    expires: Instant,
+    granted: bool,
+    code: &str,
+    desktop: bool,
+) -> bool {
+    Instant::now() < expires
+        && desktop == granted
+        && codes_match(expected, &code.to_ascii_uppercase())
+}
+
+fn desktop_allowed(id: &str) -> bool {
+    state().devices.iter().any(|d| d.id == id && d.desktop)
+}
+
+fn pair_device(public_key: [u8; 32], code: &str, name: &str, desktop: bool) -> Option<String> {
     let mut st = state();
-    let (expected, expires) = st.pairing.clone()?;
-    if Instant::now() > expires || !codes_match(&expected, &code.to_ascii_uppercase()) {
+    let (expected, expires, granted) = st.pairing.clone()?;
+    if !pairing_allowed(&expected, expires, granted, code, desktop) {
         return None;
     }
     st.pairing = None;
     if let Some(known) = st.devices.iter().find(|d| d.public_key == public_key) {
-        return Some(known.id.clone());
+        return (known.desktop == desktop).then(|| known.id.clone());
     }
     let device = Device {
         id: hex(&random_bytes::<8>()),
@@ -504,6 +485,7 @@ fn pair_device(public_key: [u8; 32], code: &str, name: &str) -> Option<String> {
         public_key,
         paired_at: now_ms(),
         push_token: None,
+        desktop,
     };
     let id = device.id.clone();
     st.devices.push(device);
@@ -557,8 +539,15 @@ async fn handshake(tx: &mut Tx, rx: &mut Rx) -> Option<(Channel, String)> {
     });
     tx.send(Message::Text(reply.to_string())).await.ok()?;
 
-    let key = session_key(&secret, &client_pk, &client_nonce, &server_nonce)?;
-    let mut chan = Channel::new(&key);
+    let key = session_key(
+        &secret,
+        &client_pk,
+        &client_pk,
+        &server_pk,
+        &client_nonce,
+        &server_nonce,
+    )?;
+    let mut chan = Channel::new(&key, 1 - wire::DIR_CLIENT);
     let Message::Binary(first) = next_data(rx).await? else {
         return None;
     };
@@ -568,6 +557,7 @@ async fn handshake(tx: &mut Tx, rx: &mut Rx) -> Option<(Channel, String)> {
             client_pk,
             intro["code"].as_str().unwrap_or_default(),
             intro["name"].as_str().unwrap_or("Phone"),
+            intro["capability"].as_str() == Some("desktop"),
         ),
         Some("auth") => authorize(&client_pk),
         _ => None,
@@ -581,6 +571,7 @@ async fn handshake(tx: &mut Tx, rx: &mut Rx) -> Option<(Channel, String)> {
         "v": PROTOCOL_VERSION,
         "deviceId": device_id,
         "host": host_name(),
+        "addresses": lan_addresses(),
     });
     send_json(tx, &mut chan, &welcome).await.ok()?;
     Some((chan, device_id))
@@ -1032,6 +1023,17 @@ fn stop_run(tile_id: &str, kind: &str) {
 async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, String> {
     match method {
         "ping" => Ok(json!({})),
+        "host.call" => {
+            if !desktop_allowed(&subs.device_id) {
+                return Err("Desktop capability required".into());
+            }
+            crate::service_bridge::call(
+                str_param(p, "command")?,
+                p.get("args").cloned().unwrap_or(Value::Null),
+            )
+            .await
+        }
+
         "tiles.list" => Ok(tiles_json()),
         "tile.open" => ui::open_tile(str_param(p, "cwd")?, p["agent"].as_str()),
         "run.list" => run_overview(str_param(p, "tileId")?).await,
@@ -1132,7 +1134,7 @@ fn frame_hash(frame: &[u8]) -> u64 {
     h.finish()
 }
 
-async fn push_chats(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<(), ()> {
+async fn push_chats(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs, pacer: &mut Option<pacer::Pacer>) -> Result<(), ()> {
     for (tile_id, cursor) in subs.chats.iter_mut() {
         if !chat_changed(tile_id, cursor) {
             continue;
@@ -1148,7 +1150,7 @@ async fn push_chats(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<
         if quiet {
             continue;
         }
-        send_json(tx, chan, &json!({ "t": "evt", "e": "chat", "tileId": tile_id, "r": body })).await?;
+        send_paced_json(tx, chan, &json!({ "t": "evt", "e": "chat", "tileId": tile_id, "r": body }), pacer).await?;
     }
     for (tile_id, seen) in subs.live_seen.iter_mut() {
         let Some(live) = live_snapshot(tile_id) else {
@@ -1158,7 +1160,7 @@ async fn push_chats(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<
             continue;
         }
         *seen = live.clone();
-        send_json(tx, chan, &json!({ "t": "evt", "e": "live", "tileId": tile_id, "r": live })).await?;
+        send_paced_json(tx, chan, &json!({ "t": "evt", "e": "live", "tileId": tile_id, "r": live }), pacer).await?;
     }
     Ok(())
 }
@@ -1171,7 +1173,7 @@ fn text_view(session: &Session) -> Option<reflow::TextView> {
     Some(reflow::logical_lines(parser.screen_mut(), TEXT_ROWS))
 }
 
-async fn push_terms(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<(), ()> {
+async fn push_terms(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs, pacer: &mut Option<pacer::Pacer>) -> Result<(), ()> {
     for (tile_id, sub) in subs.terms.iter_mut() {
         let Some(session) = lookup(tile_id) else {
             continue;
@@ -1184,7 +1186,7 @@ async fn push_terms(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<
         sub.hash = hash;
         let Some(view) = sub.text.then(|| text_view(&session)).flatten() else {
             sub.lines.clear();
-            send_frame(tx, chan, tile_id, &frame).await?;
+            send_frame(tx, chan, tile_id, &frame, pacer).await?;
             continue;
         };
         let patch = reflow::patch(&sub.lines, &view.lines);
@@ -1196,46 +1198,138 @@ async fn push_terms(tx: &mut Tx, chan: &mut Channel, subs: &mut Subs) -> Result<
         }
         let mut r = patch.unwrap_or_else(|| json!({ "drop": 0, "keep": sub.lines.len(), "lines": [] }));
         r["cursor"] = json!(view.cursor);
-        send_json(tx, chan, &json!({ "t": "evt", "e": "text", "tileId": tile_id, "r": r })).await?;
+        send_paced_json(tx, chan, &json!({ "t": "evt", "e": "text", "tileId": tile_id, "r": r }), pacer).await?;
     }
     Ok(())
 }
 
-async fn serve(mut tx: Tx, mut rx: Rx, mut chan: Channel, device_id: String) {
+fn event_or_resync(
+    event: Result<Value, tokio::sync::broadcast::error::RecvError>,
+) -> Option<Value> {
+    match event {
+        Ok(event) => Some(event),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Some(json!({"event":"resync"})),
+        Err(_) => None,
+    }
+}
+
+fn reset_idle(deadline: std::pin::Pin<&mut tokio::time::Sleep>, timeout: std::time::Duration) {
+    deadline.reset(tokio::time::Instant::now() + timeout);
+}
+
+async fn before_deadline<T>(deadline: tokio::time::Instant, future: impl std::future::Future<Output = T>) -> Result<T, tokio::time::error::Elapsed> {
+    tokio::time::timeout_at(deadline, future).await
+}
+
+async fn serve(mut tx: Tx, mut rx: Rx, mut chan: Channel, device_id: String, relay: bool) {
+    let mut pacer = relay.then(|| pacer::Pacer::new(640_000, 256 * 1024));
+    static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let session_id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let desktop = desktop_allowed(&device_id);
+    let mut calls = tokio::task::JoinSet::new();
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(45));
+    tokio::pin!(deadline);
     let mut subs = Subs {
         device_id,
         ..Default::default()
     };
+    let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let mut mux = tunnel::Mux::new(stream_tx.clone());
     let mut tick = tokio::time::interval(FRAME_INTERVAL);
+    let mut host_events = crate::service_bridge::subscribe();
+    let mut subscribed = false;
+    macro_rules! bounded {
+        ($future:expr) => {
+            if desktop { before_deadline(deadline.deadline(), $future).await.unwrap_or(Err(())) }
+            else { $future.await }
+        };
+    }
     loop {
         tokio::select! {
+            _ = &mut deadline, if desktop => break,
+            Some(_) = calls.join_next(), if !calls.is_empty() => {},
             _ = tick.tick() => {
                 if !device_active(&subs.device_id)
-                    || push_terms(&mut tx, &mut chan, &mut subs).await.is_err()
-                    || push_chats(&mut tx, &mut chan, &mut subs).await.is_err()
+                    || bounded!(push_terms(&mut tx, &mut chan, &mut subs, &mut pacer)).is_err()
+                    || bounded!(push_chats(&mut tx, &mut chan, &mut subs, &mut pacer)).is_err()
                 {
                     break;
                 }
             }
-            msg = rx.next() => match msg {
+            event = host_events.recv(), if subscribed => {
+                let Some(event) = event_or_resync(event) else { break };
+                let message = json!({
+                    "t": "host.event", "event": event["event"], "payload": event["payload"]
+                });
+                if bounded!(send_paced_json(&mut tx, &mut chan, &message, &mut pacer)).is_err() { break; }
+            }
+            Some(plain) = stream_rx.recv() => {
+                mux.sent(&plain);
+                pace(&mut pacer, plain.len()).await;
+                if bounded!(async { tx.send(Message::Binary(chan.seal(&plain))).await.map_err(|_| ()) }).is_err() { break; }
+            }
+            msg = rx.next() => {
+                if msg.as_ref().is_some_and(|m| m.is_ok()) { reset_idle(deadline.as_mut(), std::time::Duration::from_secs(45)); }
+                match msg {
                 Some(Ok(Message::Binary(sealed))) => {
+                    if !device_active(&subs.device_id) { break; }
                     let Some(plain) = chan.open(&sealed) else {
                         break;
                     };
-                    let Some(req) = parse_json(&plain) else {
+                    if plain.first() == Some(&2) { if !mux.handle(&plain) { break; } continue; }
+                    let Some(req) = parse_json(&plain) else { continue; };
+                    if req["t"] == "heartbeat" {
+                        if bounded!(send_json(&mut tx, &mut chan, &json!({"t":"heartbeat"}))).is_err() { break; }
                         continue;
-                    };
-                    let reply = reply_for(&req, &mut subs).await;
-                    if send_json(&mut tx, &mut chan, &reply).await.is_err() {
+                    }
+                    if req["t"] == "stream" {
+                        if !desktop_allowed(&subs.device_id) { break; }
+                        if req["op"] == "open" { desktop_tunnel::open(&req, &mut mux, &stream_tx).await; }
+                        else if !mux.handle(&plain) { break; }
+                        continue;
+                    }
+                    if req["m"] == "host.call" && desktop_allowed(&subs.device_id) {
+                        let out = stream_tx.clone();
+                        calls.spawn(async move {
+                            let result = match req["p"]["command"].as_str() {
+                                Some(command) => crate::service_bridge::call_scoped(command, req["p"]["args"].clone(), Some(session_id)).await,
+                                None => Err("Missing command".into()),
+                            };
+                            let reply = match result {
+                                Ok(r) => json!({"t":"res", "id":req["id"], "ok":true, "r":r}),
+                                Err(e) => json!({"t":"res", "id":req["id"], "ok":false, "err":e}),
+                            };
+                            let mut plain = vec![0];
+                            plain.extend_from_slice(reply.to_string().as_bytes());
+                            let _ = out.send(plain).await;
+                        });
+                        continue;
+                    }
+                    let reply = if req["m"] == "host.subscribe" && desktop_allowed(&subs.device_id) {
+                        subscribed = true;
+                        json!({"t":"res", "id":req["id"], "ok":true, "r":null})
+                    } else { reply_for(&req, &mut subs).await };
+                    if !device_active(&subs.device_id) { break; }
+                    if bounded!(send_paced_json(&mut tx, &mut chan, &reply, &mut pacer)).is_err() {
                         break;
                     }
                 }
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Ping(_))) => { if bounded!(async { tx.flush().await.map_err(|_| ()) }).is_err() { break; } }
+                Some(Ok(Message::Pong(_))) => {}
                 _ => break,
-            }
+            }}
         }
     }
-    let _ = tx.close().await;
+    drop(stream_rx);
+    while calls.join_next().await.is_some() {}
+    if desktop {
+        let _ = crate::service_bridge::call_scoped("release", json!({}), Some(session_id)).await;
+    }
+    if desktop {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), tx.close()).await;
+    } else {
+        let _ = tx.close().await;
+    }
 }
 
 async fn handle_conn(stream: TcpStream) {
@@ -1246,25 +1340,55 @@ async fn handle_conn(stream: TcpStream) {
         return;
     };
     let (tx, rx) = ws.split();
-    serve_session(Box::pin(tx), Box::pin(rx)).await;
+    serve_session(Box::pin(tx), Box::pin(rx), false).await;
 }
 
-async fn serve_session(mut tx: Tx, mut rx: Rx) {
+async fn serve_session(mut tx: Tx, mut rx: Rx, relay: bool) {
     let Ok(Some((chan, device_id))) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(&mut tx, &mut rx)).await else {
         let _ = tx.close().await;
         return;
     };
-    serve(tx, rx, chan, device_id).await;
+    serve(tx, rx, chan, device_id, relay).await;
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn blocked_send_obeys_deadline() {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(20);
+        assert!(super::before_deadline(deadline, std::future::pending::<()>()).await.is_err());
+    }
+    #[tokio::test]
+    async fn idle_deadline_is_extended_by_incoming_traffic() {
+        let timeout = std::time::Duration::from_millis(80);
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        super::reset_idle(deadline.as_mut(), timeout);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), deadline.as_mut()).await.is_err());
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), deadline.as_mut()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn lost_host_events_request_resync() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        sender.send(serde_json::json!({"event":"first"})).unwrap();
+        sender.send(serde_json::json!({"event":"second"})).unwrap();
+        assert_eq!(
+            super::event_or_resync(receiver.recv().await).unwrap()["event"],
+            "resync"
+        );
+        assert_eq!(
+            super::event_or_resync(receiver.recv().await).unwrap()["event"],
+            "second"
+        );
+    }
     use super::*;
 
     #[test]
     fn channel_round_trips_and_rejects_replay() {
         let key = [7u8; 32];
-        let mut server = Channel::new(&key);
+        let mut server = Channel::new(&key, 1 - wire::DIR_CLIENT);
         let client = XSalsa20Poly1305::new((&key).into());
         let sealed = client.encrypt(&nonce(DIR_CLIENT, 0), b"\x00{}".as_slice()).unwrap();
         assert_eq!(server.open(&sealed).as_deref(), Some(b"\x00{}".as_slice()));
@@ -1277,7 +1401,15 @@ mod tests {
         let client = StaticSecret::from([2u8; 32]);
         let client_pk = PublicKey::from(&client).to_bytes();
         let (cn, sn) = ([3u8; 24], [4u8; 24]);
-        let key = session_key(&server, &client_pk, &cn, &sn).unwrap();
+        let key = session_key(
+            &server,
+            &client_pk,
+            &client_pk,
+            PublicKey::from(&server).as_bytes(),
+            &cn,
+            &sn,
+        )
+        .unwrap();
         let shared = client.diffie_hellman(&PublicKey::from(&server));
         let mut h = Sha512::new();
         h.update(shared.as_bytes());
@@ -1290,7 +1422,15 @@ mod tests {
 
     #[test]
     fn rejects_low_order_client_key() {
-        assert!(session_key(&StaticSecret::from([1u8; 32]), &[0u8; 32], &[0; 24], &[0; 24]).is_none());
+        assert!(session_key(
+            &StaticSecret::from([1u8; 32]),
+            &[0u8; 32],
+            &[0u8; 32],
+            &[1u8; 32],
+            &[0; 24],
+            &[0; 24]
+        )
+        .is_none());
     }
 
     #[test]
@@ -1319,6 +1459,25 @@ mod tests {
             { "status": "error", "details": { "error": "DeviceNotRegistered" } },
         ] });
         assert_eq!(unregistered_tokens(&messages, &tickets), vec!["ExpoPushToken[b]".to_string()]);
+    }
+
+    #[test]
+    fn remote_terminal_allows_resize() {
+        assert!(remote_pty_message_allowed(r#"{"t":"resize"}"#));
+        assert!(remote_pty_message_allowed(r#"{"t":"in","d":"hello"}"#));
+        assert!(!remote_pty_message_allowed("invalid"));
+    }
+
+    #[test]
+    fn desktop_pairing_requires_explicit_matching_grant_and_live_code() {
+        let future = Instant::now() + Duration::from_secs(10);
+        let past = Instant::now() - Duration::from_secs(1);
+        assert!(pairing_allowed("AB12", future, false, "ab12", false));
+        assert!(pairing_allowed("AB12", future, true, "AB12", true));
+        assert!(!pairing_allowed("AB12", future, false, "AB12", true));
+        assert!(!pairing_allowed("AB12", future, true, "AB12", false));
+        assert!(!pairing_allowed("AB12", past, true, "AB12", true));
+        assert!(!pairing_allowed("AB12", future, true, "wrong", true));
     }
 
     #[test]

@@ -14,6 +14,7 @@ import CrashNotice from '~/components/commons/CrashNotice';
 import ErrorBoundary from '~/components/commons/ErrorBoundary';
 import NotificationOverlay from '~/components/commons/Notifications';
 import { WorkspaceProvider } from '~/usecase/context/WorkspaceContext';
+import { initSidecar } from '~/adapter/pty/sidecar.client';
 
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/400-italic.css';
@@ -49,7 +50,7 @@ const isOverlay = getCurrentWindow().label === 'notif';
 
 void loadHackFont();
 const boot = async (): Promise<void> => {
-  await initSettings().catch(() => {});
+  await Promise.all([initSettings().catch(() => {}), initSidecar()]);
   const plugins = initPlugins();
   if (usesPluginTheme() || usesPluginFont()) await plugins;
   if (!isOverlay) {

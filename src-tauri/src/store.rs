@@ -8,6 +8,33 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const SCHEMA_VERSION: i64 = 1;
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+pub(crate) fn set_app(app: tauri::AppHandle) { let _ = APP.set(app); }
+static EVENTS: OnceLock<tokio::sync::broadcast::Sender<Value>> = OnceLock::new();
+pub fn subscribe() -> tokio::sync::broadcast::Receiver<Value> {
+    EVENTS.get_or_init(|| tokio::sync::broadcast::channel(256).0).subscribe()
+}
+fn revisions(conn: &Connection, names: impl IntoIterator<Item = String>, origin: Option<String>) -> Result<Vec<Value>, String> {
+    let mut events = Vec::new();
+    for name in names {
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('store_revision', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+            [],
+        ).map_err(|e| e.to_string())?;
+        let revision: i64 = conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'store_revision'", [], |row| row.get(0)
+        ).map_err(|e| e.to_string())?;
+        events.push(serde_json::json!({ "name": name, "revision": revision, "origin": origin }));
+    }
+    Ok(events)
+}
+fn changed(events: Vec<Value>) {
+    use tauri::Emitter;
+    for payload in events {
+        if let Some(app) = APP.get() { let _ = app.emit("store:changed", &payload); }
+        if let Some(events) = EVENTS.get() { let _ = events.send(payload); }
+    }
+}
 
 #[derive(Deserialize)]
 pub struct Entry {
@@ -16,11 +43,12 @@ pub struct Entry {
 }
 
 pub(crate) fn base_dir() -> Result<PathBuf, String> {
-    if let Ok(dir) = std::env::var("PANORAMA_CONFIG_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
     let name = if cfg!(debug_assertions) { "panorama-dev" } else { "panorama" };
-    Ok(dirs::config_dir().ok_or("no config dir")?.join(name))
+    crate::config_dir::config_dir(
+        std::env::var_os("PANORAMA_CONFIG_DIR").map(Into::into),
+        dirs::config_dir(),
+        name,
+    ).ok_or_else(|| "no config dir".into())
 }
 
 fn valid_name(name: &str) -> Result<(), String> {
@@ -264,9 +292,7 @@ pub fn read_value(name: &str) -> Result<Option<Value>, String> {
 }
 
 pub fn write_value(name: &str, value: &Value) -> Result<(), String> {
-    valid_name(name)?;
-    let conn = db()?.lock().map_err(|e| e.to_string())?;
-    put(&conn, name, value)
+    store_write(name.to_string(), value.clone(), None)
 }
 
 #[tauri::command]
@@ -275,29 +301,38 @@ pub fn store_read(name: String) -> Result<Option<Value>, String> {
 }
 
 #[tauri::command]
-pub fn store_write(name: String, value: Value) -> Result<(), String> {
-    write_value(&name, &value)
-}
-
-#[tauri::command]
-pub fn store_write_many(entries: Vec<Entry>) -> Result<(), String> {
-    for entry in &entries {
-        valid_name(&entry.name)?;
-    }
-    let conn = db()?.lock().map_err(|e| e.to_string())?;
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    for entry in &entries {
-        put(&tx, &entry.name, &entry.value)?;
-    }
-    tx.commit().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn store_delete(name: String) -> Result<(), String> {
+pub fn store_write(name: String, value: Value, origin: Option<String>) -> Result<(), String> {
     valid_name(&name)?;
     let conn = db()?.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM kv WHERE name = ?1", params![name])
-        .map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    put(&tx, &name, &value)?;
+    let events = revisions(&tx, [name], origin)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    changed(events);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn store_write_many(entries: Vec<Entry>, origin: Option<String>) -> Result<(), String> {
+    for entry in &entries { valid_name(&entry.name)?; }
+    let conn = db()?.lock().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for entry in &entries { put(&tx, &entry.name, &entry.value)?; }
+    let events = revisions(&tx, entries.into_iter().map(|entry| entry.name), origin)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    changed(events);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn store_delete(name: String, origin: Option<String>) -> Result<(), String> {
+    valid_name(&name)?;
+    let conn = db()?.lock().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM kv WHERE name = ?1", params![name]).map_err(|e| e.to_string())?;
+    let events = revisions(&tx, [name], origin)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    changed(events);
     Ok(())
 }
 
@@ -393,17 +428,36 @@ mod tests {
         store_write_many(vec![
             Entry { name: "workspaces.json".into(), value: serde_json::json!({ "order": ["ws-1"] }) },
             Entry { name: "workspaces/ws-1.json".into(), value: serde_json::json!({ "meta": { "id": "ws-1" } }) },
-        ])
+        ], None)
         .unwrap();
 
         assert_eq!(store_list("workspaces".into()).unwrap(), vec!["ws-1.json"]);
         assert!(store_read("workspaces.json".into()).unwrap().is_some());
-        assert!(store_write_many(vec![Entry { name: "../escape.json".into(), value: serde_json::json!(1) }]).is_err());
+        let remote = tauri::async_runtime::block_on(crate::service_bridge::dispatch(
+            "store_read", &serde_json::json!({"name": "workspaces.json"})
+        )).unwrap();
+        assert_eq!(remote, serde_json::json!({ "order": ["ws-1"] }));
+        assert!(store_write_many(vec![Entry { name: "../escape.json".into(), value: serde_json::json!(1) }], None).is_err());
         assert!(store_read("../escape.json".into()).is_err());
 
-        store_delete("workspaces/ws-1.json".into()).unwrap();
+        store_delete("workspaces/ws-1.json".into(), None).unwrap();
         assert!(store_read("workspaces/ws-1.json".into()).unwrap().is_none());
         assert!(store_list("workspaces".into()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn revisions_are_ordered_and_rollback_with_writes() {
+        let dir = temp_dir("revisions");
+        let conn = open_db(&dir.join("panorama.db")).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        put(&tx, "workspaces/a.json", &serde_json::json!(1)).unwrap();
+        let events = revisions(&tx, ["workspaces/a.json".into(), "workspaces.json".into()], Some("screen".into())).unwrap();
+        assert_eq!(events[0]["revision"], 1);
+        assert_eq!(events[1]["revision"], 2);
+        assert_eq!(events[0]["origin"], "screen");
+        drop(tx);
+        assert!(conn.query_row("SELECT value FROM meta WHERE key = 'store_revision'", [], |r| r.get::<_, String>(0)).is_err());
+        assert_eq!(revisions(&conn, ["next".into()], None).unwrap()[0]["revision"], 1);
     }
 
     #[test]

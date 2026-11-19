@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isRemote } from '~/adapter/transport';
 
 export interface DirEntry {
   name: string;
@@ -7,8 +7,10 @@ export interface DirEntry {
   ignored?: boolean;
 }
 
-export const readDir = (path: string): Promise<DirEntry[]> =>
-  invoke<DirEntry[]>('read_dir', { path }).catch(() => [] as DirEntry[]);
+export const readDir = (path: string): Promise<DirEntry[]> => {
+  const result = invoke<DirEntry[]>('read_dir', { path });
+  return isRemote() ? result : result.catch(() => [] as DirEntry[]);
+};
 
 export const readTextFile = (path: string): Promise<string> => invoke<string>('read_text_file', { path });
 

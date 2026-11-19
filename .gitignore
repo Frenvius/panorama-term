@@ -17,3 +17,5 @@ sidecar-rs/**/target
 !/docs/CODEX_INTEGRATION.md
 !/docs/PLUGINS.md
 !/docs/PLUGINS.pt-BR.md
+!/docs/REMOTE.md
+!/docs/REMOTE.pt-BR.md

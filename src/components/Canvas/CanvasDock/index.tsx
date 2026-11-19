@@ -1,3 +1,4 @@
+import { isRemote } from '~/adapter/transport';
 import type { DirEntry } from '~/adapter/fs/fs.client';
 import type { DockSide } from '~/domain/interfaces/dock.interface';
 import type { Tile } from '~/domain/interfaces/canvas.interface';
@@ -170,7 +171,7 @@ const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff,
     { label: 'New file', icon: <FilePlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, false) },
     { label: 'New folder', icon: <FolderPlus size={15} strokeWidth={1.75} />, onSelect: () => startCreate(entry, true) },
     { label: 'Edit', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: () => openFile(entry.path), disabled: entry.dir },
-    { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path) },
+    { label: 'Reveal in explorer', icon: <FolderOpen size={15} strokeWidth={1.75} />, onSelect: () => revealPath(entry.path), disabled: isRemote() },
     { label: 'Copy path', icon: <ClipboardCopy size={15} strokeWidth={1.75} />, onSelect: () => writeClipboard(entry.path) }
   ];
 

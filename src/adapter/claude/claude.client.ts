@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '~/adapter/transport';
 
 import type { SessionSummary, ConversationEntry } from '~/domain/interfaces/claude.interface';
 
