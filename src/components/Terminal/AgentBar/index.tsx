@@ -99,7 +99,7 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   return out;
 };
 
-const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive, onShiftRows }: AgentBarProps) => {
+const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive, onShiftPx }: AgentBarProps) => {
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
@@ -1171,7 +1171,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const viewing = agentType === 'claude' ? structured?.viewing ?? '' : '';
   const visibleBar = !!agentType && agentType !== 'opencode' && !hidden;
   const cover = coverLayout(coverSize.tile, coverSize.natural, gridRows, inputTop);
-  const shiftRows = visibleBar ? cover.shiftRows : 0;
+  const shiftPx = visibleBar ? cover.shiftPx : 0;
 
   React.useLayoutEffect(() => {
     const bar = barRef.current;
@@ -1194,10 +1194,10 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   }, [visibleBar]);
 
   React.useLayoutEffect(() => {
-    onShiftRows?.(shiftRows);
-  }, [onShiftRows, shiftRows]);
+    onShiftPx?.(shiftPx);
+  }, [onShiftPx, shiftPx]);
 
-  React.useEffect(() => () => onShiftRows?.(0), [onShiftRows]);
+  React.useEffect(() => () => onShiftPx?.(0), [onShiftPx]);
 
   const barStyle = hidden ? { display: 'none' } : { minHeight: cover.minHeightPx ?? undefined };
 

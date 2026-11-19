@@ -11,7 +11,7 @@ export interface AgentBarProps {
   getFrame: () => GridFrame | null;
   getStructured: () => ClaudeState | null;
   focusTerminal: () => void;
-  onShiftRows?: (rows: number) => void;
+  onShiftPx?: (px: number) => void;
   onAgentActive?: (type: AgentType | null) => void;
 }
 

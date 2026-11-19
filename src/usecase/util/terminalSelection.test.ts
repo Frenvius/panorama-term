@@ -13,10 +13,10 @@ test('cellAtPoint accounts for zoom on both axes', () => {
   expect(cellAtPoint(40.5, 122, 0.5, 2, 10, 15, 10, 6, 0)).toEqual({ row: 4, col: 8 });
 });
 
-test('cellAtPoint applies the row shift and clamps to the frame', () => {
-  expect(cellAtPoint(21, 16, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 3, col: 2 });
-  expect(cellAtPoint(-10, -100, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 0, col: 0 });
-  expect(cellAtPoint(500, 500, 1, 1, 10, 15, 10, 6, 2)).toEqual({ row: 5, col: 9 });
+test('cellAtPoint applies the pixel shift and clamps to the frame', () => {
+  expect(cellAtPoint(21, 16, 1, 1, 10, 15, 10, 6, 30)).toEqual({ row: 3, col: 2 });
+  expect(cellAtPoint(-10, -100, 1, 1, 10, 15, 10, 6, 30)).toEqual({ row: 0, col: 0 });
+  expect(cellAtPoint(500, 500, 1, 1, 10, 15, 10, 6, 30)).toEqual({ row: 5, col: 9 });
 });
 
 const lines = ['hello world   ', 'foo bar', 'last line here'];

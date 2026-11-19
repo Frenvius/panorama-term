@@ -223,10 +223,10 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const termRef = React.useRef<HTMLDivElement>(null);
   const rowsRefEl = React.useRef<HTMLDivElement>(null);
   const overlayRef = React.useRef<HTMLDivElement>(null);
-  const shiftRowsRef = React.useRef(0);
-  const shiftRows = React.useCallback((rows: number) => {
-    shiftRowsRef.current = rows;
-    const transform = rows ? `translateY(-${rows * CELL_H}px)` : '';
+  const shiftPxRef = React.useRef(0);
+  const shiftPx = React.useCallback((px: number) => {
+    shiftPxRef.current = px;
+    const transform = px ? `translateY(-${px}px)` : '';
     for (const el of [rowsRefEl.current, overlayRef.current, cursorRef.current]) {
       if (el) el.style.transform = transform;
     }
@@ -606,7 +606,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       CELL_H,
       frame.cols,
       frame.rows,
-      shiftRowsRef.current
+      shiftPxRef.current
     );
   };
 
@@ -934,7 +934,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             getStructured={getStructured}
             focusTerminal={focusTerminal}
             onAgentActive={onAgentActive}
-            onShiftRows={shiftRows}
+            onShiftPx={shiftPx}
           />
         </div>
       )}

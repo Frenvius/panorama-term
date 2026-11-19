@@ -12,10 +12,10 @@ export const cellAtPoint = (
   cellH: number,
   cols: number,
   rows: number,
-  shiftRows: number
+  shiftPx: number
 ): Cell => {
   const col = Math.floor(x / scaleX / cellW);
-  const row = Math.floor(y / scaleY / cellH) + shiftRows;
+  const row = Math.floor((y / scaleY + shiftPx) / cellH);
   return { col: Math.max(0, Math.min(cols - 1, col)), row: Math.max(0, Math.min(rows - 1, row)) };
 };
 
