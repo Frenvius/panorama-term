@@ -1356,6 +1356,20 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     let _ = write_atomic(path, rec.to_string().as_bytes());
 }
 
+fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
+    let Some(path) = binding_path(tile_id) else {
+        return;
+    };
+    let mut rec = read_binding_rec(tile_id)
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let obj = rec.as_object_mut().unwrap();
+    obj.insert("tileId".into(), tile_id.into());
+    obj.insert("agent".into(), agent.into());
+    obj.insert("cwd".into(), cwd.into());
+    let _ = write_atomic(path, rec.to_string().as_bytes());
+}
+
 fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
     let raw = std::fs::read_to_string(binding_path(tile_id)?).ok()?;
     serde_json::from_str(&raw).ok()
@@ -1430,6 +1444,58 @@ fn find_transcript(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn codex_home() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var("CODEX_HOME").ok().filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())?;
+    Some(Path::new(&home).join(".codex"))
+}
+
+fn find_rollout_in(dir: &Path, suffix: &str, exact: &str, depth: usize) -> Option<PathBuf> {
+    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    entries.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth > 0 {
+                if let Some(found) = find_rollout_in(&path, suffix, exact, depth - 1) {
+                    return Some(found);
+                }
+            }
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(suffix) || name == exact {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn find_codex_transcript(session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || session_id.contains('\\')
+        || session_id.contains("..")
+    {
+        return None;
+    }
+    let sessions = codex_home()?.join("sessions");
+    let suffix = format!("-{session_id}.jsonl");
+    let exact = format!("{session_id}.jsonl");
+    find_rollout_in(&sessions, &suffix, &exact, 4)
+}
+
+pub(crate) fn find_agent_transcript(agent: &str, session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
+    match agent {
+        "claude" => find_transcript(session_id, cwd),
+        "codex" => find_codex_transcript(session_id),
+        _ => None,
+    }
 }
 
 fn status_from_session_json(raw: &str, agent_id: &str) -> Option<String> {
@@ -1921,7 +1987,7 @@ fn handle_agent_status(body: &[u8]) {
     if from_codex && v["status"] == "waiting" {
         v.as_object_mut().map(|obj| obj.remove("status"));
     }
-    if from_mod {
+    if from_mod || from_codex {
         mobile::record_status(&tile_id, &v["status"]);
     }
     let msg = if from_mod || from_codex {
@@ -2045,6 +2111,23 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     if std::fs::read_to_string(&ps_wrapper).ok().as_deref() != Some(ps_body.as_str()) {
         std::fs::write(&ps_wrapper, ps_body).ok()?;
     }
+    Some((wrapper.parent()?.to_path_buf(), original))
+}
+
+#[cfg(not(windows))]
+fn codex_wrapper() -> Option<(PathBuf, String)> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::process::Command::new("which").arg("codex").output().ok()?;
+    let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
+    if original.is_empty() { return None; }
+    let wrapper = panorama_dir()?.join("bin").join("codex");
+    let exe = host::brain_bin();
+    let body = format!("#!/bin/sh\nexec \"{}\" codex-launch \"$@\"\n", exe.display());
+    std::fs::create_dir_all(wrapper.parent()?).ok()?;
+    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
+        std::fs::write(&wrapper, body).ok()?;
+    }
+    let _ = std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755));
     Some((wrapper.parent()?.to_path_buf(), original))
 }
 
@@ -2223,28 +2306,13 @@ fn transcript_last_texts(path: &str) -> (String, String) {
     };
     let mut query = String::new();
     let mut response = String::new();
-    for line in raw.lines() {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+    for item in chat::parse_lines(&raw) {
+        let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else {
             continue;
         };
-        let kind = entry.get("type").and_then(|t| t.as_str());
-        let content = entry.get("message").and_then(|m| m.get("content"));
-        let text = match content {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Array(blocks)) => blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => continue,
-        };
-        if text.trim().is_empty() {
-            continue;
-        }
-        match kind {
-            Some("user") => query = text,
-            Some("assistant") => response = text,
+        match item["kind"].as_str() {
+            Some("user") => query = text.to_string(),
+            Some("assistant") => response = text.to_string(),
             _ => {}
         }
     }
@@ -3102,15 +3170,17 @@ fn spawn_session(
     env.push(("PANORAMA_TERMINAL".into(), "1".into()));
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
     env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
-    #[cfg(windows)]
     if let Some((wrapper, original)) = codex_wrapper() {
         let path = fresh_path().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
-        env.push(("PATH".into(), format!("{};{path}", wrapper.display())));
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        env.push(("PATH".into(), format!("{}{sep}{path}", wrapper.display())));
         env.push(("PANORAMA_CODEX_ORIGINAL".into(), original));
-        let shell_name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-        if p.spawn_cmd.is_none() && !p.elevated && (shell_name.starts_with("pwsh") || shell_name.starts_with("powershell")) {
-            let dir = wrapper.display().to_string().replace('\'', "''");
-            args.extend(["-NoExit".into(), "-Command".into(), format!("$env:PATH = '{dir};' + $env:PATH")]);
+        if cfg!(windows) {
+            let shell_name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+            if p.spawn_cmd.is_none() && !p.elevated && (shell_name.starts_with("pwsh") || shell_name.starts_with("powershell")) {
+                let dir = wrapper.display().to_string().replace('\'', "''");
+                args.extend(["-NoExit".into(), "-Command".into(), format!("$env:PATH = '{dir};' + $env:PATH")]);
+            }
         }
     }
     if let Some(dirs) = claude_plugin_dirs() {
@@ -3835,7 +3905,12 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
         Some((_, tail)) => tail.trim(),
         None => line,
     };
-    if cmd.is_empty() || cmd == "claude" || cmd.starts_with("claude ") {
+    if cmd.is_empty()
+        || cmd == "claude"
+        || cmd.starts_with("claude ")
+        || cmd == "codex"
+        || cmd.starts_with("codex ")
+    {
         None
     } else {
         Some(cmd.chars().take(60).collect())

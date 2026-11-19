@@ -9,9 +9,9 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use super::{sessions, write_input};
+use super::{seed_agent_binding, sessions, write_input};
 
-const AGENT_COMMANDS: &[(&str, &str)] = &[("claude", "claude")];
+const AGENT_COMMANDS: &[(&str, &str)] = &[("claude", "claude"), ("codex", "codex")];
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(20);
 const SHELL_SETTLE: Duration = Duration::from_millis(800);
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -83,6 +83,9 @@ pub fn open_tile(cwd: &str, agent: Option<&str>) -> Result<Value, String> {
         return Err("Panorama window is not open".into());
     }
     let tile_id = new_tile_id();
+    if let Some(name) = agent {
+        seed_agent_binding(&tile_id, name, cwd);
+    }
     let event = json!({ "t": "tile.open", "tileId": tile_id, "cwd": cwd });
     channel().send(event.to_string()).map_err(|_| "Panorama window is not open".to_string())?;
     if let Some(command) = command {

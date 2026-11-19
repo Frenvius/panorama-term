@@ -74,7 +74,172 @@ fn result_text(content: &Value) -> String {
     clip(text.trim(), OUTPUT_CAP)
 }
 
+fn codex_text(content: &Value) -> String {
+    content
+        .as_array()
+        .map(|list| list.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+fn codex_cmd(item: &Value) -> String {
+    if let Some(cmd) = item["parsed_cmd"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|c| c["cmd"].as_str())
+    {
+        return cmd.to_string();
+    }
+    if let Some(arr) = item["command"].as_array() {
+        let parts: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+        if parts.len() >= 3 && matches!(parts[1], "-Command" | "-c" | "/C") {
+            return parts.last().copied().unwrap_or_default().to_string();
+        }
+        return parts.join(" ");
+    }
+    item["command"].as_str().unwrap_or_default().to_string()
+}
+
+struct ToolPair<'a> {
+    id: &'a str,
+    name: &'a str,
+    summary: String,
+    detail: String,
+    is_error: bool,
+    output: String,
+}
+
+fn tool_pair(p: ToolPair<'_>) -> Vec<Value> {
+    let ToolPair { id, name, summary, detail, is_error, output } = p;
+    vec![
+        json!({ "id": format!("{id}:call"), "kind": "tool", "toolUseId": id, "name": name, "summary": summary, "detail": detail }),
+        json!({ "id": format!("{id}:res"), "kind": "toolResult", "toolUseId": id, "isError": is_error, "output": output }),
+    ]
+}
+
+fn codex_item_completed(item: &Value) -> Vec<Value> {
+    let id = item["id"].as_str().unwrap_or_default();
+    match item["type"].as_str() {
+        Some("UserMessage") => user_text(&codex_text(&item["content"]))
+            .map(|text| vec![json!({ "id": id, "kind": "user", "text": text })])
+            .unwrap_or_default(),
+        Some("AgentMessage") => {
+            let text = codex_text(&item["content"]);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![json!({ "id": id, "kind": "assistant", "text": clip(trimmed, TEXT_CAP) })]
+            }
+        }
+        Some("CommandExecution") => {
+            let cmd = codex_cmd(item);
+            let summary = clip(&one_line(&cmd), SUMMARY_CAP);
+            let detail = clip(cmd.trim(), OUTPUT_CAP);
+            let output = clip(item["aggregated_output"].as_str().unwrap_or_default().trim(), OUTPUT_CAP);
+            let is_error = item["status"].as_str() == Some("failed")
+                || item["exit_code"].as_i64().is_some_and(|c| c != 0);
+            tool_pair(ToolPair { id, name: "Bash", summary, detail, is_error, output })
+        }
+        Some("FileChange") => {
+            let (paths, diffs): (Vec<&str>, Vec<&str>) = item["changes"]
+                .as_object()
+                .map(|obj| {
+                    let paths = obj.keys().map(String::as_str).collect();
+                    let diffs = obj.values().filter_map(|v| v["unified_diff"].as_str()).collect();
+                    (paths, diffs)
+                })
+                .unwrap_or_default();
+            let summary = clip(&one_line(&paths.join(", ")), SUMMARY_CAP);
+            let detail = clip(&paths.join("\n"), OUTPUT_CAP);
+            let output = clip(diffs.join("\n").trim(), OUTPUT_CAP);
+            let is_error = item["status"].as_str() == Some("failed");
+            tool_pair(ToolPair { id, name: "Edit", summary, detail, is_error, output })
+        }
+        Some("McpToolCall") => {
+            let name = item["tool"].as_str().unwrap_or("mcp");
+            let summary = tool_summary(&item["arguments"]);
+            let detail = tool_detail(&item["arguments"]);
+            let output = result_text(&item["result"]["content"]);
+            let is_error = item["status"].as_str() == Some("failed") || !item["error"].is_null();
+            tool_pair(ToolPair { id, name, summary, detail, is_error, output })
+        }
+        Some("CollabAgentToolCall") => {
+            let name = item["tool"].as_str().unwrap_or("agent");
+            let prompt = item["prompt"].as_str().unwrap_or_default();
+            let summary = clip(&one_line(prompt), SUMMARY_CAP);
+            let detail = clip(prompt.trim(), OUTPUT_CAP);
+            let is_error = item["status"].as_str() == Some("failed");
+            tool_pair(ToolPair { id, name, summary, detail, is_error, output: String::new() })
+        }
+        Some("ImageView") => {
+            let path = item["path"].as_str().unwrap_or_default();
+            tool_pair(ToolPair {
+                id,
+                name: "Read",
+                summary: clip(&one_line(path), SUMMARY_CAP),
+                detail: clip(path, OUTPUT_CAP),
+                is_error: false,
+                output: String::new(),
+            })
+        }
+        Some("Extension") => {
+            let kind = item["kind"].as_str().unwrap_or("extension");
+            let name = match kind {
+                "web.search" => "WebSearch",
+                "image_gen.generation" => "ImageGen",
+                _ => kind,
+            };
+            let arg = item["query"]
+                .as_str()
+                .or_else(|| item["revisedPrompt"].as_str())
+                .or_else(|| item["savedPath"].as_str())
+                .unwrap_or_default();
+            let output = item["savedPath"].as_str().unwrap_or_default();
+            let is_error = item["status"].as_str() == Some("failed");
+            tool_pair(ToolPair {
+                id,
+                name,
+                summary: clip(&one_line(arg), SUMMARY_CAP),
+                detail: clip(arg.trim(), OUTPUT_CAP),
+                is_error,
+                output: clip(output, OUTPUT_CAP),
+            })
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn codex_entry_items(entry: &Value) -> Vec<Value> {
+    if entry["type"].as_str() != Some("event_msg") {
+        return Vec::new();
+    }
+    let payload = &entry["payload"];
+    let fallback_id = entry["ordinal"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| entry["timestamp"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    match payload["type"].as_str() {
+        Some("user_message") => payload["message"]
+            .as_str()
+            .and_then(user_text)
+            .map(|text| vec![json!({ "id": format!("u:{fallback_id}"), "kind": "user", "text": text })])
+            .unwrap_or_default(),
+        Some("agent_message") => payload["message"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|text| vec![json!({ "id": format!("a:{fallback_id}"), "kind": "assistant", "text": clip(text, TEXT_CAP) })])
+            .unwrap_or_default(),
+        Some("item_completed") => codex_item_completed(&payload["item"]),
+        _ => Vec::new(),
+    }
+}
+
 fn entry_items(entry: &Value) -> Vec<Value> {
+    if entry.get("payload").is_some_and(|p| p.is_object()) {
+        return codex_entry_items(entry);
+    }
     if entry["isSidechain"].as_bool() == Some(true) || entry["isMeta"].as_bool() == Some(true) {
         return Vec::new();
     }
@@ -236,5 +401,26 @@ mod tests {
         assert_eq!(chunk.items[0]["text"], "m5");
         assert_eq!(chunk.offset, raw.len() as u64);
         let _ = std::fs::remove_file(dir);
+    }
+
+    #[test]
+    fn maps_codex_rollout_lines_and_ignores_duplicates() {
+        let raw = [
+            r#"{"type":"session_meta","payload":{"id":"s1"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"id":"u1","type":"UserMessage","content":[{"type":"Text","text":"run tests"}]}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"id":"c1","type":"CommandExecution","command":["pwsh","-Command","cargo  test"],"aggregated_output":"ok\n","exit_code":0,"status":"completed"}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"id":"f1","type":"FileChange","changes":{"src/lib.rs":{"unified_diff":"@@ -1 +1 @@\n-old\n+new\n"}},"status":"completed"}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"id":"a1","type":"AgentMessage","content":[{"type":"Text","text":"All passing."}]}}}"#,
+        ]
+        .join("\n");
+        let items = parse_lines(&raw);
+        assert_eq!(items.len(), 6);
+        assert_eq!(items[0], json!({ "id": "u1", "kind": "user", "text": "run tests" }));
+        assert_eq!(items[1], json!({ "id": "c1:call", "kind": "tool", "toolUseId": "c1", "name": "Bash", "summary": "cargo test", "detail": "cargo  test" }));
+        assert_eq!(items[2], json!({ "id": "c1:res", "kind": "toolResult", "toolUseId": "c1", "isError": false, "output": "ok" }));
+        assert_eq!(items[3], json!({ "id": "f1:call", "kind": "tool", "toolUseId": "f1", "name": "Edit", "summary": "src/lib.rs", "detail": "src/lib.rs" }));
+        assert_eq!(items[4], json!({ "id": "f1:res", "kind": "toolResult", "toolUseId": "f1", "isError": false, "output": "@@ -1 +1 @@\n-old\n+new" }));
+        assert_eq!(items[5], json!({ "id": "a1", "kind": "assistant", "text": "All passing." }));
     }
 }

@@ -45,7 +45,7 @@ pub(crate) fn remote_pty_message_allowed(text: &str) -> bool {
 pub use prompt::{wait as wait_prompt, Wait as PromptWait};
 
 use super::{
-    activity, attach, build_frame, chat, files, hidden_command, find_transcript, forget_session, git_glance, panorama_dir, read_binding_rec, reflow,
+    activity, attach, build_frame, chat, files, find_agent_transcript, forget_session, git_glance, hidden_command, panorama_dir, read_binding_rec, reflow,
     run_commands, run_lookup_tile, run_start_json, run_status_json, run_stop, sessions, ui, urlenc,
     write_atomic, write_input, Session,
 };
@@ -614,7 +614,8 @@ fn tile_snippet(session: &Session, agent: Option<&str>) -> Option<Value> {
 
 fn transcript_mtime_ms(binding: &Value) -> Option<u64> {
     let session_id = binding["agentSessionId"].as_str()?;
-    let path = find_transcript(session_id, binding["cwd"].as_str())?;
+    let agent = binding["agent"].as_str().unwrap_or("claude");
+    let path = find_agent_transcript(agent, session_id, binding["cwd"].as_str())?;
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     modified
         .duration_since(std::time::UNIX_EPOCH)
@@ -723,7 +724,12 @@ pub fn agent_event(tile_id: &str, event: &str, evt: &Value) -> Option<String> {
             view["id"].as_str().map(str::to_string)
         }
         "stop" => {
-            notify(tile_id, "Claude finished", None);
+            let title = if evt["agent"].as_str() == Some("codex") {
+                "Codex finished"
+            } else {
+                "Claude finished"
+            };
+            notify(tile_id, title, None);
             None
         }
         _ => None,
@@ -791,6 +797,9 @@ fn notify(tile_id: &str, title: &str, prompt: Option<&Value>) {
     let project = tile_project(tile_id);
     let body = format!("{project} · {}", host_name());
     let extra = prompt.map(prompt_push).unwrap_or(Value::Null);
+    let agent = read_binding_rec(tile_id)
+        .and_then(|b| b["agent"].as_str().map(String::from))
+        .unwrap_or_else(|| "claude".into());
     let messages: Vec<Value> = tokens
         .iter()
         .map(|to| {
@@ -806,7 +815,7 @@ fn notify(tile_id: &str, title: &str, prompt: Option<&Value>) {
                     "hostKey": host_key,
                     "tileId": tile_id,
                     "title": project,
-                    "agent": "claude",
+                    "agent": agent,
                     "promptId": extra["promptId"],
                     "kind": extra["kind"],
                 },
@@ -913,11 +922,14 @@ struct ChatCursor {
 
 fn transcript_for(tile_id: &str) -> Result<(String, Option<PathBuf>), String> {
     let binding = read_binding_rec(tile_id).ok_or("tile has no agent")?;
-    if binding["agent"].as_str() != Some("claude") {
-        return Err("chat is only available for Claude tiles".into());
+    let agent = binding["agent"].as_str().unwrap_or_default();
+    if agent != "claude" && agent != "codex" {
+        return Err("chat is only available for Claude and Codex tiles".into());
     }
-    let session_id = binding["agentSessionId"].as_str().ok_or("agent session not started")?;
-    Ok((session_id.to_string(), find_transcript(session_id, binding["cwd"].as_str())))
+    let Some(session_id) = binding["agentSessionId"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok((String::new(), None));
+    };
+    Ok((session_id.to_string(), find_agent_transcript(agent, session_id, binding["cwd"].as_str())))
 }
 
 fn chat_update(tile_id: &str, cursor: Option<&ChatCursor>) -> Result<(ChatCursor, Value), String> {
