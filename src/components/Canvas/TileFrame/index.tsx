@@ -42,7 +42,8 @@ import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { operationTag } from '~/usecase/util/repoOperation';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
-import { TILE_GAP, TILE_HEADER } from '~/usecase/util/constants';
+import { TILE_GAP } from '~/usecase/util/constants';
+import { termGridOf } from '~/usecase/util/termGrid';
 import { getBinding, formatCombo } from '~/usecase/util/keybindings';
 
 import styles from './styles.module.scss';
@@ -680,8 +681,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ? { width: bodyW, height: bodyH }
     : { width: bodyW, height: bodyH, transform: `scale(${k})`, transformOrigin: 'top left' as const };
   const term = tile.type === 'term' && live;
-  const termCols = Math.max(20, Math.floor((bodyW - 8) / cellW));
-  const termRows = Math.max(2, Math.floor((bodyH - TILE_HEADER - 11) / 15));
+  const { cols: termCols, rows: termRows } = termGridOf(bodyW + TILE_GAP, bodyH + TILE_GAP, cellW);
   const anim = fullscreen ? (exiting ? styles.fsExit : styles.fsEnter) : null;
   const cls = [styles.tile, note && styles.sticky, tile.pinned && styles.pinnedTile, note && linkActive && styles.linkActive, selected && !fullscreen && styles.selected, active && !fullscreen && styles.active, anim].filter(Boolean).join(' ');
   const gone = { display: hidden ? 'none' : undefined };

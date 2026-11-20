@@ -40,6 +40,7 @@ import CrashNotice from '~/components/commons/CrashNotice';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import ErrorBoundary from '~/components/commons/ErrorBoundary';
 import { isDirty, subscribeDirty } from '~/usecase/util/dirtyFiles';
+import { fitCells, TERM_ROW_PX } from '~/usecase/util/termGrid';
 import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { PiLogo, KimiLogo, CodexLogo, OpenCodeLogo, GenericAgentLogo, AntigravityLogo } from '~/components/commons/AgentIcons';
@@ -161,8 +162,8 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
 
   const termTiles = React.useMemo(() => groupTiles.filter((t) => t.type === 'term'), [groupTiles]);
 
-  const termCols = Math.max(20, Math.floor((bodySize.w - 16) / cellW));
-  const termRows = Math.max(2, Math.floor((bodySize.h - 16) / 15));
+  const termCols = Math.max(20, fitCells(bodySize.w, 8, cellW));
+  const termRows = Math.max(2, fitCells(bodySize.h, 10, TERM_ROW_PX));
 
   const noteSections = activeTile?.type === 'note' ? noteTabs(activeTile.content) : [];
   const activeNoteTabName = activeTile?.type === 'note' ? parseFrontField(activeTile.content, 'tab') : '';

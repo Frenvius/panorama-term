@@ -1,4 +1,7 @@
-export const TERM_ROW_PX = 15;
+import { TERM_ROW_PX } from '~/usecase/util/termGrid';
+
+export { TERM_ROW_PX };
+
 const TERM_TOP_INSET_PX = 4;
 const TERM_BOTTOM_INSET_PX = 6;
 const BAR_BOTTOM_INSET_PX = 4;
