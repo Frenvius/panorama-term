@@ -48,6 +48,9 @@ const mountOverlay = () => {
 
 const isOverlay = getCurrentWindow().label === 'notif';
 
+const blockNativeMenu = (e: MouseEvent) => e.preventDefault();
+window.addEventListener('contextmenu', blockNativeMenu, true);
+
 void loadHackFont();
 const boot = async (): Promise<void> => {
   await Promise.all([initSettings().catch(() => {}), initSidecar()]);
