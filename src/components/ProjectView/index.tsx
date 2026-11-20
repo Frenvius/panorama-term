@@ -62,6 +62,7 @@ const ProjectView = () => {
     tiles,
     frames,
     projects,
+    projectView,
     panelState,
     activeTileId,
     activeProject,
@@ -86,6 +87,7 @@ const ProjectView = () => {
     openDiff,
     openRunOutput,
     closeTile,
+    detachTile,
     reopenTile,
     patchTile,
     setTileCwd,
@@ -179,6 +181,14 @@ const ProjectView = () => {
     [frames, projects, tiles]
   );
 
+  const detachedTileIds = React.useMemo(() => {
+    const docked = new Set<string>();
+    for (const panel of Object.values(projectView.byProject)) {
+      for (const group of Object.values(panel.groups)) for (const id of group.tileIds) docked.add(id);
+    }
+    return new Set(tiles.filter((t) => t.type === 'term' && !docked.has(t.id)).map((t) => t.id));
+  }, [projectView.byProject, tiles]);
+
   const projectNotes = React.useMemo(
     () => (activeProject ? tiles.filter((t) => t.type === 'note' && tileMatchesProject(t, activeProject, projects)) : []),
     [activeProject, projects, tiles]
@@ -202,7 +212,18 @@ const ProjectView = () => {
     },
     [tileMap, closeTile]
   );
-  closeTileRef.current = requestCloseTile;
+
+  const requestCloseTab = React.useCallback(
+    (id: string) => {
+      if (tileMap.get(id)?.type === 'term') {
+        detachTile(id);
+        return;
+      }
+      requestCloseTile(id);
+    },
+    [tileMap, detachTile, requestCloseTile]
+  );
+  closeTileRef.current = requestCloseTab;
 
   const discardTile = () => {
     if (tileToClose) closeTile(tileToClose.id);
@@ -486,7 +507,8 @@ const ProjectView = () => {
   const splitTreeHandlers: PanelSplitTreeProps['handlers'] = {
     onFocusGroup: focusGroup,
     onCloseGroup: closeGroup,
-    onCloseTile: requestCloseTile,
+    onCloseTile: requestCloseTab,
+    onTerminateTile: requestCloseTile,
     onDuplicateTile: handleDuplicateTile,
     onToggleMaximize: toggleMaximizeGroup,
     onNewNote: handleGroupNewNote,
@@ -637,7 +659,7 @@ const ProjectView = () => {
               activeTileId={activeTileId}
               activeGroupKey={pvActiveGroupKey}
               recentProjects={recentProjects}
-              signals={{ alerts: alertKinds, agents }}
+              signals={{ alerts: alertKinds, agents, detached: detachedTileIds }}
               actions={projectActions}
             />
           );
@@ -678,6 +700,7 @@ const ProjectView = () => {
       recentProjects,
       alertKinds,
       agents,
+      detachedTileIds,
       projectActions,
       inspectorProject,
       openFile,

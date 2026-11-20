@@ -900,6 +900,22 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     [activateTile, projectFrameSlot]
   );
 
+  const detachTile = React.useCallback((id: string) => {
+    setFallbackActiveTileId((a) => (a === id ? null : a));
+    setProjectView((prev) => {
+      const nextByProject: Record<string, ProjectPanelState> = {};
+      for (const [proj, panel] of Object.entries(prev.byProject)) {
+        nextByProject[proj] = removeTileFromPanelState(panel, id);
+      }
+      const next: ProjectViewState = {
+        ...prev,
+        byProject: nextByProject
+      };
+      projectViewRef.current = next;
+      return next;
+    });
+  }, []);
+
   const closeTile = React.useCallback(
     (id: string) => {
       clearAlert(id);
@@ -925,22 +941,10 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         .map((t) => ((t.linkedTo ?? []).includes(id) ? { ...t, linkedTo: (t.linkedTo ?? []).filter((x) => x !== id) } : t));
       tilesRef.current = nextTiles;
       setTiles(nextTiles);
-      setFallbackActiveTileId((a) => (a === id ? null : a));
-      setProjectView((prev) => {
-        const nextByProject: Record<string, ProjectPanelState> = {};
-        for (const [proj, panel] of Object.entries(prev.byProject)) {
-          nextByProject[proj] = removeTileFromPanelState(panel, id);
-        }
-        const next: ProjectViewState = {
-          ...prev,
-          byProject: nextByProject
-        };
-        projectViewRef.current = next;
-        return next;
-      });
+      detachTile(id);
       void killPtySession(id);
     },
-    [bindKey]
+    [bindKey, detachTile]
   );
 
   const reopenTile = React.useCallback(() => {
@@ -1190,6 +1194,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     openDiff,
     openRunOutput,
     closeTile,
+    detachTile,
     reopenTile,
     patchTile,
     setTileCwd,

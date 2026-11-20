@@ -5,6 +5,7 @@ import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 export interface ProjectsPanelSignals {
   alerts: Map<string, NotifyKind>;
   agents: Map<string, 'idle' | 'busy'>;
+  detached?: Set<string>;
 }
 
 export interface ProjectsPanelActions {

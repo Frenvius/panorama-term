@@ -10,6 +10,7 @@ import React from 'react';
 import {
   X,
   Plus,
+  Power,
   Rows2,
   Pencil,
   Columns2,
@@ -340,7 +341,24 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
         }
       );
     }
-    items.push('separator', {
+    items.push('separator');
+    if (tile.type === 'term') {
+      items.push(
+        {
+          label: 'Close tab',
+          icon: <X size={15} strokeWidth={1.75} />,
+          onSelect: () => handlers.onCloseTile(tile.id)
+        },
+        {
+          label: 'Terminate',
+          icon: <Power size={15} strokeWidth={1.75} />,
+          danger: true,
+          onSelect: () => handlers.onTerminateTile(tile.id)
+        }
+      );
+      return items;
+    }
+    items.push({
       label: 'Close panel',
       icon: <X size={15} strokeWidth={1.75} />,
       danger: true,

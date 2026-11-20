@@ -95,13 +95,16 @@ const TileRow = ({
 
   const tileAlert = signals.alerts.has(tile.id);
   const tileAgent = signals.agents.get(tile.id);
-  const dotKind: 'alert' | 'busy' | 'idle' | null = tileAlert
+  const isDetached = Boolean(signals.detached?.has(tile.id));
+  const dotKind: 'alert' | 'busy' | 'idle' | 'detached' | null = tileAlert
     ? 'alert'
     : tileAgent === 'busy'
       ? 'busy'
       : tileAgent === 'idle'
         ? 'idle'
-        : null;
+        : isDetached
+          ? 'detached'
+          : null;
 
   const cwdBase = tile.cwd ? tile.cwd.split(/[\\/]/).pop() ?? '' : '';
 
@@ -184,7 +187,14 @@ const TileRow = ({
         {flatGroupTitle && <span className={styles.flatGroupLabel}>{flatGroupTitle}</span>}
       </div>
       <div className={styles.tileRight}>
-        {dotKind && <span className={styles.statusDot} data-kind={dotKind} />}
+        {dotKind && (
+          <span
+            data-kind={dotKind}
+            className={styles.statusDot}
+            data-tooltip={isDetached ? 'Running in background' : undefined}
+            data-tooltip-place="right"
+          />
+        )}
         <button type="button" onClick={handleClose} aria-label="Close tile" className={styles.closeTileBtn}>
           <X size={12} strokeWidth={2} />
         </button>

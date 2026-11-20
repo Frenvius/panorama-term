@@ -79,6 +79,7 @@ export interface PanelGroupViewHandlers {
   onFocusGroup: (groupId: string) => void;
   onCloseGroup: (groupId: string) => void;
   onCloseTile: (tileId: string) => void;
+  onTerminateTile: (tileId: string) => void;
   onDuplicateTile: (tileId: string) => void;
   onToggleMaximize: (groupId: string) => void;
   onNewNote: (groupId: string) => void;
