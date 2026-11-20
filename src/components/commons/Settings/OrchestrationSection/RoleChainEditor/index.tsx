@@ -1,16 +1,13 @@
 import type { Role, OrchAgent } from '~/domain/interfaces/orch.interface';
 
-import React from 'react';
 import { X, ChevronUp, ChevronDown } from 'lucide-react';
 
-import settingsStyles from '~/components/commons/Settings/styles.module.scss';
+import Select from '~/components/commons/Settings/Select';
 import styles from '../styles.module.scss';
 
 interface RoleChainEditorProps {
   role: Role;
-  label: string;
   chain: string[];
-  description: string;
   agents: OrchAgent[];
   onChange: (chain: string[]) => void;
 }
@@ -28,7 +25,7 @@ const allProfiles = (agents: OrchAgent[]): string[] => {
   return result;
 };
 
-const RoleChainEditor = ({ role, label, description, chain, agents, onChange }: RoleChainEditorProps) => {
+const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps) => {
   const profileOptions = allProfiles(agents);
 
   const moveUp = (i: number) => {
@@ -49,52 +46,63 @@ const RoleChainEditor = ({ role, label, description, chain, agents, onChange }: 
     onChange(chain.filter((_, idx) => idx !== i));
   };
 
-  const addEntry = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
+  const addEntry = (val: string) => {
     if (!val) return;
-    e.target.value = '';
     onChange([...chain, val]);
   };
 
+  const selectOptions = profileOptions
+    .filter((p) => !chain.includes(p))
+    .map((p) => ({ value: p, label: p }));
+
   return (
-    <div className={settingsStyles.group} data-role={role}>
-      <p className={settingsStyles.groupLabel}>{label}</p>
-      <p className={settingsStyles.hint}>{description}</p>
-      <div className={styles.workersList}>
-        {chain.map((entry, i) => (
-          <div key={i} className={styles.workerRow}>
-            <span className={styles.workerChip}>{entry}</span>
-            <button
-              type="button"
-              className={styles.arrowBtn}
-              disabled={i === 0}
-              onClick={() => moveUp(i)}
-              aria-label="Move up"
-            >
-              <ChevronUp size={13} strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className={styles.arrowBtn}
-              disabled={i === chain.length - 1}
-              onClick={() => moveDown(i)}
-              aria-label="Move down"
-            >
-              <ChevronDown size={13} strokeWidth={2} />
-            </button>
-            <button type="button" className={styles.removeBtn} onClick={() => remove(i)} aria-label="Remove">
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        ))}
-      </div>
-      {profileOptions.length > 0 && (
-        <select defaultValue="" onChange={addEntry} className={styles.select}>
-          <option value="" disabled>Add entry...</option>
-          {profileOptions.map((opt) => (
-            <option key={opt} value={opt}>{opt}</option>
-          ))}
-        </select>
+    <div data-role={role}>
+      {chain.length === 0 ? (
+        <p className={styles.chainEmpty}>No models in chain.</p>
+      ) : (
+        <div className={styles.workersList}>
+          {chain.map((entry, i) => {
+            const handleMoveUp = () => moveUp(i);
+            const handleMoveDown = () => moveDown(i);
+            const handleRemove = () => remove(i);
+            return (
+              <div key={i} className={styles.workerRow}>
+                <span className={styles.workerChip}>{entry}</span>
+                <button
+                  type="button"
+                  className={styles.arrowBtn}
+                  disabled={i === 0}
+                  onClick={handleMoveUp}
+                  aria-label="Move up"
+                >
+                  <ChevronUp size={13} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className={styles.arrowBtn}
+                  disabled={i === chain.length - 1}
+                  onClick={handleMoveDown}
+                  aria-label="Move down"
+                >
+                  <ChevronDown size={13} strokeWidth={2} />
+                </button>
+                <button type="button" className={styles.removeBtn} onClick={handleRemove} aria-label="Remove">
+                  <X size={13} strokeWidth={2} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {selectOptions.length > 0 && (
+        <div className={styles.chainAddRow}>
+          <Select
+            options={[{ value: '', label: 'Add model...' }, ...selectOptions]}
+            value=""
+            onChange={addEntry}
+            placeholder="Add model..."
+          />
+        </div>
       )}
     </div>
   );

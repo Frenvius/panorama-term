@@ -1,0 +1,32 @@
+.statusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  min-height: 48px;
+}
+
+.statusLabel {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.statusActions {
+  display: flex;
+  gap: 8px;
+}
+
+.error {
+  padding: 4px 16px 12px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.pairForm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}

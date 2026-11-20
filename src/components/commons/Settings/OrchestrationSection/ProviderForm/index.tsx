@@ -4,6 +4,9 @@ import type { SaveProviderOpts } from '~/adapter/orch/orch.client';
 import React from 'react';
 
 import { testProvider } from '~/adapter/orch/orch.client';
+import Button from '~/components/commons/Settings/Button';
+import Field, { Input } from '~/components/commons/Settings/Field';
+import Select from '~/components/commons/Settings/Select';
 import styles from '../styles.module.scss';
 
 interface ProviderFormProps {
@@ -24,7 +27,10 @@ const ProviderForm = ({ presets, provider, onSave, onDelete, onCancel }: Provide
   const [apiKey, setApiKey] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
+  const [saveError, setSaveError] = React.useState('');
   const [testResult, setTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+
+  const presetOptions = presets.map((p) => ({ value: p.id, label: p.label }));
 
   const applyPreset = (id: string) => {
     const previous = presets.find((pr) => pr.id === preset);
@@ -39,10 +45,13 @@ const ProviderForm = ({ presets, provider, onSave, onDelete, onCancel }: Provide
 
   const handleSave = () => {
     setSaving(true);
+    setSaveError('');
     const opts: SaveProviderOpts = { preset, label, baseUrl, mainModel, fastModel };
     if (provider?.id) opts.id = provider.id;
     if (apiKey) opts.apiKey = apiKey;
-    onSave(opts).finally(() => setSaving(false));
+    onSave(opts)
+      .catch((e: unknown) => setSaveError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSaving(false));
   };
 
   const handleTest = () => {
@@ -57,66 +66,58 @@ const ProviderForm = ({ presets, provider, onSave, onDelete, onCancel }: Provide
 
   const handleDelete = () => {
     if (!provider?.id || !onDelete) return;
-    onDelete(provider.id);
+    void onDelete(provider.id);
   };
 
   return (
     <div className={styles.form}>
       <p className={styles.formTitle}>{provider ? `Edit ${provider.label}` : 'Add provider'}</p>
-      <div className={styles.field}>
-        <label className={styles.fieldLabel}>Preset</label>
-        <select value={preset} onChange={(e) => applyPreset(e.target.value)} className={styles.select}>
-          {presets.map((p) => (
-            <option key={p.id} value={p.id}>{p.label}</option>
-          ))}
-        </select>
-      </div>
-      <div className={styles.field}>
-        <label className={styles.fieldLabel}>Label</label>
-        <input value={label} onChange={(e) => setLabel(e.target.value)} className={styles.input} placeholder="My provider" />
-      </div>
-      <div className={styles.field}>
-        <label className={styles.fieldLabel}>Base URL</label>
-        <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className={styles.input} placeholder="https://..." />
-      </div>
-      <div className={styles.formRow}>
-        <div className={styles.field} style={{ flex: 1 }}>
-          <label className={styles.fieldLabel}>Main model</label>
-          <input value={mainModel} onChange={(e) => setMainModel(e.target.value)} className={styles.input} />
+      <div className={styles.formFields}>
+        <Field label="Preset">
+          <Select options={presetOptions} value={preset} onChange={applyPreset} />
+        </Field>
+        <Field label="Label">
+          <Input value={label} onChange={setLabel} placeholder="My provider" />
+        </Field>
+        <Field label="Base URL">
+          <Input value={baseUrl} onChange={setBaseUrl} placeholder="https://..." />
+        </Field>
+        <div className={styles.formRow}>
+          <Field label="Main model">
+            <Input value={mainModel} onChange={setMainModel} />
+          </Field>
+          <Field label="Fast model">
+            <Input value={fastModel} onChange={setFastModel} />
+          </Field>
         </div>
-        <div className={styles.field} style={{ flex: 1 }}>
-          <label className={styles.fieldLabel}>Fast model</label>
-          <input value={fastModel} onChange={(e) => setFastModel(e.target.value)} className={styles.input} />
-        </div>
+        <Field label={`API key${provider?.hasKey ? ' (leave empty to keep stored key)' : ''}`}>
+          <Input
+            type="password"
+            value={apiKey}
+            onChange={setApiKey}
+            placeholder={provider?.hasKey ? '(stored)' : 'sk-...'}
+          />
+        </Field>
       </div>
-      <div className={styles.field}>
-        <label className={styles.fieldLabel}>API key{provider?.hasKey ? ' (leave empty to keep stored key)' : ''}</label>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          className={styles.input}
-          placeholder={provider?.hasKey ? '(stored)' : 'sk-...'}
-        />
-      </div>
+      {saveError && <p className={styles.formError}>{saveError}</p>}
       <div className={styles.formActions}>
-        <button type="button" className={styles.saveBtn} disabled={saving || !label} onClick={handleSave}>
-          {saving ? 'Saving...' : 'Save'}
-        </button>
+        <Button variant="primary" disabled={saving || !label} busy={saving} busyLabel="Saving..." onClick={handleSave}>
+          Save
+        </Button>
         {provider?.id && (
-          <button type="button" className={styles.testBtn} disabled={testing} onClick={handleTest}>
-            {testing ? 'Testing...' : 'Test'}
-          </button>
+          <Button disabled={testing} busy={testing} busyLabel="Testing..." onClick={handleTest}>
+            Test
+          </Button>
         )}
         {provider?.id && onDelete && (
-          <button type="button" className={styles.deleteBtn} onClick={handleDelete}>Delete</button>
+          <Button variant="danger" onClick={handleDelete}>Delete</Button>
         )}
         {testResult && (
           <span className={`${styles.testResult} ${testResult.ok ? styles.ok : styles.fail}`}>
             {testResult.ok ? 'Reachable' : testResult.message}
           </span>
         )}
-        <button type="button" className={styles.cancelBtn} onClick={onCancel}>Cancel</button>
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   );

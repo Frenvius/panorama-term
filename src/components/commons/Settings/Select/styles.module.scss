@@ -1,0 +1,104 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  min-width: 140px;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 13px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  transition: border-color 0.12s ease;
+
+  &:hover {
+    border-color: var(--border-3);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  &.open {
+    border-color: var(--accent);
+  }
+}
+
+.placeholder {
+  color: var(--text-dim);
+}
+
+.chevron {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+
+  .open & {
+    transform: rotate(180deg);
+  }
+}
+
+.popover {
+  position: fixed;
+  z-index: 70;
+  overflow-y: auto;
+  max-height: 280px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-pop);
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  min-height: 36px;
+  transition: background 0.08s ease;
+
+  &:hover,
+  &.focused {
+    background: var(--hover-2);
+  }
+}
+
+.optionText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.optionLabel {
+  color: var(--text-strong);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optionSecondary {
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.check {
+  color: var(--accent);
+  flex-shrink: 0;
+}

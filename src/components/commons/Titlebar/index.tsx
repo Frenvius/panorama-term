@@ -69,7 +69,7 @@ const Titlebar = () => {
   React.useEffect(() => onSettingsRequest(setSettingsSection), []);
 
   const close = () => void win.close();
-  const openSettings = () => setSettingsSection('general');
+  const openSettings = () => setSettingsSection('canvas');
   const closeSettings = () => setSettingsSection(null);
 
   const onDragStart = (e: React.MouseEvent) => {

@@ -6,17 +6,22 @@ import { Plus } from 'lucide-react';
 
 import { ROLES, ROLE_META } from '~/usecase/util/orch';
 import { orchSettingsActions, useOrchSettings } from '~/usecase/hooks/useOrchSettings';
-import ToggleOption from '~/components/commons/Settings/ToggleOption';
-import settingsStyles from '~/components/commons/Settings/styles.module.scss';
+import Group from '~/components/commons/Settings/Group';
+import Row from '~/components/commons/Settings/Row';
+import AgentLogo from '~/components/commons/AgentLogo';
+import Switch from '~/components/commons/Settings/Switch';
+import Button from '~/components/commons/Settings/Button';
+import Segmented from '~/components/commons/Settings/Segmented';
+import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import ProviderForm from './ProviderForm';
 import RoleChainEditor from './RoleChainEditor';
 import styles from './styles.module.scss';
 
-const HINT_LABELS: Record<OrchestrateHint, string> = {
-  off: 'Off',
-  auto: 'Auto',
-  suggest: 'Suggest'
-};
+const HINT_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'suggest', label: 'Suggest' },
+  { value: 'auto', label: 'Auto' }
+];
 
 const HINT_DESCRIPTIONS: Record<OrchestrateHint, string> = {
   off: 'No orchestration hint is injected.',
@@ -24,19 +29,18 @@ const HINT_DESCRIPTIONS: Record<OrchestrateHint, string> = {
   suggest: 'Agents propose orchestrating large work and wait for your approval.'
 };
 
-const HINT_ORDER: OrchestrateHint[] = ['off', 'suggest', 'auto'];
-
 const OrchestrationSection = () => {
   const { settings, presets, agents, loading } = useOrchSettings();
   const [editingProvider, setEditingProvider] = React.useState<OrchProvider | null | 'new'>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
 
   const saveRoleChain = (role: Role, chain: string[]) => {
     const roles = { [role]: chain } as Partial<RoleChains>;
     void orchSettingsActions.updateSettings({ roles });
   };
 
-  const setOrchestrateHint = (hint: OrchestrateHint) => {
-    void orchSettingsActions.updateSettings({ orchestrateHint: hint });
+  const setOrchestrateHint = (hint: string) => {
+    void orchSettingsActions.updateSettings({ orchestrateHint: hint as OrchestrateHint });
   };
 
   const toggleShowWorkerTiles = () => {
@@ -55,31 +59,38 @@ const OrchestrationSection = () => {
   const handleSaveProvider = (opts: SaveProviderOpts): Promise<void> =>
     orchSettingsActions.saveProvider(opts).then(() => setEditingProvider(null));
 
-  const handleDeleteProvider = (id: string): Promise<void> =>
-    orchSettingsActions.deleteProvider(id).then(() => setEditingProvider(null));
+  const confirmDelete = (id: string) => setDeleteTarget(id);
+  const cancelDelete = () => setDeleteTarget(null);
+
+  const doDeleteProvider = (): Promise<void> => {
+    if (!deleteTarget) return Promise.resolve();
+    return orchSettingsActions.deleteProvider(deleteTarget).then(() => {
+      setDeleteTarget(null);
+      setEditingProvider(null);
+    });
+  };
+
+  const handleDeleteProvider = (id: string): Promise<void> => {
+    confirmDelete(id);
+    return Promise.resolve();
+  };
 
   const openAdd = () => setEditingProvider('new');
   const closeForm = () => setEditingProvider(null);
 
   if (loading && !settings) {
     return (
-      <div className={settingsStyles.pane}>
-        <div className={settingsStyles.paneHead}>
-          <h2 className={settingsStyles.title}>Orchestration</h2>
-        </div>
-        <p className={settingsStyles.hint}>Loading...</p>
-      </div>
+      <Group label="Runs">
+        <Row label="Loading..." />
+      </Group>
     );
   }
 
   if (!settings) {
     return (
-      <div className={settingsStyles.pane}>
-        <div className={settingsStyles.paneHead}>
-          <h2 className={settingsStyles.title}>Orchestration</h2>
-        </div>
-        <p className={settingsStyles.hint}>Unable to load settings. Is the brain running?</p>
-      </div>
+      <Group label="Runs">
+        <Row label="Unable to load settings." description="Is the brain running?" />
+      </Group>
     );
   }
 
@@ -87,115 +98,106 @@ const OrchestrationSection = () => {
   const builtinAgents = agents.filter((a) => a.kind === 'builtin');
 
   return (
-    <div className={settingsStyles.pane}>
-      <div className={settingsStyles.paneHead}>
-        <h2 className={settingsStyles.title}>Orchestration</h2>
-        <p className={settingsStyles.subtitle}>Agents and models used for multi-agent runs.</p>
-      </div>
-      <div className={settingsStyles.group}>
-        <div className={settingsStyles.options}>
-          <ToggleOption
-            label="Open worker tiles automatically"
-            checked={settings.showWorkerTiles}
-            description="Off: workers run in the background; open one from the run board."
-            onToggle={toggleShowWorkerTiles}
-          />
-        </div>
-      </div>
-      <div className={settingsStyles.group}>
-        <p className={settingsStyles.groupLabel}>Orchestrate hint</p>
-        <div className={styles.hintSegmented}>
-          {HINT_ORDER.map((h) => {
-            const handleHintClick = () => setOrchestrateHint(h);
-            return (
-              <button
-                key={h}
-                type="button"
-                className={`${styles.hintSegBtn}${hint === h ? ` ${styles.hintSegActive}` : ''}`}
-                onClick={handleHintClick}
-              >
-                {HINT_LABELS[h]}
-              </button>
-            );
-          })}
-        </div>
-        <p className={settingsStyles.hint}>{HINT_DESCRIPTIONS[hint]}</p>
-      </div>
-      <div className={settingsStyles.group}>
-        <p className={settingsStyles.groupLabel}>Roles</p>
+    <>
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete provider"
+          message="Delete this provider? The API key will be removed."
+          confirmLabel="Delete"
+          danger
+          onConfirm={doDeleteProvider}
+          onCancel={cancelDelete}
+        />
+      )}
+      <Group label="Runs">
+        <Row
+          settingId="orchestration.workerTiles"
+          label="Open worker tiles automatically"
+          description="Off: workers run in the background; open one from the run board."
+        >
+          <Switch checked={settings.showWorkerTiles} onChange={toggleShowWorkerTiles} label="Open worker tiles automatically" />
+        </Row>
+        <Row
+          settingId="orchestration.hint"
+          label="Orchestrate hint"
+          description={HINT_DESCRIPTIONS[hint]}
+        >
+          <Segmented options={HINT_OPTIONS} value={hint} onChange={setOrchestrateHint} label="Orchestrate hint" />
+        </Row>
+      </Group>
+      <Group label="Roles">
         {ROLES.map((role) => {
           const handleChange = (chain: string[]) => saveRoleChain(role, chain);
           const chain = settings.roles?.[role] ?? [];
           return (
-            <RoleChainEditor
-              key={role}
-              role={role}
-              label={ROLE_META[role].label}
-              description={ROLE_META[role].description}
-              chain={chain}
-              agents={agents}
-              onChange={handleChange}
-            />
+            <div key={role}>
+              <Row
+                settingId="orchestration.roles"
+                label={ROLE_META[role].label}
+                description={ROLE_META[role].description}
+                stacked
+              >
+                <RoleChainEditor role={role} chain={chain} agents={agents} onChange={handleChange} />
+              </Row>
+            </div>
           );
         })}
-      </div>
-      <div className={settingsStyles.group}>
-        <div className={styles.providerHeader}>
-          <p className={settingsStyles.groupLabel} style={{ margin: 0 }}>Providers</p>
-          <button type="button" className={styles.addBtn} onClick={openAdd}>
-            <Plus size={12} strokeWidth={2} />
-            Add provider
-          </button>
-        </div>
+      </Group>
+      <Group
+        label="Providers"
+        action={
+          <Button size="sm" icon={Plus} onClick={openAdd}>Add provider</Button>
+        }
+      >
         {settings.providers.length === 0 && editingProvider !== 'new' && (
-          <p className={settingsStyles.hint}>No custom providers. Add one to use external Claude-compatible APIs.</p>
+          <Row label="No custom providers." description="Add one to use external Claude-compatible APIs." />
         )}
-        {settings.providers.map((p) => (
-          <React.Fragment key={p.id}>
-            <div
-              className={`${styles.providerRow} ${editingProvider && editingProvider !== 'new' && editingProvider.id === p.id ? styles.active : ''}`}
-              onClick={() => setEditingProvider(editingProvider !== 'new' && editingProvider?.id === p.id ? null : p)}
-            >
-              <span className={`${styles.keyDot} ${p.hasKey ? styles.hasKey : ''}`} />
-              <span className={styles.providerLabel}>{p.label}</span>
-              <span className={styles.providerUrl}>{p.baseUrl}</span>
-            </div>
-            {editingProvider !== 'new' && editingProvider?.id === p.id && (
-              <ProviderForm
-                presets={presets}
-                provider={p}
-                onSave={handleSaveProvider}
-                onDelete={handleDeleteProvider}
-                onCancel={closeForm}
-              />
-            )}
-          </React.Fragment>
-        ))}
+        {settings.providers.map((p) => {
+          const handleRowClick = () => setEditingProvider(editingProvider !== 'new' && editingProvider?.id === p.id ? null : p);
+          return (
+            <React.Fragment key={p.id}>
+              <div
+                className={`${styles.providerRow} ${editingProvider && editingProvider !== 'new' && editingProvider.id === p.id ? styles.active : ''}`}
+                onClick={handleRowClick}
+              >
+                <span className={`${styles.keyDot} ${p.hasKey ? styles.hasKey : ''}`} />
+                <span className={styles.providerLabel}>{p.label}</span>
+                <span className={styles.providerUrl}>{p.baseUrl}</span>
+              </div>
+              {editingProvider !== 'new' && editingProvider?.id === p.id && (
+                <ProviderForm
+                  presets={presets}
+                  provider={p}
+                  onSave={handleSaveProvider}
+                  onDelete={handleDeleteProvider}
+                  onCancel={closeForm}
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
         {editingProvider === 'new' && (
           <ProviderForm presets={presets} onSave={handleSaveProvider} onCancel={closeForm} />
         )}
-      </div>
+      </Group>
       {builtinAgents.length > 0 && (
-        <div className={settingsStyles.group}>
-          <p className={settingsStyles.groupLabel}>Agents</p>
-          <div className={settingsStyles.options}>
-            {builtinAgents.map((a) => (
-              <div key={a.id} className={styles.agentRow}>
-                <ToggleOption
-                  label={a.label}
-                  checked={!settings.hiddenAgents.includes(a.id)}
-                  description={a.available ? '' : 'Executable not found in PATH.'}
-                  onToggle={() => toggleAgent(a.id)}
-                />
-                <span className={`${styles.badge} ${a.available ? styles.available : ''}`}>
-                  {a.available ? 'found' : 'not found'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Group label="Available agents">
+          {builtinAgents.map((a) => {
+            const handleToggle = () => toggleAgent(a.id);
+            return (
+              <Row
+                key={a.id}
+                label={a.label}
+                icon={<AgentLogo agent={a.id} />}
+                description={a.available ? undefined : 'Not found in PATH.'}
+              >
+                <Switch checked={!settings.hiddenAgents.includes(a.id)} onChange={handleToggle} label={a.label} />
+              </Row>
+            );
+          })}
+        </Group>
       )}
-    </div>
+    </>
   );
 };
 

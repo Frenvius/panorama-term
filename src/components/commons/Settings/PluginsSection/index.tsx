@@ -2,56 +2,58 @@ import { isRemote } from '~/adapter/transport';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { usePlugins } from '~/usecase/hooks/usePlugins';
 import { togglePlugin } from '~/usecase/service/plugins.service';
-import ToggleOption from '~/components/commons/Settings/ToggleOption';
-import settingsStyles from '~/components/commons/Settings/styles.module.scss';
+import Group from '~/components/commons/Settings/Group';
+import Row from '~/components/commons/Settings/Row';
+import Switch from '~/components/commons/Settings/Switch';
+import Button from '~/components/commons/Settings/Button';
 
 import styles from './styles.module.scss';
 
 const PluginsSection = () => {
   const { root, plugins, error } = usePlugins();
 
+  const openFolder = () => root && revealPath(root);
+
   return (
-    <div className={settingsStyles.pane}>
-      <div className={settingsStyles.paneHead}>
-        <h2 className={settingsStyles.title}>Plugins</h2>
-        <p className={settingsStyles.subtitle}>Extend Panorama with themes, fonts and more.</p>
-      </div>
+    <>
       {error && <p className={styles.error}>{error}</p>}
-      <div className={settingsStyles.group}>
-        <p className={settingsStyles.groupLabel}>Installed</p>
+      <Group label="Installed">
         {plugins.length === 0 ? (
-          <p className={settingsStyles.hint}>No plugins installed yet.</p>
+          <Row label="No plugins installed yet." />
         ) : (
-          <div className={settingsStyles.options}>
-            {plugins.map((plugin) =>
-              'error' in plugin ? (
-                <p key={plugin.dir} className={styles.error}>
-                  {plugin.dir}: {plugin.error}
-                </p>
-              ) : (
-                <ToggleOption
-                  key={plugin.dir}
-                  checked={plugin.enabled}
-                  onToggle={() => togglePlugin(plugin.dir)}
-                  label={`${plugin.manifest.name} ${plugin.manifest.version}`}
-                  description={plugin.manifest.description ?? plugin.manifest.author ?? ''}
-                />
-              )
-            )}
-          </div>
+          plugins.map((plugin) => {
+            if ('error' in plugin) {
+              return (
+                <Row key={plugin.dir} label={plugin.dir}>
+                  <span className={styles.pluginError}>{plugin.error}</span>
+                </Row>
+              );
+            }
+            const handleToggle = () => togglePlugin(plugin.dir);
+            return (
+              <Row
+                key={plugin.dir}
+                label={plugin.manifest.name}
+                description={plugin.manifest.description ?? plugin.manifest.author ?? ''}
+              >
+                <span className={styles.version}>{plugin.manifest.version}</span>
+                <Switch checked={plugin.enabled} onChange={handleToggle} label={plugin.manifest.name} />
+              </Row>
+            );
+          })
         )}
-      </div>
+      </Group>
       {root && (
-        <div className={settingsStyles.group}>
-          <p className={settingsStyles.groupLabel}>Plugins folder</p>
-          <p className={settingsStyles.hint}>Each plugin is a folder with a plugin.json. Changes show up right away.</p>
-          <span className={styles.path}>{root}</span>
-          <button type="button" className={styles.button} disabled={isRemote()} onClick={() => revealPath(root)}>
-            Open folder
-          </button>
-        </div>
+        <Group label="Folder">
+          <Row
+            label={root}
+            description={isRemote() ? 'Open folder is unavailable on a remote host.' : 'Each plugin is a folder with a plugin.json. Changes show up right away.'}
+          >
+            <Button disabled={isRemote()} onClick={openFolder}>Open folder</Button>
+          </Row>
+        </Group>
       )}
-    </div>
+    </>
   );
 };
 

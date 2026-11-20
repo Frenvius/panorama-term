@@ -1,0 +1,66 @@
+.wrapper {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.screen {
+  position: relative;
+  width: 96px;
+  height: 60px;
+  border: 1px solid var(--border-3);
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.target {
+  position: absolute;
+  width: 24px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  border-radius: 3px;
+  background: var(--hover-2);
+  transition: background 0.12s ease;
+
+  &:hover {
+    background: var(--hover-3);
+  }
+
+  &.selected {
+    background: var(--accent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
+.topLeft {
+  top: 4px;
+  left: 4px;
+}
+
+.topRight {
+  top: 4px;
+  right: 4px;
+}
+
+.bottomLeft {
+  bottom: 4px;
+  left: 4px;
+}
+
+.bottomRight {
+  bottom: 4px;
+  right: 4px;
+}
+
+.currentLabel {
+  width: 80px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}

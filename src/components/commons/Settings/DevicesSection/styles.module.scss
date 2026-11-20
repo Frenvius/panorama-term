@@ -1,0 +1,115 @@
+.portError {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--danger);
+  font-size: 12px;
+  border-top: 1px solid var(--border-1);
+}
+
+.pairingCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+}
+
+.pairingInfo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pairingHint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.pairingCode {
+  color: var(--text-strong);
+  font-size: 16px;
+  font-family: Hack, monospace;
+  letter-spacing: 2px;
+}
+
+.pairingExpiry {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: Hack, monospace;
+}
+
+.pairButtons {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+}
+
+.pairedDevices {
+  display: flex;
+  flex-direction: column;
+}
+
+.deviceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+
+  & + & {
+    border-top: 1px solid var(--border-1);
+  }
+}
+
+.deviceText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.deviceName {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.deviceMeta {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.uriArea {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px;
+  color: var(--text-1);
+  font-size: 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  resize: vertical;
+
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+}
+
+.loadingRow {
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
