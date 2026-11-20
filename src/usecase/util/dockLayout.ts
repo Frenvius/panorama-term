@@ -1,20 +1,20 @@
 import type { DockLayout, DockMode, DockSide, PanelId } from '~/domain/interfaces/dock.interface';
 
 export const MODE_PANELS: Record<DockMode, PanelId[]> = {
-  canvas: ['files', 'projects', 'git', 'docker'],
-  project: ['projects', 'files', 'git', 'notes', 'docker']
+  canvas: ['files', 'projects', 'git', 'docker', 'orch'],
+  project: ['projects', 'files', 'git', 'notes', 'docker', 'orch']
 };
 
 export const DEFAULT_LAYOUT: Record<DockMode, DockLayout> = {
   canvas: {
-    left: ['files', 'projects', 'git', 'docker'],
+    left: ['files', 'projects', 'git', 'docker', 'orch'],
     right: [],
     hidden: [],
     active: { left: 'files', right: null }
   },
   project: {
     left: ['projects'],
-    right: ['files', 'git', 'notes', 'docker'],
+    right: ['files', 'git', 'notes', 'docker', 'orch'],
     hidden: [],
     active: { left: 'projects', right: 'files' }
   }

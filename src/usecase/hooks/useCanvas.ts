@@ -11,7 +11,7 @@ import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
-import { placeBeside } from '~/usecase/util/frameLayout';
+import { placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
@@ -359,7 +359,65 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     [placeTerm]
   );
 
-  const openRemoteTile = React.useCallback((id: string, cwd: string) => placeTerm({ id, cwd }), [placeTerm]);
+  const placeGroupedTerm = React.useCallback(
+    (id: string, cwd: string, group: { id: string; title: string }) => {
+      setView((v) => {
+        const cx = (window.innerWidth / 2 - v.x) / v.k;
+        const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
+        const prevTiles = tilesRef.current;
+        const prevFrames = framesRef.current;
+        const last = [...prevTiles].reverse().find((t) => t.type === 'term');
+        const width = last?.width ?? TILE_WIDTH;
+        const height = last?.height ?? TILE_HEIGHT;
+        const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
+        const spacing = currentLayoutSpacing();
+        const existing = prevFrames.find((f) => f.groupId === group.id);
+        if (existing) {
+          const result = placeTileInFrame({
+            frame: existing, frames: prevFrames, width, height, tiles: prevTiles, spacing
+          });
+          setTiles((prev) => [
+            ...prev,
+            { id, cwd, type: 'term' as const, x: result.x, y: result.y, width, height, zIndex }
+          ]);
+          if (result.frame !== null) {
+            const patch = result.frame;
+            setFrames((prev) => prev.map((f) => (f.id === existing.id ? { ...f, ...patch } : f)));
+          }
+        } else {
+          const pad = spacing.pad;
+          const newFrameId = createId();
+          setFrames((prev) => [
+            ...prev,
+            {
+              id: newFrameId,
+              groupId: group.id,
+              title: group.title,
+              color: FRAME_COLOR,
+              x: cx - pad,
+              y: cy - pad,
+              width: width + pad * 2,
+              height: height + pad * 2
+            }
+          ]);
+          setTiles((prev) => [
+            ...prev,
+            { id, cwd, type: 'term' as const, x: cx, y: cy, width, height, zIndex }
+          ]);
+        }
+        return v;
+      });
+    },
+    []
+  );
+
+  const openRemoteTile = React.useCallback(
+    (id: string, cwd: string, group?: { id: string; title: string }) => {
+      if (!group) { placeTerm({ id, cwd }); return; }
+      placeGroupedTerm(id, cwd, group);
+    },
+    [placeTerm, placeGroupedTerm]
+  );
 
   const addRunView = React.useCallback((srcId: string, cwd: string, sessionId: string, cmd: string) => {
     setTiles((prev) => {

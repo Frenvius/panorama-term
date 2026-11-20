@@ -634,12 +634,12 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     });
   }, []);
 
-  const addTerminal = React.useCallback((projectPath?: string, groupId?: string, at?: { x: number; y: number }): string => {
+  const addTerminal = React.useCallback((projectPath?: string, groupId?: string, at?: { x: number; y: number }, tileId?: string): string => {
     const rawTarget = projectPath ?? projectViewRef.current.activeProject ?? undefined;
     const startDir = rawTarget ? normalizeProjectPath(rawTarget) : '';
     const targetProject = rawTarget ? projectRootPath(rawTarget) : DEFAULT_PROJECT;
     const realPath = targetProject === DEFAULT_PROJECT ? undefined : targetProject;
-    const id = createId();
+    const id = tileId ?? createId();
     const prevTiles = tilesRef.current;
     const slot = at ?? projectSlot(realPath, TILE_WIDTH, TILE_HEIGHT);
     const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;

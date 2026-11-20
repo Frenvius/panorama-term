@@ -233,9 +233,9 @@ const Canvas = () => {
   const fsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activated = React.useRef<Set<string>>(new Set());
 
-  const openPhoneTile = (id: string, cwd: string) => {
+  const openPhoneTile = (id: string, cwd: string, group?: { id: string; title: string }) => {
     activated.current.add(id);
-    openRemoteTile(id, cwd);
+    openRemoteTile(id, cwd, group);
   };
   useRemoteTiles(openPhoneTile);
 
@@ -839,10 +839,25 @@ const Canvas = () => {
     [moveTileToTab, tiles, frames, view]
   );
 
+  const openOrchDiff = (root: string, file: string, opts: { commit?: string; base?: string }) =>
+    openEditorTab({ kind: 'diff', root, path: file, ...opts });
+
+  const handleShowWorker = ({ tileId, cwd, group }: { tileId: string; cwd: string; group: { id: string; title: string } }) => {
+    if (editorTabs.length > 0) closeEditorTabs();
+    if (tiles.some((t) => t.id === tileId)) {
+      activateAndClear(tileId);
+      focusTile(tileId, true);
+      return;
+    }
+    openRemoteTile(tileId, cwd, group);
+  };
+
   const baseDockHandlers = {
     onDiffFiles: setDiffFiles,
     onOpenDiff: openDiff,
-    onOpenFile: openEditorFile
+    onOpenFile: openEditorFile,
+    onOpenOrchDiff: openOrchDiff,
+    onShowWorker: handleShowWorker
   };
 
   const leftDockHandlers: CanvasDockHandlers = { ...baseDockHandlers, onWidth: setNavWidth, onClose: hideNav };

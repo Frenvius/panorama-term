@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import GitTab from '~/components/Canvas/Navigator/GitTab';
+import OrchPanel from '~/components/Canvas/Navigator/OrchPanel';
 import ProjectsPanel from '~/components/commons/ProjectsPanel';
 import FileTree from '~/components/Canvas/Navigator/FileTree';
 import DockerTab from '~/components/Canvas/Navigator/DockerTab';
@@ -47,6 +48,8 @@ export interface CanvasDockHandlers {
   onDiffFiles: (files: string[]) => void;
   onOpenDiff: (root: string, file: string, commit?: string) => void;
   onOpenFile: (root: string, file: string, preview?: boolean) => void;
+  onOpenOrchDiff: (root: string, file: string, opts: { commit?: string; base?: string }) => void;
+  onShowWorker: (opts: { tileId: string; cwd: string; group: { id: string; title: string } }) => void;
 }
 
 interface CanvasDockProps {
@@ -82,7 +85,9 @@ const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff,
     onWidth,
     onDiffFiles,
     onOpenDiff,
-    onOpenFile
+    onOpenFile,
+    onOpenOrchDiff,
+    onShowWorker
   } = handlers;
 
   const { layout } = useDockLayout('canvas');
@@ -195,7 +200,7 @@ const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff,
         </button>
       </div>
 
-      {activePanel !== 'git' && activePanel !== 'projects' && (
+      {activePanel !== 'git' && activePanel !== 'projects' && activePanel !== 'orch' && (
         <div className={styles.search}>
           <div className={styles.filter}>
             <Search size={12} strokeWidth={2} />
@@ -220,6 +225,8 @@ const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff,
         ))}
 
       {activePanel === 'docker' && <DockerTab query={needle} />}
+
+      {activePanel === 'orch' && <OrchPanel onOpenDiff={onOpenOrchDiff} onShowWorker={onShowWorker} />}
 
       {activePanel === 'projects' && (
         <ProjectsPanel

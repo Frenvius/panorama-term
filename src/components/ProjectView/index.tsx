@@ -13,6 +13,7 @@ import { FolderGit2, FolderPlus, LayoutGrid, SquareTerminal } from 'lucide-react
 import styles from './styles.module.scss';
 import GitPanel from './GitPanel';
 import DockerPanel from './DockerPanel';
+import OrchPanel from '~/components/Canvas/Navigator/OrchPanel';
 import FilesPanel from './FilesPanel';
 import NotesPanel from './NotesPanel';
 import DockSidebar from './DockSidebar';
@@ -148,7 +149,7 @@ const ProjectView = () => {
         activateTile(id);
         return;
       }
-      addTerminal(cwd || activeProject || undefined);
+      addTerminal(cwd || activeProject || undefined, undefined, undefined, id);
     },
     [tiles, activeProject, activateTile, addTerminal]
   );
@@ -610,6 +611,22 @@ const ProjectView = () => {
   const handleLeftClose = React.useCallback(() => setLeftOpen(false), [setLeftOpen]);
   const handleRightClose = React.useCallback(() => setRightOpen(false), [setRightOpen]);
 
+  const handleOrchOpenDiff = React.useCallback(
+    (root: string, file: string, _opts?: { commit?: string; base?: string }) => openDiff(root, file),
+    [openDiff]
+  );
+
+  const handleShowWorker = React.useCallback(
+    ({ tileId, cwd }: { tileId: string; cwd: string; group: { id: string; title: string } }) => {
+      if (tiles.some((t) => t.id === tileId)) {
+        activateTile(tileId);
+        return;
+      }
+      addTerminal(cwd || undefined, undefined, undefined, tileId);
+    },
+    [tiles, activateTile, addTerminal]
+  );
+
   const renderPanel = React.useCallback(
     (id: PanelId): React.ReactNode => {
       switch (id) {
@@ -648,6 +665,8 @@ const ProjectView = () => {
           );
         case 'docker':
           return <DockerPanel />;
+        case 'orch':
+          return <OrchPanel onOpenDiff={handleOrchOpenDiff} onShowWorker={handleShowWorker} />;
         default:
           return null;
       }
@@ -668,7 +687,9 @@ const ProjectView = () => {
       projectNotes,
       handleInspectorNewNote,
       requestCloseTile,
-      handleSidebarActivateTile
+      handleSidebarActivateTile,
+      handleOrchOpenDiff,
+      handleShowWorker
     ]
   );
 

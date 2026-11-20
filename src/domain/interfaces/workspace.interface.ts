@@ -39,6 +39,7 @@ export interface Frame {
   title: string;
   color: string;
   path?: string;
+  groupId?: string;
 }
 
 export interface Viewport {

@@ -22,6 +22,7 @@ export interface TileOpenRequest {
   t: 'tile.open';
   cwd: string;
   tileId: string;
+  group?: { id: string; title: string };
 }
 
 export interface MobilePairing {
