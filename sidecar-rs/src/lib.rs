@@ -1,5 +1,6 @@
 mod local_origins;
 mod config_dir;
+mod http_guard;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -4528,6 +4529,10 @@ async fn handle_conn(mut stream: TcpStream) {
         None => return,
     };
     let (path, headers) = parse_head(&head);
+    if !http_guard::allowed(&headers, mobile::desktop_tunnel::secret()) {
+        let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        return;
+    }
     let (path_only, query) = match path.split_once('?') {
         Some((p, q)) => (p, q),
         None => (path.as_str(), ""),
@@ -4716,7 +4721,8 @@ async fn handle_conn(mut stream: TcpStream) {
         };
         let text = capture_text(&raw, rows, cols, lines);
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             text.len(),
             text
         );
@@ -4747,7 +4753,8 @@ async fn handle_conn(mut stream: TcpStream) {
             }
         };
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4773,7 +4780,8 @@ async fn handle_conn(mut stream: TcpStream) {
             None => String::new(),
         };
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             name.len(),
             name
         );
@@ -4792,7 +4800,8 @@ async fn handle_conn(mut stream: TcpStream) {
         };
         let body = run_start_json(&kind, &tile, &cwd, &cmd).await;
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4806,7 +4815,8 @@ async fn handle_conn(mut stream: TcpStream) {
             .await
             .unwrap_or_else(|_| "[]".into());
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4823,7 +4833,8 @@ async fn handle_conn(mut stream: TcpStream) {
         };
         let body = run_restart_json(kind, &tile).await;
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4840,7 +4851,8 @@ async fn handle_conn(mut stream: TcpStream) {
             q.get("cwd").map(String::as_str),
         ));
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4856,7 +4868,8 @@ async fn handle_conn(mut stream: TcpStream) {
             &q,
         );
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4883,7 +4896,8 @@ async fn handle_conn(mut stream: TcpStream) {
         }
         let body = "{\"ok\":true}";
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
             body.len(),
             body
         );
@@ -4906,7 +4920,8 @@ async fn handle_conn(mut stream: TcpStream) {
         "panorama sidecar"
     };
     let resp = format!(
-        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        mobile::cors_origin(origin),
         body.len(),
         body
     );

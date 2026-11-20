@@ -62,7 +62,9 @@ async fn serve(mut pipe: DuplexStream, method: &str, target: &str, ws: bool) {
         else {
             return;
         };
-        if local.write_all(&head).await.is_ok() {
+        let mut patched = head[..head.len() - 4].to_vec();
+        patched.extend_from_slice(format!("x-panorama-remote: {}\r\n\r\n", secret()).as_bytes());
+        if local.write_all(&patched).await.is_ok() {
             let _ = tokio::io::copy_bidirectional(&mut pipe, &mut local).await;
         }
         return;
