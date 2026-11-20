@@ -21,6 +21,28 @@ fn channel() -> &'static broadcast::Sender<String> {
     UI.get_or_init(|| broadcast::channel(16).0)
 }
 
+pub(crate) struct TileGroup<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+}
+
+pub(crate) fn broadcast_grouped_tile_open(tile_id: &str, cwd: &str, group: TileGroup) {
+    send_event(json!({
+        "t": "tile.open", "tileId": tile_id, "cwd": cwd,
+        "group": { "id": group.id, "title": group.title }
+    }));
+}
+
+pub(crate) fn broadcast_orch_changed(run_id: &str) {
+    send_event(json!({ "t": "orch.changed", "runId": run_id }));
+}
+
+fn send_event(event: serde_json::Value) {
+    if channel().receiver_count() > 0 {
+        let _ = channel().send(event.to_string());
+    }
+}
+
 pub async fn serve(ws: WebSocketStream<TcpStream>) {
     let mut events = channel().subscribe();
     let (mut tx, mut rx) = ws.split();
@@ -44,7 +66,7 @@ pub async fn serve(ws: WebSocketStream<TcpStream>) {
     let _ = tx.close().await;
 }
 
-fn new_tile_id() -> String {
+pub(crate) fn new_tile_id() -> String {
     let mut bytes = [0u8; 8];
     getrandom::getrandom(&mut bytes).expect("os rng");
     bytes.iter().map(|b| ID_ALPHABET[*b as usize % ID_ALPHABET.len()] as char).collect()

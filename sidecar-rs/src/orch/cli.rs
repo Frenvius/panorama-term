@@ -1,0 +1,425 @@
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::time::Duration;
+
+pub fn main() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if args.is_empty() {
+        eprintln!("usage: panorama-cli orch <command> [--flags]");
+        std::process::exit(2);
+    }
+    let command = args[0].clone();
+    let rest = &args[1..];
+    let (mut body, pretty) = parse_flags(rest, &command);
+    apply_env_defaults(&command, &mut body);
+
+    if let Err(msg) = validate_required(&command, &body) {
+        eprintln!("[orch] {msg}");
+        std::process::exit(2);
+    }
+
+    let wait = body.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
+    let timeout_ms = body.get("timeoutMs").and_then(|v| v.as_u64()).unwrap_or(30_000);
+    let read_timeout_ms = if wait {
+        timeout_ms.min(600_000).saturating_add(5_000)
+    } else {
+        10_000
+    };
+
+    let port = crate::port();
+    let json_body = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+    let path = format!("/orch/{command}");
+
+    let format_markdown = command == "report"
+        && body.get("format").and_then(|v| v.as_str()) == Some("markdown");
+
+    match http_post(port, &path, &json_body, read_timeout_ms) {
+        Ok(response) => {
+            let body_text = parse_response_body(&response);
+            let v = match serde_json::from_str::<serde_json::Value>(body_text) {
+                Ok(v) => v,
+                Err(_) => {
+                    let status_line = response.lines().next().unwrap_or("HTTP error");
+                    eprintln!("[orch] unexpected response: {status_line}");
+                    std::process::exit(4);
+                }
+            };
+            let ok = v["ok"].as_bool().unwrap_or(false);
+            if ok && format_markdown {
+                if let Some(text) = v["text"].as_str() {
+                    print!("{text}");
+                    return;
+                }
+            }
+            if pretty {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| body_text.to_string()));
+            } else {
+                println!("{body_text}");
+            }
+            if !ok {
+                let code = v["error"]["code"].as_str().unwrap_or("error");
+                eprintln!("[orch] {}: {}", code, v["error"]["message"].as_str().unwrap_or(""));
+                std::process::exit(3);
+            }
+        }
+        Err(e) => {
+            eprintln!("[orch] brain unreachable: {e}");
+            std::process::exit(4);
+        }
+    }
+}
+
+fn apply_env_defaults(command: &str, body: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Ok(run_id) = std::env::var("PANORAMA_RUN_ID") {
+        if !run_id.is_empty() && !body.contains_key("runId") {
+            body.insert("runId".into(), run_id.into());
+        }
+    }
+    let dispatch_id = std::env::var("PANORAMA_DISPATCH_ID").ok().filter(|s| !s.is_empty());
+    let from_default = dispatch_id.clone().unwrap_or_else(|| "coordinator".into());
+    if !body.contains_key("from") {
+        body.insert("from".into(), from_default.clone().into());
+    }
+    if let Some(ref did) = dispatch_id {
+        if !body.contains_key("dispatchId") {
+            body.insert("dispatchId".into(), did.clone().into());
+        }
+    }
+    if command == "check" && !body.contains_key("recipient") {
+        body.insert("recipient".into(), from_default.clone().into());
+    }
+    if command == "send" && !body.contains_key("to") {
+        body.insert("to".into(), "coordinator".into());
+    }
+}
+
+fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let required: &[&str] = match command {
+        "run-create" => &["repo"],
+        "run-show" => &["runId"],
+        "run-set-status" => &["runId", "status"],
+        "task-create" => &["runId", "title", "spec"],
+        "task-update" => &["runId", "taskId"],
+        "task-list" => &["runId"],
+        "dispatch" => &["runId", "taskId"],
+        "send" => &["runId", "type"],
+        "check" => &["runId"],
+        "gate-create" => &["runId", "taskId", "question"],
+        "gate-resolve" => &["runId", "gateId", "resolution"],
+        "worker-start" => &["runId", "taskId"],
+        "worker-show" => &["runId", "dispatchId"],
+        "worker-read" => &["runId", "dispatchId"],
+        "worker-send" => &["runId", "dispatchId", "text"],
+        "worker-stop" => &["runId", "dispatchId"],
+        "worker-release" => &["runId", "dispatchId"],
+        "run-list" => &[],
+        "integrate" => &["runId", "taskId"],
+        "worktree-clean" => &["runId"],
+        "verify" => &["runId", "taskId"],
+        "retry" => &["runId", "taskId"],
+        "report" => &["runId"],
+        _ => return Err(format!("unknown command: {command}")),
+    };
+    for field in required {
+        let missing = !body.contains_key(*field)
+            || body[*field].is_null()
+            || body[*field].as_str().map(|s| s.is_empty()).unwrap_or(false);
+        if missing {
+            return Err(format!("missing required field: {field}"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_flags(args: &[String], command: &str) -> (serde_json::Map<String, serde_json::Value>, bool) {
+    let mut body: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut arrays: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let mut pretty = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if !arg.starts_with("--") {
+            i += 1;
+            continue;
+        }
+        let flag = &arg[2..];
+
+        if flag == "pretty" {
+            pretty = true;
+            i += 1;
+            continue;
+        }
+
+        if flag == "spec-file" {
+            if i + 1 < args.len() {
+                let path = &args[i + 1];
+                match std::fs::read_to_string(path) {
+                    Ok(content) => { body.insert("spec".into(), content.into()); }
+                    Err(e) => { eprintln!("cannot read spec-file: {e}"); std::process::exit(2); }
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        let field = flag_to_field(flag, command);
+        let is_bool = is_bool_flag(flag);
+        let is_arr = is_array_field(field, command);
+
+        if is_bool {
+            body.insert(field.into(), true.into());
+            i += 1;
+            continue;
+        }
+
+        if i + 1 >= args.len() {
+            i += 1;
+            continue;
+        }
+        let raw = &args[i + 1];
+
+        if field == "body" && raw == "-" {
+            let mut stdin_content = String::new();
+            if std::io::stdin().read_to_string(&mut stdin_content).is_ok() {
+                body.insert("body".into(), stdin_content.into());
+            }
+            i += 2;
+            continue;
+        }
+
+        let json_val = coerce_value(field, raw);
+        if is_arr {
+            arrays.entry(field.into()).or_default().push(json_val);
+        } else {
+            body.insert(field.into(), json_val);
+        }
+        i += 2;
+    }
+
+    for (key, vals) in arrays {
+        body.insert(key, serde_json::Value::Array(vals));
+    }
+    (body, pretty)
+}
+
+fn flag_to_field<'a>(flag: &'a str, command: &str) -> &'a str {
+    match flag {
+        "dep" => "deps",
+        "file" => "filesModified",
+        "option" => "options",
+        "type" if command == "check" => "types",
+        "type" => "type",
+        "run-id" => "runId",
+        "task-id" => "taskId",
+        "gate-id" => "gateId",
+        "dispatch-id" => "dispatchId",
+        "retry-of" => "retryOf",
+        "tile-id" => "tileId",
+        "base-ref" => "baseRef",
+        "coordinator-tile" => "coordinatorTile",
+        "timeout-ms" => "timeoutMs",
+        "max-workers" => "maxWorkers",
+        "max-attempts" => "maxAttempts",
+        "dispatch-timeout-min" => "dispatchTimeoutMin",
+        "verify-timeout-min" => "verifyTimeoutMin",
+        "stall-quiet-min" => "stallQuietMin",
+        "reply-to" => "replyTo",
+        other => camel_cache(other),
+    }
+}
+
+fn camel_cache(flag: &str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(v) = guard.get(flag) {
+        return v;
+    }
+    let camel = kebab_to_camel(flag);
+    let leaked: &'static str = Box::leak(camel.into_boxed_str());
+    guard.insert(flag.to_string(), leaked);
+    leaked
+}
+
+fn kebab_to_camel(s: &str) -> String {
+    let mut result = String::new();
+    let mut upper = false;
+    for c in s.chars() {
+        if c == '-' {
+            upper = true;
+        } else if upper {
+            result.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn is_bool_flag(flag: &str) -> bool {
+    matches!(flag, "review" | "peek" | "wait" | "pretty" | "keys")
+}
+
+fn is_array_field(field: &str, command: &str) -> bool {
+    matches!(field, "deps" | "filesModified" | "verify" | "escalation" | "options")
+        || (field == "types" && command == "check")
+}
+
+fn coerce_value(field: &str, raw: &str) -> serde_json::Value {
+    if is_numeric_field(field) {
+        if let Ok(n) = raw.parse::<u64>() {
+            return serde_json::Value::Number(n.into());
+        }
+    }
+    serde_json::Value::String(raw.to_string())
+}
+
+fn is_numeric_field(field: &str) -> bool {
+    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "replyTo" | "lines")
+}
+
+fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))
+        .map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(read_http_response(&mut stream)?)
+}
+
+fn read_http_response(stream: &mut std::net::TcpStream) -> Result<String, String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    match stream.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) => {
+            // Windows WSAECONNRESET (10054): server closed with RST after sending data.
+            // If we already have data, treat it as EOF rather than an error.
+            if buf.is_empty() {
+                return Err(e.to_string());
+            }
+        }
+    }
+    String::from_utf8(buf).map_err(|e| e.to_string())
+}
+
+fn parse_response_body(response: &str) -> &str {
+    response.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str], command: &str) -> serde_json::Map<String, serde_json::Value> {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_flags(&owned, command).0
+    }
+
+    #[test]
+    fn type_flag_send_maps_to_type_string() {
+        let body = parse(&["--type", "worker_done"], "send");
+        assert_eq!(body["type"].as_str(), Some("worker_done"));
+        assert!(!body.contains_key("types"));
+    }
+
+    #[test]
+    fn type_flag_check_maps_to_types_array() {
+        let body = parse(&["--type", "progress", "--type", "worker_done"], "check");
+        assert!(!body.contains_key("type"));
+        let types = body["types"].as_array().unwrap();
+        assert_eq!(types.len(), 2);
+        assert_eq!(types[0].as_str(), Some("progress"));
+        assert_eq!(types[1].as_str(), Some("worker_done"));
+    }
+
+    #[test]
+    fn repeated_dep_flags_become_array() {
+        let body = parse(&["--dep", "t1", "--dep", "t2"], "task-create");
+        let deps = body["deps"].as_array().unwrap();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].as_str(), Some("t1"));
+        assert_eq!(deps[1].as_str(), Some("t2"));
+    }
+
+    #[test]
+    fn flag_value_starting_with_dashes_is_treated_as_value() {
+        let body = parse(&["--summary", "--fixed-bug"], "send");
+        assert_eq!(body["summary"].as_str(), Some("--fixed-bug"));
+    }
+
+    #[test]
+    fn bool_flags_set_true_without_consuming_next_arg() {
+        let body = parse(&["--wait", "--peek"], "check");
+        assert_eq!(body["wait"].as_bool(), Some(true));
+        assert_eq!(body["peek"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn kebab_flag_converts_to_camel() {
+        let body = parse(&["--run-id", "r1", "--task-id", "t1"], "task-update");
+        assert_eq!(body["runId"].as_str(), Some("r1"));
+        assert_eq!(body["taskId"].as_str(), Some("t1"));
+    }
+
+    #[test]
+    fn timeout_ms_is_numeric() {
+        let body = parse(&["--timeout-ms", "60000"], "check");
+        assert_eq!(body["timeoutMs"].as_u64(), Some(60000));
+    }
+
+    #[test]
+    fn validate_required_send_fails_without_type() {
+        let mut body = serde_json::Map::new();
+        body.insert("runId".into(), "r1".into());
+        assert!(validate_required("send", &body).is_err());
+    }
+
+    #[test]
+    fn validate_required_send_passes_with_type() {
+        let mut body = serde_json::Map::new();
+        body.insert("runId".into(), "r1".into());
+        body.insert("type".into(), "worker_done".into());
+        assert!(validate_required("send", &body).is_ok());
+    }
+
+    #[test]
+    fn validate_required_unknown_command_is_error() {
+        let body = serde_json::Map::new();
+        let err = validate_required("unknown-cmd", &body).unwrap_err();
+        assert!(err.contains("unknown command"));
+    }
+
+    #[test]
+    fn validate_required_run_create_requires_repo() {
+        let body = serde_json::Map::new();
+        assert!(validate_required("run-create", &body).is_err());
+        let mut body2 = serde_json::Map::new();
+        body2.insert("repo".into(), "/tmp/r".into());
+        assert!(validate_required("run-create", &body2).is_ok());
+    }
+
+    #[test]
+    fn read_timeout_uses_saturating_add() {
+        let timeout_ms: u64 = 600_000;
+        let result = timeout_ms.min(600_000).saturating_add(5_000);
+        assert_eq!(result, 605_000);
+
+        let large: u64 = u64::MAX;
+        let capped = large.min(600_000).saturating_add(5_000);
+        assert_eq!(capped, 605_000);
+    }
+}

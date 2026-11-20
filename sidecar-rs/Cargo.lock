@@ -872,6 +872,7 @@ dependencies = [
  "libc",
  "panorama-runtime",
  "portable-pty",
+ "serde",
  "serde_json",
  "sha2",
  "subtle",

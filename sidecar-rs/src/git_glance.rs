@@ -7,7 +7,7 @@ use super::hidden_command;
 const MAX_FILES: usize = 300;
 const MAX_DIFF_BYTES: usize = 200 * 1024;
 
-fn git(dir: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn git(dir: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = hidden_command("git")
         .arg("-C")
         .arg(dir)

@@ -30,6 +30,7 @@ mod attach;
 mod activity;
 mod git_glance;
 mod run_commands;
+mod orch;
 
 enum ConsumerMsg {
     Data(u64, Vec<u8>),
@@ -246,7 +247,7 @@ fn connect_to_host() -> std::net::TcpStream {
     }
 }
 
-fn host_handle() -> &'static HostHandle {
+pub(crate) fn host_handle() -> &'static HostHandle {
     static H: OnceLock<HostHandle> = OnceLock::new();
     H.get_or_init(|| {
         let stream = connect_to_host();
@@ -392,11 +393,25 @@ fn reconnect_sessions() {
 const PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
 const DAEMON_ARG: &str = "--daemon";
 
-fn port() -> u16 {
+pub(crate) fn port() -> u16 {
     std::env::var("PANORAMA_SIDECAR_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(PORT)
+}
+
+pub(crate) fn panorama_cli_path() -> String {
+    let suffix = if cfg!(debug_assertions) { "-dev" } else { "" };
+    let exe_name = if cfg!(windows) {
+        format!("panorama-cli{suffix}.exe")
+    } else {
+        format!("panorama-cli{suffix}")
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(&exe_name)))
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or(exe_name)
 }
 
 #[cfg(windows)]
@@ -468,6 +483,7 @@ pub async fn brain_main() {
         .expect("bind sidecar port");
     if let Err(e) = service_bridge::init() { eprintln!("[host service] {e}"); }
     mobile::boot();
+    tokio::task::block_in_place(|| orch::init());
     tokio::spawn(async {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -507,6 +523,10 @@ pub fn cli_main() {
     }
     if std::env::args().nth(1).as_deref() == Some("codex-launch") {
         codex_launch_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("orch") {
+        orch::cli::main();
         return;
     }
     eprintln!("panorama-cli: unknown command");
@@ -1135,7 +1155,7 @@ fn run_key(kind: &str, tile: &str) -> String {
     format!("{}:{}", kind, sanitize_key(tile))
 }
 
-fn run_lookup_tile(kind: &str, tile: &str) -> Option<Arc<Session>> {
+pub(crate) fn run_lookup_tile(kind: &str, tile: &str) -> Option<Arc<Session>> {
     sessions().lock().unwrap().get(&run_key(kind, tile)).cloned()
 }
 
@@ -1209,7 +1229,7 @@ impl RawRing {
     }
 }
 
-struct Session {
+pub(crate) struct Session {
     tile_id: String,
     shell: String,
     pid: u32,
@@ -1354,7 +1374,7 @@ fn shared_panorama_dir() -> Option<std::path::PathBuf> {
     )
 }
 
-fn panorama_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn panorama_dir() -> Option<std::path::PathBuf> {
     let dir = shared_panorama_dir()?;
     Some(instance_dir(dir, std::env::var_os("PANORAMA_CONFIG_DIR").is_some(), cfg!(debug_assertions)))
 }
@@ -1950,7 +1970,7 @@ fn remember_agent_state(session: &Session, msg: &str) {
     merge_agent_state(&mut cache, msg);
 }
 
-fn cached_agent_state(session: &Session) -> Option<String> {
+pub(crate) fn cached_agent_state(session: &Session) -> Option<String> {
     let cache = session.agent_state.lock().unwrap_or_else(|e| e.into_inner());
     if cache.is_empty() {
         return None;
@@ -2092,8 +2112,20 @@ fn handle_agent_status(body: &[u8]) {
                 bind_agent_session(&tile_id, &serde_json::json!({"agent":"codex","sessionId":id,"cwd":v.get("cwd")}).to_string());
             }
         }
+        let prev_status = s.agent_state.lock().unwrap_or_else(|e| e.into_inner())
+            .get("lastStatus").and_then(|s| s.as_str()).map(str::to_string);
         remember_agent_state(&s, &msg);
         s.events.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
+        let new_status = v.get("status").and_then(|s| s.as_str()).map(str::to_string);
+        if let Some(ref ns) = new_status {
+            let prev = prev_status.as_deref();
+            if ns == "idle" && prev != Some("idle") {
+                orch::on_agent_idle(&tile_id);
+            }
+            if ns == "waiting" && prev != Some("waiting") {
+                orch::on_agent_waiting(&tile_id);
+            }
+        }
     }
 }
 
@@ -2975,7 +3007,19 @@ fn foreground_command(pid: u32) -> Option<String> {
     Some(display_command_name(last))
 }
 
-fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
+pub(crate) fn foreground_name_for(session: &Session) -> Option<String> {
+    foreground_command(session.pid)
+}
+
+pub(crate) fn session_pid(session: &Session) -> u32 {
+    session.pid
+}
+
+pub(crate) fn shell_name_for(session: &Session) -> String {
+    display_command_name(&session.shell)
+}
+
+pub(crate) fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
     let rows = rows.max(2);
     let cols = cols.max(2);
     let mut p = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
@@ -2998,7 +3042,7 @@ fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
     out[start..].join("\n")
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
+pub(crate) fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
     static S: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -3007,7 +3051,7 @@ fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
 const IDLE_COMPACT_OFF_TOKENS: &str = "1000000000";
 
 #[derive(Clone)]
-struct Params {
+pub(crate) struct Params {
     tile_id: String,
     cols: u16,
     rows: u16,
@@ -3021,6 +3065,7 @@ struct Params {
     attach_only: bool,
     watch_only: bool,
     remote: bool,
+    extra_env: Vec<(String, String)>,
 }
 
 fn default_shell() -> String {
@@ -3267,6 +3312,10 @@ fn spawn_session(
     env.push(("PANORAMA_TERMINAL".into(), "1".into()));
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
     env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
+    env.push(("PANORAMA_CLI".into(), panorama_cli_path()));
+    for (k, v) in &p.extra_env {
+        env.push((k.clone(), v.clone()));
+    }
     if let Some((wrapper, original)) = codex_wrapper() {
         let path = fresh_path().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
         let sep = if cfg!(windows) { ';' } else { ':' };
@@ -3538,14 +3587,14 @@ fn spawn_sem() -> Arc<tokio::sync::Semaphore> {
         .clone()
 }
 
-fn lookup_live(tile_id: &str) -> Option<Arc<Session>> {
+pub(crate) fn lookup_live(tile_id: &str) -> Option<Arc<Session>> {
     let map = sessions().lock().unwrap();
     map.get(tile_id)
         .filter(|s| !s.exited.load(Ordering::Relaxed))
         .cloned()
 }
 
-async fn get_or_create(p: &Params) -> Result<(Arc<Session>, bool), String> {
+pub(crate) async fn get_or_create(p: &Params) -> Result<(Arc<Session>, bool), String> {
     if let Some(s) = lookup_live(&p.tile_id) {
         return Ok((s, true));
     }
@@ -3720,7 +3769,7 @@ fn mark_killed(s: &Arc<Session>) {
     }
 }
 
-fn kill_session(s: &Arc<Session>) {
+pub(crate) fn kill_session(s: &Arc<Session>) {
     let Some(run) = &s.run else {
         mark_killed(s);
         host_handle().kill(&s.tile_id);
@@ -3746,7 +3795,7 @@ fn kill_session(s: &Arc<Session>) {
     });
 }
 
-fn run_stop(s: &Arc<Session>) {
+pub(crate) fn run_stop(s: &Arc<Session>) {
     if let Some(run) = &s.run {
         run.phase.store(RUN_PHASE_STOPPING, Ordering::Relaxed);
         run.stopped_by_user.store(true, Ordering::Relaxed);
@@ -3764,7 +3813,7 @@ fn run_stop(s: &Arc<Session>) {
     });
 }
 
-fn run_status_json(target: Option<Arc<Session>>) -> String {
+pub(crate) fn run_status_json(target: Option<Arc<Session>>) -> String {
     let Some(s) = target else {
         return serde_json::json!({ "state": "none" }).to_string();
     };
@@ -3803,7 +3852,7 @@ fn run_status_json(target: Option<Arc<Session>>) -> String {
     }
 }
 
-async fn run_start_json(kind: &str, tile: &str, cwd: &str, cmd: &str) -> String {
+pub(crate) async fn run_start_json(kind: &str, tile: &str, cwd: &str, cmd: &str) -> String {
     if cwd.is_empty() || cmd.is_empty() || tile.is_empty() {
         return serde_json::json!({ "error": "cwd, cmd and tile required" }).to_string();
     }
@@ -3826,11 +3875,20 @@ async fn run_start_json(kind: &str, tile: &str, cwd: &str, cmd: &str) -> String 
         attach_only: false,
         watch_only: false,
         remote: false,
+        extra_env: Vec::new(),
     };
     match get_or_create(&params).await {
         Ok(_) => run_status_json(run_lookup_tile(kind, tile)),
         Err(e) => serde_json::json!({ "error": e }).to_string(),
     }
+}
+
+pub(crate) fn run_tail_lines(kind: &str, tile: &str, n: usize) -> Vec<String> {
+    let Some(s) = run_lookup_tile(kind, tile) else { return vec![] };
+    let Some(run) = &s.run else { return vec![] };
+    let log = run.log.lock().unwrap_or_else(|e| e.into_inner());
+    let count = n.min(log.buf.len());
+    log.buf.iter().rev().take(count).cloned().collect::<Vec<_>>().into_iter().rev().collect()
 }
 
 async fn run_restart_json(kind: &str, tile: &str) -> String {
@@ -4014,7 +4072,7 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
     }
 }
 
-fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
+pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     let msg = text.trim_end_matches(['\r', '\n']).to_string();
     let session = sessions().lock().unwrap().get(tile_id).cloned();
     let live = session.is_some()
@@ -4049,7 +4107,7 @@ fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_input(s: &Arc<Session>, d: &str) {
+pub(crate) fn write_input(s: &Arc<Session>, d: &str) {
     s.scrollback.store(0, Ordering::Relaxed);
     s.dirty.fetch_add(1, Ordering::Relaxed);
     if d.contains('\r') || d.contains('\n') {
@@ -4596,6 +4654,7 @@ async fn handle_conn(mut stream: TcpStream) {
             attach_only: watch_only || q.get("attach").map(|v| v == "1").unwrap_or(false),
             watch_only,
             remote,
+            extra_env: Vec::new(),
         };
         handle_ws(ws, params).await;
         return;
@@ -4907,6 +4966,31 @@ async fn handle_conn(mut stream: TcpStream) {
             mobile::cors_origin(origin),
             body.len(),
             body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if let Some(cmd) = path_only.strip_prefix("/orch/") {
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if len > 1024 * 1024 {
+            let r = "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(r.as_bytes()).await;
+            return;
+        }
+        let mut req_body = vec![0u8; len];
+        if len > 0 {
+            let _ = stream.read_exact(&mut req_body).await;
+        }
+        let resp_body = orch::handle(cmd, &req_body).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            mobile::cors_origin(origin),
+            resp_body.len(),
+            resp_body
         );
         let _ = stream.write_all(resp.as_bytes()).await;
         return;
