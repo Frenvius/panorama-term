@@ -208,7 +208,8 @@ export const useWorkspaces = () => {
 
   const saveActiveState = React.useCallback(
     (state: CanvasState) => {
-      setActiveState(state);
+      const live = current.current;
+      if (live.activeId === activeId && live.activeTabId === activeTabId) setActiveState(state);
       if (activeId && activeTabId) void workspaceService.saveTabState(activeId, activeTabId, state);
     },
     [activeId, activeTabId]

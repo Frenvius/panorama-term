@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.2]
+
+### Fixed
+- Switching tabs no longer copies the previous tab's tiles into the tab you switch to.
+
 ## [0.3.1]
 
 ### Added
