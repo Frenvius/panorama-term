@@ -1,23 +1,23 @@
 {
-  "version": "0.3.1",
-  "notes": "### Added\n- Remote desktop: control a workspace running on another computer over the LAN, Tailscale or the relay. Actions that only make sense on the host, such as \"Reveal in explorer\", are disabled while connected remotely.\n- Project mode: each tab can switch between Canvas and Project mode. Project mode shows terminals, notes and files as tabbed panels that split right or down, with Files, Source Control, Docker and Project Notes panels docked on the left or right.\n- A Projects panel lists your project folders. Frames on the canvas can be linked to a project folder, and new terminals and notes open inside them.\n- The macOS app is now signed with a Developer ID and notarized by Apple, so it opens without the \"unidentified developer\" warning. After this update, macOS asks once more for permissions you already granted.\n\n### Fixed\n- The AgentBar no longer covers the last lines of terminal output.\n- Mouse selection in the terminal lines up with the drawn cells.\n- Agent project names are read correctly from Windows paths, also when viewed from another computer.",
-  "pub_date": "2026-11-19T02:56:19Z",
+  "version": "0.3.2",
+  "notes": "### Fixed\n- Switching tabs no longer copies the previous tab's tiles into the tab you switch to.",
+  "pub_date": "2026-11-20T02:53:33Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.1/Panorama_0.3.1_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHBBRGhqcWZ3R1JIVVZnN0FHQWIvWGRWcno0Q2dTZmRrcXlIdDhVNmgxL3RYTlFETURTaVVCVExhcURFcG9DeG9wSllYbmpNZk5TRG5Ua0todTg3d2dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU2NDQzCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4xCkwwaWdvMmxCb3V0QjdmUnpEVXlzWHNhNXBaU0RDZFM3ZTk3QjQ5UVUzemdyK1IzNDZ2ZU5DUmRpVkNYL3JVZUY3YmlqUThuTDVJK2czcFB5ZWdZbkFRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.2/Panorama_0.3.2_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGlQZXhrV29hWjRQbFA3azAraUhHYjhKOC9GTkgzcjNBeHpPbFZvSklnekZ4YllxS3NRQURQNlRsbDJQRTBzSWdMaGxxRStYKy82aS85TnVrRUh5L3dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTQyNjk0CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4yCkNTaWhTbnFDemdLYis1bUZIRjBTZEl1Vng4SUFxL0lpY1RmQ2xyRXZqYkE0TU5pQ0lNSzNzbjlCUGl6blZPdzBvMUxnbXFicUdxMmFOTnZSeVZlR0RRPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.1/Panorama_0.3.1_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtVbHBqSFRNcTRzRHp4aWQ5cCs4ZWVaOUY2T0RYN0V4N3RuVmVXd0VLL3pTOW1maloyZWp1bmFMWEI1RS9hMTZRcHJBZU1EbnVPRGJrbkYrNW9qV1E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU2ODMxCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4xCkZlTk9wOEpzSnhBdlk4TG5kZUtkU0lxTXZFQUF1R1hLbzZDajd2NWNheXJHWnhiMjdOSTdaTU5YYXluVXMwL2U1c3FFZlhhQ292c3JxZnQ0SkZnUUJRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.2/Panorama_0.3.2_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG1iS0RNZllvYTMraDk5TEhsR2t4MW5iano1eDNzbTJlVW9VZHltNVRxT3VOektKQnVjQllab0xEOG5iMnFxOWhrcmdwZlFBRHpHamZZUHR2MkpGUHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTQzMTI0CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuMy4yCkw2cGNiemxVV256dzNpTm4zMHpzSFdreXZXTHBnR2JpYm1nS21XRVh2UTl0a1Y4amp6cWpYSEtLcDEyN3psTWJuaHc0MXg2UGFQY0RLOTBsUDd2ZUFBPT0K"
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.1/Panorama_0.3.1_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNqTmFyZTQ2RzFtbi8vbldkUmF0MHkwRTR2T1BCMmZJUVdtV0N0bXBQM3h6cU5yR2pOYU1rOTZaVDVIeGtrV3NYMGdUQVhGaXNnSzJ6YVZoTzNyNEFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU2NDUwCWZpbGU6UGFub3JhbWFfMC4zLjFfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjMuMQpwOFBKTk5PUUJZaUlBT1N2RDdDUDRWV1phSmduRE5YOWZlNnNHeFlNcGtKVURRdVRoTjhmUmQxQm5JQ25uNWQyTzVDQmpEaENqUjgyQ3VxSTcydzBBdz09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.2/Panorama_0.3.2_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGhreWZIMmNzTEJIdlFqYVRJSWJkdVVWalRiTEJ5bSszZzlac3M0Tm44ZGZ5OXM4cXplU1lnTjRlMlg1RzI3Uy9qTXlldnQvVk03T3E3aE01cXlVdVFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTQyNjcwCWZpbGU6UGFub3JhbWFfMC4zLjJfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjMuMgp0cVdhWEtJVXhjZ2lsYzJpd1J3cENHYU5TbGFHTVNQRzBkVnB1c2tIOUxjMDNVdnF5RjVGM2hnbEVJZEhSaTdWZ2ZRZk9jSndPa29OTm1Kbkw5UWdEQT09Cg=="
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.1/Panorama_0.3.1_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFQTjU3NUFUVkc2S20zeGNLRGJWR0pMZmFZVmxhcHh0VjVzcFRsb0FubUZFc1NJS3FLdjBINHFBS2ZnVHZtb3BuRXlFSy9PdGlyekF6ZVg3YjJyUWdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDU2NDgwCWZpbGU6UGFub3JhbWFfMC4zLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMy4xCkVVMnN6TjU4d0VwWHhaOFZkYy9VMkczYnBKNVVhRlMzZzhlZmFzNmNFcnV3UWNrNm1jbm9JSGlDeFNFZmh6L2lkWTd5NjRHZUJ1SEhseFJsYm1kTEFnPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.3.2/Panorama_0.3.2_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGlHaEhRMEFEMVZwSmpxRGpUa3Y3S2dvb3pQUXJ2MzZOUUZMWkc1dDZvekRuUHJDR0xUaG9IdEJxSkdHbkZ2YzhIRHNJemRoYWFmTGFxZ2s3bTFOa0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTQyNzk1CWZpbGU6UGFub3JhbWFfMC4zLjJfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMy4yCkdpUVlTUnhHQ3hscEpNVzUrNm9WckdmL2I1ZVVEcVUvSHZhYmxsVmFaemhzZGNiRWZraFd0YTAvRVVQSFJuY24zZVNYbnoyR09HUXk1ZG1oNVpCd0JRPT0K"
     }
   }
 }
