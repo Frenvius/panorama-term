@@ -7,17 +7,16 @@
   background: var(--surface-2);
   border: 1px solid var(--border-1);
   border-radius: 8px;
-  box-shadow: var(--shadow-island);
   user-select: none;
 }
 
 .resizerRight {
   position: absolute;
   top: 0;
-  right: -6px;
+  right: calc(-9px - var(--dock-slack, 0px));
   bottom: 0;
   z-index: 10;
-  width: 8px;
+  width: calc(8px + var(--dock-slack, 0px));
   cursor: ew-resize;
   touch-action: none;
 
@@ -48,9 +47,9 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -6px;
+  left: calc(-9px - var(--dock-slack, 0px));
   z-index: 10;
-  width: 8px;
+  width: calc(8px + var(--dock-slack, 0px));
   cursor: ew-resize;
   touch-action: none;
 

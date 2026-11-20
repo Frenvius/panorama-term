@@ -108,5 +108,6 @@ export interface PanelSplitTreeProps {
   sharedState: Omit<PanelGroupViewState, 'group' | 'isFocused' | 'isMaximized' | 'canCloseGroup'>;
   handlers: PanelGroupViewHandlers & {
     onResizeSplit: (path: number[], ratio: number) => void;
+    onGridSlack: (px: number) => void;
   };
 }

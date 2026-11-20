@@ -122,6 +122,7 @@ const ProjectView = () => {
 
   const [hasDocker, setHasDocker] = React.useState(false);
   const [draggingTab, setDraggingTab] = React.useState<DraggingTabState | null>(null);
+  const [gridSlack, setGridSlack] = React.useState(0);
   const [commandBarOpen, setCommandBarOpen] = React.useState(false);
   const [addProjectOpen, setAddProjectOpen] = React.useState(false);
   const [tileToClose, setTileToClose] = React.useState<{ id: string; path: string } | null>(null);
@@ -558,8 +559,11 @@ const ProjectView = () => {
     onSplitGroup: splitGroup,
     onDragStartTab: setDraggingTab,
     onDropTab: handleDropTab,
-    onResizeSplit: handleResizeSplit
+    onResizeSplit: handleResizeSplit,
+    onGridSlack: setGridSlack
   };
+
+  const workspaceStyle = { '--dock-slack': `${gridSlack}px` } as React.CSSProperties;
 
   const sharedGroupState: PanelSplitTreeProps['sharedState'] = {
     wsId: activeId,
@@ -733,7 +737,7 @@ const ProjectView = () => {
   return (
     <div className={styles.root}>
       <div className={styles.bg}>
-        <div className={styles.workspace}>
+        <div className={styles.workspace} style={workspaceStyle}>
           {leftHasVisible && leftOpen && (
             <DockSidebar
               side="left"

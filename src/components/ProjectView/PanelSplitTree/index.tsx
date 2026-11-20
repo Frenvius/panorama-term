@@ -24,7 +24,6 @@ const SplitBranch = (props: SplitBranchProps) => {
   const { node, path, cellW, hasToolbar, onResizeSplit, renderNode } = props;
   const containerRef = React.useRef<HTMLDivElement>(null);
   const firstRef = React.useRef<HTMLDivElement>(null);
-  const secondRef = React.useRef<HTMLDivElement>(null);
   const dragRef = React.useRef<{ pointerId: number; ratio: number } | null>(null);
   const [dragging, setDragging] = React.useState(false);
   const [containerPx, setContainerPx] = React.useState<number | null>(null);
@@ -64,7 +63,7 @@ const SplitBranch = (props: SplitBranchProps) => {
   }, [containerPx, ratio, cellW, node.direction, node.first, node.second, hasToolbar]);
 
   const firstStyle = layout ? { flex: `0 0 ${layout.first}px` } : { flex: `${ratio} 1 0%` };
-  const secondStyle = layout ? { flex: `0 0 ${layout.second}px` } : { flex: `${1 - ratio} 1 0%` };
+  const secondStyle = layout ? { flex: '1 1 0%' } : { flex: `${1 - ratio} 1 0%` };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -89,7 +88,6 @@ const SplitBranch = (props: SplitBranchProps) => {
     const next = layoutSplit({ ratio: clampedRatio, available: containerSize, firstChrome, secondChrome, step });
     drag.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, next.first / (containerSize - 8)));
     if (firstRef.current) firstRef.current.style.flex = `0 0 ${next.first}px`;
-    if (secondRef.current) secondRef.current.style.flex = `0 0 ${next.second}px`;
   };
 
   const endDrag = () => {
@@ -122,7 +120,7 @@ const SplitBranch = (props: SplitBranchProps) => {
         onDoubleClick={resetSplitRatio}
       />
 
-      <div ref={secondRef} className={styles.pane} style={secondStyle}>
+      <div className={styles.pane} style={secondStyle}>
         {renderNode(node.second, [...path, 1])}
       </div>
     </div>
@@ -212,6 +210,15 @@ const PanelSplitTree = (props: PanelSplitTreeProps) => {
 
   const maximized = maximizedGroupId && groups[maximizedGroupId] ? maximizedGroupId : null;
   const root: PanelLayoutNode = maximized ? { type: 'leaf', groupId: maximized } : node;
+
+  const snapsWidth = root.type === 'leaf' || root.direction === 'vertical';
+  const slackX = rootPx && snapsWidth ? (rootPx.w - exactWidth(rootPx.w)) / 2 : 0;
+  const { onGridSlack } = handlers;
+
+  React.useEffect(() => {
+    onGridSlack(slackX);
+    return () => onGridSlack(0);
+  }, [slackX, onGridSlack]);
 
   return (
     <div ref={rootRef} className={styles.treeRoot}>
