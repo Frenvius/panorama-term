@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.3]
+
+### Added
+- Undo and redo for canvas layout changes: moving, resizing, adding and removing tiles.
+- Reorder the canvas into a grid-aligned layout, with a compact mode.
+- Project tiles spawn inside their frame, and git worktrees are treated as projects.
+- Layout spacing applies to every automatically placed tile.
+- In project view, notes tint their body and header, and panels show tabs.
+- Codex tiles show up in the mobile app's chat and notifications.
+- Naming things now uses inline inputs instead of native prompt dialogs.
+
+### Fixed
+- Windows updates no longer fail with "Error opening file for writing" when the sidecar is running.
+- The terminal sits flush against the AgentBar, with no empty strip at the bottom.
+
 ## [0.3.2]
 
 ### Fixed
