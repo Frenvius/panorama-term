@@ -49,6 +49,8 @@ const inputFrame = (text: string, cursorCol: number, dim: boolean): GridFrame =>
     cursorHidden: false,
     mouseMode: 0,
     offset: 0,
+    topLine: 0,
+    alt: false,
     lines: padded,
     attrs
   };

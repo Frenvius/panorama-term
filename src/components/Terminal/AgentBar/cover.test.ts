@@ -11,6 +11,10 @@ describe('coverLayout', () => {
     expect(coverLayout(308, 76, 20, 17)).toEqual({ shiftPx: 31, minHeightPx: 76 });
     expect(coverLayout(308, 63.2, 20, 17)).toEqual({ shiftPx: 19, minHeightPx: 64 });
   });
+  test('accounts for the leftover space above a bottom-anchored grid', () => {
+    expect(coverLayout(318, 47, 20, 17)).toEqual({ shiftPx: 0, minHeightPx: 47 });
+    expect(coverLayout(318, 48, 20, 17)).toEqual({ shiftPx: 1, minHeightPx: 48 });
+  });
   test('clamps the shift to the input row', () => {
     expect(coverLayout(308, 500, 20, 2)).toEqual({ shiftPx: 30, minHeightPx: 300 });
   });

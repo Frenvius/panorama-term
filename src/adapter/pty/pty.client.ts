@@ -1,6 +1,6 @@
-import type { GridFrame, AgentEvent, ClaudeState, PtyServerMessage } from '~/domain/interfaces/pty.interface';
+import type { GridFrame, AgentEvent, ClaudeState, PtySearchResult, PtyServerMessage } from '~/domain/interfaces/pty.interface';
 
-import { SIDECAR_WS } from '~/adapter/pty/sidecar.client';
+import { SIDECAR_HTTP, SIDECAR_WS } from '~/adapter/pty/sidecar.client';
 
 const decoder = new TextDecoder();
 
@@ -39,7 +39,7 @@ export interface PtyHandlers {
   onPromptRestore: (text: string) => void;
 }
 
-const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
+export const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
   const dv = new DataView(buf);
   if (dv.getUint8(0) !== 1) return null;
   const rows = dv.getUint16(1, true);
@@ -50,7 +50,17 @@ const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
   const offset = dv.getUint16(11, true);
   const textLen = dv.getUint32(13, true);
   const text = decoder.decode(new Uint8Array(buf, 17, textLen));
-  const attrs = new Uint32Array(buf.slice(17 + textLen));
+  const attrStart = 17 + textLen;
+  const attrByteLen = rows * cols * 2 * 4;
+  const attrs = new Uint32Array(buf.slice(attrStart, attrStart + attrByteLen));
+  const trailerStart = attrStart + attrByteLen;
+  let topLine = 0;
+  let alt = false;
+  if (buf.byteLength >= trailerStart + 8) {
+    const tdv = new DataView(buf, trailerStart, 8);
+    topLine = tdv.getUint32(0, true);
+    alt = tdv.getUint8(4) === 1;
+  }
   return {
     rows,
     cols,
@@ -59,6 +69,8 @@ const parseGridFrame = (buf: ArrayBuffer): GridFrame | null => {
     cursorHidden,
     mouseMode,
     offset,
+    topLine,
+    alt,
     lines: text.split('\n'),
     attrs
   };
@@ -144,4 +156,23 @@ export const sendPtyDismissAgent = (ws: WebSocket): void => {
 
 export const sendPtyKill = (ws: WebSocket): void => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'kill' }));
+};
+
+export const sendPtyScrollTo = (ws: WebSocket, line: number): void => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'scrollTo', line }));
+};
+
+export const searchPty = async (tileId: string, query: string): Promise<PtySearchResult> => {
+  try {
+    const url = `${SIDECAR_HTTP}/search?tileId=${encodeURIComponent(tileId)}&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url);
+    if (!res.ok) return { matches: [], truncated: false };
+    const data = (await res.json()) as { matches: [number, number, number][]; truncated: boolean };
+    return {
+      matches: data.matches.map(([line, col, len]) => ({ line, col, len })),
+      truncated: data.truncated
+    };
+  } catch {
+    return { matches: [], truncated: false };
+  }
 };

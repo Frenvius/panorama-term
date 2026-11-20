@@ -1,6 +1,7 @@
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 
 import { groupByFrame } from '~/usecase/util/frame';
+import { snapTermSize } from '~/usecase/util/termGrid';
 import { CELL, TILE_MIN_WIDTH, FRAME_BAR_SPACE, FRAME_MIN_WIDTH, TILE_MIN_HEIGHT, FRAME_MIN_HEIGHT } from '~/usecase/util/constants';
 
 export type ReorderMode = 'default' | 'compact';
@@ -40,14 +41,13 @@ const toGrid = (value: number): number => Math.round(value / CELL) * CELL;
 
 const ceilGrid = (value: number): number => Math.ceil(value / CELL) * CELL;
 
-const gridTile = (tile: Tile): Box => ({
-  id: tile.id,
-  x: tile.x,
-  y: tile.y,
-  lead: 0,
-  width: Math.max(TILE_MIN_WIDTH, toGrid(tile.width)),
-  height: Math.max(TILE_MIN_HEIGHT, toGrid(tile.height))
-});
+const gridTile = (tile: Tile, cellW: number): Box => {
+  if (tile.type === 'term') {
+    const { width, height } = snapTermSize(tile.width, tile.height, cellW);
+    return { id: tile.id, x: tile.x, y: tile.y, lead: 0, width, height };
+  }
+  return { id: tile.id, x: tile.x, y: tile.y, lead: 0, width: Math.max(TILE_MIN_WIDTH, toGrid(tile.width)), height: Math.max(TILE_MIN_HEIGHT, toGrid(tile.height)) };
+};
 
 const readingRows = (boxes: Box[]): Box[][] => {
   const rows: Box[][] = [];
@@ -82,8 +82,8 @@ const packRows = (boxes: Box[], origin: { x: number; y: number }, gap: number): 
   return placed;
 };
 
-const reorderMembers = (frame: Rect, members: Tile[], spacing: Spacing): Map<string, Rect> =>
-  packRows(members.map(gridTile), { x: frame.x + spacing.pad, y: frame.y + spacing.pad }, spacing.gap);
+const reorderMembers = (frame: Rect, members: Tile[], spacing: Spacing, cellW: number): Map<string, Rect> =>
+  packRows(members.map((t) => gridTile(t, cellW)), { x: frame.x + spacing.pad, y: frame.y + spacing.pad }, spacing.gap);
 
 const frameAroundPlaced = (frame: Rect, placed: Map<string, Rect>, pad: number): Rect => {
   const rects = [...placed.values()];
@@ -104,35 +104,37 @@ const gridFrame = (frame: Frame): Rect => ({
   height: Math.max(FRAME_MIN_HEIGHT, toGrid(frame.height))
 });
 
-const planFrame = (frame: Frame, members: Tile[], spacing: Spacing): ReorderPlan => {
+const planFrame = (frame: Frame, members: Tile[], spacing: Spacing, cellW: number): ReorderPlan => {
   const rect = gridFrame(frame);
   if (!members.length) return { tiles: new Map(), frames: new Map([[frame.id, rect]]) };
-  const placed = reorderMembers(rect, members, spacing);
+  const placed = reorderMembers(rect, members, spacing, cellW);
   return { tiles: placed, frames: new Map([[frame.id, frameAroundPlaced(rect, placed, spacing.pad)]]) };
 };
 
 interface PlanFrameReorderArgs {
   id: string;
+  cellW: number;
   tiles: Tile[];
   frames: Frame[];
   spacing: Spacing;
 }
 
-export const planFrameReorder = ({ id, tiles, frames, spacing }: PlanFrameReorderArgs): ReorderPlan | null => {
+export const planFrameReorder = ({ id, cellW, tiles, frames, spacing }: PlanFrameReorderArgs): ReorderPlan | null => {
   const frame = frames.find((f) => f.id === id);
   if (!frame) return null;
   const members = (groupByFrame(frames, tiles).members.get(id) ?? []).filter(isMovable);
   if (!members.length) return null;
-  return planFrame(frame, members, spacing);
+  return planFrame(frame, members, spacing, cellW);
 };
 
 interface PlanCanvasReorderArgs {
   tiles: Tile[];
   frames: Frame[];
+  cellW: number;
   spacing: Spacing;
 }
 
-export const planCanvasReorder = ({ tiles, frames, spacing }: PlanCanvasReorderArgs): ReorderPlan | null => {
+export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs): ReorderPlan | null => {
   const { members, loose } = groupByFrame(frames, tiles);
   const tileRects = new Map<string, Rect>();
   const frameRects = new Map<string, Rect>();
@@ -140,7 +142,7 @@ export const planCanvasReorder = ({ tiles, frames, spacing }: PlanCanvasReorderA
   const blocks: Box[] = [];
 
   for (const frame of frames) {
-    const plan = planFrame(frame, (members.get(frame.id) ?? []).filter(isMovable), spacing);
+    const plan = planFrame(frame, (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW);
     plan.tiles.forEach((rect, tid) => tileRects.set(tid, rect));
     const rect = plan.frames.get(frame.id)!;
     frameRects.set(frame.id, rect);
@@ -148,7 +150,7 @@ export const planCanvasReorder = ({ tiles, frames, spacing }: PlanCanvasReorderA
     blocks.push({ id: frame.id, ...rect, lead: spacing.barSpace });
   }
   for (const tile of loose.filter(isMovable)) {
-    const box = gridTile(tile);
+    const box = gridTile(tile, cellW);
     tileRects.set(tile.id, box);
     blocks.push(box);
   }

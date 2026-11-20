@@ -1,8 +1,10 @@
+use std::num::NonZeroU16;
+
 #[test]
 fn scrollback_offset_beyond_rows_does_not_panic() {
     let rows = 20u16;
     let cols = 80u16;
-    let mut parser = vt100::Parser::new(rows, cols, 10000);
+    let mut parser = vt100::Parser::new(NonZeroU16::new(rows).unwrap(), NonZeroU16::new(cols).unwrap(), 10000);
     let mut seed = String::new();
     for i in 1..=200 {
         seed.push_str(&format!("line {i}\r\n"));

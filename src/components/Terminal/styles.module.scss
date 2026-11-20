@@ -11,6 +11,13 @@
   white-space: pre;
 }
 
+.grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
 .rows {
   position: absolute;
   inset: 0;
@@ -45,6 +52,20 @@
   position: absolute;
   height: 1px;
   background: currentcolor;
+}
+
+.searchHit {
+  position: absolute;
+  height: 15px;
+  background: rgba(255, 220, 80, 0.22);
+}
+
+.searchCurrent {
+  position: absolute;
+  height: 15px;
+  background: rgba(255, 160, 40, 0.5);
+  outline: 1px solid rgba(255, 160, 40, 0.8);
+  outline-offset: -1px;
 }
 
 .cursor {

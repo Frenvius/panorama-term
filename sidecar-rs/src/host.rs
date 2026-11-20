@@ -4,7 +4,7 @@ use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -107,8 +107,8 @@ struct SessionState {
 struct HostSession {
     key: String,
     pid: u32,
-    cols: u16,
-    rows: u16,
+    cols: AtomicU16,
+    rows: AtomicU16,
     meta: serde_json::Value,
     alive: Arc<AtomicBool>,
     exit_once: Arc<AtomicBool>,
@@ -591,6 +591,8 @@ fn dispatch_rpc(
             let rows = v["rows"].as_u64().unwrap_or(24) as u16;
             let sess = inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let s = sess.get(key).ok_or("session not found")?;
+            s.cols.store(cols, Ordering::Relaxed);
+            s.rows.store(rows, Ordering::Relaxed);
             let _ = s
                 .master
                 .lock()
@@ -656,8 +658,8 @@ fn dispatch_rpc(
                     serde_json::json!({
                         "key": s.key,
                         "pid": s.pid,
-                        "cols": s.cols,
-                        "rows": s.rows,
+                        "cols": s.cols.load(Ordering::Relaxed),
+                        "rows": s.rows.load(Ordering::Relaxed),
                         "alive": s.alive.load(Ordering::Relaxed),
                         "total": total,
                         "meta": s.meta,
@@ -737,8 +739,8 @@ fn host_spawn(
     let session = Arc::new(HostSession {
         key: key.clone(),
         pid,
-        cols,
-        rows,
+        cols: AtomicU16::new(cols),
+        rows: AtomicU16::new(rows),
         meta,
         alive: alive.clone(),
         exit_once: exit_once.clone(),

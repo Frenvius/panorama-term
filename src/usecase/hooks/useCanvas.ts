@@ -7,8 +7,11 @@ import type { CanvasState } from '~/domain/interfaces/workspace.interface';
 import type { ReorderPlan } from '~/usecase/util/reorderLayout';
 import type { Layout } from '~/usecase/util/layoutHistory';
 import { drawGrid } from '~/usecase/util/gridUtils';
+import { termMetrics } from '~/usecase/util/fonts';
+import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
+import { snapTermSize } from '~/usecase/util/termGrid';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame } from '~/usecase/util/frame';
 import { placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
@@ -328,6 +331,20 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     []
   );
 
+  const cellW = useTermCellWidth();
+
+  React.useEffect(() => {
+    setTiles((prev) => {
+      const next = prev.map((t) => {
+        if (t.type !== 'term') return t;
+        const { width, height } = snapTermSize(t.width, t.height, cellW);
+        if (Math.abs(width - t.width) < 0.01 && Math.abs(height - t.height) < 0.01) return t;
+        return { ...t, width, height };
+      });
+      return next.some((t, i) => t !== prev[i]) ? next : prev;
+    });
+  }, [cellW]);
+
   const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd'>, at?: { x: number; y: number }) => {
     setView((v) => {
       const p = at ?? mouseRef.current;
@@ -335,8 +352,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       const cy = p ? p.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => {
         const last = lastTermSize.current ?? [...prev].reverse().find((t) => t.type === 'term');
-        const width = last?.width ?? TILE_WIDTH;
-        const height = last?.height ?? TILE_HEIGHT;
+        const { width, height } = snapTermSize(last?.width ?? TILE_WIDTH, last?.height ?? TILE_HEIGHT, termMetrics.cellW);
         return [
           ...prev,
           {
@@ -690,10 +706,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const others = [...prev.filter((t) => t.id !== id), ...framesRef.current];
     const snap = computeResizeSnap({ x, y, width, height }, dir, others, SNAP_PX / k, TILE_MIN_WIDTH, TILE_MIN_HEIGHT);
     if (tile.type === 'term') {
-      lastTermSize.current = {
-        width: Math.max(TILE_MIN_WIDTH, Math.round(snap.width / CELL) * CELL),
-        height: Math.max(TILE_MIN_HEIGHT, Math.round(snap.height / CELL) * CELL)
-      };
+      const snapped = snapTermSize(snap.width, snap.height, termMetrics.cellW);
+      const nx = dir.includes('w') ? snap.x + snap.width - snapped.width : snap.x;
+      const ny = dir.includes('n') ? snap.y + snap.height - snapped.height : snap.y;
+      lastTermSize.current = snapped;
+      setTiles((p) => p.map((t) => (t.id === id ? { ...t, x: nx, y: ny, ...snapped } : t)));
+      return;
     }
     setTiles((p) => p.map((t) => (t.id === id ? { ...t, x: snap.x, y: snap.y, width: snap.width, height: snap.height } : t)));
   }, []);
@@ -708,6 +726,10 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       const others = [...prev.filter((t) => !group.has(t.id)), ...framesRef.current];
       if (members.length === 1) {
         const rect = settleRect({ rect: members[0]!, others, cell: CELL, minW: TILE_MIN_WIDTH, minH: TILE_MIN_HEIGHT });
+        if (members[0]!.type === 'term') {
+          const size = snapTermSize(members[0]!.width, members[0]!.height, termMetrics.cellW);
+          return prev.map((t) => (t.id === members[0]!.id ? { ...t, x: rect.x, y: rect.y, ...size } : t));
+        }
         return prev.map((t) => (t.id === members[0]!.id ? { ...t, ...rect } : t));
       }
       const { dx, dy } = settleOffset(boundsOf(members), others, CELL);
@@ -1009,12 +1031,13 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   }, [animateLayout]);
 
   const reorderFrame = React.useCallback(
-    (id: string) => applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, spacing: currentLayoutSpacing() })),
+    (id: string) =>
+      applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })),
     [applyReorder]
   );
 
   const reorderCanvas = React.useCallback(
-    () => applyReorder(planCanvasReorder({ tiles: tilesRef.current, frames: framesRef.current, spacing: currentLayoutSpacing() })),
+    () => applyReorder(planCanvasReorder({ tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })),
     [applyReorder]
   );
 
