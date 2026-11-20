@@ -1,6 +1,7 @@
 use vt100::{Cell, Color, Screen};
 
 use crate::reflow::soft_wrapped;
+use crate::{dim, grid_size};
 
 const HEADER: &[u8] = b"\x1b_panorama-history;";
 const HEADER_END: &[u8] = b"\x1b\\";
@@ -58,7 +59,7 @@ fn visible(cell: &Cell) -> bool {
 }
 
 fn write_row(out: &mut Vec<u8>, screen: &Screen, row: u16, style: &mut Style) {
-    let cols = screen.size().1;
+    let cols = grid_size(screen).1;
     let end = (0..cols)
         .rev()
         .find(|&col| screen.cell(row, col).is_some_and(visible))
@@ -83,7 +84,7 @@ fn main_grid_bytes(screen: &mut Screen) -> Vec<u8> {
     let saved = screen.scrollback();
     screen.set_scrollback(usize::MAX);
     let history = screen.scrollback();
-    let rows = screen.size().0;
+    let rows = grid_size(screen).0;
     let total = history + rows as usize;
     let mut out = Vec::new();
     let mut style = Style::default();
@@ -108,7 +109,7 @@ fn main_grid_bytes(screen: &mut Screen) -> Vec<u8> {
         next = top + rows as usize;
     }
     screen.set_scrollback(0);
-    out.extend_from_slice(&screen.cursor_state_formatted());
+    out.extend_from_slice(screen.cursor_state_formatted().as_bytes());
     screen.set_scrollback(saved);
     out
 }
@@ -117,8 +118,8 @@ pub fn main_history(screen: &mut Screen) -> Vec<u8> {
     if !screen.alternate_screen() {
         return main_grid_bytes(screen);
     }
-    let (rows, cols) = screen.size();
-    let mut main = vt100::Parser::new(rows, cols, 0);
+    let (rows, cols) = grid_size(screen);
+    let mut main = vt100::Parser::new(dim(rows), dim(cols), 0);
     *main.screen_mut() = screen.clone();
     main.process(b"\x1b[?1049l");
     main_grid_bytes(main.screen_mut())
@@ -126,11 +127,11 @@ pub fn main_history(screen: &mut Screen) -> Vec<u8> {
 
 pub fn screen_tail(screen: &Screen) -> Vec<u8> {
     if !screen.alternate_screen() {
-        return screen.input_mode_formatted();
+        return screen.input_mode_formatted().into_bytes();
     }
     let mut out = b"\x1b[?1049h".to_vec();
-    out.extend_from_slice(&screen.state_formatted());
-    out.extend_from_slice(&screen.cursor_state_formatted());
+    out.extend_from_slice(screen.state_formatted().as_bytes());
+    out.extend_from_slice(screen.cursor_state_formatted().as_bytes());
     out
 }
 
@@ -142,19 +143,29 @@ fn snapshot(screen: &mut Screen) -> Vec<u8> {
 }
 
 // The header rides in an APC string so a parser replaying the file skips it.
-pub fn encode(pid: u32, total: u64, body: &[u8]) -> Vec<u8> {
+// Optional third field: scroll_len (number of disk-backed rows at snapshot time).
+pub fn encode(pid: u32, total: u64, scroll_len: Option<u64>, body: &[u8]) -> Vec<u8> {
     let mut out = HEADER.to_vec();
-    out.extend_from_slice(format!("{pid};{total}").as_bytes());
+    match scroll_len {
+        Some(sl) => out.extend_from_slice(format!("{pid};{total};{sl}").as_bytes()),
+        None => out.extend_from_slice(format!("{pid};{total}").as_bytes()),
+    }
     out.extend_from_slice(HEADER_END);
     out.extend_from_slice(body);
     out
 }
 
-pub fn decode(data: &[u8]) -> Option<(u32, u64, &[u8])> {
+/// Returns `(pid, total, scroll_len, body)`. `scroll_len` is `None` for files
+/// written before the disk-scrollback feature (treat as "unknown").
+pub fn decode(data: &[u8]) -> Option<(u32, u64, Option<u64>, &[u8])> {
     let rest = data.strip_prefix(HEADER)?;
     let end = rest.windows(HEADER_END.len()).position(|w| w == HEADER_END)?;
-    let (pid, total) = std::str::from_utf8(&rest[..end]).ok()?.split_once(';')?;
-    Some((pid.parse().ok()?, total.parse().ok()?, &rest[end + HEADER_END.len()..]))
+    let header_str = std::str::from_utf8(&rest[..end]).ok()?;
+    let mut parts = header_str.splitn(3, ';');
+    let pid: u32 = parts.next()?.parse().ok()?;
+    let total: u64 = parts.next()?.parse().ok()?;
+    let scroll_len: Option<u64> = parts.next().and_then(|s| s.parse().ok());
+    Some((pid, total, scroll_len, &rest[end + HEADER_END.len()..]))
 }
 
 #[cfg(test)]
@@ -162,13 +173,13 @@ mod tests {
     use super::*;
 
     fn rebuild(bytes: &[u8], rows: u16, cols: u16) -> vt100::Parser {
-        let mut parser = vt100::Parser::new(rows, cols, 1000);
+        let mut parser = vt100::Parser::new(dim(rows), dim(cols), 1000);
         parser.process(bytes);
         parser
     }
 
     fn all_rows(parser: &mut vt100::Parser) -> Vec<String> {
-        let cols = parser.screen().size().1;
+        let cols = grid_size(parser.screen()).1;
         parser.screen_mut().set_scrollback(usize::MAX);
         let history = parser.screen().scrollback();
         let mut out = Vec::new();
@@ -185,7 +196,7 @@ mod tests {
 
     #[test]
     fn main_screen_round_trips_with_scrollback_colors_and_cursor() {
-        let mut src = vt100::Parser::new(4, 12, 1000);
+        let mut src = vt100::Parser::new(dim(4), dim(12), 1000);
         src.process(b"one\r\n\x1b[31;1mred\x1b[0m two\r\nhello world, wraps\r\n\x1b[44m  \x1b[m\r\nlast\r\n$ ab\x1b[D");
         let bytes = snapshot(src.screen_mut());
         let mut dst = rebuild(&bytes, 4, 12);
@@ -199,7 +210,7 @@ mod tests {
 
     #[test]
     fn alternate_screen_keeps_main_history_and_alt_contents() {
-        let mut src = vt100::Parser::new(4, 20, 1000);
+        let mut src = vt100::Parser::new(dim(4), dim(20), 1000);
         src.process(b"a\r\nb\r\nc\r\nd\r\n$ claude\x1b[?1049h\x1b[2J\x1b[2;3Hagent ui\x1b[?2004h");
         let bytes = snapshot(src.screen_mut());
         let mut dst = rebuild(&bytes, 4, 20);
@@ -215,9 +226,26 @@ mod tests {
 
     #[test]
     fn header_round_trips_and_is_invisible() {
-        let encoded = encode(42, 9001, b"hi");
-        assert_eq!(decode(&encoded), Some((42, 9001, &b"hi"[..])));
+        let encoded = encode(42, 9001, None, b"hi");
+        assert_eq!(decode(&encoded), Some((42, 9001, None, &b"hi"[..])));
         assert_eq!(rebuild(&encoded, 2, 10).screen().contents(), "hi");
         assert_eq!(decode(b"plain bytes"), None);
+    }
+
+    #[test]
+    fn header_with_scroll_len_round_trips() {
+        let encoded = encode(1, 500, Some(777), b"body");
+        assert_eq!(decode(&encoded), Some((1, 500, Some(777), &b"body"[..])));
+    }
+
+    #[test]
+    fn old_header_without_scroll_len_decodes_as_none() {
+        // Manually craft a v1 header (no scroll_len field)
+        let mut old = b"\x1b_panorama-history;".to_vec();
+        old.extend_from_slice(b"5;1000");
+        old.extend_from_slice(b"\x1b\\");
+        old.extend_from_slice(b"content");
+        let result = decode(&old);
+        assert_eq!(result, Some((5, 1000, None, &b"content"[..])));
     }
 }

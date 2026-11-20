@@ -170,6 +170,19 @@ export interface GridFrame {
   cursorHidden: boolean;
   mouseMode: number;
   offset: number;
+  topLine: number;
+  alt: boolean;
   lines: string[];
   attrs: Uint32Array;
+}
+
+export interface SearchMatch {
+  line: number;
+  col: number;
+  len: number;
+}
+
+export interface PtySearchResult {
+  matches: SearchMatch[];
+  truncated: boolean;
 }

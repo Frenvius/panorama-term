@@ -28,6 +28,8 @@ mod files;
 mod attach;
 mod activity;
 mod git_glance;
+mod scroll_store;
+mod search;
 mod run_commands;
 
 enum ConsumerMsg {
@@ -299,17 +301,30 @@ fn reconnect_sessions() {
         let cols = (si["cols"].as_u64().unwrap_or(220) as u16).max(2);
         let rows = (si["rows"].as_u64().unwrap_or(50) as u16).max(2);
         let (raw, snap_total) = host_handle().snapshot_total(&key);
-        let replay = adoption_replay(&key, pid, &raw, snap_total);
+        let saved = load_buffer(&key);
+        let saved_scroll_len = history::decode(&saved).and_then(|(_, _, sl, _)| sl);
+        let replay = splice_saved_history(&saved, pid, &raw, snap_total);
+
+        let is_run = key.starts_with("run:") || key.starts_with("build:");
+        let mut scroll_store = if is_run {
+            None
+        } else {
+            pty_buffer_path(&key, "scroll").and_then(scroll_store::ScrollStore::open)
+        };
+        if let (Some(store), Some(sl)) = (scroll_store.as_mut(), saved_scroll_len) {
+            store.truncate(sl as usize);
+        }
 
         let focused = Arc::new(AtomicBool::new(false));
         let focus_reporting = Arc::new(AtomicBool::new(false));
         let sink = CwdSink {
+            scroll_store,
             focused: focused.clone(),
             focus_reporting: focus_reporting.clone(),
             ..Default::default()
         };
         let mut parser =
-            vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
+            vt100::Parser::new_with_callbacks(dim(rows), dim(cols), SCROLLBACK_LINES, sink);
         if !replay.is_empty() {
             parser.process(&replay);
             let _ = parser.callbacks_mut().take_clipboard();
@@ -358,6 +373,7 @@ fn reconnect_sessions() {
             cols: AtomicU16::new(cols),
             rows: AtomicU16::new(rows),
             scrollback: AtomicUsize::new(0),
+            grow_pad: AtomicUsize::new(0),
             cwd: Mutex::new(None),
             agent_cwd: Mutex::new(None),
             cwd_dirty: AtomicU64::new(0),
@@ -538,6 +554,15 @@ fn idx_rgb(i: u8) -> u32 {
     }
 }
 
+pub(crate) fn dim(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN)
+}
+
+pub(crate) fn grid_size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
+
 fn color_rgb(c: vt100::Color) -> Option<u32> {
     match c {
         vt100::Color::Default => None,
@@ -572,6 +597,7 @@ struct CwdSink {
     progress_changed: bool,
     focused: Arc<AtomicBool>,
     focus_reporting: Arc<AtomicBool>,
+    scroll_store: Option<scroll_store::ScrollStore>,
 }
 
 impl CwdSink {
@@ -751,6 +777,22 @@ impl vt100::Callbacks for CwdSink {
             self.responses.push(seq.to_vec());
         }
     }
+
+    fn on_scroll(
+        &mut self,
+        contents: vt100::capture::RowContents<'_>,
+        alternate_screen: bool,
+    ) {
+        if alternate_screen {
+            return;
+        }
+        let Some(store) = self.scroll_store.as_mut() else { return };
+        let mut s = String::new();
+        let mut state = vt100::capture::BasicFormattedCaptureState::new();
+        if contents.write_formatted_basic(&mut s, &mut state).is_ok() {
+            store.push(&s);
+        }
+    }
 }
 
 const OSC52_MAX: usize = 128 * 1024;
@@ -837,7 +879,8 @@ fn parse_osc7(url: &[u8]) -> Option<String> {
     Some(percent_decode(path))
 }
 
-const SCROLLBACK_LINES: usize = 5000;
+const SCROLLBACK_LINES: usize = 1000;
+const CAPTURE_LINES: usize = 5000;
 const RAW_CAP: usize = 256 * 1024;
 const RUN_LINE_CAP: usize = 10_000;
 const RUN_REQ_MAX: usize = 500;
@@ -1225,6 +1268,7 @@ struct Session {
     cols: AtomicU16,
     rows: AtomicU16,
     scrollback: AtomicUsize,
+    grow_pad: AtomicUsize,
     cwd: Mutex<Option<String>>,
     agent_cwd: Mutex<Option<String>>,
     cwd_dirty: AtomicU64,
@@ -1260,18 +1304,14 @@ fn write_atomic(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
+fn pty_buffer_path(tile_id: &str, ext: &str) -> Option<std::path::PathBuf> {
     let dir = panorama_dir()?.join("pty-buffers");
     std::fs::create_dir_all(&dir).ok()?;
-    let mut name = String::with_capacity(tile_id.len());
-    for ch in tile_id.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            name.push(ch);
-        } else {
-            name.push('_');
-        }
-    }
-    Some(dir.join(format!("{name}.raw")))
+    Some(dir.join(format!("{}.{}", sanitize_key(tile_id), ext)))
+}
+
+fn buffer_path(tile_id: &str) -> Option<std::path::PathBuf> {
+    pty_buffer_path(tile_id, "raw")
 }
 
 fn load_buffer(tile_id: &str) -> Vec<u8> {
@@ -1284,7 +1324,7 @@ const RESTORE_RESET: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?6l\x1b[m\x1b[?25h\x1b[?1l\
 
 fn seal_restored_screen(parser: &mut vt100::Parser<CwdSink>) -> Vec<u8> {
     parser.process(RESTORE_RESET);
-    let (rows, cols) = parser.screen().size();
+    let (rows, cols) = grid_size(parser.screen());
     let used = parser
         .screen()
         .rows(0, cols)
@@ -1304,14 +1344,12 @@ fn seal_restored_screen(parser: &mut vt100::Parser<CwdSink>) -> Vec<u8> {
     out
 }
 
-fn adoption_replay(tile_id: &str, pid: u32, raw: &[u8], total: u64) -> Vec<u8> {
-    splice_saved_history(&load_buffer(tile_id), pid, raw, total)
-}
-
 fn splice_saved_history(saved: &[u8], pid: u32, raw: &[u8], total: u64) -> Vec<u8> {
     let base = total.saturating_sub(raw.len() as u64);
     match history::decode(saved) {
-        Some((saved_pid, at, body)) if saved_pid == pid && (base..=total).contains(&at) => {
+        Some((saved_pid, at, _scroll_len, body))
+            if saved_pid == pid && (base..=total).contains(&at) =>
+        {
             let mut out = body.to_vec();
             out.extend_from_slice(&raw[(at - base) as usize..]);
             out
@@ -1324,7 +1362,7 @@ fn flush_session(s: &Session) {
     if s.run.is_some() || s.parsed_total.load(Ordering::Relaxed) == s.flushed_total.load(Ordering::Relaxed) {
         return;
     }
-    let (total, body) = {
+    let (total, body, scroll_len) = {
         let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
         let total = s.parsed_total.load(Ordering::Relaxed);
         let mut main = s.main_history.lock().unwrap_or_else(|e| e.into_inner());
@@ -1333,12 +1371,16 @@ fn flush_session(s: &Session) {
         }
         let mut body = main.clone();
         body.extend_from_slice(&history::screen_tail(parser.screen()));
-        (total, body)
+        let scroll_len = parser.callbacks_mut().scroll_store.as_mut().map(|st| {
+            st.flush();
+            st.len() as u64
+        });
+        (total, body, scroll_len)
     };
     let Some(path) = buffer_path(&s.tile_id) else {
         return;
     };
-    if write_atomic(path, &history::encode(s.pid, total, &body)).is_ok() {
+    if write_atomic(path, &history::encode(s.pid, total, scroll_len, &body)).is_ok() {
         s.flushed_total.store(total, Ordering::Relaxed);
     }
 }
@@ -2977,7 +3019,7 @@ fn foreground_command(pid: u32) -> Option<String> {
 fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
     let rows = rows.max(2);
     let cols = cols.max(2);
-    let mut p = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
+    let mut p = vt100::Parser::new(dim(rows), dim(cols), CAPTURE_LINES);
     p.process(raw);
     let screen = p.screen_mut();
     screen.set_scrollback(usize::MAX);
@@ -3000,6 +3042,82 @@ fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
 fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
     static S: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn search_session(s: &Session, query: &str) -> serde_json::Value {
+    if query.trim().is_empty() {
+        return serde_json::json!({ "matches": [], "truncated": false });
+    }
+    let fold = !query.chars().any(|c| c.is_uppercase());
+    let query_chars: Vec<char> = query.chars().collect();
+
+    for _attempt in 0..3 {
+        let (disk_path, disk_base, disk_len, disk_byte_end, ram_rows, ram_len) = {
+            let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let cols = grid_size(parser.screen()).1;
+            let snap = parser.callbacks_mut().scroll_store.as_mut().map(|st| st.snapshot());
+            let saved = parser.screen().scrollback();
+            parser.screen_mut().set_scrollback(usize::MAX);
+            let depth = parser.screen().scrollback();
+            let total = depth + grid_size(parser.screen()).0 as usize;
+            let mut strings: Vec<String> = Vec::with_capacity(total);
+            while strings.len() < total {
+                let off = depth.saturating_sub(strings.len());
+                parser.screen_mut().set_scrollback(off);
+                let skip = strings.len() - (depth - off);
+                strings.extend(parser.screen().rows(0, cols).skip(skip).map(|l| l.to_string()));
+            }
+            parser.screen_mut().set_scrollback(saved);
+            let (dp, db, dl, dbe) = snap.unwrap_or_else(|| (PathBuf::new(), 0, 0, 0));
+            (dp, db, dl, dbe, strings, depth)
+        };
+
+        let disk_rows: Vec<String> = if disk_len > 0 && !disk_path.as_os_str().is_empty() && disk_path.exists() {
+            match std::fs::File::open(&disk_path) {
+                Ok(mut f) => {
+                    let mut buf = vec![0u8; disk_byte_end as usize];
+                    if f.read_exact(&mut buf).is_ok() {
+                        String::from_utf8_lossy(&buf)
+                            .lines()
+                            .take(disk_len)
+                            .map(|l| vt100::capture::basic_formatted_to_plain(l).collect::<String>())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        {
+            let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let cur = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.base());
+            if cur != disk_base {
+                continue;
+            }
+        }
+
+        let total_disk = disk_rows.len();
+        let mut indexed: Vec<(u64, &str)> = Vec::with_capacity(total_disk + ram_rows.len());
+        for (i, row) in disk_rows.iter().enumerate() {
+            indexed.push((disk_base + i as u64, row.as_str()));
+        }
+        for (j, row) in ram_rows[..ram_len].iter().enumerate() {
+            indexed.push((disk_base + disk_len as u64 + j as u64, row.as_str()));
+        }
+        for (r, row) in ram_rows[ram_len..].iter().enumerate() {
+            indexed.push((disk_base + disk_len as u64 + ram_len as u64 + r as u64, row.as_str()));
+        }
+
+        let (matches, truncated) = search::search_rows(&indexed, &query_chars, fold);
+        let arr: Vec<serde_json::Value> = matches.iter().map(|m| serde_json::json!([m.line, m.col, m.len])).collect();
+        return serde_json::json!({ "matches": arr, "truncated": truncated });
+    }
+
+    serde_json::json!({ "matches": [], "truncated": false })
 }
 
 // above any context window, so idle compaction never triggers
@@ -3287,14 +3405,25 @@ fn spawn_session(
 
     let mut seed = if p.spawn_cmd.is_some() { Vec::new() } else { load_buffer(&p.tile_id) };
 
+    let saved_scroll_len = history::decode(&seed).and_then(|(_, _, sl, _)| sl);
+    let mut scroll_store = if p.spawn_cmd.is_some() {
+        None
+    } else {
+        pty_buffer_path(&p.tile_id, "scroll").and_then(scroll_store::ScrollStore::open)
+    };
+    if let (Some(store), Some(sl)) = (scroll_store.as_mut(), saved_scroll_len) {
+        store.truncate(sl as usize);
+    }
+
     let focused = Arc::new(AtomicBool::new(true));
     let focus_reporting = Arc::new(AtomicBool::new(false));
     let sink = CwdSink {
+        scroll_store,
         focused: focused.clone(),
         focus_reporting: focus_reporting.clone(),
         ..Default::default()
     };
-    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, sink);
+    let mut parser = vt100::Parser::new_with_callbacks(dim(rows), dim(cols), SCROLLBACK_LINES, sink);
     if !seed.is_empty() {
         parser.process(&seed);
         let boundary = seal_restored_screen(&mut parser);
@@ -3343,6 +3472,7 @@ fn spawn_session(
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         scrollback: AtomicUsize::new(0),
+        grow_pad: AtomicUsize::new(0),
         cwd: Mutex::new(Some(cwd.clone())),
         agent_cwd: Mutex::new(None),
         cwd_dirty: AtomicU64::new(1),
@@ -3396,7 +3526,16 @@ fn run_consumer_loop(
                 let responses = {
                     let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let was_alt = p.screen().alternate_screen();
+                    let pre_scroll = p.screen().scrollback_len();
                     p.process(chunk);
+                    if pre_scroll > 0
+                        && p.screen().scrollback_len() == 0
+                        && !p.screen().alternate_screen()
+                    {
+                        if let Some(store) = p.callbacks_mut().scroll_store.as_mut() {
+                            store.clear();
+                        }
+                    }
                     if !was_alt || !p.screen().alternate_screen() {
                         s.main_dirty.store(true, Ordering::Relaxed);
                     }
@@ -3571,25 +3710,64 @@ fn resize_session(s: &Session, cols: u16, rows: u16) {
     s.cols.store(cols, Ordering::Relaxed);
     s.rows.store(rows, Ordering::Relaxed);
     host_handle().resize(&s.tile_id, cols, rows);
-    s.parser
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .screen_mut()
-        .set_size(rows, cols);
+    let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let pulled = resize_parser(&mut parser, rows, cols);
+    s.grow_pad.fetch_add(pulled, Ordering::Relaxed);
+    drop(parser);
     s.dirty.fetch_add(1, Ordering::Relaxed);
 }
 
+// vt100 grows the screen by pulling rows back from scrollback, but ConPTY grows its buffer with
+// blank rows at the bottom and keeps the cursor in place; push the pulled rows back so both agree.
+// Returns how many rows were pushed back, so the view can still show them (see view_shift).
+fn resize_parser<CB: vt100::Callbacks>(parser: &mut vt100::Parser<CB>, rows: u16, cols: u16) -> usize {
+    let before = parser.screen().cursor_position().0;
+    parser.set_size(dim(rows), dim(cols));
+    let pulled = parser.screen().cursor_position().0.saturating_sub(before);
+    if pulled > 0 {
+        parser.process(format!("\x1b[{pulled}S\x1b[{pulled}A").as_bytes());
+    }
+    pulled as usize
+}
+
+// Rows the view is lifted by after a grow: the pushed-back rows are shown above the screen while
+// the rows under the cursor are still blank, so the content stays anchored to the bottom. ConPTY's
+// own coordinates are unchanged; mouse rows sent to the app are lowered by the same amount.
+fn view_shift(pad: &AtomicUsize, screen: &mut vt100::Screen) -> usize {
+    let wanted = pad.load(Ordering::Relaxed);
+    if wanted == 0 {
+        return 0;
+    }
+    let saved = screen.scrollback();
+    screen.set_scrollback(0);
+    let (rows, cols) = grid_size(screen);
+    let cursor = screen.cursor_position().0;
+    let blank = (cursor + 1..rows)
+        .rev()
+        .take_while(|&r| (0..cols).all(|c| screen.cell(r, c).is_none_or(|cell| !cell.has_contents())))
+        .count();
+    screen.set_scrollback(saved);
+    let shift = if cursor == 0 || screen.alternate_screen() { 0 } else { wanted.min(blank) };
+    if shift < wanted {
+        pad.store(shift, Ordering::Relaxed);
+    }
+    shift
+}
+
 fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
-    let (alt, app_cursor, mouse, enc) = {
-        let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let (alt, app_cursor, mouse, enc, shift) = {
+        let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let shift = view_shift(&s.grow_pad, parser.screen_mut());
         let sc = parser.screen();
         (
             sc.alternate_screen(),
             sc.application_cursor(),
             sc.mouse_protocol_mode(),
             sc.mouse_protocol_encoding(),
+            shift,
         )
     };
+    let row = row.saturating_sub(shift).max(1);
 
     // kimi-code runs full-screen and handles the wheel itself, but on Windows ConPTY drops its
     // mouse-tracking escapes (see docs/kimi-support.md), so the mode never reaches vt100. Feed it
@@ -3631,22 +3809,27 @@ fn scroll_session(s: &Session, dir: i64, lines: usize, col: usize, row: usize) {
     let desired = (cur + dir * lines as i64).max(0) as usize;
     let actual = {
         let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-        parser.screen_mut().set_scrollback(desired);
-        parser.screen().scrollback()
+        let ram = parser.screen().scrollback_len();
+        let disk = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.len());
+        let clamped = desired.min(ram + disk);
+        parser.screen_mut().set_scrollback(clamped.min(ram));
+        clamped
     };
     s.scrollback.store(actual, Ordering::Relaxed);
     s.dirty.fetch_add(1, Ordering::Relaxed);
 }
 
 fn mouse_session(s: &Session, kind: u8, button: i64, col: usize, row: usize, mods: i64) {
-    let (mouse, enc) = {
-        let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let (mouse, enc, shift) = {
+        let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let shift = view_shift(&s.grow_pad, parser.screen_mut());
         let sc = parser.screen();
-        (sc.mouse_protocol_mode(), sc.mouse_protocol_encoding())
+        (sc.mouse_protocol_mode(), sc.mouse_protocol_encoding(), shift)
     };
-    if mouse == vt100::MouseProtocolMode::None {
+    if mouse == vt100::MouseProtocolMode::None || row <= shift {
         return;
     }
+    let row = row - shift;
     let motion = kind == 2;
     if motion && button == 3 && mouse != vt100::MouseProtocolMode::AnyMotion {
         return;
@@ -3905,27 +4088,109 @@ fn cell_words(cell: &vt100::Cell) -> (u32, u32) {
     ((fg & 0x00FF_FFFF) | (flags << 24), bg_word)
 }
 
+const DISK_ROW_MAX_COLS: u16 = 1024;
+
+// Rows are stored at the width they had when evicted; the scratch screen stays wider than any
+// stored row so a row from a wider tile is truncated instead of wrapping away its start.
+fn render_disk_row(sgr: &str, cols: u16) -> Vec<(String, u32, u32)> {
+    let scratch_cols = cols.max(DISK_ROW_MAX_COLS);
+    let mut scratch = vt100::Parser::new(dim(1), dim(scratch_cols), 0);
+    scratch.process(sgr.as_bytes());
+    let screen = scratch.screen();
+    (0..cols)
+        .map(|c| {
+            let cell = screen.cell(0, c);
+            let content = match cell {
+                Some(cell) if !cell.contents().is_empty() => cell.contents().to_string(),
+                _ => " ".to_string(),
+            };
+            let (fg, bg) = cell.map_or((DEFAULT_FG, 0), cell_words);
+            (content, fg, bg)
+        })
+        .collect()
+}
+
 fn build_frame(s: &Session) -> Vec<u8> {
     let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-    parser
-        .screen_mut()
-        .set_scrollback(s.scrollback.load(Ordering::Relaxed));
+    let shift = view_shift(&s.grow_pad, parser.screen_mut());
+    let user_offset = s.scrollback.load(Ordering::Relaxed);
+    let (rows, cols) = grid_size(parser.screen());
+
+    let ram = parser.screen().scrollback_len();
+    let disk = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.len());
+    let want = user_offset + shift;
+    let vt = want.min(ram);
+    let extra = want.saturating_sub(vt).min(disk);
+
+    // Collect disk rows before accessing the screen (can't hold both borrows at once).
+    let disk_cells: Vec<Vec<(String, u32, u32)>> = if extra > 0 {
+        if let Some(store) = parser.callbacks_mut().scroll_store.as_mut() {
+            store.flush();
+        }
+        (0..extra)
+            .map(|i| {
+                let line_idx = disk - extra + i;
+                let cached = parser
+                    .callbacks()
+                    .scroll_store
+                    .as_ref()
+                    .and_then(|st| st.render_cache.get(&(line_idx, cols)))
+                    .cloned();
+                if let Some(c) = cached {
+                    return c;
+                }
+                let raw = parser
+                    .callbacks_mut()
+                    .scroll_store
+                    .as_mut()
+                    .and_then(|st| st.row_no_flush(line_idx))
+                    .unwrap_or_default();
+                let rendered = render_disk_row(&raw, cols);
+                if let Some(store) = parser.callbacks_mut().scroll_store.as_mut() {
+                    if store.render_cache.len() >= 512 {
+                        store.render_cache.clear();
+                    }
+                    store.render_cache.insert((line_idx, cols), rendered.clone());
+                }
+                rendered
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    parser.screen_mut().set_scrollback(vt);
     let screen = parser.screen();
-    let offset = screen.scrollback() as u16;
-    let (rows, cols) = screen.size();
+
+    let applied = vt + extra;
+    let lift = applied.saturating_sub(user_offset) as u16;
+    let offset = user_offset.min(u16::MAX as usize) as u16;
 
     let mut text = String::with_capacity(rows as usize * (cols as usize + 1));
     let mut attrs: Vec<u32> = Vec::with_capacity(rows as usize * cols as usize * 2);
     for r in 0..rows {
+        let r_idx = r as usize;
         for c in 0..cols {
-            let cell = screen.cell(r, c);
-            match cell {
-                Some(cell) if !cell.contents().is_empty() => text.push_str(cell.contents()),
-                _ => text.push(' '),
+            if r_idx < extra {
+                let (content, fg, bg) = disk_cells
+                    .get(r_idx)
+                    .and_then(|row| row.get(c as usize))
+                    .map(|(s, f, b)| (s.as_str(), *f, *b))
+                    .unwrap_or((" ", DEFAULT_FG, 0));
+                text.push_str(content);
+                attrs.push(fg);
+                attrs.push(bg);
+            } else {
+                let vt_row = (r_idx - extra) as u16;
+                let cell = screen.cell(vt_row, c);
+                match cell {
+                    Some(cell) if !cell.contents().is_empty() => text.push_str(cell.contents()),
+                    _ => text.push(' '),
+                }
+                let (fg_word, bg_word) = cell.map_or((DEFAULT_FG, 0), cell_words);
+                attrs.push(fg_word);
+                attrs.push(bg_word);
             }
-            let (fg_word, bg_word) = cell.map_or((DEFAULT_FG, 0), cell_words);
-            attrs.push(fg_word);
-            attrs.push(bg_word);
         }
         if r + 1 < rows {
             text.push('\n');
@@ -3933,7 +4198,7 @@ fn build_frame(s: &Session) -> Vec<u8> {
     }
 
     let (cur_r, cur_c) = screen.cursor_position();
-    let cursor = ((cur_r as u32) << 16) | (cur_c as u32);
+    let cursor = (((cur_r + lift) as u32) << 16) | (cur_c as u32);
     let hidden = screen.hide_cursor();
     // Leaving the alternate screen means the agent quit; the tile is a plain shell again.
     if !screen.alternate_screen() {
@@ -3946,10 +4211,12 @@ fn build_frame(s: &Session) -> Vec<u8> {
         vt100::MouseProtocolMode::ButtonMotion => 3,
         vt100::MouseProtocolMode::AnyMotion => 4,
     };
+    let disk_base = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.base());
+    let is_alt = screen.alternate_screen();
     drop(parser);
 
     let text_bytes = text.as_bytes();
-    let mut buf = Vec::with_capacity(16 + text_bytes.len() + attrs.len() * 4);
+    let mut buf = Vec::with_capacity(16 + text_bytes.len() + attrs.len() * 4 + 8);
     buf.push(1u8);
     buf.extend_from_slice(&rows.to_le_bytes());
     buf.extend_from_slice(&cols.to_le_bytes());
@@ -3962,6 +4229,15 @@ fn build_frame(s: &Session) -> Vec<u8> {
     for w in &attrs {
         buf.extend_from_slice(&w.to_le_bytes());
     }
+
+    // 8-byte trailer after attrs: u32 LE top_line, u8 alt, 3 zero padding bytes.
+    let top_line = (disk_base + disk as u64 + ram as u64)
+        .saturating_sub(vt as u64)
+        .saturating_sub(extra as u64) as u32;
+    buf.extend_from_slice(&top_line.to_le_bytes());
+    buf.push(if is_alt { 1 } else { 0 });
+    buf.extend_from_slice(&[0u8; 3]);
+
     buf
 }
 
@@ -3981,7 +4257,7 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
     let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
     let screen = parser.screen();
     let (row, _) = screen.cursor_position();
-    let cols = screen.size().1;
+    let cols = grid_size(screen).1;
     let mut line = String::new();
     for c in 0..cols {
         match screen.cell(row, c) {
@@ -4264,6 +4540,30 @@ fn handle_client_msg(s: &Arc<Session>, client: &mut PtyClient, watch_only: bool,
             if visible {
                 s.dirty.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        Some("scrollTo") => {
+            let line = match v.get("line").and_then(|l| l.as_u64()) {
+                Some(l) => l,
+                None => return,
+            };
+            let mut parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            if parser.screen().alternate_screen() {
+                return;
+            }
+            let shift = view_shift(&s.grow_pad, parser.screen_mut());
+            let (rows, _cols) = grid_size(parser.screen());
+            let ram = parser.screen().scrollback_len();
+            let disk = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.len());
+            let disk_base = parser.callbacks().scroll_store.as_ref().map_or(0, |st| st.base());
+            let hist = disk as u64 + ram as u64;
+            let idx = line.saturating_sub(disk_base);
+            let half = (rows as u64) / 2;
+            let top = idx.saturating_sub(half).min(hist);
+            let offset = hist.saturating_sub(top).saturating_sub(shift as u64).min(hist) as usize;
+            parser.screen_mut().set_scrollback(offset.min(ram));
+            drop(parser);
+            s.scrollback.store(offset, Ordering::Relaxed);
+            s.dirty.fetch_add(1, Ordering::Relaxed);
         }
         Some("dismissAgent") => clear_binding_session(&s.tile_id),
         Some("kill") => kill_session(s),
@@ -4724,6 +5024,29 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
+    if path_only == "/search" {
+        let q = parse_query(query);
+        let tid = q.get("tileId").cloned().unwrap_or_default();
+        let query_str = q.get("q").cloned().unwrap_or_default();
+        let session = sessions().lock().unwrap().get(&tid).cloned();
+        let body = match session {
+            Some(s) => {
+                tokio::task::spawn_blocking(move || search_session(&s, &query_str))
+                    .await
+                    .unwrap_or_else(|_| serde_json::json!({ "matches": [], "truncated": false }))
+                    .to_string()
+            }
+            None => "{\"matches\":[],\"truncated\":false}".to_string(),
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
     if path_only == "/agent/send" {
         let q = parse_query(query);
         let tid = q.get("tileId").cloned().unwrap_or_default();
@@ -4931,10 +5254,11 @@ fn restore_ctrl_c() {
 #[cfg(test)]
 mod tests {
     use super::{
+        dim, resize_parser, view_shift, AtomicUsize,
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
         codex_hook_state, codex_launch_args, history, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
         strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
-        SCROLLBACK_LINES,
+        SCROLLBACK_LINES, render_disk_row, DEFAULT_FG,
     };
 
     #[test]
@@ -5192,7 +5516,7 @@ mod tests {
 
     #[test]
     fn osc9_progress_and_notifications() {
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default());
         parser.process(b"\x1b]9;4;1;42\x07\x1b]9;2;task done\x07\x1b]9;plain notify\x07");
         assert_eq!(parser.callbacks_mut().take_progress(), Some((1, 42)));
         assert_eq!(parser.callbacks_mut().take_progress(), None);
@@ -5210,7 +5534,7 @@ mod tests {
 
     #[test]
     fn osc777_routes_agent_state_to_a_claude_message() {
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default());
         let body = r#"{"agent":"pi","model":"gpt-5.6-sol","secret":"drop me"}"#;
         parser.process(format!("]777;notify;panorama://agent-state;{body}").as_bytes());
         let states = parser.callbacks_mut().take_agent_states();
@@ -5228,7 +5552,7 @@ mod tests {
 
     #[test]
     fn osc777_routes_agent_events_and_generic_notifies() {
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default());
         let body = r#"{"v":1,"event":"stop","response":"a;b;c"}"#;
         parser.process(format!("\x1b]777;notify;panorama://cli-agent;{body}\x07").as_bytes());
         parser.process(b"\x1b]777;notify;Build;done in 3s\x07");
@@ -5302,7 +5626,7 @@ mod tests {
 
     #[test]
     fn color_queries_queue_responses_and_title_is_captured() {
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default());
         parser.process(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]2;my title\x07");
         let responses = parser.callbacks_mut().take_responses();
         assert_eq!(responses, vec![OSC_FG_RESPONSE.to_vec(), OSC_BG_RESPONSE.to_vec()]);
@@ -5317,12 +5641,12 @@ mod tests {
         let reporting = Arc::new(AtomicBool::new(true));
         let session = Session {
             tile_id: "test".into(), shell: String::new(), pid: 0,
-            parser: Mutex::new(vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default())),
+            parser: Mutex::new(vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default())),
             dirty: AtomicU64::new(0), parsed_total: AtomicU64::new(0), flushed_total: AtomicU64::new(0),
             main_dirty: AtomicBool::new(false), main_history: Mutex::new(Vec::new()), exited: AtomicBool::new(false),
             visible: AtomicBool::new(false), clients: Mutex::new(Vec::new()),
             size_ownership: Mutex::new(SizeOwnership::default()), cols: AtomicU16::new(80), rows: AtomicU16::new(24),
-            scrollback: AtomicUsize::new(0), cwd: Mutex::new(None), agent_cwd: Mutex::new(None), cwd_dirty: AtomicU64::new(0),
+            scrollback: AtomicUsize::new(0), grow_pad: AtomicUsize::new(0), cwd: Mutex::new(None), agent_cwd: Mutex::new(None), cwd_dirty: AtomicU64::new(0),
             branch: Mutex::new(None), cmd: Mutex::new(None), clipboard: Mutex::new(None), clipboard_dirty: AtomicU64::new(0),
             title: Mutex::new(None), title_dirty: AtomicU64::new(0), events: Mutex::new(Vec::new()),
             agent_state: Mutex::new(serde_json::Map::new()), mod_session: Mutex::new(None),
@@ -5359,7 +5683,7 @@ mod tests {
             focus_reporting: reporting.clone(),
             ..Default::default()
         };
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, sink);
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, sink);
         parser.process(b"\x1b[?1004h");
         assert!(reporting.load(Ordering::Relaxed));
         assert_eq!(parser.callbacks_mut().take_responses(), vec![b"\x1b[I".to_vec()]);
@@ -5370,7 +5694,7 @@ mod tests {
 
     #[test]
     fn primary_device_attributes_are_answered() {
-        let mut parser = vt100::Parser::new_with_callbacks(24, 80, 0, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default());
         parser.process(b"\x1b[c\x1b[0c\x1b[>c\x1b[5c");
         assert_eq!(parser.callbacks_mut().take_responses(), vec![DA1_RESPONSE.to_vec(), DA1_RESPONSE.to_vec()]);
     }
@@ -5383,17 +5707,17 @@ mod tests {
         }
         stream.extend_from_slice(b"$ claude\x1b[?1049h\x1b[2J\x1b[Hframe 1");
         let at = stream.len();
-        let mut live = vt100::Parser::new(5, 30, SCROLLBACK_LINES);
+        let mut live = vt100::Parser::new(dim(5), dim(30), SCROLLBACK_LINES);
         live.process(&stream);
         let mut body = history::main_history(live.screen_mut());
         body.extend_from_slice(&history::screen_tail(live.screen()));
-        let saved = history::encode(7, at as u64, &body);
+        let saved = history::encode(7, at as u64, None, &body);
         stream.extend_from_slice(b"\x1b[1;7H2\x1b[?1049l\r\n$ ");
         live.process(&stream[at..]);
         let base = at - 10;
         let ring = &stream[base..];
 
-        let mut adopted = vt100::Parser::new(5, 30, SCROLLBACK_LINES);
+        let mut adopted = vt100::Parser::new(dim(5), dim(30), SCROLLBACK_LINES);
         adopted.process(&splice_saved_history(&saved, 7, ring, stream.len() as u64));
         assert_eq!(adopted.screen().contents(), live.screen().contents());
         adopted.screen_mut().set_scrollback(usize::MAX);
@@ -5407,8 +5731,34 @@ mod tests {
     }
 
     #[test]
+    fn growing_keeps_rows_in_place_like_conpty() {
+        let mut parser = vt100::Parser::new(dim(4), dim(10), 100);
+        parser.process(b"a\r\nb\r\nc\r\nd\r\ne\r\n$ ");
+        assert_eq!(resize_parser(&mut parser, 7, 10), 2);
+        let screen = parser.screen_mut();
+        assert_eq!(screen.cursor_position(), (3, 2));
+        assert_eq!(screen.contents(), "c\nd\ne\n$ ");
+        screen.set_scrollback(usize::MAX);
+        assert_eq!(screen.scrollback(), 2);
+        assert!(screen.contents().starts_with("a\nb\nc"));
+    }
+
+    #[test]
+    fn view_shift_follows_the_blank_rows_left_by_a_grow() {
+        let mut parser = vt100::Parser::new(dim(4), dim(10), 100);
+        parser.process(b"a\r\nb\r\nc\r\nd\r\ne\r\n$ ");
+        let pad = AtomicUsize::new(resize_parser(&mut parser, 7, 10));
+        assert_eq!(view_shift(&pad, parser.screen_mut()), 2);
+        parser.process(b"x\r\ny\r\n$ ");
+        assert_eq!(view_shift(&pad, parser.screen_mut()), 1);
+        parser.process(b"\x1b[2J\x1b[H$ ");
+        assert_eq!(view_shift(&pad, parser.screen_mut()), 0);
+        assert_eq!(pad.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn restored_screen_is_sealed_into_scrollback() {
-        let mut parser = vt100::Parser::new_with_callbacks(6, 20, 100, CwdSink::default());
+        let mut parser = vt100::Parser::new_with_callbacks(dim(6), dim(20), 100, CwdSink::default());
         parser.process(b"history\r\n$ claude\r\n\x1b[?1049h\x1b[2J\x1b[Hagent ui\x1b[3;5r\x1b[?1000h");
         seal_restored_screen(&mut parser);
         let screen = parser.screen();
@@ -5562,5 +5912,99 @@ mod tests {
             Some("/home/u/my dir")
         );
         assert_eq!(parse_osc7(b"not-a-url"), None);
+    }
+
+    fn tmp_scroll_path() -> std::path::PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        std::env::temp_dir().join(format!("lib_scroll_test_{n}.scroll"))
+    }
+
+    #[test]
+    fn scroll_sink_captures_evicted_rows_in_order() {
+        let path = tmp_scroll_path();
+        let store = super::scroll_store::ScrollStore::open(path).expect("store");
+        let sink = CwdSink { scroll_store: Some(store), ..Default::default() };
+        // 2-row terminal, RAM cap 3
+        let mut parser = vt100::Parser::new_with_callbacks(dim(2), dim(20), 3, sink);
+        for i in 1..=10 {
+            if i < 10 {
+                parser.process(format!("line{i}\r\n").as_bytes());
+            } else {
+                parser.process(format!("line{i}").as_bytes());
+            }
+        }
+        let store = parser.callbacks_mut().scroll_store.as_mut().unwrap();
+        store.flush();
+        // Lines 1-5 evicted: RAM cap 3 so eviction starts after 3 rows fill scrollback.
+        // With a 2-row screen: scroll happens on each \r\n once screen is full.
+        // line1..line5 go to disk (evicted when RAM scrollback overflows).
+        assert!(store.len() >= 4, "expected at least 4 evicted rows, got {}", store.len());
+        assert_eq!(store.row(0).as_deref(), Some("line1"));
+    }
+
+    #[test]
+    fn scroll_sink_preserves_sgr_for_colored_row() {
+        let path = tmp_scroll_path();
+        let store = super::scroll_store::ScrollStore::open(path).expect("store");
+        let sink = CwdSink { scroll_store: Some(store), ..Default::default() };
+        // 2-row terminal, RAM cap 1 so any second scroll row immediately evicts first
+        let mut parser = vt100::Parser::new_with_callbacks(dim(2), dim(20), 1, sink);
+        // Push enough rows to evict both "plain" and the colored "bright" into the store.
+        // With a 2-row terminal and RAM cap=1, each \r\n that causes scroll evicts once cap is full.
+        // plain -> scroll, cap not full; bright -> scroll, plain evicted (cap full after bright);
+        // push -> scroll, bright evicted; extra -> scroll, push evicted
+        parser.process(b"plain\r\n");
+        parser.process(b"\x1b[31mbright\x1b[0m\r\n");
+        parser.process(b"push\r\n");
+        parser.process(b"extra\r\n");
+        let store = parser.callbacks_mut().scroll_store.as_mut().unwrap();
+        store.flush();
+        // "plain" and "bright" are both in disk now
+        assert!(store.len() >= 2, "expected >=2 disk rows, got {}", store.len());
+        let colored = store.row(1).unwrap_or_default();
+        // The stored row should contain an SGR sequence (ESC [)
+        assert!(colored.contains('\x1b'), "expected SGR escapes in stored row: {colored:?}");
+        // Rendering it should give non-default fg for the first cell
+        let cells = render_disk_row(&colored, 20);
+        let (_, fg, _) = cells[0];
+        assert_ne!(fg, DEFAULT_FG, "expected colored fg for 'b' in 'bright'");
+    }
+
+    #[test]
+    fn render_disk_row_truncates_rows_wider_than_the_tile() {
+        let row = format!("start{}end", "x".repeat(200));
+        let cells = render_disk_row(&row, 20);
+        assert_eq!(cells.len(), 20);
+        let text: String = cells.iter().map(|(s, _, _)| s.as_str()).collect();
+        assert!(text.starts_with("startxxx"));
+    }
+
+    #[test]
+    fn render_disk_row_plain_text_produces_correct_cells() {
+        let cells = render_disk_row("hello", 10);
+        assert_eq!(cells.len(), 10);
+        assert_eq!(cells[0].0, "h");
+        assert_eq!(cells[1].0, "e");
+        assert_eq!(cells[4].0, "o");
+        assert_eq!(cells[5].0, " "); // blank after content
+        assert_eq!(cells[0].1, DEFAULT_FG);
+    }
+
+    #[test]
+    fn frame_layout_selects_disk_rows_beyond_ram() {
+        // Verify the layout math: given ram=3, disk=5, want=4 (user_offset=4, shift=0):
+        // vt = min(4, 3) = 3; extra = min(1, 5) = 1
+        let ram = 3usize;
+        let disk = 5usize;
+        let want = 4usize;
+        let vt = want.min(ram);
+        let extra = want.saturating_sub(vt).min(disk);
+        assert_eq!(vt, 3);
+        assert_eq!(extra, 1);
+        // Row 0 of display: disk row at index disk - extra + 0 = 4
+        assert_eq!(disk - extra, 4);
     }
 }

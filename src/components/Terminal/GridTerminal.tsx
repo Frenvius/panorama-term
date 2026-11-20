@@ -23,9 +23,10 @@ import { notifyClaude, clearNotify } from '~/components/commons/Notifications/br
 import { openUrl } from '~/adapter/shell/shell.client';
 import { cellAtPoint, urlSpanAt, orderSel, selectText, lineSelection, wordSelection } from '~/usecase/util/terminalSelection';
 import { readClipboard, writeClipboard, hasClipboardImage } from '~/adapter/clipboard/clipboard.client';
-import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, sendPtyVisible, openPtyConnection, sendPtyDismissAgent } from '~/adapter/pty/pty.client';
+import { sendPtyKill, sendPtyMouse, sendPtyFocus, sendPtyInput, sendPtyScroll, sendPtyResize, sendPtyVisible, openPtyConnection, sendPtyDismissAgent, sendPtyScrollTo } from '~/adapter/pty/pty.client';
+import SearchBar from '~/components/Terminal/SearchBar';
 
-import type { GridFrame, ClaudeState, TerminalRestart } from '~/domain/interfaces/pty.interface';
+import type { GridFrame, ClaudeState, SearchMatch, TerminalRestart } from '~/domain/interfaces/pty.interface';
 import type { Cell, Selection, UrlSpan } from '~/usecase/util/terminalSelection';
 
 import styles from './styles.module.scss';
@@ -220,7 +221,11 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
 
 const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, visible, elevated, restart, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const [resume, setResume] = React.useState<ResumeTarget | null>(null);
+  const [searchKey, setSearchKey] = React.useState<number | null>(null);
+  const matchesRef = React.useRef<SearchMatch[]>([]);
+  const searchCurrentRef = React.useRef(0);
   const termRef = React.useRef<HTMLDivElement>(null);
+  const gridRef = React.useRef<HTMLDivElement>(null);
   const rowsRefEl = React.useRef<HTMLDivElement>(null);
   const overlayRef = React.useRef<HTMLDivElement>(null);
   const shiftPxRef = React.useRef(0);
@@ -352,6 +357,27 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
         ov += `<div class="${styles.urlLine}" style="left:${seg.c0}ch;top:${seg.row * CELL_H + CELL_H - 1}px;width:${seg.c1 - seg.c0 + 1}ch"></div>`;
       }
     }
+
+    const matches = matchesRef.current;
+    const curMatch = searchCurrentRef.current;
+    if (matches.length > 0 && frame.topLine !== undefined) {
+      const topLine = frame.topLine;
+      let lo = 0;
+      let hi = matches.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (matches[mid].line < topLine) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let mi = lo; mi < matches.length; mi++) {
+        const m = matches[mi];
+        const r = m.line - topLine;
+        if (r >= nRows) break;
+        const cls = mi === curMatch ? styles.searchCurrent : styles.searchHit;
+        ov += `<div class="${cls}" style="left:${m.col}ch;top:${r * CELL_H}px;width:${m.len}ch"></div>`;
+      }
+    }
+
     if (overlay.innerHTML !== ov) overlay.innerHTML = ov;
 
     const showCursor = activeRef.current && !frame.cursorHidden;
@@ -591,8 +617,22 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     return () => window.removeEventListener('keydown', onCopyKey, true);
   }, [active]);
 
+  React.useEffect(() => {
+    if (!active) return;
+    const onFindKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      if (e.key.toLowerCase() !== 'f') return;
+      if (frameRef.current?.alt) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSearchKey((k) => (k ?? 0) + 1);
+    };
+    window.addEventListener('keydown', onFindKey, true);
+    return () => window.removeEventListener('keydown', onFindKey, true);
+  }, [active]);
+
   const cellFromEvent = (e: React.MouseEvent): Cell | null => {
-    const el = termRef.current;
+    const el = gridRef.current;
     const frame = frameRef.current;
     if (!el || !frame) return null;
     const rect = el.getBoundingClientRect();
@@ -854,6 +894,26 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     onKeyDown(e as any);
   };
 
+  const onSearchResults = React.useCallback(
+    (matches: SearchMatch[], cur: number) => {
+      matchesRef.current = matches;
+      searchCurrentRef.current = cur;
+      dirtyRef.current = true;
+      const match = matches[cur];
+      const ws = wsRef.current;
+      if (match && ws) sendPtyScrollTo(ws, match.line);
+    },
+    []
+  );
+
+  const onSearchClose = React.useCallback(() => {
+    setSearchKey(null);
+    matchesRef.current = [];
+    searchCurrentRef.current = 0;
+    dirtyRef.current = true;
+    focusTerminal();
+  }, [focusTerminal]);
+
   const closeResume = () => {
     setResume(null);
     focusTerminal();
@@ -908,22 +968,32 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
         onPointerCancel={onPointerUp}
         onContextMenu={onContextMenu}
       >
-        <div ref={rowsRefEl} className={styles.rows} />
-        <div ref={overlayRef} className={styles.overlay} />
-        <div ref={cursorRef} className={styles.cursor} />
+        <div ref={gridRef} className={styles.grid} style={{ height: rows * CELL_H }}>
+          <div ref={rowsRefEl} className={styles.rows} />
+          <div ref={overlayRef} className={styles.overlay} />
+          <div ref={cursorRef} className={styles.cursor} />
+        </div>
       </div>
-      {!readOnly && (
-        <div className={styles.agentOverlay}>
-          {resume && (
-            <ResumePanel
-              agent={resume.agent}
-              sessionId={resume.id}
-              cwd={cwd}
-              active={active}
-              onResume={startResume}
-              onSkip={dismissResume}
-            />
-          )}
+      <div className={styles.agentOverlay}>
+        {searchKey !== null && (
+          <SearchBar
+            tileId={sessionId ?? tileId}
+            focusKey={searchKey}
+            onResults={onSearchResults}
+            onClose={onSearchClose}
+          />
+        )}
+        {!readOnly && resume && (
+          <ResumePanel
+            agent={resume.agent}
+            sessionId={resume.id}
+            cwd={cwd}
+            active={active}
+            onResume={startResume}
+            onSkip={dismissResume}
+          />
+        )}
+        {!readOnly && (
           <AgentBar
             tileId={tileId}
             sessionId={sessionId ?? tileId}
@@ -936,8 +1006,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
             onAgentActive={onAgentActive}
             onShiftPx={shiftPx}
           />
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 };

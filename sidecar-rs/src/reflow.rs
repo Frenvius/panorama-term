@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use super::{cell_words, DEFAULT_FG};
+use super::{cell_words, grid_size, DEFAULT_FG};
 
 const MAX_SHIFT: usize = 256;
 const UNDERLINE: u32 = 4 << 24;
@@ -48,7 +48,7 @@ fn finish_line(cells: &mut Vec<Cell>) -> TextLine {
 }
 
 fn push_row(screen: &vt100::Screen, row: u16, cells: &mut Vec<Cell>) {
-    let cols = screen.size().1;
+    let cols = grid_size(screen).1;
     for col in 0..cols {
         let Some(cell) = screen.cell(row, col) else {
             cells.push((" ".into(), (DEFAULT_FG, 0)));
@@ -65,7 +65,7 @@ fn push_row(screen: &vt100::Screen, row: u16, cells: &mut Vec<Cell>) {
 // ConPTY repaints a line by padding it with spaces to the last column, which marks the row as
 // wrapped; a real soft wrap always leaves a glyph in the last cell.
 pub(crate) fn soft_wrapped(screen: &vt100::Screen, row: u16) -> bool {
-    let last = screen.cell(row, screen.size().1 - 1);
+    let last = screen.cell(row, grid_size(screen).1 - 1);
     screen.row_wrapped(row)
         && last.is_some_and(|c| c.is_wide_continuation() || !c.contents().trim().is_empty())
 }
@@ -91,7 +91,7 @@ pub fn logical_lines(screen: &mut vt100::Screen, max_rows: usize) -> TextView {
     let saved = screen.scrollback();
     screen.set_scrollback(usize::MAX);
     let history = screen.scrollback();
-    let rows = screen.size().0;
+    let rows = grid_size(screen).0;
     let total = history + rows as usize;
     let (cursor_row, cursor_col) = screen.cursor_position();
     let show_cursor = !screen.hide_cursor();
@@ -157,6 +157,7 @@ pub fn patch(old: &[TextLine], new: &[TextLine]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dim;
 
     fn lines_of(parser: &mut vt100::Parser, max_rows: usize) -> Vec<TextLine> {
         logical_lines(parser.screen_mut(), max_rows).lines
@@ -176,7 +177,7 @@ mod tests {
 
     #[test]
     fn rejoins_wrapped_rows_across_scrollback() {
-        let mut parser = vt100::Parser::new(3, 10, 100);
+        let mut parser = vt100::Parser::new(dim(3), dim(10), 100);
         parser.process(b"one\r\nhello world, long line\r\nnext\r\n$ ");
         let lines = lines_of(&mut parser,1000);
         assert_eq!(texts(&lines), ["one", "hello world, long line", "next", "$"]);
@@ -185,7 +186,7 @@ mod tests {
 
     #[test]
     fn cursor_maps_to_logical_line_and_column() {
-        let mut parser = vt100::Parser::new(3, 10, 100);
+        let mut parser = vt100::Parser::new(dim(3), dim(10), 100);
         parser.process("one\r\n日本 longer wrapped\r\n$ ".as_bytes());
         let view = logical_lines(parser.screen_mut(), 1000);
         assert_eq!(texts(&view.lines), ["one", "日本 longer wrapped", "$"]);
@@ -204,7 +205,7 @@ mod tests {
 
     #[test]
     fn space_padded_rows_are_not_joined() {
-        let mut parser = vt100::Parser::new(3, 10, 100);
+        let mut parser = vt100::Parser::new(dim(3), dim(10), 100);
         parser.process(b"$ echo hi second");
         let lines = lines_of(&mut parser,10);
         assert_eq!(texts(&lines), ["$ echo hi", "second"]);
@@ -212,7 +213,7 @@ mod tests {
 
     #[test]
     fn window_keeps_only_the_last_rows() {
-        let mut parser = vt100::Parser::new(3, 10, 100);
+        let mut parser = vt100::Parser::new(dim(3), dim(10), 100);
         parser.process(b"a\r\nb\r\nc\r\nd\r\ne");
         let lines = lines_of(&mut parser,2);
         assert_eq!(texts(&lines), ["d", "e"]);
@@ -220,7 +221,7 @@ mod tests {
 
     #[test]
     fn runs_merge_equal_styles() {
-        let mut parser = vt100::Parser::new(2, 20, 0);
+        let mut parser = vt100::Parser::new(dim(2), dim(20), 0);
         parser.process(b"ab\x1b[31mcd\x1b[0m");
         let lines = lines_of(&mut parser,10);
         assert_eq!(lines[0].runs.len(), 2);
@@ -230,7 +231,7 @@ mod tests {
 
     #[test]
     fn patch_follows_lines_scrolling_off_the_top() {
-        let mut parser = vt100::Parser::new(3, 10, 100);
+        let mut parser = vt100::Parser::new(dim(3), dim(10), 100);
         parser.process(b"a\r\nb\r\nc\r\nd");
         let old = lines_of(&mut parser,4);
         parser.process(b"\r\ne\r\nf");
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn patch_truncates_when_lines_shrink() {
-        let mut parser = vt100::Parser::new(5, 10, 0);
+        let mut parser = vt100::Parser::new(dim(5), dim(10), 0);
         parser.process(b"a\r\nb\r\nc");
         let old = lines_of(&mut parser,10);
         parser.process(b"\x1b[2J\x1b[Ha");
