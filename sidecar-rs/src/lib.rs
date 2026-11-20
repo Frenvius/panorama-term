@@ -2916,10 +2916,29 @@ fn install_kimi_statusline() {
     }
 }
 
-fn strip_claude_hooks(json: &mut serde_json::Value, exe: &str, prev_status: Option<String>) -> bool {
+fn split_quoted_program(cmd: &str) -> Option<(&str, &str)> {
+    cmd.strip_prefix('"')?.split_once('"')
+}
+
+fn strip_claude_hooks(
+    json: &mut serde_json::Value,
+    exe: &str,
+    prev_status: Option<String>,
+    exists: impl Fn(&Path) -> bool,
+) -> bool {
+    // entries from other builds are kept unless their sidecar binary is gone, since the CLI then errors on every hook
+    let owned_program = |prog: &str| {
+        prog == exe
+            || (!exists(Path::new(prog))
+                && Path::new(prog)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case("sidecar")))
+    };
     let ours = |cmd: &str| {
-        cmd.starts_with(&format!("\"{exe}\" "))
-            && (cmd.ends_with(" record-agent") || cmd.contains(" emit-event "))
+        split_quoted_program(cmd).is_some_and(|(prog, rest)| {
+            owned_program(prog) && (rest == " record-agent" || rest.starts_with(" emit-event "))
+        })
     };
     let mut changed = false;
     let Some(obj) = json.as_object_mut() else {
@@ -2945,12 +2964,12 @@ fn strip_claude_hooks(json: &mut serde_json::Value, exe: &str, prev_status: Opti
             obj.remove("hooks");
         }
     }
-    let our_status = format!("\"{exe}\" statusline");
     let status_is_ours = obj
         .get("statusLine")
         .and_then(|s| s.get("command"))
         .and_then(|c| c.as_str())
-        == Some(our_status.as_str());
+        .and_then(split_quoted_program)
+        .is_some_and(|(prog, rest)| rest == " statusline" && owned_program(prog));
     if status_is_ours {
         match prev_status {
             Some(prev) => {
@@ -2992,7 +3011,7 @@ fn uninstall_claude_hook() {
     else {
         return;
     };
-    if !strip_claude_hooks(&mut json, &exe.display().to_string(), load_statusline_chain()) {
+    if !strip_claude_hooks(&mut json, &exe.display().to_string(), load_statusline_chain(), Path::exists) {
         return;
     }
     if let Ok(text) = serde_json::to_string_pretty(&json) {
@@ -5423,12 +5442,12 @@ mod tests {
             },
             "statusLine": { "type": "command", "command": "\"C:\\dev\\sidecar.exe\" statusline" }
         });
-        assert!(strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", Some("hud".into())));
+        assert!(strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", Some("hud".into()), |_| true));
         let stop = json["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2);
         assert!(json["hooks"].get("SessionStart").is_none());
         assert_eq!(json["statusLine"]["command"], "hud");
-        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None));
+        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None, |_| true));
     }
 
     #[test]
@@ -5436,8 +5455,24 @@ mod tests {
         let mut json = serde_json::json!({
             "statusLine": { "type": "command", "command": "\"C:\\rel\\sidecar.exe\" statusline" }
         });
-        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None));
+        assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None, |_| true));
         assert_eq!(json["statusLine"]["command"], "\"C:\\rel\\sidecar.exe\" statusline");
+    }
+
+    #[test]
+    fn strip_claude_hooks_removes_entries_whose_sidecar_is_gone() {
+        let mut json = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [
+                    { "hooks": [{ "type": "command", "command": "\"C:\\old\\sidecar.exe\" emit-event prompt-submit" }] },
+                    { "hooks": [{ "type": "command", "command": "\"C:\\old\\other.exe\" emit-event prompt-submit" }] }
+                ]
+            },
+            "statusLine": { "type": "command", "command": "\"C:\\old\\sidecar.exe\" statusline" }
+        });
+        assert!(strip_claude_hooks(&mut json, "C:\\new\\panorama-cli.exe", None, |_| false));
+        assert_eq!(json["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 1);
+        assert!(json.get("statusLine").is_none());
     }
 
     #[test]
