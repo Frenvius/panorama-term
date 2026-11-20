@@ -2752,19 +2752,22 @@ fn install_claude_mod() {
         (".claude-plugin/plugin.json", include_str!("../assets/claude-mod/plugin.json")),
         ("hooks/hooks.json", include_str!("../assets/claude-mod/hooks.json")),
         ("hooks/register.ts", include_str!("../assets/claude-mod/register.ts")),
+        ("skills/orchestrate/SKILL.md", include_str!("../assets/claude-mod/skills/orchestrate/SKILL.md")),
     ];
     let Some(dir) = claude_mod_dir() else {
         return;
     };
+    let cli = panorama_cli_path();
     for (rel, source) in FILES {
         let file = dir.join(rel);
-        if std::fs::read_to_string(&file).ok().as_deref() == Some(*source) {
+        let content = source.replace(orch::worker::CLI_PLACEHOLDER, &cli);
+        if std::fs::read_to_string(&file).ok().as_deref() == Some(content.as_str()) {
             continue;
         }
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = write_atomic(&file, source.as_bytes());
+        let _ = write_atomic(&file, content.as_bytes());
     }
 }
 
