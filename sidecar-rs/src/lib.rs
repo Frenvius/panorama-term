@@ -3057,6 +3057,13 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+// PowerShell -Command exits 1 for any failing native command; run status needs the real code.
+fn powershell_with_exit_code(cmd: &str) -> String {
+    format!(
+        "{cmd}\n$__ok = $?\nif ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}\nif (-not $__ok) {{ exit 1 }}"
+    )
+}
+
 fn resolve_powershell() -> String {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE
@@ -3239,7 +3246,7 @@ fn spawn_session(
             if cfg!(windows) {
                 (
                     resolve_powershell(),
-                    vec!["-NoLogo".into(), "-Command".into(), run_cmd.clone()],
+                    vec!["-NoLogo".into(), "-Command".into(), powershell_with_exit_code(run_cmd)],
                     Vec::new(),
                 )
             } else {
