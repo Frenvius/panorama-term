@@ -2022,6 +2022,12 @@ pub(crate) fn cached_agent_state(session: &Session) -> Option<String> {
     Some(serde_json::Value::Object(obj).to_string())
 }
 
+pub(crate) fn tile_cost_usd(tile_id: &str) -> Option<f64> {
+    let session = sessions().lock().unwrap().get(tile_id).cloned()?;
+    let js = cached_agent_state(&session)?;
+    serde_json::from_str::<serde_json::Value>(&js).ok()?.get("costUsd")?.as_f64()
+}
+
 fn status_ws_msg(v: &serde_json::Value) -> Option<String> {
     let mut obj = serde_json::Map::new();
     obj.insert("t".into(), "claude".into());
@@ -2534,7 +2540,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
 }
 
 fn prompt_context(tile_id: &str, cwd: &str) -> String {
-    [linked_notes_context(tile_id), linked_peers_context(tile_id), run_context(cwd), orch::coordinator_context(tile_id)]
+    [linked_notes_context(tile_id), linked_peers_context(tile_id), run_context(cwd), orch::orch_context(tile_id)]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()

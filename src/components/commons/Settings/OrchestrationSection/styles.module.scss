@@ -314,6 +314,43 @@
   }
 }
 
+.hintSegmented {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+}
+
+.hintSegBtn {
+  flex: 1;
+  padding: 6px 0;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  background: transparent;
+  transition: background 0.1s ease, color 0.1s ease;
+
+  &:not(:first-child) {
+    border-left: 1px solid var(--border-2);
+  }
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+}
+
+.hintSegActive {
+  color: var(--text-strong);
+  background: var(--hover-2);
+
+  &:hover {
+    color: var(--text-strong);
+    background: var(--hover-2);
+  }
+}
+
 .coordSelect {
   width: 100%;
   padding: 6px 8px;

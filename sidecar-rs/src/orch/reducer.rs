@@ -43,10 +43,12 @@ pub struct RunEntry {
     pub gate_count: u32,
     pub msg_seq: u32,
     pub event_seq: u32,
+    pub coordinator_cost_baseline: Option<f64>,
+    pub coordinator_cost_final: Option<f64>,
 }
 
 impl RunEntry {
-    fn new(run: Run) -> Self {
+    pub(crate) fn new(run: Run) -> Self {
         RunEntry {
             run,
             tasks: HashMap::new(),
@@ -57,6 +59,8 @@ impl RunEntry {
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
+            coordinator_cost_baseline: None,
+            coordinator_cost_final: None,
         }
     }
 
@@ -138,8 +142,19 @@ pub enum Cmd {
         profile: Option<String>,
         escalation: Vec<String>,
         verify: Vec<String>,
+        role: Option<crate::orch::model::Role>,
         review: bool,
         owner: Option<String>,
+        now: u64,
+    },
+    RunCoordinatorCost {
+        run_id: String,
+        cost_usd: f64,
+        now: u64,
+    },
+    RunRecordCoordinatorBaseline {
+        run_id: String,
+        cost_usd: Option<f64>,
         now: u64,
     },
     TaskUpdate {
@@ -345,7 +360,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, review, owner, now } => {
+            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role, review, owner, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -365,8 +380,8 @@ impl State {
                 ApplyResult::Ok("task-create".into(), serde_json::json!({
                     "runId": run_id, "id": id, "title": title, "spec": spec,
                     "acceptance": acceptance, "deps": deps, "profile": profile,
-                    "escalation": escalation, "verify": verify, "review": review,
-                    "owner": owner, "now": now
+                    "escalation": escalation, "verify": verify, "role": role,
+                    "review": review, "owner": owner, "now": now
                 }))
             }
 
@@ -741,6 +756,24 @@ impl State {
                     "runId": run_id, "taskId": task_id, "now": now
                 }))
             }
+
+            Cmd::RunCoordinatorCost { run_id, cost_usd, now } => {
+                if !self.runs.contains_key(run_id.as_str()) {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                }
+                ApplyResult::Ok("run-coordinator-cost".into(), serde_json::json!({
+                    "runId": run_id, "costUsd": cost_usd, "now": now
+                }))
+            }
+
+            Cmd::RunRecordCoordinatorBaseline { run_id, cost_usd, now } => {
+                if !self.runs.contains_key(run_id.as_str()) {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                }
+                ApplyResult::Ok("run-coordinator-baseline".into(), serde_json::json!({
+                    "runId": run_id, "costUsd": cost_usd, "now": now
+                }))
+            }
         }
     }
 
@@ -767,6 +800,8 @@ impl State {
             "task-verified" => self.replay_task_verified(data),
             "task-verification-failed" => self.replay_task_verification_failed(data),
             "task-re-verify" => self.replay_task_re_verify(data),
+            "run-coordinator-cost" => self.replay_run_coordinator_cost(data),
+            "run-coordinator-baseline" => self.replay_run_coordinator_baseline(data),
             other => Err(format!("unknown event kind: {other}")),
         }
     }
@@ -820,6 +855,9 @@ impl State {
         if id.is_empty() { return Err("task-create: empty id".into()); }
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         let now = u64_field(data, "now");
+        let role: Option<crate::orch::model::Role> = data.get("role")
+            .filter(|v| !v.is_null())
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
         let task = Task {
             id: id.clone(),
             title: str_field(data, "title"),
@@ -829,6 +867,7 @@ impl State {
             profile: opt_str(data, "profile"),
             escalation: str_arr(data, "escalation"),
             verify: str_arr(data, "verify"),
+            role,
             review: data["review"].as_bool().unwrap_or(false),
             owner: opt_str(data, "owner"),
             status: TaskStatus::Pending,
@@ -1357,6 +1396,24 @@ impl State {
         entry.run.updated_at = now;
         Ok(())
     }
+
+    fn replay_run_coordinator_cost(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-coordinator-cost: empty runId".into()); }
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if let Some(cost) = data["costUsd"].as_f64() {
+            entry.coordinator_cost_final = Some(cost);
+        }
+        Ok(())
+    }
+
+    fn replay_run_coordinator_baseline(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-coordinator-baseline: empty runId".into()); }
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        entry.coordinator_cost_baseline = data["costUsd"].as_f64();
+        Ok(())
+    }
 }
 
 fn str_field(data: &Value, key: &str) -> String {
@@ -1434,6 +1491,7 @@ mod tests {
             profile: None,
             escalation: vec![],
             verify: vec![],
+            role: None,
             review: false,
             owner: None,
             now: ts(),
@@ -1519,6 +1577,7 @@ mod tests {
             profile: None,
             escalation: vec![],
             verify: vec![],
+            role: None,
             review: false,
             owner: None,
             now: ts(),
@@ -1665,7 +1724,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["bun test".into()], review: false, owner: None, now: ts(),
+            verify: vec!["bun test".into()], role: None, review: false, owner: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -1908,7 +1967,7 @@ mod tests {
         apply_capture!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "task".into(),
             spec: "spec".into(), acceptance: None, deps: vec![],
-            profile: None, escalation: vec![], verify: vec![], review: false, owner: None, now: ts(),
+            profile: None, escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: ts(),
         });
         apply_capture!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
@@ -2257,6 +2316,7 @@ mod tests {
             profile: None,
             escalation: vec![],
             verify: vec!["bun test".into()],
+            role: None,
             review,
             owner: None,
             now: ts(),
@@ -2481,7 +2541,7 @@ mod tests {
         apply_ev!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["check".into()], review: false, owner: None, now: ts(),
+            verify: vec!["check".into()], role: None, review: false, owner: None, now: ts(),
         });
         apply_ev!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
@@ -2540,6 +2600,7 @@ mod tests {
             profile: None,
             escalation: vec![],
             verify: vec![],
+            role: None,
             review: true,
             owner: None,
             now: ts(),
@@ -2670,5 +2731,79 @@ mod tests {
             _ => panic!("run-set-coordinator detach failed"),
         }
         assert_eq!(s.runs["r1"].run.coordinator_tile, None);
+    }
+
+    #[test]
+    fn task_create_with_role_applies_and_replays() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t1".into(), title: "explore task".into(),
+            spec: "look around".into(), acceptance: None, deps: vec![],
+            profile: None, escalation: vec!["claude:haiku".into()],
+            verify: vec![], role: Some(crate::orch::model::Role::Explore),
+            review: false, owner: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-create failed"),
+        }
+        let task = &s.runs["r1"].tasks["t1"];
+        assert_eq!(task.role, Some(crate::orch::model::Role::Explore));
+    }
+
+    #[test]
+    fn task_create_without_role_replays_as_none() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t1".into(), title: "task".into(),
+            spec: "spec".into(), acceptance: None, deps: vec![],
+            profile: None, escalation: vec![], verify: vec![], role: None,
+            review: false, owner: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-create failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].role, None);
+    }
+
+    #[test]
+    fn task_create_old_log_without_role_replays_ok() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let data = serde_json::json!({
+            "runId": "r1", "id": "t1", "title": "old task", "spec": "spec",
+            "acceptance": null, "deps": [], "profile": null, "escalation": [],
+            "verify": [], "review": false, "owner": null, "now": ts()
+        });
+        s.replay("task-create", &data).expect("old log replay should not fail");
+        assert_eq!(s.runs["r1"].tasks["t1"].role, None,
+            "task from old log without role field should have role=None");
+    }
+
+    #[test]
+    fn run_coordinator_cost_freezes_value() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::RunCoordinatorCost { run_id: "r1".into(), cost_usd: 0.42, now: ts() };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("run-coordinator-cost failed"),
+        }
+        assert_eq!(s.runs["r1"].coordinator_cost_final, Some(0.42));
+    }
+
+    #[test]
+    fn run_coordinator_baseline_recorded() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::RunRecordCoordinatorBaseline { run_id: "r1".into(), cost_usd: Some(1.0), now: ts() };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("run-coordinator-baseline failed"),
+        }
+        assert_eq!(s.runs["r1"].coordinator_cost_baseline, Some(1.0));
     }
 }

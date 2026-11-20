@@ -1,4 +1,4 @@
-import type { OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary } from '~/domain/interfaces/orch.interface';
+import type { OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -41,10 +41,11 @@ export const getSettings = (): Promise<{ ok: boolean; settings: OrchSettings; pr
   post('settings-get', {});
 
 export interface SetSettingsOpts {
-  workers?: string[];
   coordinator?: string;
   hiddenAgents?: string[];
   showWorkerTiles?: boolean;
+  roles?: Partial<RoleChains>;
+  orchestrateHint?: OrchestrateHint;
 }
 
 export const setSettings = (opts: SetSettingsOpts): Promise<{ ok: boolean; settings: OrchSettings }> =>

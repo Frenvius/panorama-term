@@ -4,6 +4,10 @@ export type TaskStatus = 'pending' | 'dispatched' | 'verifying' | 'review' | 'co
 
 export type DispatchStatus = 'starting' | 'running' | 'reported' | 'failed' | 'stopped' | 'stale';
 
+export type Role = 'test' | 'review' | 'explore' | 'implement' | 'mechanical';
+
+export type OrchestrateHint = 'off' | 'auto' | 'suggest';
+
 export interface Limits {
   maxWorkers: number;
   maxAttempts: number;
@@ -32,6 +36,7 @@ export interface Task {
   spec: string;
   acceptance?: string;
   deps: string[];
+  role?: Role;
   profile?: string;
   escalation: string[];
   verify: string[];
@@ -107,12 +112,27 @@ export interface OrchPreset {
   fastModel: string;
 }
 
+export interface RoleChains {
+  test: string[];
+  review: string[];
+  explore: string[];
+  implement: string[];
+  mechanical: string[];
+}
+
+export interface CostEntry {
+  usd: number;
+  reported: number;
+  dispatches: number;
+}
+
 export interface OrchSettings {
-  workers: string[];
   coordinator: string;
   hiddenAgents: string[];
   providers: OrchProvider[];
   showWorkerTiles: boolean;
+  roles: RoleChains;
+  orchestrateHint: OrchestrateHint;
 }
 
 export interface OrchAgent {
@@ -128,6 +148,9 @@ export interface RunSummary {
   run: Run;
   taskCounts: Record<string, number>;
   openGates: number;
+  coordinatorCostUsd?: number;
+  costByRole?: Record<string, CostEntry>;
+  costByModel?: Record<string, CostEntry>;
 }
 
 export interface RunDetail {
@@ -135,4 +158,7 @@ export interface RunDetail {
   tasks: Task[];
   dispatches: Dispatch[];
   gates: Gate[];
+  coordinatorCostUsd?: number;
+  costByRole?: Record<string, CostEntry>;
+  costByModel?: Record<string, CostEntry>;
 }

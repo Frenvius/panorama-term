@@ -15,7 +15,7 @@ const OrchToggle = ({ tileId, cwd }: OrchToggleProps) => {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
-  const title = error ? `Orchestrate mode - ${error}` : 'Orchestrate mode';
+  const title = error ? `Forced coordinator mode - ${error}` : 'Forced coordinator mode';
 
   const normCwd = cwd ? normalizeRepo(cwd) : '';
 

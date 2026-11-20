@@ -125,6 +125,9 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
         projectRuns={projectRuns}
         onPatchRunId={onPatchRunId}
         onChanged={fetchDetail}
+        coordinatorCostUsd={detail.coordinatorCostUsd}
+        costByRole={detail.costByRole}
+        costByModel={detail.costByModel}
       />
       <div className={styles.board}>
         {COLUMNS.map((col) => {

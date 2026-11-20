@@ -1,4 +1,4 @@
-import type { Dispatch, Run, RunSummary } from '~/domain/interfaces/orch.interface';
+import type { Dispatch, Run, RunSummary, CostEntry } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
 import { ChevronDown, Pause, Play, Plus, X } from 'lucide-react';
@@ -15,20 +15,32 @@ interface BoardHeaderProps {
   projectRuns: RunSummary[];
   onPatchRunId: (runId: string) => void;
   onChanged: () => void;
+  coordinatorCostUsd?: number;
+  costByRole?: Record<string, CostEntry>;
+  costByModel?: Record<string, CostEntry>;
 }
 
-const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChanged }: BoardHeaderProps) => {
+const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChanged, coordinatorCostUsd, costByRole, costByModel }: BoardHeaderProps) => {
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
   const [renaming, setRenaming] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState('');
   const [confirmClose, setConfirmClose] = React.useState(false);
   const [headerError, setHeaderError] = React.useState<string | null>(null);
+  const [breakdownOpen, setBreakdownOpen] = React.useState(false);
 
   const headerMainRef = React.useRef<HTMLDivElement>(null);
+  const metaRef = React.useRef<HTMLDivElement>(null);
 
   const canPauseResume = run.status === 'active' || run.status === 'paused';
   const cost = totalCost(dispatches);
   const elapsed = formatDuration(run.createdAt);
+
+  const hasBreakdown =
+    !!(costByRole && Object.keys(costByRole).length > 0) ||
+    !!(costByModel && Object.keys(costByModel).length > 0) ||
+    coordinatorCostUsd != null;
+
+  const totalReported = costByRole ? Object.values(costByRole).reduce((s, e) => s + e.reported, 0) : 0;
 
   React.useEffect(() => {
     if (!switcherOpen) return;
@@ -45,6 +57,22 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChange
       window.removeEventListener('keydown', onKey, true);
     };
   }, [switcherOpen]);
+
+  React.useEffect(() => {
+    if (!breakdownOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!metaRef.current?.contains(e.target as Node)) setBreakdownOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setBreakdownOpen(false);
+    };
+    window.addEventListener('mousedown', onDown, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [breakdownOpen]);
 
   const handleSwitchTo = (id: string) => {
     setSwitcherOpen(false);
@@ -106,6 +134,7 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChange
 
   const handleRenameChange = (e: React.ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value);
   const handleSwitcherToggle = () => setSwitcherOpen((v) => !v);
+  const handleCostClick = () => setBreakdownOpen((v) => !v);
 
   return (
     <>
@@ -163,9 +192,55 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChange
           )}
         </div>
 
-        <div className={styles.runMeta}>
-          {cost != null && <span>${cost.toFixed(4)}</span>}
+        <div className={styles.runMeta} ref={metaRef}>
+          {cost != null && (
+            hasBreakdown
+              ? <button type="button" className={styles.costBtn} onClick={handleCostClick}>${cost.toFixed(4)}</button>
+              : <span>${cost.toFixed(4)}</span>
+          )}
           <span>{elapsed}</span>
+          {breakdownOpen && (
+            <div className={styles.breakdown}>
+              {costByRole && Object.keys(costByRole).length > 0 && (
+                <div className={styles.breakdownSection}>
+                  <span className={styles.breakdownLabel}>By role</span>
+                  {Object.entries(costByRole).map(([role, e]) => (
+                    <div key={role} className={styles.breakdownRow}>
+                      <span className={styles.breakdownKey}>{role}</span>
+                      <span className={styles.breakdownVal}>${e.usd.toFixed(4)}</span>
+                      <span className={styles.breakdownSub}>{e.reported}/{e.dispatches}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {costByModel && Object.keys(costByModel).length > 0 && (
+                <div className={styles.breakdownSection}>
+                  <span className={styles.breakdownLabel}>By model</span>
+                  {Object.entries(costByModel).map(([model, e]) => (
+                    <div key={model} className={styles.breakdownRow}>
+                      <span className={styles.breakdownKey}>{model}</span>
+                      <span className={styles.breakdownVal}>${e.usd.toFixed(4)}</span>
+                      <span className={styles.breakdownSub}>{e.reported}/{e.dispatches}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {coordinatorCostUsd != null && (
+                <div className={styles.breakdownSection}>
+                  <div className={styles.breakdownRow}>
+                    <span className={styles.breakdownKey}>Coordinator</span>
+                    <span className={styles.breakdownVal}>${coordinatorCostUsd.toFixed(4)}</span>
+                  </div>
+                </div>
+              )}
+              {dispatches.length > 0 && (
+                <div className={styles.breakdownCoverage}>
+                  {totalReported}/{dispatches.length} dispatches reported
+                </div>
+              )}
+              <div className={styles.breakdownNote}>Reported by agents (API-equivalent), not billed on subscriptions.</div>
+            </div>
+          )}
         </div>
 
         {!confirmClose && (

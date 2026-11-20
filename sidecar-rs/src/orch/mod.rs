@@ -464,13 +464,80 @@ async fn handle_run_create(body: &[u8]) -> String {
     }, id.clone()).await;
     match result {
         CommitResult::Ok(_) => {
-            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-            let run = guard.runs.get(&id).map(|e| serde_json::to_value(&e.run).unwrap_or_default());
-            ok_resp(serde_json::json!({"run": run}))
+            let (run_val, coord_tile) = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                let entry = guard.runs.get(&id);
+                let run = entry.map(|e| serde_json::to_value(&e.run).unwrap_or_default());
+                let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
+                (run, tile)
+            };
+            if let Some(ref tile) = coord_tile {
+                let cost_usd = crate::tile_cost_usd(tile);
+                let run_id_b = id.clone();
+                let now_b = unix_ms();
+                let _ = commit(move |_| {
+                    Ok(Cmd::RunRecordCoordinatorBaseline { run_id: run_id_b, cost_usd, now: now_b })
+                }, id.clone()).await;
+            }
+            ok_resp(serde_json::json!({"run": run_val}))
         }
         CommitResult::Stale => err_resp("stale", "run create stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
+}
+
+struct CostEntry {
+    usd: f64,
+    dispatches: usize,
+    reported: usize,
+}
+
+fn cost_aggregates(entry: &reducer::RunEntry) -> (Value, Value) {
+    let mut by_role: HashMap<String, CostEntry> = HashMap::new();
+    let mut by_model: HashMap<String, CostEntry> = HashMap::new();
+
+    for d in entry.dispatches.values() {
+        let task_role = entry.tasks.get(d.task_id.as_str())
+            .and_then(|t| t.role.as_ref())
+            .map(|r| r.as_str().to_string())
+            .unwrap_or_else(|| "implement".to_string());
+
+        let model_key = match (d.profile.as_deref(), d.model.as_deref()) {
+            (Some(p), Some(m)) => format!("{p}:{m}"),
+            (Some(p), None) => p.to_string(),
+            _ => "unknown".to_string(),
+        };
+
+        let has_cost = d.cost_usd.is_some();
+        let cost_val = d.cost_usd.unwrap_or(0.0);
+
+        let re = by_role.entry(task_role).or_insert(CostEntry { usd: 0.0, dispatches: 0, reported: 0 });
+        re.dispatches += 1;
+        if has_cost { re.usd += cost_val; re.reported += 1; }
+
+        let me = by_model.entry(model_key).or_insert(CostEntry { usd: 0.0, dispatches: 0, reported: 0 });
+        me.dispatches += 1;
+        if has_cost { me.usd += cost_val; me.reported += 1; }
+    }
+
+    let role_json: serde_json::Map<String, Value> = by_role.into_iter()
+        .map(|(k, v)| (k, serde_json::json!({"usd": v.usd, "dispatches": v.dispatches, "reported": v.reported})))
+        .collect();
+    let model_json: serde_json::Map<String, Value> = by_model.into_iter()
+        .map(|(k, v)| (k, serde_json::json!({"usd": v.usd, "dispatches": v.dispatches, "reported": v.reported})))
+        .collect();
+
+    (Value::Object(role_json), Value::Object(model_json))
+}
+
+fn coordinator_cost_usd(entry: &reducer::RunEntry) -> Option<f64> {
+    if let Some(frozen) = entry.coordinator_cost_final {
+        return Some(frozen);
+    }
+    let tile_id = entry.run.coordinator_tile.as_deref()?;
+    let baseline = entry.coordinator_cost_baseline?;
+    let current = crate::tile_cost_usd(tile_id)?;
+    Some((current - baseline).max(0.0))
 }
 
 fn handle_run_list() -> String {
@@ -481,7 +548,14 @@ fn handle_run_list() -> String {
             *counts.entry(format!("{:?}", t.status).to_lowercase()).or_insert(0) += 1;
         }
         let open_gates = e.gates.values().filter(|g| g.resolution.is_none()).count();
-        serde_json::json!({"run": e.run, "taskCounts": counts, "openGates": open_gates})
+        let (cost_by_role, cost_by_model) = cost_aggregates(e);
+        let coord_cost = coordinator_cost_usd(e);
+        let mut row = serde_json::json!({"run": e.run, "taskCounts": counts, "openGates": open_gates,
+            "costByRole": cost_by_role, "costByModel": cost_by_model});
+        if let Some(c) = coord_cost {
+            row["coordinatorCostUsd"] = c.into();
+        }
+        row
     }).collect();
     ok_resp(serde_json::json!({"runs": runs}))
 }
@@ -513,18 +587,26 @@ fn handle_run_show(body: &[u8]) -> String {
         .filter(|(_, d)| d.status == DispatchStatus::Running)
         .filter_map(|(i, d)| d.tile_id.clone().map(|t| (i, t)))
         .collect();
+    let (cost_by_role, cost_by_model) = cost_aggregates(entry);
+    let coord_cost = coordinator_cost_usd(entry);
     drop(guard);
     for (i, tile) in running_tiles {
         if let Some(obj) = dispatches[i].as_object_mut() {
             obj.insert("waiting".into(), is_tile_waiting(&tile).into());
         }
     }
-    ok_resp(serde_json::json!({
+    let mut resp = serde_json::json!({
         "run": run,
         "tasks": tasks,
         "dispatches": dispatches,
-        "gates": gates
-    }))
+        "gates": gates,
+        "costByRole": cost_by_role,
+        "costByModel": cost_by_model,
+    });
+    if let Some(c) = coord_cost {
+        resp["coordinatorCostUsd"] = c.into();
+    }
+    ok_resp(resp)
 }
 
 pub fn on_agent_resumed(tile_id: &str) {
@@ -549,13 +631,35 @@ async fn handle_run_set_status(body: &[u8]) -> String {
             Err(_) => return err_resp("bad_request", "invalid status value"),
         }
     };
+    let is_terminal = matches!(status, RunStatus::Completed | RunStatus::Cancelled);
     let now = unix_ms();
     let run_id_c = run_id.clone();
     let result = commit(move |_| {
         Ok(Cmd::RunSetStatus { run_id: run_id_c, status, now })
-    }, run_id).await;
+    }, run_id.clone()).await;
     match result {
-        CommitResult::Ok(_) => ok_resp(serde_json::json!({})),
+        CommitResult::Ok(_) => {
+            if is_terminal {
+                let (tile_id, baseline) = {
+                    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                    let entry = guard.runs.get(&run_id);
+                    let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
+                    let base = entry.and_then(|e| e.coordinator_cost_baseline);
+                    (tile, base)
+                };
+                if let (Some(ref tile), Some(bl)) = (tile_id, baseline) {
+                    if let Some(current) = crate::tile_cost_usd(tile) {
+                        let delta = (current - bl).max(0.0);
+                        let run_id_b = run_id.clone();
+                        let now_b = unix_ms();
+                        let _ = commit(move |_| {
+                            Ok(Cmd::RunCoordinatorCost { run_id: run_id_b, cost_usd: delta, now: now_b })
+                        }, run_id).await;
+                    }
+                }
+            }
+            ok_resp(serde_json::json!({}))
+        }
         CommitResult::Stale => err_resp("stale", "run set-status stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
@@ -592,7 +696,7 @@ async fn handle_run_set_coordinator(body: &[u8]) -> String {
     let run_id_c = run_id.clone();
     let result = commit(move |_| {
         Ok(Cmd::RunSetCoordinator { run_id: run_id_c, tile_id: tile_id_c, now })
-    }, run_id).await;
+    }, run_id.clone()).await;
     match result {
         CommitResult::Ok(_) => {
             if let Some(ref tid) = tile_id {
@@ -604,6 +708,12 @@ async fn handle_run_set_coordinator(body: &[u8]) -> String {
                 if let Err(e) = save_coordinators(&base, &snapshot) {
                     return err_resp("io", &e);
                 }
+                let cost_usd = crate::tile_cost_usd(tid);
+                let run_id_b = run_id.clone();
+                let now_b = unix_ms();
+                let _ = commit(move |_| {
+                    Ok(Cmd::RunRecordCoordinatorBaseline { run_id: run_id_b, cost_usd, now: now_b })
+                }, run_id).await;
             }
             ok_resp(serde_json::json!({}))
         }
@@ -626,20 +736,55 @@ async fn handle_task_create(body: &[u8]) -> String {
     let now = unix_ms();
 
     let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
-    let escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
+    let mut escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
     let verify = match strict_str_arr(&v, "verify") { Ok(a) => a, Err(e) => return e };
+
+    let role: Option<model::Role> = match v.get("role").filter(|r| !r.is_null()) {
+        None => None,
+        Some(r) => match serde_json::from_value::<model::Role>(r.clone()) {
+            Ok(role) => Some(role),
+            Err(_) => return err_resp("bad_role", &format!(
+                "role must be one of: {}; got: {}",
+                model::Role::all().join(", "),
+                r.as_str().unwrap_or("(invalid)")
+            )),
+        },
+    };
+
+    if escalation.is_empty() && profile.is_none() {
+        let Some(base) = crate::panorama_dir() else {
+            return err_resp("io", "no panorama dir");
+        };
+        let s = settings::load(&base);
+        let effective_role = role.as_ref().map(|r| r.as_str()).unwrap_or("implement");
+        let chain = match effective_role {
+            "explore" => &s.roles.explore,
+            "implement" => &s.roles.implement,
+            "test" => &s.roles.test,
+            "review" => &s.roles.review,
+            "mechanical" => &s.roles.mechanical,
+            _ => &s.roles.implement,
+        };
+        if chain.is_empty() {
+            return err_resp("empty_role_chain", &format!(
+                "role chain for '{effective_role}' is empty; set it in Settings > Orchestration or pass --escalation"
+            ));
+        }
+        escalation = chain.clone();
+    }
 
     let owner_c = owner.clone();
     let run_id_c = run_id.clone();
     let title_c = title.clone();
+    let role_c = role.clone();
     let result = commit(move |state| {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let task_id = entry.next_task_id();
         Ok(Cmd::TaskCreate {
             run_id: run_id_c, id: task_id,
-            title: title_c, spec, acceptance, deps, profile, escalation, verify, review,
-            owner: owner_c, now,
+            title: title_c, spec, acceptance, deps, profile, escalation, verify, role: role_c,
+            review, owner: owner_c, now,
         })
     }, run_id.clone()).await;
 
@@ -2674,7 +2819,14 @@ fn settings_with_keys_json(s: &settings::OrchSettings, base: Option<&std::path::
     }).collect();
     serde_json::json!({
         "coordinator": s.coordinator,
-        "workers": s.workers,
+        "roles": {
+            "explore": s.roles.explore,
+            "implement": s.roles.implement,
+            "test": s.roles.test,
+            "review": s.roles.review,
+            "mechanical": s.roles.mechanical,
+        },
+        "orchestrateHint": s.orchestrate_hint,
         "hiddenAgents": s.hidden_agents,
         "providers": providers,
         "showWorkerTiles": s.show_worker_tiles,
@@ -2702,6 +2854,21 @@ fn handle_settings_get() -> String {
     ok_resp(serde_json::json!({ "settings": settings_json, "presets": presets_json() }))
 }
 
+fn validate_chain(chain: &[String], known_ids: &[String]) -> Result<(), String> {
+    for entry in chain {
+        let profile = entry.split_once(':').map(|(p, _)| p).unwrap_or(entry);
+        if !known_ids.iter().any(|id| id == profile) {
+            return Err(format!("unknown agent profile: {profile}"));
+        }
+    }
+    Ok(())
+}
+
+fn known_profile_ids(base: &std::path::Path) -> Vec<String> {
+    let profiles = load_profiles(base);
+    profiles.iter().map(|p| p.id.clone()).collect()
+}
+
 fn handle_settings_set(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let Some(base) = crate::panorama_dir() else {
@@ -2711,14 +2878,39 @@ fn handle_settings_set(body: &[u8]) -> String {
     if let Some(coord) = v["coordinator"].as_str() {
         s.coordinator = coord.to_string();
     }
-    if let Some(arr) = v["workers"].as_array() {
-        s.workers = arr.iter().filter_map(|x| x.as_str()).map(str::to_string).collect();
-    }
     if let Some(arr) = v["hiddenAgents"].as_array() {
         s.hidden_agents = arr.iter().filter_map(|x| x.as_str()).map(str::to_string).collect();
     }
     if let Some(show) = v["showWorkerTiles"].as_bool() {
         s.show_worker_tiles = show;
+    }
+    if let Some(hint_str) = v["orchestrateHint"].as_str() {
+        match hint_str {
+            "off" => s.orchestrate_hint = settings::OrchestrateHint::Off,
+            "suggest" => s.orchestrate_hint = settings::OrchestrateHint::Suggest,
+            "auto" => s.orchestrate_hint = settings::OrchestrateHint::Auto,
+            _ => return err_resp("bad_hint", &format!("orchestrateHint must be off, suggest, or auto; got: {hint_str}")),
+        }
+    }
+    if let Some(roles_obj) = v.get("roles").filter(|r| r.is_object()) {
+        let ids = known_profile_ids(&base);
+        let role_names = ["explore", "implement", "test", "review", "mechanical"];
+        for role_name in &role_names {
+            if let Some(arr) = roles_obj[role_name].as_array() {
+                let chain: Vec<String> = arr.iter().filter_map(|x| x.as_str()).map(str::to_string).collect();
+                if let Err(e) = validate_chain(&chain, &ids) {
+                    return err_resp("bad_agent", &e);
+                }
+                match *role_name {
+                    "explore" => s.roles.explore = chain,
+                    "implement" => s.roles.implement = chain,
+                    "test" => s.roles.test = chain,
+                    "review" => s.roles.review = chain,
+                    "mechanical" => s.roles.mechanical = chain,
+                    _ => {}
+                }
+            }
+        }
     }
     if let Err(e) = settings::save(&base, &s) {
         return err_resp("io", &format!("save settings: {e}"));
@@ -2933,15 +3125,54 @@ fn handle_coordinator_list() -> String {
     ok_resp(serde_json::json!({ "tiles": tiles }))
 }
 
-pub fn coordinator_context(tile_id: &str) -> Option<String> {
+pub fn orch_context(tile_id: &str) -> Option<String> {
     let in_set = coordinators().lock().unwrap_or_else(|e| e.into_inner()).contains(tile_id);
-    if !in_set {
+    if in_set {
+        return coordinator_block(tile_id);
+    }
+    let is_worker = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.values().any(|e| {
+            e.dispatches.values().any(|d| {
+                d.status == DispatchStatus::Running && d.tile_id.as_deref() == Some(tile_id)
+            })
+        })
+    };
+    if is_worker {
         return None;
     }
+    let Some(base) = crate::panorama_dir() else { return None };
+    let s = settings::load(&base);
+    let cli = crate::panorama_cli_path();
+    match s.orchestrate_hint {
+        settings::OrchestrateHint::Off => None,
+        settings::OrchestrateHint::Suggest => Some(format!(
+            "[Panorama] Orchestration is available: {cli} orch can split work across cheaper worker agents in isolated worktrees. \
+             Use it only for large or parallelizable work (several independent tasks); do small work yourself. \
+             When it fits, propose the split in a few lines (tasks, role each) and wait for the user's yes. \
+             Once agreed, load the `panorama:orchestrate` skill and follow it."
+        )),
+        settings::OrchestrateHint::Auto => Some(format!(
+            "[Panorama] Orchestration is available: {cli} orch can split work across cheaper worker agents in isolated worktrees. \
+             Use it only for large or parallelizable work (several independent tasks); do small work yourself. \
+             When it fits, load the panorama:orchestrate skill and dispatch without asking; say in one line that you did."
+        )),
+    }
+}
+
+fn coordinator_block(tile_id: &str) -> Option<String> {
     let cli = crate::panorama_cli_path();
     let Some(base) = crate::panorama_dir() else { return None };
     let s = settings::load(&base);
-    let workers_line = s.workers.join(" -> ");
+    let roles_line = format!(
+        "Roles (pass --role on task-create; the brain picks the agent): \
+         explore={}; implement={}; test={}; review={}; mechanical={}",
+        chain_display(&s.roles.explore),
+        chain_display(&s.roles.implement),
+        chain_display(&s.roles.test),
+        chain_display(&s.roles.review),
+        chain_display(&s.roles.mechanical),
+    );
 
     let board_lines: Vec<String> = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2999,8 +3230,13 @@ pub fn coordinator_context(tile_id: &str) -> Option<String> {
          - Set --review on task-create only when the user asked to check results before the task counts as done.\n\
          - review status means the task is waiting for the user; do not complete it yourself unless the user tells you to.\n\
          - Read task details with {cli} orch run-show or {cli} orch task-list.\n\
-         - Default worker escalation: {workers_line}. Change it in Settings > Orchestration."
+         - {roles_line}. Change chains in Settings > Orchestration."
     ))
+}
+
+fn chain_display(chain: &[String]) -> String {
+    if chain.is_empty() { return "(empty)".into(); }
+    chain.join(" -> ")
 }
 
 #[cfg(test)]
@@ -3127,6 +3363,8 @@ mod tests {
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
+            coordinator_cost_baseline: None,
+            coordinator_cost_final: None,
         }
     }
 
@@ -3140,6 +3378,7 @@ mod tests {
             profile: None,
             escalation: vec![],
             verify: vec![],
+            role: None,
             review: false,
             owner: None,
             status,
@@ -3486,7 +3725,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
             spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
-            escalation: vec![], verify: vec![], review: false, owner: None, now: 1_000_000,
+            escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::Dispatch {
@@ -3538,7 +3777,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
             spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
-            escalation: vec![], verify: vec![], review: false, owner: None, now: 1_000_000,
+            escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::TaskUpdate {
@@ -3608,7 +3847,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let s = settings::load(&dir);
         assert_eq!(s.coordinator, "claude:opus");
-        assert_eq!(s.workers, vec!["claude:haiku", "claude:sonnet"]);
+        assert_eq!(s.roles.implement, vec!["claude:haiku", "claude:sonnet"]);
         assert!(s.providers.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3636,26 +3875,29 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_context_none_when_not_in_set() {
+    fn orch_context_no_coordinator_block_when_not_in_set() {
         let tile = "tile-not-in-set-99881";
-        let result = coordinator_context(tile);
-        assert!(result.is_none(), "expected None for tile not in coordinator set");
-    }
-
-    #[test]
-    fn coordinator_context_some_no_active_run() {
-        let tile = format!("tile-coord-norun-{}", unix_ms());
-        coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
-        let result = coordinator_context(&tile);
+        let result = orch_context(tile);
         if let Some(ctx) = result {
-            assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
-            assert!(ctx.contains("No active boards yet"), "expected no-boards line: {ctx}");
-            assert!(ctx.contains("Settings > Orchestration"), "missing workers line: {ctx}");
+            assert!(!ctx.contains("Orchestrate mode is ON"),
+                "non-coordinator tile must not get the coordinator block: {ctx}");
         }
     }
 
     #[test]
-    fn coordinator_context_some_with_active_run() {
+    fn orch_context_coordinator_no_active_run() {
+        let tile = format!("tile-coord-norun-{}", unix_ms());
+        coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
+        let result = orch_context(&tile);
+        if let Some(ctx) = result {
+            assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
+            assert!(ctx.contains("No active boards yet"), "expected no-boards line: {ctx}");
+            assert!(ctx.contains("Roles"), "missing roles line: {ctx}");
+        }
+    }
+
+    #[test]
+    fn orch_context_coordinator_with_active_run() {
         let tile = format!("tile-coord-run-{}", unix_ms());
         let run_id = format!("r-ctx-{}", unix_ms());
         coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
@@ -3677,7 +3919,7 @@ mod tests {
                 _ => {}
             }
         }
-        let result = coordinator_context(&tile);
+        let result = orch_context(&tile);
         if let Some(ctx) = result {
             assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
             assert!(ctx.contains(&run_id), "missing run id: {ctx}");
@@ -3720,5 +3962,104 @@ mod tests {
             .find(|r| r["run"]["id"].as_str() == Some(&run_id))
             .expect("run not found in list");
         assert_eq!(run_row["openGates"].as_u64(), Some(1), "expected 1 open gate");
+    }
+
+    #[test]
+    fn orch_context_worker_tile_returns_none() {
+        let run_id = format!("r-worker-ctx-{}", unix_ms());
+        let tile = format!("tile-worker-{}", unix_ms());
+        {
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let cmd = Cmd::RunCreate {
+                id: run_id.clone(), title: "run".into(), repo: "/tmp".into(),
+                base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+                limits: Limits::default(), now: unix_ms(),
+            };
+            match guard.apply(&cmd) {
+                ApplyResult::Ok(k, d) => guard.replay(&k, &d).expect("replay"),
+                _ => {}
+            }
+            let cmd = Cmd::TaskCreate {
+                run_id: run_id.clone(), id: "t1".into(), title: "t".into(),
+                spec: "s".into(), acceptance: None, deps: vec![], profile: None,
+                escalation: vec![], verify: vec![], role: None, review: false,
+                owner: None, now: unix_ms(),
+            };
+            match guard.apply(&cmd) {
+                ApplyResult::Ok(k, d) => guard.replay(&k, &d).expect("replay"),
+                _ => {}
+            }
+            let cmd = Cmd::Dispatch {
+                run_id: run_id.clone(), id: format!("{run_id}.t1.1"),
+                task_id: "t1".into(), attempt: 1, retry_of: None,
+                profile: None, model: None, tile_id: Some(tile.clone()),
+                owner: None, now: unix_ms(),
+            };
+            match guard.apply(&cmd) {
+                ApplyResult::Ok(k, d) => guard.replay(&k, &d).expect("replay"),
+                _ => {}
+            }
+        }
+        let result = orch_context(&tile);
+        assert!(result.is_none(), "worker tile should get None from orch_context");
+    }
+
+    #[test]
+    fn cost_aggregates_by_role_and_model() {
+        use crate::orch::reducer::RunEntry;
+        use crate::orch::model::*;
+
+        let run = Run {
+            id: "r1".into(), title: "test".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None,
+            coordinator_tile: None, status: RunStatus::Active,
+            limits: Limits::default(), created_at: 0, updated_at: 0,
+        };
+        let mut entry = RunEntry::new(run);
+        let mut t1 = Task {
+            id: "t1".into(), title: "t1".into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec![], verify: vec![],
+            role: Some(Role::Explore), review: false, owner: None,
+            status: TaskStatus::Completed, result: None, integrated_sha: None,
+            attempts: 1, created_at: 0, updated_at: 0,
+        };
+        let mut t2 = t1.clone();
+        t2.id = "t2".into();
+        t2.role = Some(Role::Implement);
+        entry.tasks.insert("t1".into(), t1);
+        entry.tasks.insert("t2".into(), t2);
+        let d1 = Dispatch {
+            id: "d1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
+            profile: Some("claude".into()), model: Some("haiku".into()),
+            tile_id: None, worktree: None, branch: None, status: DispatchStatus::Reported,
+            outcome: None, head_sha: None, files_modified: vec![], summary: None,
+            started_at: 0, ended_at: None, last_heartbeat: None, verifications: vec![],
+            cost_usd: Some(0.1), cost_source: Some("exact".into()),
+        };
+        let mut d2 = d1.clone();
+        d2.id = "d2".into();
+        d2.task_id = "t2".into();
+        d2.model = Some("sonnet".into());
+        d2.cost_usd = None;
+        let mut d3 = d1.clone();
+        d3.id = "d3".into();
+        d3.task_id = "t1".into();
+        d3.cost_usd = Some(0.05);
+        entry.dispatches.insert("d1".into(), d1);
+        entry.dispatches.insert("d2".into(), d2);
+        entry.dispatches.insert("d3".into(), d3);
+
+        let (by_role, by_model) = cost_aggregates(&entry);
+        let explore = &by_role["explore"];
+        assert_eq!(explore["dispatches"].as_u64(), Some(2), "explore dispatches");
+        assert_eq!(explore["reported"].as_u64(), Some(2), "explore reported");
+        let usd = explore["usd"].as_f64().unwrap();
+        assert!((usd - 0.15).abs() < 1e-9, "explore usd = {usd}");
+        let implement = &by_role["implement"];
+        assert_eq!(implement["dispatches"].as_u64(), Some(1));
+        assert_eq!(implement["reported"].as_u64(), Some(0));
+        let sonnet = &by_model["claude:sonnet"];
+        assert_eq!(sonnet["dispatches"].as_u64(), Some(1));
+        assert_eq!(sonnet["reported"].as_u64(), Some(0));
     }
 }

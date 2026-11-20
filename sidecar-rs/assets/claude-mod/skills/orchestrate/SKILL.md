@@ -24,13 +24,23 @@ JSON says why), 4 brain unreachable. Pass `--pretty` to read a reply comfortably
 
 ## 1. Plan with the user
 
+Do not orchestrate small work. One task that one agent can finish quickly is cheaper done directly.
+Orchestration pays off for large or parallelizable work - several independent tasks or work that
+benefits from cheaper worker models.
+
 Agree on these before creating anything:
 
 - **Repo** and base ref (default `HEAD`). Workers branch from it.
-- **Tasks**. Each one is a self-contained unit of work a cheaper model can finish alone.
-- **Workers**. Use the profiles and models the user names. If they named none, propose `claude`
-  with model `haiku` and escalation to `claude:sonnet`. Built-in profiles: `claude` (models
-  `haiku`, `sonnet`, `opus`), `codex`, `opencode` (model is `provider/model`), `kimi`, `pi`.
+- **Tasks**. Each one is a self-contained unit of work a cheaper model can finish alone. Assign a
+  role to each task based on what it does:
+  - `explore` - read, search, map code, answer questions; no edits.
+  - `implement` - write or change code to a spec.
+  - `test` - write and run tests for finished work.
+  - `review` - read a diff and report problems; no edits.
+  - `mechanical` - renames, formatting, boilerplate, moves.
+- **Workers**. The brain picks the agent from the role chain in Settings > Orchestration. Pass
+  `--escalation`/`--profile` only to override when the user names a specific agent.
+  Built-in profiles: `claude` (models `haiku`, `sonnet`, `opus`), `codex`, `opencode` (model is `provider/model`), `kimi`, `pi`.
 - **Verification**. Commands that exit 0 when a task is done, such as tests, a typecheck or a build.
 
 Good tasks:
@@ -58,12 +68,14 @@ type a short notice into it when messages arrive while you are idle.
 
 ```
 {cli} orch task-create --run-id <run> --title "<short title>" --spec "<full spec>" \
-  --acceptance "<what done means>" --verify "<command>" --dep t1 \
-  --profile claude --escalation claude:haiku --escalation claude:sonnet
+  --acceptance "<what done means>" --verify "<command>" --dep t1 --role implement
 ```
 
+- `--role` sets the task role: `explore`, `implement`, `test`, `review`, `mechanical`. Omit to
+  default to `implement`. The brain resolves the agent chain from Settings > Orchestration.
+- Use `--escalation`/`--profile` only to override the role chain for a specific task.
 - `--spec-file <path>` reads a long spec from a file.
-- `--verify`, `--dep` and `--escalation` repeat.
+- `--verify` and `--dep` repeat. `--escalation` repeats when overriding the role chain.
 - An escalation entry is `profile` or `profile:model`. Attempt N uses entry N, and the last entry
   repeats.
 - `--review` keeps the task in `verifying` after its checks pass, until you approve it (step 4).

@@ -168,6 +168,15 @@
   }
 }
 
+.roleChip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .waitBadge {
   flex: none;
   padding: 0 4px;

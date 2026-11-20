@@ -1,6 +1,16 @@
-import type { Task, Dispatch } from '~/domain/interfaces/orch.interface';
+import type { Role, Task, Dispatch } from '~/domain/interfaces/orch.interface';
 
 export const ACTIVE_DISPATCH_STATUSES = new Set(['starting', 'running', 'reported']);
+
+export const ROLES: Role[] = ['explore', 'implement', 'test', 'review', 'mechanical'];
+
+export const ROLE_META: Record<Role, { label: string; description: string }> = {
+  explore: { label: 'Explore', description: 'Read, search, and map code; no edits.' },
+  implement: { label: 'Implement', description: 'Write or change code to a spec.' },
+  test: { label: 'Test', description: 'Write and run tests for finished work.' },
+  review: { label: 'Review', description: 'Read a diff and report problems; no edits.' },
+  mechanical: { label: 'Mechanical', description: 'Renames, formatting, boilerplate, moves.' }
+};
 
 export const normalizeRepo = (p: string): string => p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 

@@ -4,13 +4,62 @@ use serde::{Deserialize, Serialize};
 fn default_coordinator() -> String { "claude:opus".into() }
 fn default_workers() -> Vec<String> { vec!["claude:haiku".into(), "claude:sonnet".into()] }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchestrateHint {
+    Off,
+    Suggest,
+    Auto,
+}
+
+impl Default for OrchestrateHint {
+    fn default() -> Self { OrchestrateHint::Suggest }
+}
+
+fn default_explore_chain() -> Vec<String> { vec!["claude:haiku".into()] }
+fn default_implement_chain() -> Vec<String> { vec!["claude:haiku".into(), "claude:sonnet".into()] }
+fn default_test_chain() -> Vec<String> { vec!["claude:haiku".into(), "claude:sonnet".into()] }
+fn default_review_chain() -> Vec<String> { vec!["claude:sonnet".into()] }
+fn default_mechanical_chain() -> Vec<String> { vec!["claude:haiku".into()] }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleChains {
+    #[serde(default = "default_explore_chain")]
+    pub explore: Vec<String>,
+    #[serde(default = "default_implement_chain")]
+    pub implement: Vec<String>,
+    #[serde(default = "default_test_chain")]
+    pub test: Vec<String>,
+    #[serde(default = "default_review_chain")]
+    pub review: Vec<String>,
+    #[serde(default = "default_mechanical_chain")]
+    pub mechanical: Vec<String>,
+}
+
+impl Default for RoleChains {
+    fn default() -> Self {
+        Self {
+            explore: default_explore_chain(),
+            implement: default_implement_chain(),
+            test: default_test_chain(),
+            review: default_review_chain(),
+            mechanical: default_mechanical_chain(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchSettings {
     #[serde(default = "default_coordinator")]
     pub coordinator: String,
-    #[serde(default = "default_workers")]
+    #[serde(default = "default_workers", skip_serializing)]
     pub workers: Vec<String>,
+    #[serde(default)]
+    pub roles: RoleChains,
+    #[serde(default)]
+    pub orchestrate_hint: OrchestrateHint,
     #[serde(default)]
     pub hidden_agents: Vec<String>,
     #[serde(default)]
@@ -23,7 +72,9 @@ impl Default for OrchSettings {
     fn default() -> Self {
         Self {
             coordinator: default_coordinator(),
-            workers: default_workers(),
+            workers: Vec::new(),
+            roles: RoleChains::default(),
+            orchestrate_hint: OrchestrateHint::default(),
             hidden_agents: Vec::new(),
             providers: Vec::new(),
             show_worker_tiles: false,
@@ -111,10 +162,16 @@ pub fn settings_path(base: &Path) -> std::path::PathBuf {
 
 pub fn load(base: &Path) -> OrchSettings {
     let path = settings_path(base);
-    std::fs::read_to_string(&path)
+    let raw: Option<serde_json::Value> = std::fs::read_to_string(&path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let Some(v) = raw else { return OrchSettings::default() };
+    let roles_absent = v.get("roles").is_none();
+    let mut s: OrchSettings = serde_json::from_value(v).unwrap_or_default();
+    if roles_absent && !s.workers.is_empty() {
+        s.roles.implement = s.workers.clone();
+    }
+    s
 }
 
 pub fn save(base: &Path, settings: &OrchSettings) -> Result<(), String> {
@@ -181,7 +238,8 @@ mod tests {
         let dir = tmp_dir("defaults");
         let settings = load(&dir);
         assert_eq!(settings.coordinator, "claude:opus");
-        assert_eq!(settings.workers, vec!["claude:haiku", "claude:sonnet"]);
+        assert_eq!(settings.roles.implement, vec!["claude:haiku", "claude:sonnet"]);
+        assert_eq!(settings.orchestrate_hint, OrchestrateHint::Suggest);
         assert!(settings.hidden_agents.is_empty());
         assert!(settings.providers.is_empty());
         assert!(!settings.show_worker_tiles);
@@ -210,9 +268,13 @@ mod tests {
     #[test]
     fn save_and_load_roundtrip() {
         let dir = tmp_dir("roundtrip");
+        let mut roles = RoleChains::default();
+        roles.implement = vec!["claude:haiku".into()];
         let settings = OrchSettings {
             coordinator: "claude:opus".into(),
-            workers: vec!["claude:haiku".into()],
+            workers: Vec::new(),
+            roles,
+            orchestrate_hint: OrchestrateHint::Auto,
             hidden_agents: vec!["codex".into()],
             show_worker_tiles: true,
             providers: vec![OrchProvider {
@@ -227,9 +289,82 @@ mod tests {
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
         assert_eq!(loaded.coordinator, "claude:opus");
+        assert_eq!(loaded.roles.implement, vec!["claude:haiku"]);
+        assert_eq!(loaded.orchestrate_hint, OrchestrateHint::Auto);
         assert_eq!(loaded.providers.len(), 1);
         assert_eq!(loaded.providers[0].id, "myds");
         assert!(loaded.show_worker_tiles);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_workers_to_roles_implement() {
+        let dir = tmp_dir("migration");
+        let json = serde_json::json!({
+            "coordinator": "claude:opus",
+            "workers": ["claude:haiku", "claude:sonnet"],
+            "hiddenAgents": [],
+            "providers": [],
+            "showWorkerTiles": false
+        });
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json.to_string()).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.roles.implement, vec!["claude:haiku", "claude:sonnet"],
+            "workers should migrate to roles.implement");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_no_workers_keeps_default_roles() {
+        let dir = tmp_dir("no-workers");
+        let json = serde_json::json!({
+            "coordinator": "claude:opus",
+            "workers": [],
+            "hiddenAgents": [],
+            "providers": [],
+            "showWorkerTiles": false
+        });
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json.to_string()).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.roles.implement, default_implement_chain(),
+            "empty workers should not override default roles");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn roles_present_wins_over_workers() {
+        let dir = tmp_dir("roles-present");
+        let json = serde_json::json!({
+            "coordinator": "claude:opus",
+            "workers": ["claude:haiku"],
+            "roles": { "implement": ["claude:sonnet"] },
+            "hiddenAgents": [],
+            "providers": [],
+            "showWorkerTiles": false
+        });
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json.to_string()).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.roles.implement, vec!["claude:sonnet"],
+            "explicit roles.implement should win over workers migration");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn orchestrate_hint_roundtrip() {
+        let dir = tmp_dir("hint");
+        let settings = OrchSettings {
+            orchestrate_hint: OrchestrateHint::Off,
+            ..OrchSettings::default()
+        };
+        save(&dir, &settings).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.orchestrate_hint, OrchestrateHint::Off);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

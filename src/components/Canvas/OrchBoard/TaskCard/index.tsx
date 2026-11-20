@@ -8,7 +8,7 @@ import ReopenForm from './ReopenForm';
 import EditForm from './EditForm';
 import { latestDispatch } from '../columns';
 import { cancelTask, updateTask, startWorker } from '~/adapter/orch/orch.client';
-import { formatDuration } from '~/usecase/util/orch';
+import { totalCost, formatDuration } from '~/usecase/util/orch';
 import { requestOrchDiff, requestShowWorker } from '~/usecase/util/orchBoardRequest';
 
 export interface TaskCardProps {
@@ -38,6 +38,7 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
   const profile = dispatch ? [dispatch.profile, dispatch.model].filter(Boolean).join(':') : task.profile;
   const elapsed = dispatch ? formatDuration(dispatch.startedAt, dispatch.endedAt) : undefined;
   const fileCount = dispatch?.filesModified.length ?? 0;
+  const taskCost = totalCost(dispatches.filter((d) => d.taskId === task.id));
   const runPaused = runStatus === 'paused';
   const waiting = task.status === 'dispatched' && dispatch?.waiting === true;
   const live = task.status === 'dispatched';
@@ -152,14 +153,16 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
         {task.owner === 'user' && <span className={styles.ownerBadge}>you</span>}
       </div>
 
-      {(flag || profile || elapsed || task.attempts > 1 || fileCount > 0) && (
+      {(flag || task.role || profile || elapsed || task.attempts > 1 || fileCount > 0 || taskCost != null) && (
         <div className={styles.cardMeta}>
           {flag && <span className={styles.flagChip} data-status={task.status}>{flag}</span>}
+          {task.role && <span className={styles.roleChip}>{task.role}</span>}
           {profile && <span className={styles.metaChip}>{profile}</span>}
           {task.attempts > 1 && <span className={styles.metaChip}>attempt {task.attempts}</span>}
           {live && <span className={styles.liveDot} />}
           {elapsed && <span className={styles.metaDim}>{elapsed}</span>}
           {fileCount > 0 && <span className={styles.metaDim}>{fileCount} {fileCount === 1 ? 'file' : 'files'}</span>}
+          {taskCost != null && <span className={styles.metaDim}>${taskCost.toFixed(4)}</span>}
         </div>
       )}
 

@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Explore,
+    Implement,
+    Test,
+    Review,
+    Mechanical,
+}
+
+impl Role {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::Explore => "explore",
+            Role::Implement => "implement",
+            Role::Test => "test",
+            Role::Review => "review",
+            Role::Mechanical => "mechanical",
+        }
+    }
+
+    pub fn all() -> &'static [&'static str] {
+        &["explore", "implement", "test", "review", "mechanical"]
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 fn default_verify_timeout_min() -> u32 { 15 }
 fn default_stall_quiet_min() -> u32 { 5 }
 
@@ -94,6 +126,8 @@ pub struct Task {
     pub profile: Option<String>,
     pub escalation: Vec<String>,
     pub verify: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
     pub review: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,

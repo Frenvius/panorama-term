@@ -318,6 +318,7 @@ mod tests {
             profile: Some("claude".into()),
             escalation: vec![],
             verify: vec!["test -f hello.txt".into()],
+            role: None,
             review: false,
             owner: None,
             status: TaskStatus::Dispatched,

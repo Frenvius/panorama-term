@@ -1,22 +1,42 @@
-import type { OrchProvider } from '~/domain/interfaces/orch.interface';
+import type { OrchProvider, Role, OrchestrateHint, RoleChains } from '~/domain/interfaces/orch.interface';
 import type { SaveProviderOpts } from '~/adapter/orch/orch.client';
 
 import React from 'react';
 import { Plus } from 'lucide-react';
 
+import { ROLES, ROLE_META } from '~/usecase/util/orch';
 import { orchSettingsActions, useOrchSettings } from '~/usecase/hooks/useOrchSettings';
 import ToggleOption from '~/components/commons/Settings/ToggleOption';
 import settingsStyles from '~/components/commons/Settings/styles.module.scss';
 import ProviderForm from './ProviderForm';
-import WorkersEditor from './WorkersEditor';
+import RoleChainEditor from './RoleChainEditor';
 import styles from './styles.module.scss';
+
+const HINT_LABELS: Record<OrchestrateHint, string> = {
+  off: 'Off',
+  auto: 'Auto',
+  suggest: 'Suggest'
+};
+
+const HINT_DESCRIPTIONS: Record<OrchestrateHint, string> = {
+  off: 'No orchestration hint is injected.',
+  auto: 'Agents orchestrate large work without asking.',
+  suggest: 'Agents propose orchestrating large work and wait for your approval.'
+};
+
+const HINT_ORDER: OrchestrateHint[] = ['off', 'suggest', 'auto'];
 
 const OrchestrationSection = () => {
   const { settings, presets, agents, loading } = useOrchSettings();
   const [editingProvider, setEditingProvider] = React.useState<OrchProvider | null | 'new'>(null);
 
-  const saveWorkers = (workers: string[]) => {
-    void orchSettingsActions.updateSettings({ workers });
+  const saveRoleChain = (role: Role, chain: string[]) => {
+    const roles = { [role]: chain } as Partial<RoleChains>;
+    void orchSettingsActions.updateSettings({ roles });
+  };
+
+  const setOrchestrateHint = (hint: OrchestrateHint) => {
+    void orchSettingsActions.updateSettings({ orchestrateHint: hint });
   };
 
   const toggleShowWorkerTiles = () => {
@@ -39,7 +59,6 @@ const OrchestrationSection = () => {
     orchSettingsActions.deleteProvider(id).then(() => setEditingProvider(null));
 
   const openAdd = () => setEditingProvider('new');
-
   const closeForm = () => setEditingProvider(null);
 
   if (loading && !settings) {
@@ -64,6 +83,7 @@ const OrchestrationSection = () => {
     );
   }
 
+  const hint = settings.orchestrateHint ?? 'suggest';
   const builtinAgents = agents.filter((a) => a.kind === 'builtin');
 
   return (
@@ -82,11 +102,43 @@ const OrchestrationSection = () => {
           />
         </div>
       </div>
-      <WorkersEditor
-        settings={settings}
-        agents={agents}
-        onChangeWorkers={saveWorkers}
-      />
+      <div className={settingsStyles.group}>
+        <p className={settingsStyles.groupLabel}>Orchestrate hint</p>
+        <div className={styles.hintSegmented}>
+          {HINT_ORDER.map((h) => {
+            const handleHintClick = () => setOrchestrateHint(h);
+            return (
+              <button
+                key={h}
+                type="button"
+                className={`${styles.hintSegBtn}${hint === h ? ` ${styles.hintSegActive}` : ''}`}
+                onClick={handleHintClick}
+              >
+                {HINT_LABELS[h]}
+              </button>
+            );
+          })}
+        </div>
+        <p className={settingsStyles.hint}>{HINT_DESCRIPTIONS[hint]}</p>
+      </div>
+      <div className={settingsStyles.group}>
+        <p className={settingsStyles.groupLabel}>Roles</p>
+        {ROLES.map((role) => {
+          const handleChange = (chain: string[]) => saveRoleChain(role, chain);
+          const chain = settings.roles?.[role] ?? [];
+          return (
+            <RoleChainEditor
+              key={role}
+              role={role}
+              label={ROLE_META[role].label}
+              description={ROLE_META[role].description}
+              chain={chain}
+              agents={agents}
+              onChange={handleChange}
+            />
+          );
+        })}
+      </div>
       <div className={settingsStyles.group}>
         <div className={styles.providerHeader}>
           <p className={settingsStyles.groupLabel} style={{ margin: 0 }}>Providers</p>
