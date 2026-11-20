@@ -46,15 +46,15 @@ Good tasks:
 ## 2. Create the run and its tasks
 
 ```
-{cli} orch run-create --repo <abs path> --title "<title>" --coordinator-tile "$PANORAMA_TILE_ID"
+{cli} orch run-create --repo <abs path> --title "<title>"
 ```
 
 Optional: `--base-ref <ref>`, `--setup "<command run in each new worktree>"` (e.g. `bun install`),
 `--max-workers 4`, `--max-attempts 3`, `--dispatch-timeout-min 60`, `--verify-timeout-min 15`,
 `--stall-quiet-min 5`. Note the returned `run.id`.
 
-`--coordinator-tile` lets the brain type a short notice into this terminal when messages arrive
-while you are idle. Keep it.
+The CLI records this terminal as the coordinator tile (from `PANORAMA_TILE_ID`), so the brain can
+type a short notice into it when messages arrive while you are idle.
 
 ```
 {cli} orch task-create --run-id <run> --title "<short title>" --spec "<full spec>" \
@@ -115,6 +115,7 @@ arrives. Run `check` then.
 | `worker_failed` | The agent process exited, or its terminal is gone | `retry` |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
 | `integration_conflict` | The merge conflicted and was aborted. The task is `blocked` | Lists the files. Re-scope the task against the new base and retry, or ask the user |
+| `note` from `user` with a task id | The user cancelled that task from the run board. The task is now `cancelled` | Do not retry it unless the user explicitly asks |
 
 Inspecting and steering a worker:
 
@@ -192,7 +193,28 @@ Other commands: `run-list`, `run-show --run-id <run>`, `task-list --run-id <run>
 
 ## Rules
 
+- Run every CLI call as its own command, starting with the literal path `{cli}`. No shell
+  variables, no `;`, `&&` or `echo` around it. The permission rule only matches that exact
+  prefix, so anything else stops the run on an approval prompt. The exit code is reported anyway.
 - One decision per message. Do not loop on `check` without acting on what it returned.
 - Never edit a worker's worktree by hand while its attempt is running.
 - Never force-push, reset, or delete branches. The brain does not either.
 - If the brain is unreachable (exit 4), tell the user. Panorama may be closed or restarting.
+
+## User-managed boards (F9)
+
+Boards are runs the user created in the UI. They may already have tasks before you are
+attached as coordinator.
+
+- `--review` on task-create: set it only when the user explicitly asked to review results
+  before the task counts as done. Without that ask, leave it off so tasks complete on their own.
+- `review` status means the task is waiting for the user. Do not set it to `completed` yourself
+  unless the user tells you to (by sending you a note or message in the conversation).
+- owner `user` on a task means the user will start and retry that task themselves. Do not
+  dispatch it. Do not retry it. If you receive a worker_done or failure for a user-owned task,
+  report it to the user and wait for their instruction.
+- `run-set-coordinator` is how a board gets a coordinator. When the user opens a board tile
+  and attaches you, the brain sends `run-set-coordinator {runId, tileId}`. You will see it as
+  a note in the next `check`. Read the board with `run-show` / `task-list` and pick up from
+  the current state without re-creating tasks.
+- Boards can be renamed with `run-update --run-id <id> --title "<new name>".

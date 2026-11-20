@@ -1,6 +1,6 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { X, Bot, Puzzle, Palette, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal, Monitor } from 'lucide-react';
+import { X, Bot, Puzzle, Palette, Workflow, Keyboard, RotateCcw, Smartphone, SquareTerminal, SlidersHorizontal, Monitor } from 'lucide-react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
 import { SETTINGS_SECTIONS, type SettingsSection } from '~/usecase/util/settingsNav';
@@ -60,6 +60,7 @@ import ToggleOption from './ToggleOption';
 import MobileSection from './MobileSection';
 import RemoteSection from './RemoteSection';
 import PluginsSection from './PluginsSection';
+import OrchestrationSection from './OrchestrationSection';
 import styles from './styles.module.scss';
 
 interface SettingsProps {
@@ -177,7 +178,8 @@ const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
   mobile: Smartphone,
   remote: Monitor,
   plugins: Puzzle,
-  shortcuts: Keyboard
+  shortcuts: Keyboard,
+  orchestration: Workflow
 };
 
 const SECTIONS = SETTINGS_SECTIONS.map((s) => ({ ...s, Icon: SECTION_ICONS[s.id] }));
@@ -562,6 +564,7 @@ const Settings = ({ initialSection = 'general', onClose }: SettingsProps) => {
           {section === 'mobile' && <MobileSection />}
           {section === 'remote' && <RemoteSection />}
           {section === 'plugins' && <PluginsSection />}
+          {section === 'orchestration' && <OrchestrationSection />}
           {section === 'appearance' && (
             <div className={styles.pane}>
               <div className={styles.paneHead}>

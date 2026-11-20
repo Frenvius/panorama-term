@@ -88,6 +88,13 @@ fn apply_env_defaults(command: &str, body: &mut serde_json::Map<String, serde_js
     if command == "check" && !body.contains_key("recipient") {
         body.insert("recipient".into(), from_default.clone().into());
     }
+    if command == "run-create" && !body.contains_key("coordinatorTile") {
+        if let Ok(tile) = std::env::var("PANORAMA_TILE_ID").map(|t| t.trim().to_string()) {
+            if !tile.is_empty() {
+                body.insert("coordinatorTile".into(), tile.into());
+            }
+        }
+    }
     if command == "send" && !body.contains_key("to") {
         body.insert("to".into(), "coordinator".into());
     }
@@ -98,6 +105,8 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "run-create" => &["repo"],
         "run-show" => &["runId"],
         "run-set-status" => &["runId", "status"],
+        "run-update" => &["runId", "title"],
+        "run-set-coordinator" => &["runId"],
         "task-create" => &["runId", "title", "spec"],
         "task-update" => &["runId", "taskId"],
         "task-list" => &["runId"],

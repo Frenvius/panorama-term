@@ -113,6 +113,16 @@ pub enum Cmd {
         limits: Limits,
         now: u64,
     },
+    RunUpdate {
+        run_id: String,
+        title: String,
+        now: u64,
+    },
+    RunSetCoordinator {
+        run_id: String,
+        tile_id: Option<String>,
+        now: u64,
+    },
     RunSetStatus {
         run_id: String,
         status: RunStatus,
@@ -129,6 +139,7 @@ pub enum Cmd {
         escalation: Vec<String>,
         verify: Vec<String>,
         review: bool,
+        owner: Option<String>,
         now: u64,
     },
     TaskUpdate {
@@ -141,6 +152,7 @@ pub enum Cmd {
         verify: Option<Vec<String>>,
         profile: Option<String>,
         escalation: Option<Vec<String>>,
+        review: Option<bool>,
         now: u64,
     },
     Dispatch {
@@ -152,6 +164,7 @@ pub enum Cmd {
         profile: Option<String>,
         model: Option<String>,
         tile_id: Option<String>,
+        owner: Option<String>,
         now: u64,
     },
     Send {
@@ -268,6 +281,27 @@ pub enum Cmd {
 impl State {
     pub fn apply(&self, cmd: &Cmd) -> ApplyResult {
         match cmd {
+            Cmd::RunUpdate { run_id, title, now } => {
+                if !self.runs.contains_key(run_id.as_str()) {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                }
+                ApplyResult::Ok("run-update".into(), serde_json::json!({
+                    "runId": run_id, "title": title, "now": now
+                }))
+            }
+
+            Cmd::RunSetCoordinator { run_id, tile_id, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.run.status.is_terminal() {
+                    return ApplyResult::Err(OrchError::Conflict("run is terminal".into()));
+                }
+                ApplyResult::Ok("run-set-coordinator".into(), serde_json::json!({
+                    "runId": run_id, "tileId": tile_id, "now": now
+                }))
+            }
+
             Cmd::RunCreate { id, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now } => {
                 if self.runs.contains_key(id.as_str()) {
                     return ApplyResult::Err(OrchError::Conflict("run id already exists".into()));
@@ -311,7 +345,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, review, now } => {
+            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, review, owner, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -331,11 +365,12 @@ impl State {
                 ApplyResult::Ok("task-create".into(), serde_json::json!({
                     "runId": run_id, "id": id, "title": title, "spec": spec,
                     "acceptance": acceptance, "deps": deps, "profile": profile,
-                    "escalation": escalation, "verify": verify, "review": review, "now": now
+                    "escalation": escalation, "verify": verify, "review": review,
+                    "owner": owner, "now": now
                 }))
             }
 
-            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, now } => {
+            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, review, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -352,11 +387,15 @@ impl State {
                         (TaskStatus::Pending, TaskStatus::Cancelled)
                         | (TaskStatus::Pending, TaskStatus::Blocked)
                         | (TaskStatus::Blocked, TaskStatus::Pending)
+                        | (TaskStatus::Blocked, TaskStatus::Cancelled)
                         | (TaskStatus::Failed, TaskStatus::Pending)
                         | (TaskStatus::Failed, TaskStatus::Cancelled)
                         | (TaskStatus::Verifying, TaskStatus::Completed)
                         | (TaskStatus::Verifying, TaskStatus::Failed)
                         | (TaskStatus::Dispatched, TaskStatus::Failed)
+                        | (TaskStatus::Review, TaskStatus::Completed)
+                        | (TaskStatus::Review, TaskStatus::Pending)
+                        | (TaskStatus::Review, TaskStatus::Cancelled)
                     );
                     if !ok {
                         return ApplyResult::Err(OrchError::Conflict(format!(
@@ -374,8 +413,9 @@ impl State {
                     }
                 }
                 let field_edit = spec.is_some() || acceptance.is_some() || verify.is_some()
-                    || profile.is_some() || escalation.is_some();
-                if field_edit && !matches!(task.status, TaskStatus::Pending | TaskStatus::Blocked | TaskStatus::Failed) {
+                    || profile.is_some() || escalation.is_some() || review.is_some();
+                let end_status = status.as_ref().unwrap_or(&task.status);
+                if field_edit && !matches!(end_status, TaskStatus::Pending | TaskStatus::Blocked | TaskStatus::Failed) {
                     return ApplyResult::Err(OrchError::Conflict(
                         "field edits only allowed when pending/blocked/failed".into()
                     ));
@@ -383,11 +423,11 @@ impl State {
                 ApplyResult::Ok("task-update".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "status": status, "result": result,
                     "spec": spec, "acceptance": acceptance, "verify": verify,
-                    "profile": profile, "escalation": escalation, "now": now
+                    "profile": profile, "escalation": escalation, "review": review, "now": now
                 }))
             }
 
-            Cmd::Dispatch { run_id, id, task_id, attempt, retry_of, profile, model, tile_id, now } => {
+            Cmd::Dispatch { run_id, id, task_id, attempt, retry_of, profile, model, tile_id, owner, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -426,7 +466,7 @@ impl State {
                 ApplyResult::Ok("dispatch".into(), serde_json::json!({
                     "runId": run_id, "id": id, "taskId": task_id, "attempt": attempt,
                     "retryOf": retry_of, "profile": profile, "model": model,
-                    "tileId": tile_id, "now": now
+                    "tileId": tile_id, "owner": owner, "now": now
                 }))
             }
 
@@ -707,6 +747,8 @@ impl State {
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
         match kind {
             "run-create" => self.replay_run_create(data),
+            "run-update" => self.replay_run_update(data),
+            "run-set-coordinator" => self.replay_run_set_coordinator(data),
             "run-set-status" => self.replay_run_set_status(data),
             "task-create" => self.replay_task_create(data),
             "task-update" => self.replay_task_update(data),
@@ -788,6 +830,7 @@ impl State {
             escalation: str_arr(data, "escalation"),
             verify: str_arr(data, "verify"),
             review: data["review"].as_bool().unwrap_or(false),
+            owner: opt_str(data, "owner"),
             status: TaskStatus::Pending,
             result: None,
             integrated_sha: None,
@@ -831,6 +874,9 @@ impl State {
         if let Some(arr) = opt_val_arr(data, "verify") { task.verify = arr; }
         if let Some(v) = opt_val_str(data, "profile") { task.profile = Some(v); }
         if let Some(arr) = opt_val_arr(data, "escalation") { task.escalation = arr; }
+        if let Some(v) = data.get("review").filter(|v| !v.is_null()).and_then(|v| v.as_bool()) {
+            task.review = v;
+        }
         task.updated_at = now;
         Ok(())
     }
@@ -866,6 +912,11 @@ impl State {
             cost_usd: None,
             cost_source: None,
         };
+        if let Some(owner) = opt_str(data, "owner") {
+            if let Some(task) = entry.tasks.get_mut(&task_id) {
+                task.owner = Some(owner);
+            }
+        }
         entry.dispatches.insert(dispatch_id, dispatch);
         if let Some(task) = entry.tasks.get_mut(&task_id) {
             task.status = TaskStatus::Dispatched;
@@ -909,12 +960,15 @@ impl State {
             }
             let task_id = entry.dispatches.get(&from).map(|d| d.task_id.clone());
             if let Some(task_id) = task_id {
-                let needs_verify = entry.tasks.get(&task_id)
-                    .map(|t| !t.verify.is_empty() || t.review)
-                    .unwrap_or(false);
                 if let Some(task) = entry.tasks.get_mut(&task_id) {
                     task.status = if outcome == "succeeded" {
-                        if needs_verify { TaskStatus::Verifying } else { TaskStatus::Completed }
+                        if !task.verify.is_empty() {
+                            TaskStatus::Verifying
+                        } else if task.review {
+                            TaskStatus::Review
+                        } else {
+                            TaskStatus::Completed
+                        }
                     } else {
                         TaskStatus::Failed
                     };
@@ -1206,9 +1260,7 @@ impl State {
         let review = data["review"].as_bool().unwrap_or(false);
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         if let Some(task) = entry.tasks.get_mut(&task_id) {
-            if !review {
-                task.status = TaskStatus::Completed;
-            }
+            task.status = if review { TaskStatus::Review } else { TaskStatus::Completed };
             task.updated_at = now;
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
@@ -1281,6 +1333,28 @@ impl State {
             task.status = TaskStatus::Verifying;
             task.updated_at = now;
         }
+        Ok(())
+    }
+
+    fn replay_run_update(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-update: empty runId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if let Some(title) = opt_str(data, "title") {
+            entry.run.title = title;
+        }
+        entry.run.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_run_set_coordinator(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-set-coordinator: empty runId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        entry.run.coordinator_tile = opt_str(data, "tileId");
+        entry.run.updated_at = now;
         Ok(())
     }
 }
@@ -1361,6 +1435,7 @@ mod tests {
             escalation: vec![],
             verify: vec![],
             review: false,
+            owner: None,
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -1380,6 +1455,7 @@ mod tests {
             profile: None,
             model: None,
             tile_id: None,
+            owner: None,
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -1444,6 +1520,7 @@ mod tests {
             escalation: vec![],
             verify: vec![],
             review: false,
+            owner: None,
             now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::BadRequest(_))));
@@ -1479,7 +1556,7 @@ mod tests {
         mk_task(&mut s, "r1", "t2", vec!["t1".into()]);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t2.1".into(), task_id: "t2".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1492,7 +1569,7 @@ mod tests {
         s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().attempts = 3;
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.4".into(), task_id: "t1".into(),
-            attempt: 4, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 4, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -1509,7 +1586,7 @@ mod tests {
         }
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t5.1".into(), task_id: "t5".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -1522,7 +1599,7 @@ mod tests {
         mk_dispatch(&mut s, "r1", "t1", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1536,7 +1613,7 @@ mod tests {
         worker_done(&mut s, "r1", "r1.t1.1", "failed", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: Some("r1.t1.1".into()), profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 2, retry_of: Some("r1.t1.1".into()), profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)));
     }
@@ -1548,7 +1625,7 @@ mod tests {
         mk_task(&mut s, "r1", "t1", vec![]);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1566,7 +1643,7 @@ mod tests {
             id: "r1.t1.1".into(),
             task_id: "t1".into(),
             attempt: 2,
-            retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1588,7 +1665,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["bun test".into()], review: false, now: ts(),
+            verify: vec!["bun test".into()], review: false, owner: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -1662,7 +1739,7 @@ mod tests {
             let cmd = Cmd::TaskUpdate {
                 run_id: "r1".into(), task_id: tid.to_string(),
                 status: Some(to.clone()), result: None, spec: None,
-                acceptance: None, verify: None, profile: None, escalation: None, now: ts(),
+                acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
             };
             assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)), "transition failed for {tid}");
         }
@@ -1685,7 +1762,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: None, result: Some("done".into()), spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1739,7 +1816,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Pending), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -1794,7 +1871,7 @@ mod tests {
         let update = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Failed), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
         };
         match s.apply(&update) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -1831,11 +1908,11 @@ mod tests {
         apply_capture!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "task".into(),
             spec: "spec".into(), acceptance: None, deps: vec![],
-            profile: None, escalation: vec![], verify: vec![], review: false, now: ts(),
+            profile: None, escalation: vec![], verify: vec![], review: false, owner: None, now: ts(),
         });
         apply_capture!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         });
 
         let mut fresh = State::default();
@@ -1879,7 +1956,7 @@ mod tests {
                     let dispatch_id = format!("r1.{task_id}.{attempt}");
                     let cmd = Cmd::Dispatch {
                         run_id: "r1".into(), id: dispatch_id, task_id: task_id.clone(),
-                        attempt, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+                        attempt, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
                     };
                     match guard.apply(&cmd) {
                         ApplyResult::Ok(k, d) => {
@@ -2017,7 +2094,7 @@ mod tests {
         mk_dispatch(&mut s, "r1", "t2", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t3.1".into(), task_id: "t3".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -2181,6 +2258,7 @@ mod tests {
             escalation: vec![],
             verify: vec!["bun test".into()],
             review,
+            owner: None,
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -2213,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn task_verified_with_review_stays_verifying() {
+    fn task_verified_with_review_sets_review() {
         let mut s = State::default();
         mk_run(&mut s, "r1");
         mk_task_with_verify(&mut s, "r1", "t1", true);
@@ -2226,7 +2304,7 @@ mod tests {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
             _ => panic!("task-verified failed"),
         }
-        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Verifying);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Review);
     }
 
     #[test]
@@ -2403,11 +2481,11 @@ mod tests {
         apply_ev!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["check".into()], review: false, now: ts(),
+            verify: vec!["check".into()], review: false, owner: None, now: ts(),
         });
         apply_ev!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         });
         s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Verifying;
         apply_ev!(Cmd::DispatchAppendVerification {
@@ -2449,5 +2527,148 @@ mod tests {
         let limits: Limits = serde_json::from_str(json).unwrap();
         assert_eq!(limits.verify_timeout_min, 15);
         assert_eq!(limits.stall_quiet_min, 5);
+    }
+
+    fn mk_task_review_only(state: &mut State, run_id: &str, task_id: &str) {
+        let cmd = Cmd::TaskCreate {
+            run_id: run_id.into(),
+            id: task_id.into(),
+            title: "task".into(),
+            spec: "spec".into(),
+            acceptance: None,
+            deps: vec![],
+            profile: None,
+            escalation: vec![],
+            verify: vec![],
+            review: true,
+            owner: None,
+            now: ts(),
+        };
+        match state.apply(&cmd) {
+            ApplyResult::Ok(k, d) => state.replay(&k, &d).expect("replay"),
+            _ => panic!("task-create failed"),
+        }
+    }
+
+    #[test]
+    fn worker_done_succeeded_no_verify_review_true_sets_review() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task_review_only(&mut s, "r1", "t1");
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        worker_done(&mut s, "r1", "r1.t1.1", "succeeded", 1);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Review);
+    }
+
+    #[test]
+    fn worker_done_succeeded_verify_and_review_sets_verifying() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task_with_verify(&mut s, "r1", "t1", true);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        worker_done(&mut s, "r1", "r1.t1.1", "succeeded", 1);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Verifying);
+    }
+
+    #[test]
+    fn review_to_completed_via_task_update() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task_review_only(&mut s, "r1", "t1");
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Review;
+        let cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(),
+            status: Some(TaskStatus::Completed), result: None, spec: None,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-update failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn review_to_pending_with_spec_edit_atomic() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task_review_only(&mut s, "r1", "t1");
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Review;
+        let cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(),
+            status: Some(TaskStatus::Pending), result: None, spec: Some("new spec".into()),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-update failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Pending);
+        assert_eq!(s.runs["r1"].tasks["t1"].spec, "new spec");
+    }
+
+    #[test]
+    fn review_to_cancelled() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task_review_only(&mut s, "r1", "t1");
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Review;
+        let cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(),
+            status: Some(TaskStatus::Cancelled), result: None, spec: None,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+        };
+        assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)));
+    }
+
+    #[test]
+    fn owner_user_set_via_dispatch_event() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        let cmd = Cmd::Dispatch {
+            run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None,
+            owner: Some("user".into()), now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("dispatch failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].owner.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn run_update_changes_title() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::RunUpdate { run_id: "r1".into(), title: "new title".into(), now: ts() };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("run-update failed"),
+        }
+        assert_eq!(s.runs["r1"].run.title, "new title");
+    }
+
+    #[test]
+    fn run_set_coordinator_replay() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::RunSetCoordinator {
+            run_id: "r1".into(), tile_id: Some("tile-abc".into()), now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("run-set-coordinator failed"),
+        }
+        assert_eq!(s.runs["r1"].run.coordinator_tile.as_deref(), Some("tile-abc"));
+        let cmd2 = Cmd::RunSetCoordinator {
+            run_id: "r1".into(), tile_id: None, now: ts(),
+        };
+        match s.apply(&cmd2) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("run-set-coordinator detach failed"),
+        }
+        assert_eq!(s.runs["r1"].run.coordinator_tile, None);
     }
 }

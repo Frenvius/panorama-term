@@ -1,4 +1,13 @@
-export type SettingsSection = 'general' | 'appearance' | 'terminal' | 'agentBar' | 'mobile' | 'remote' | 'plugins' | 'shortcuts';
+export type SettingsSection =
+  | 'general'
+  | 'appearance'
+  | 'terminal'
+  | 'agentBar'
+  | 'mobile'
+  | 'remote'
+  | 'plugins'
+  | 'shortcuts'
+  | 'orchestration';
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'General' },
@@ -8,7 +17,8 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'mobile', label: 'Mobile' },
   { id: 'remote', label: 'Remote host' },
   { id: 'plugins', label: 'Plugins' },
-  { id: 'shortcuts', label: 'Shortcuts' }
+  { id: 'shortcuts', label: 'Shortcuts' },
+  { id: 'orchestration', label: 'Orchestration' }
 ];
 
 const EVENT = 'settings:open';

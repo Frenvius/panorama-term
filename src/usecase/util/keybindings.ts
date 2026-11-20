@@ -28,7 +28,9 @@ export type CommandId =
   | 'diff.nextChunk'
   | 'diff.prevFile'
   | 'diff.nextFile'
-  | 'diff.editFile';
+  | 'diff.editFile'
+  | 'orch.toggleMode'
+  | 'orch.boards';
 
 interface Command {
   id: CommandId;
@@ -66,7 +68,9 @@ export const KEYBINDINGS: Command[] = [
   { id: 'diff.nextChunk', label: 'Next difference', group: 'Diff viewer', defaultCombo: 'alt+arrowdown' },
   { id: 'diff.prevFile', label: 'Previous file', group: 'Diff viewer', defaultCombo: 'alt+arrowleft' },
   { id: 'diff.nextFile', label: 'Next file', group: 'Diff viewer', defaultCombo: 'alt+arrowright' },
-  { id: 'diff.editFile', label: 'Edit file', group: 'Diff viewer', defaultCombo: 'f4' }
+  { id: 'diff.editFile', label: 'Edit file', group: 'Diff viewer', defaultCombo: 'f4' },
+  { id: 'orch.toggleMode', label: 'Toggle orchestrate mode', group: 'Canvas', defaultCombo: 'mod+shift+o' },
+  { id: 'orch.boards', label: 'Open boards', group: 'Canvas', defaultCombo: 'mod+shift+b' }
 ];
 
 const overrides = (): Record<string, string> => getSetting<Record<string, string>>(BINDINGS_KEY, {});

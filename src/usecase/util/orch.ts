@@ -2,6 +2,8 @@ import type { Task, Dispatch } from '~/domain/interfaces/orch.interface';
 
 export const ACTIVE_DISPATCH_STATUSES = new Set(['starting', 'running', 'reported']);
 
+export const normalizeRepo = (p: string): string => p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+
 export const topoSort = (tasks: Task[]): Task[] => {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const result: Task[] = [];

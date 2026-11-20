@@ -30,8 +30,8 @@ const dispatch = (data: string): void => {
   }
   if (msg.t === 'tile.open') {
     for (const fn of tileOpenSubs) fn(msg as TileOpenRequest);
-  } else if (msg.t === 'orch.changed' && msg.runId) {
-    for (const sub of orchSubs) sub.onChanged(msg.runId);
+  } else if (msg.t === 'orch.changed') {
+    for (const sub of orchSubs) sub.onChanged(msg.runId ?? '');
   }
 };
 

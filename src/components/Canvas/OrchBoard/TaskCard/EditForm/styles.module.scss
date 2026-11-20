@@ -1,0 +1,87 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.textarea {
+  padding: 4px 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  color: var(--text-1);
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--surface-1);
+  resize: none;
+  outline: none;
+
+  &:focus {
+    border-color: var(--accent);
+  }
+}
+
+.select {
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  color: var(--text-1);
+  font-size: 11px;
+  background: var(--surface-1);
+  outline: none;
+
+  &:focus {
+    border-color: var(--accent);
+  }
+}
+
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.check {
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.cancelBtn {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  background: transparent;
+
+  &:hover {
+    color: var(--text-1);
+  }
+}
+
+.submitBtn {
+  height: 20px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #fff;
+  font-size: 10.5px;
+  background: var(--accent);
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}

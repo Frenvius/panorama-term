@@ -2167,6 +2167,9 @@ fn handle_agent_status(body: &[u8]) {
             if ns == "waiting" && prev != Some("waiting") {
                 orch::on_agent_waiting(&tile_id);
             }
+            if ns != "waiting" && prev == Some("waiting") {
+                orch::on_agent_resumed(&tile_id);
+            }
         }
     }
 }
@@ -2531,7 +2534,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
 }
 
 fn prompt_context(tile_id: &str, cwd: &str) -> String {
-    [linked_notes_context(tile_id), linked_peers_context(tile_id), run_context(cwd)]
+    [linked_notes_context(tile_id), linked_peers_context(tile_id), run_context(cwd), orch::coordinator_context(tile_id)]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -3230,7 +3233,7 @@ fn hidden_command(program: &str) -> std::process::Command {
     std::process::Command::new(program)
 }
 
-fn command_exists(cmd: &str) -> bool {
+pub(crate) fn command_exists(cmd: &str) -> bool {
     let finder = if cfg!(windows) { "where.exe" } else { "which" };
     hidden_command(finder)
         .arg(cmd)

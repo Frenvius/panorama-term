@@ -28,6 +28,7 @@ import {
 import PanelToolbar from './PanelToolbar';
 import styles from './styles.module.scss';
 import FileEditor from '~/components/FileEditor';
+import OrchBoard from '~/components/Canvas/OrchBoard';
 import DiffViewer from '~/components/DiffViewer';
 import { tileLabel } from '~/usecase/util/title';
 import { noteTabs } from '~/usecase/util/noteTabs';
@@ -554,7 +555,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
         </div>
       </div>
 
-      {activeTile && (
+      {activeTile && activeTile.type !== 'orch' && (
         <PanelToolbar
           tile={activeTile}
           wsId={wsId}
@@ -620,6 +621,17 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
                 onChange={onNoteChange}
                 onActivate={onNoteActivate}
                 onEditor={handlers.onNoteEditor}
+              />
+            </div>
+          )}
+
+          {activeTile?.type === 'orch' && (
+            <div className={styles.contentSlot}>
+              <OrchBoard
+                runId={activeTile.runId ?? ''}
+                tileId={activeTile.id}
+                cwd={activeTile.cwd ?? ''}
+                onPatchRunId={(runId) => handlers.onPatchTile(activeTile.id, { runId })}
               />
             </div>
           )}

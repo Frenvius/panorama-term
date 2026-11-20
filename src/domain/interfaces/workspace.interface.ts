@@ -2,7 +2,7 @@ import type { TabMode, ProjectViewState } from '~/domain/interfaces/projectView.
 
 export type { TabMode, ProjectViewState };
 
-export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser';
+export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser' | 'orch';
 
 export interface Tile {
   id: string;
@@ -25,6 +25,7 @@ export interface Tile {
   color?: string;
   content?: string;
   pinned?: boolean;
+  runId?: string;
   renderOnly?: boolean;
   linkedTo?: string[];
   runCwd?: string;

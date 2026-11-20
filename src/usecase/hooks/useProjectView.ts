@@ -727,6 +727,43 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     return id;
   }, [projectSlot]);
 
+  const addOrchBoard = React.useCallback((runId: string, cwd?: string): string => {
+    const existing = tilesRef.current.find((t) => t.type === 'orch' && runId && t.runId === runId);
+    if (existing) {
+      activateTile(existing.id);
+      return existing.id;
+    }
+    const id = createId();
+    const prevTiles = tilesRef.current;
+    const slot = projectSlot(undefined, 720, 420);
+    const zIndex = prevTiles.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
+    const resolvedCwd = cwd ?? projectViewRef.current.activeProject ?? '';
+    const tile: Tile = { id, type: 'orch', runId, cwd: resolvedCwd, x: slot.x, y: slot.y, width: 720, height: 420, zIndex };
+    const nextTiles = [...prevTiles, tile];
+    tilesRef.current = nextTiles;
+    setTiles(nextTiles);
+    setFallbackActiveTileId(id);
+
+    setProjectView((prev) => {
+      const proj = prev.activeProject ?? DEFAULT_PROJECT;
+      const existing2 = prev.projects.find((p) => p.toLowerCase() === proj.toLowerCase());
+      const canonical = existing2 ?? proj;
+      const projects = existing2 ? prev.projects : [...prev.projects, canonical];
+      const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([id]);
+      const nextPanel = activateTileInProject(basePanel, { tileId: id });
+      const next: ProjectViewState = {
+        ...prev,
+        projects,
+        activeProject: canonical,
+        byProject: { ...prev.byProject, [canonical]: nextPanel }
+      };
+      projectViewRef.current = next;
+      return next;
+    });
+
+    return id;
+  }, [projectSlot, activateTile]);
+
   const placeFileTile = React.useCallback(
     (root: string, filePath: string, type: 'editor' | 'code', sideSplit?: boolean) => {
       const normRoot = projectRootPath(root) || projectViewRef.current.activeProject || '';
@@ -920,7 +957,8 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     (id: string) => {
       clearAlert(id);
       const closing = tilesRef.current.find((t) => t.id === id);
-      if (closing && !closing.runCwd) {
+      const isWorker = closing?.type === 'term' && Boolean(closing.runId);
+      if (closing && !closing.runCwd && !isWorker) {
         const ws = wsIdRef.current;
         saveClosed(ws, [...loadClosed(ws), closing]);
       }
@@ -942,7 +980,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       tilesRef.current = nextTiles;
       setTiles(nextTiles);
       detachTile(id);
-      void killPtySession(id);
+      if (!isWorker) void killPtySession(id);
     },
     [bindKey, detachTile]
   );
@@ -1190,6 +1228,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     placeTiles,
     addTerminal,
     addNote,
+    addOrchBoard,
     openFile,
     openDiff,
     openRunOutput,

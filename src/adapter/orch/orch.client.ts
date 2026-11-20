@@ -1,4 +1,4 @@
-import type { RunDetail, RunSummary } from '~/domain/interfaces/orch.interface';
+import type { OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -8,8 +8,19 @@ interface OkResponse {
 }
 
 const post = async <T>(command: string, body: unknown): Promise<T> => {
-  const res = await fetch(`${SIDECAR_HTTP}/orch/${command}`, { method: 'POST', body: JSON.stringify(body) });
-  const json = (await res.json()) as OkResponse & T;
+  let res: Response;
+  try {
+    res = await fetch(`${SIDECAR_HTTP}/orch/${command}`, { method: 'POST', body: JSON.stringify(body) });
+  } catch {
+    throw new Error('Panorama brain is outdated: restart it to enable orchestration');
+  }
+  if (!res.ok) throw new Error('Panorama brain is outdated: restart it to enable orchestration');
+  let json: OkResponse & T;
+  try {
+    json = (await res.json()) as OkResponse & T;
+  } catch {
+    throw new Error('Panorama brain is outdated: restart it to enable orchestration');
+  }
   if (!json.ok) throw new Error(json.error?.message ?? command);
   return json;
 };
@@ -25,3 +36,102 @@ interface ResolveGateOpts {
 }
 
 export const resolveGate = (opts: ResolveGateOpts): Promise<void> => post('gate-resolve', opts).then(() => undefined);
+
+export const getSettings = (): Promise<{ ok: boolean; settings: OrchSettings; presets: OrchPreset[] }> =>
+  post('settings-get', {});
+
+export interface SetSettingsOpts {
+  workers?: string[];
+  coordinator?: string;
+  hiddenAgents?: string[];
+  showWorkerTiles?: boolean;
+}
+
+export const setSettings = (opts: SetSettingsOpts): Promise<{ ok: boolean; settings: OrchSettings }> =>
+  post('settings-set', opts);
+
+export interface SaveProviderOpts {
+  id?: string;
+  preset: string;
+  label: string;
+  baseUrl: string;
+  mainModel: string;
+  fastModel: string;
+  apiKey?: string;
+}
+
+export const saveProvider = (opts: SaveProviderOpts): Promise<{ ok: boolean; provider: OrchProvider }> =>
+  post('provider-save', opts);
+
+export const deleteProvider = (id: string): Promise<void> =>
+  post('provider-delete', { id }).then(() => undefined);
+
+export const testProvider = (id: string): Promise<{ ok: boolean; reachable: boolean; status?: number; message: string }> =>
+  post('provider-test', { id });
+
+export const listAgents = (): Promise<{ ok: boolean; agents: OrchAgent[] }> => post('agent-list', {});
+
+export const setCoordinator = (tileId: string, on: boolean): Promise<{ ok: boolean }> =>
+  post('coordinator-set', { tileId, on });
+
+export const listCoordinators = (): Promise<{ ok: boolean; tiles: string[] }> => post('coordinator-list', {});
+
+export interface CancelTaskOpts {
+  runId: string;
+  taskId: string;
+}
+
+export const cancelTask = (opts: CancelTaskOpts): Promise<void> =>
+  post('task-cancel', opts).then(() => undefined);
+
+export interface CreateRunOpts {
+  repo: string;
+  title: string;
+}
+
+export const createRun = (opts: CreateRunOpts): Promise<{ ok: boolean; run: { id: string; title: string } }> =>
+  post('run-create', opts);
+
+export const updateRun = (runId: string, title: string): Promise<void> =>
+  post('run-update', { runId, title }).then(() => undefined);
+
+export const setRunStatus = (runId: string, status: string): Promise<void> =>
+  post('run-set-status', { runId, status }).then(() => undefined);
+
+export const setRunCoordinator = (runId: string, tileId: string | null): Promise<void> =>
+  post('run-set-coordinator', { runId, tileId }).then(() => undefined);
+
+export interface CreateTaskOpts {
+  runId: string;
+  title: string;
+  spec: string;
+  profile?: string;
+  review?: boolean;
+  by?: string;
+}
+
+export const createTask = (opts: CreateTaskOpts): Promise<{ ok: boolean; task: { id: string } }> =>
+  post('task-create', opts);
+
+export interface UpdateTaskOpts {
+  runId: string;
+  taskId: string;
+  status?: string;
+  spec?: string;
+  profile?: string;
+  review?: boolean;
+  by?: string;
+}
+
+export const updateTask = (opts: UpdateTaskOpts): Promise<void> =>
+  post('task-update', opts).then(() => undefined);
+
+export interface StartWorkerOpts {
+  runId: string;
+  taskId: string;
+  by: string;
+  retryOf?: string;
+}
+
+export const startWorker = (opts: StartWorkerOpts): Promise<void> =>
+  post('worker-start', opts).then(() => undefined);

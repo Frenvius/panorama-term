@@ -1,0 +1,43 @@
+.gateCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-1);
+}
+
+.gateQuestion {
+  color: var(--text-1);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.gateOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.gateBtn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-1);
+  font-size: 11px;
+  background: transparent;
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--hover-1);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

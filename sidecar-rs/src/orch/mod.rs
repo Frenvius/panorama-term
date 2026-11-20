@@ -5,9 +5,11 @@ pub mod cli;
 pub mod exec;
 pub mod git;
 pub mod profiles;
+pub mod secrets;
+pub mod settings;
 pub mod worker;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use serde_json::Value;
@@ -20,6 +22,7 @@ use crate::ui::TileGroup;
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static NOTIFIES: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> = OnceLock::new();
+static COORDINATORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
@@ -27,6 +30,34 @@ fn state() -> &'static Mutex<State> {
 
 fn notifies() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Notify>>> {
     NOTIFIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn coordinators() -> &'static Mutex<HashSet<String>> {
+    COORDINATORS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn coordinators_path(base: &std::path::Path) -> std::path::PathBuf {
+    base.join("orch").join("coordinators.json")
+}
+
+fn load_coordinators(base: &std::path::Path) -> HashSet<String> {
+    std::fs::read_to_string(coordinators_path(base))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn save_coordinators(base: &std::path::Path, set: &HashSet<String>) -> Result<(), String> {
+    let vec: Vec<&String> = set.iter().collect();
+    let json = serde_json::to_string(&vec).map_err(|e| e.to_string())?;
+    let path = coordinators_path(base);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 fn run_notify(run_id: &str) -> Arc<tokio::sync::Notify> {
@@ -233,6 +264,10 @@ fn collect_ack_sync(
 
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
+
+    let loaded = load_coordinators(&base);
+    *coordinators().lock().unwrap_or_else(|e| e.into_inner()) = loaded;
+
     let runs_dir = base.join("orch").join("runs");
     if runs_dir.exists() {
         let Ok(entries) = std::fs::read_dir(&runs_dir) else {
@@ -252,9 +287,11 @@ pub fn init() {
 pub async fn handle(command: &str, body: &[u8]) -> String {
     match command {
         "run-create" => handle_run_create(body).await,
+        "run-update" => handle_run_update(body).await,
         "run-list" => handle_run_list(),
         "run-show" => handle_run_show(body),
         "run-set-status" => handle_run_set_status(body).await,
+        "run-set-coordinator" => handle_run_set_coordinator(body).await,
         "task-create" => handle_task_create(body).await,
         "task-update" => handle_task_update(body).await,
         "task-list" => handle_task_list(body),
@@ -267,6 +304,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "worker-show" => handle_worker_show(body),
         "worker-read" => handle_worker_read(body),
         "worker-send" => handle_worker_send(body),
+        "task-cancel" => handle_task_cancel(body).await,
         "worker-stop" => handle_worker_stop(body).await,
         "worker-release" => handle_worker_release(body).await,
         "integrate" => handle_integrate(body).await,
@@ -274,6 +312,14 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "verify" => handle_verify(body).await,
         "retry" => handle_retry(body).await,
         "report" => handle_report(body).await,
+        "settings-get" => handle_settings_get(),
+        "settings-set" => handle_settings_set(body),
+        "provider-save" => handle_provider_save(body),
+        "provider-delete" => handle_provider_delete(body),
+        "provider-test" => handle_provider_test(body).await,
+        "agent-list" => handle_agent_list(),
+        "coordinator-set" => handle_coordinator_set(body).await,
+        "coordinator-list" => handle_coordinator_list(),
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -434,7 +480,8 @@ fn handle_run_list() -> String {
         for t in e.tasks.values() {
             *counts.entry(format!("{:?}", t.status).to_lowercase()).or_insert(0) += 1;
         }
-        serde_json::json!({"run": e.run, "taskCounts": counts})
+        let open_gates = e.gates.values().filter(|g| g.resolution.is_none()).count();
+        serde_json::json!({"run": e.run, "taskCounts": counts, "openGates": open_gates})
     }).collect();
     ok_resp(serde_json::json!({"runs": runs}))
 }
@@ -455,14 +502,40 @@ fn handle_run_show(body: &[u8]) -> String {
         }
         tv
     }).collect();
-    let dispatches: Vec<&Dispatch> = entry.dispatches.values().collect();
-    let gates: Vec<&Gate> = entry.gates.values().collect();
+    let mut dispatches: Vec<Value> = entry.dispatches.values()
+        .map(|d| serde_json::to_value(d).unwrap_or_default())
+        .collect();
+    let gates: Vec<Value> = entry.gates.values()
+        .map(|g| serde_json::to_value(g).unwrap_or_default())
+        .collect();
+    let run = serde_json::to_value(&entry.run).unwrap_or_default();
+    let running_tiles: Vec<(usize, String)> = entry.dispatches.values().enumerate()
+        .filter(|(_, d)| d.status == DispatchStatus::Running)
+        .filter_map(|(i, d)| d.tile_id.clone().map(|t| (i, t)))
+        .collect();
+    drop(guard);
+    for (i, tile) in running_tiles {
+        if let Some(obj) = dispatches[i].as_object_mut() {
+            obj.insert("waiting".into(), is_tile_waiting(&tile).into());
+        }
+    }
     ok_resp(serde_json::json!({
-        "run": entry.run,
+        "run": run,
         "tasks": tasks,
         "dispatches": dispatches,
         "gates": gates
     }))
+}
+
+pub fn on_agent_resumed(tile_id: &str) {
+    let has_dispatch = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.values().any(|e| e.dispatches.values()
+            .any(|d| d.status == DispatchStatus::Running && d.tile_id.as_deref() == Some(tile_id)))
+    };
+    if has_dispatch {
+        crate::ui::broadcast_orch_changed("");
+    }
 }
 
 async fn handle_run_set_status(body: &[u8]) -> String {
@@ -488,6 +561,57 @@ async fn handle_run_set_status(body: &[u8]) -> String {
     }
 }
 
+async fn handle_run_update(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+    let title = v["title"].as_str().unwrap_or("").to_string();
+    if title.is_empty() { return err_resp("bad_request", "title required"); }
+    let now = unix_ms();
+    let run_id_c = run_id.clone();
+    let result = commit(move |_| {
+        Ok(Cmd::RunUpdate { run_id: run_id_c, title, now })
+    }, run_id).await;
+    match result {
+        CommitResult::Ok(_) => ok_resp(serde_json::json!({})),
+        CommitResult::Stale => err_resp("stale", "run update stale"),
+        CommitResult::Err(e) => err_from_str(&e),
+    }
+}
+
+async fn handle_run_set_coordinator(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+    let tile_id: Option<String> = v["tileId"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let now = unix_ms();
+    let tile_id_c = tile_id.clone();
+    let run_id_c = run_id.clone();
+    let result = commit(move |_| {
+        Ok(Cmd::RunSetCoordinator { run_id: run_id_c, tile_id: tile_id_c, now })
+    }, run_id).await;
+    match result {
+        CommitResult::Ok(_) => {
+            if let Some(ref tid) = tile_id {
+                let snapshot = {
+                    let mut guard = coordinators().lock().unwrap_or_else(|e| e.into_inner());
+                    guard.insert(tid.clone());
+                    guard.clone()
+                };
+                if let Err(e) = save_coordinators(&base, &snapshot) {
+                    return err_resp("io", &e);
+                }
+            }
+            ok_resp(serde_json::json!({}))
+        }
+        CommitResult::Stale => err_resp("stale", "run set-coordinator stale"),
+        CommitResult::Err(e) => err_from_str(&e),
+    }
+}
+
 async fn handle_task_create(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
@@ -497,31 +621,46 @@ async fn handle_task_create(body: &[u8]) -> String {
     let acceptance = v["acceptance"].as_str().map(str::to_string);
     let profile = v["profile"].as_str().map(str::to_string);
     let review = v["review"].as_bool().unwrap_or(false);
+    let owner: Option<String> = v["owner"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let by = v["by"].as_str().unwrap_or("coordinator").to_string();
     let now = unix_ms();
 
     let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
     let escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
     let verify = match strict_str_arr(&v, "verify") { Ok(a) => a, Err(e) => return e };
 
+    let owner_c = owner.clone();
     let run_id_c = run_id.clone();
+    let title_c = title.clone();
     let result = commit(move |state| {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let task_id = entry.next_task_id();
         Ok(Cmd::TaskCreate {
             run_id: run_id_c, id: task_id,
-            title, spec, acceptance, deps, profile, escalation, verify, review, now,
+            title: title_c, spec, acceptance, deps, profile, escalation, verify, review,
+            owner: owner_c, now,
         })
     }, run_id.clone()).await;
 
     match result {
         CommitResult::Ok(data) => {
             let task_id = data["id"].as_str().unwrap_or("").to_string();
-            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-            let task = guard.runs.get(&run_id)
-                .and_then(|e| e.tasks.get(&task_id))
-                .map(|t| serde_json::to_value(t).unwrap_or_default());
-            ok_resp(serde_json::json!({"task": task}))
+            let (task_val, coord_tile) = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                let entry = guard.runs.get(&run_id);
+                let task = entry.and_then(|e| e.tasks.get(&task_id))
+                    .map(|t| serde_json::to_value(t).unwrap_or_default());
+                let coord = entry.and_then(|e| e.run.coordinator_tile.clone());
+                (task, coord)
+            };
+            if by == "user" && coord_tile.is_some() {
+                let body_str = format!("user added task {task_id}: {title}");
+                if let Err(e) = notify_coordinator_from_user(&run_id, &task_id, body_str).await {
+                    return err_resp("io", &format!("task created, but the coordinator was not notified: {e}"));
+                }
+            }
+            ok_resp(serde_json::json!({"task": task_val}))
         }
         CommitResult::Stale => err_resp("stale", "task create stale"),
         CommitResult::Err(e) => err_from_str(&e),
@@ -556,21 +695,54 @@ async fn handle_task_update(body: &[u8]) -> String {
             Err(_) => return err_resp("bad_request", "escalation must be array of strings"),
         }
     };
-    let result = v["result"].as_str().map(str::to_string);
+    let result_val = v["result"].as_str().map(str::to_string);
     let spec = v["spec"].as_str().map(str::to_string);
     let acceptance = v["acceptance"].as_str().map(str::to_string);
     let profile = v["profile"].as_str().map(str::to_string);
+    let review_field: Option<bool> = v.get("review").filter(|s| !s.is_null()).and_then(|s| s.as_bool());
+    let by = v["by"].as_str().unwrap_or("coordinator").to_string();
     let now = unix_ms();
+
+    let prev_status = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id)
+            .and_then(|e| e.tasks.get(&task_id))
+            .map(|t| t.status.clone())
+    };
+
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
     let commit_result = commit(move |_| {
         Ok(Cmd::TaskUpdate {
-            run_id: run_id_c, task_id: task_id_c, status, result,
-            spec, acceptance, verify, profile, escalation, now,
+            run_id: run_id_c, task_id: task_id_c, status, result: result_val,
+            spec, acceptance, verify, profile, escalation, review: review_field, now,
         })
-    }, run_id).await;
+    }, run_id.clone()).await;
+
     match commit_result {
-        CommitResult::Ok(_) => ok_resp(serde_json::json!({})),
+        CommitResult::Ok(_) => {
+            let (new_status, coord_tile) = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                let entry = guard.runs.get(&run_id);
+                let status = entry.and_then(|e| e.tasks.get(&task_id)).map(|t| t.status.clone());
+                (status, entry.and_then(|e| e.run.coordinator_tile.clone()))
+            };
+            if by != "user" || coord_tile.is_none() {
+                return ok_resp(serde_json::json!({}));
+            }
+            let body_str = match (&prev_status, &new_status) {
+                (Some(TaskStatus::Review), Some(TaskStatus::Completed)) => format!("user accepted {task_id}"),
+                (Some(TaskStatus::Review), Some(TaskStatus::Pending)) if v["spec"].is_string() => {
+                    format!("user reopened {task_id}; see the task spec for the reviewer note")
+                }
+                (Some(TaskStatus::Review), Some(TaskStatus::Pending)) => format!("user reopened {task_id}"),
+                _ => return ok_resp(serde_json::json!({})),
+            };
+            if let Err(e) = notify_coordinator_from_user(&run_id, &task_id, body_str).await {
+                return err_resp("io", &format!("task updated, but the coordinator was not notified: {e}"));
+            }
+            ok_resp(serde_json::json!({}))
+        }
         CommitResult::Stale => err_resp("stale", "task update stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
@@ -621,7 +793,7 @@ async fn handle_dispatch(body: &[u8]) -> String {
         let dispatch_id = format!("{run_id_c}.{task_id_c}.{attempt}");
         Ok(Cmd::Dispatch {
             run_id: run_id_c, id: dispatch_id, task_id: task_id_c,
-            attempt, retry_of, profile, model, tile_id, now,
+            attempt, retry_of, profile, model, tile_id, owner: None, now,
         })
     }, run_id.clone()).await;
     match result {
@@ -733,7 +905,7 @@ async fn commit_worker_leftovers(run_id: &str, dispatch_id: &str) {
 }
 
 async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
-    let (wt_path, base_sha, commit_msg, task_id, tile_id) = {
+    let (wt_path, base_sha, commit_msg, task_id, tile_id, dispatch_profile) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -749,8 +921,9 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
         };
         let task_id = d.task_id.clone();
         let tile_id = d.tile_id.clone();
+        let dispatch_profile = d.profile.clone();
         let title = entry.tasks.get(&task_id).map(|t| t.title.clone()).unwrap_or_default();
-        (wt, entry.run.base_sha.clone(), format!("orch({task_id}): {title}"), task_id, tile_id)
+        (wt, entry.run.base_sha.clone(), format!("orch({task_id}): {title}"), task_id, tile_id, dispatch_profile)
     };
 
     let wt = wt_path.clone();
@@ -797,14 +970,28 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
         }
     };
 
-    let (cost_usd, cost_source) = tile_id
+    let is_provider_profile = dispatch_profile
         .as_deref()
-        .and_then(|tid| crate::sessions().lock().unwrap().get(tid).cloned())
-        .and_then(|s| crate::cached_agent_state(&s))
-        .and_then(|js| serde_json::from_str::<serde_json::Value>(&js).ok())
-        .and_then(|v| v["costUsd"].as_f64())
-        .map(|c| (Some(c), "exact".to_string()))
-        .unwrap_or((None, "unknown".to_string()));
+        .and_then(|pid| {
+            crate::panorama_dir().map(|base| {
+                let profiles = load_profiles(&base);
+                find_profile(&profiles, pid).map(|p| p.provider).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    let (cost_usd, cost_source) = if is_provider_profile {
+        (None, "provider".to_string())
+    } else {
+        tile_id
+            .as_deref()
+            .and_then(|tid| crate::sessions().lock().unwrap().get(tid).cloned())
+            .and_then(|s| crate::cached_agent_state(&s))
+            .and_then(|js| serde_json::from_str::<serde_json::Value>(&js).ok())
+            .and_then(|v| v["costUsd"].as_f64())
+            .map(|c| (Some(c), "exact".to_string()))
+            .unwrap_or((None, "unknown".to_string()))
+    };
 
     let run_id_c = run_id.clone();
     let dispatch_id_c = dispatch_id.clone();
@@ -862,8 +1049,12 @@ fn pick_escalation(input: EscalationInput) -> (String, Option<String>) {
         let m = explicit_model.map(str::to_string).or(m);
         (p, m)
     } else {
-        let p = task_profile.or(latest_profile).unwrap_or("").to_string();
-        (p, explicit_model.map(str::to_string).or_else(|| latest_model.map(str::to_string)))
+        let raw = task_profile.or(latest_profile).unwrap_or("");
+        let (p, task_m) = raw.split_once(':')
+            .map(|(p, m)| (p.to_string(), Some(m.to_string())))
+            .unwrap_or_else(|| (raw.to_string(), None));
+        let m = explicit_model.map(str::to_string).or(task_m).or_else(|| latest_model.map(str::to_string));
+        (p, m)
     }
 }
 
@@ -1290,6 +1481,8 @@ async fn handle_retry(body: &[u8]) -> String {
         return err_resp("bad_request", "runId and taskId required");
     }
 
+    let by_retry = v["by"].as_str().unwrap_or("coordinator");
+
     let (err, attempt, retry_of, escalation, task_profile, latest_profile, latest_model) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
@@ -1300,6 +1493,9 @@ async fn handle_retry(body: &[u8]) -> String {
             Some(t) => t,
             None => return err_resp("not_found", "task not found"),
         };
+        if by_retry != "user" && task.owner.as_deref() == Some("user") {
+            return err_resp("owned_by_user", "this task is owned by the user; only the user can retry it");
+        }
         if task.status != TaskStatus::Failed {
             return err_resp("conflict", "task must be failed to retry");
         }
@@ -1332,6 +1528,7 @@ async fn handle_retry(body: &[u8]) -> String {
         "runId": run_id,
         "taskId": task_id,
         "profile": profile_id,
+        "by": by_retry,
     });
     if let Some(m) = model {
         inner_body["model"] = m.into();
@@ -1896,6 +2093,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
     let explicit_profile: Option<String> = v["profile"].as_str().map(str::to_string);
     let explicit_model: Option<String> = v["model"].as_str().map(str::to_string);
     let retry_of: Option<String> = v["retryOf"].as_str().map(str::to_string);
+    let by = v["by"].as_str().unwrap_or("coordinator").to_string();
 
     let (profile_id, model) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1907,6 +2105,9 @@ async fn handle_worker_start(body: &[u8]) -> String {
             Some(t) => t,
             None => return err_resp("not_found", "task not found"),
         };
+        if by != "user" && task.owner.as_deref() == Some("user") {
+            return err_resp("owned_by_user", "this task is owned by the user; only the user can dispatch it");
+        }
         let attempt = task.attempts + 1;
         let latest_profile = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.profile.clone());
         let latest_model = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.model.clone());
@@ -1940,12 +2141,15 @@ async fn handle_worker_start(body: &[u8]) -> String {
     let cli_path = crate::panorama_cli_path();
     let now = unix_ms();
 
+    let owner_for_dispatch = if by == "user" { Some("user".to_string()) } else { None };
+
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
     let tile_id_c = tile_id.clone();
     let profile_id_c = profile_id.clone();
     let model_c = model.clone();
     let retry_of_c = retry_of.clone();
+    let owner_c = owner_for_dispatch.clone();
 
     let result = commit(move |g| {
         let entry = g.runs.get(&run_id_c)
@@ -1963,6 +2167,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
             profile: Some(profile_id_c.clone()),
             model: model_c,
             tile_id: Some(tile_id_c.clone()),
+            owner: owner_c,
             now,
         })
     }, run_id.clone()).await;
@@ -1975,6 +2180,19 @@ async fn handle_worker_start(body: &[u8]) -> String {
         CommitResult::Stale => return err_resp("stale", "dispatch stale"),
         CommitResult::Err(e) => return err_from_str(&e),
     };
+
+    if by == "user" {
+        let has_coordinator = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get(&run_id).is_some_and(|e| e.run.coordinator_tile.is_some())
+        };
+        if has_coordinator {
+            let body_str = format!("user started {task_id} manually with {profile_id}; it is owned by the user, do not dispatch it");
+            if let Err(e) = notify_coordinator_from_user(&run_id, &task_id, body_str).await {
+                eprintln!("[orch] worker-start {run_id}/{task_id}: coordinator not notified: {e}");
+            }
+        }
+    }
 
     let (task_clone, dispatch_clone, deps_results, base_cwd, run_base_sha, run_setup, task_has_deps) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2160,7 +2378,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
     };
 
     let extra_env: Vec<(String, String)> = {
-        let mut env = resolve_env(&profile.env);
+        let mut env = resolve_env(&profile.env, Some(&base));
         env.push(("PANORAMA_RUN_ID".into(), run_id.clone()));
         env.push(("PANORAMA_DISPATCH_ID".into(), dispatch_id.clone()));
         env
@@ -2181,7 +2399,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
         let launch = WorkerLaunch {
             tile_id: &tile_id2,
             cwd: &cwd2,
-            group: TileGroup { id: &run_id2, title: &run_title },
+            group: Some(TileGroup { id: &run_id2, title: &run_title }),
             profile: &profile2,
             model: model2.as_deref(),
             extra_env,
@@ -2292,6 +2510,29 @@ fn handle_worker_send(body: &[u8]) -> String {
     ok_resp(serde_json::json!({}))
 }
 
+async fn stop_running_dispatch(run_id: String, dispatch_id: String, tile_id: String) -> Result<(), String> {
+    let now = unix_ms();
+    let run_id_c = run_id.clone();
+    let dispatch_id_c = dispatch_id.clone();
+    let result = commit(move |_| {
+        Ok(Cmd::DispatchUpdate {
+            run_id: run_id_c, dispatch_id: dispatch_id_c,
+            status: DispatchStatus::Stopped,
+            summary: None, now,
+        })
+    }, run_id).await;
+    match result {
+        CommitResult::Ok(_) | CommitResult::Stale => {}
+        CommitResult::Err(e) => return Err(e),
+    }
+    if !tile_id.is_empty() {
+        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
+            crate::kill_session(&s);
+        }
+    }
+    Ok(())
+}
+
 async fn handle_worker_stop(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
@@ -2299,7 +2540,6 @@ async fn handle_worker_stop(body: &[u8]) -> String {
     if run_id.is_empty() || dispatch_id.is_empty() {
         return err_resp("bad_request", "runId and dispatchId required");
     }
-    let now = unix_ms();
     let tile_id = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         guard.runs.get(&run_id)
@@ -2307,26 +2547,87 @@ async fn handle_worker_stop(body: &[u8]) -> String {
             .and_then(|d| d.tile_id.clone())
             .unwrap_or_default()
     };
-    let run_id_c = run_id.clone();
-    let dispatch_id_c = dispatch_id.clone();
-    let result = commit(move |_| {
-        Ok(Cmd::DispatchUpdate {
-            run_id: run_id_c, dispatch_id: dispatch_id_c,
-            status: DispatchStatus::Stopped,
-            summary: None,
-            now,
-        })
-    }, run_id).await;
-    match result {
-        CommitResult::Ok(_) | CommitResult::Stale => {}
-        CommitResult::Err(e) => return err_from_str(&e),
+    match stop_running_dispatch(run_id, dispatch_id, tile_id).await {
+        Ok(()) => ok_resp(serde_json::json!({})),
+        Err(e) => err_from_str(&e),
     }
-    if !tile_id.is_empty() {
-        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
-            crate::kill_session(&s);
+}
+
+async fn handle_task_cancel(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    let task_id = v["taskId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() || task_id.is_empty() {
+        return err_resp("bad_request", "runId and taskId required");
+    }
+    let (task_title, dispatch_info) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = guard.runs.get(&run_id) else {
+            return err_resp("not_found", "run not found");
+        };
+        let Some(task) = entry.tasks.get(&task_id) else {
+            return err_resp("not_found", "task not found");
+        };
+        if task.status.is_terminal() {
+            return err_resp("conflict", "task is already terminal");
+        }
+        let title = task.title.clone();
+        let dispatch_info = entry.latest_dispatch_for_task(&task_id)
+            .filter(|d| matches!(d.status, DispatchStatus::Running | DispatchStatus::Reported))
+            .map(|d| (d.id.clone(), d.tile_id.clone().unwrap_or_default()));
+        (title, dispatch_info)
+    };
+    if let Some((dispatch_id, tile_id)) = dispatch_info {
+        if let Err(e) = stop_running_dispatch(run_id.clone(), dispatch_id, tile_id).await {
+            return err_from_str(&e);
         }
     }
+    let now = unix_ms();
+    let run_id_c = run_id.clone();
+    let task_id_c = task_id.clone();
+    let cancel_result = commit(move |_| {
+        Ok(Cmd::TaskUpdate {
+            run_id: run_id_c, task_id: task_id_c,
+            status: Some(TaskStatus::Cancelled),
+            result: None, spec: None, acceptance: None,
+            verify: None, profile: None, escalation: None, review: None, now,
+        })
+    }, run_id.clone()).await;
+    if let CommitResult::Err(e) = cancel_result {
+        return err_from_str(&e);
+    }
+    let body_str = format!(
+        "User cancelled task {task_id} ({task_title}) from the run board. Do not retry it unless the user asks."
+    );
+    if let Err(e) = notify_coordinator_from_user(&run_id, &task_id, body_str).await {
+        return err_resp("io", &format!("task cancelled, but the coordinator was not notified: {e}"));
+    }
     ok_resp(serde_json::json!({}))
+}
+
+async fn notify_coordinator_from_user(run_id: &str, task_id: &str, body: String) -> Result<(), String> {
+    let now = unix_ms();
+    let run_id_c = run_id.to_string();
+    let task_id_c = task_id.to_string();
+    let result = commit(move |state| {
+        let entry = state.runs.get(&run_id_c)
+            .ok_or_else(|| "not_found:run not found".to_string())?;
+        let seq = entry.next_msg_seq();
+        Ok(Cmd::Send {
+            run_id: run_id_c, seq,
+            from: "user".to_string(),
+            to: vec!["coordinator".to_string()],
+            msg_type: "note".to_string(),
+            task_id: Some(task_id_c),
+            dispatch_id: None, reply_to: None,
+            body: Some(body),
+            outcome: None, files_modified: vec![], summary: None, now,
+        })
+    }, run_id.to_string()).await;
+    match result {
+        CommitResult::Err(e) => Err(e),
+        _ => Ok(()),
+    }
 }
 
 async fn handle_worker_release(body: &[u8]) -> String {
@@ -2356,6 +2657,350 @@ async fn handle_worker_release(body: &[u8]) -> String {
         }
     }
     ok_resp(serde_json::json!({}))
+}
+
+fn settings_with_keys_json(s: &settings::OrchSettings, base: Option<&std::path::Path>) -> Value {
+    let providers: Vec<Value> = s.providers.iter().map(|p| {
+        let has_key = secrets::get(&p.id, base).is_some();
+        serde_json::json!({
+            "id": p.id,
+            "preset": p.preset,
+            "label": p.label,
+            "baseUrl": p.base_url,
+            "mainModel": p.main_model,
+            "fastModel": p.fast_model,
+            "hasKey": has_key,
+        })
+    }).collect();
+    serde_json::json!({
+        "coordinator": s.coordinator,
+        "workers": s.workers,
+        "hiddenAgents": s.hidden_agents,
+        "providers": providers,
+        "showWorkerTiles": s.show_worker_tiles,
+    })
+}
+
+fn presets_json() -> Value {
+    settings::presets().iter().map(|p| {
+        serde_json::json!({
+            "id": p.id,
+            "label": p.label,
+            "baseUrl": p.base_url,
+            "mainModel": p.main_model,
+            "fastModel": p.fast_model,
+        })
+    }).collect::<Vec<_>>().into()
+}
+
+fn handle_settings_get() -> String {
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let s = settings::load(&base);
+    let settings_json = settings_with_keys_json(&s, Some(&base));
+    ok_resp(serde_json::json!({ "settings": settings_json, "presets": presets_json() }))
+}
+
+fn handle_settings_set(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let mut s = settings::load(&base);
+    if let Some(coord) = v["coordinator"].as_str() {
+        s.coordinator = coord.to_string();
+    }
+    if let Some(arr) = v["workers"].as_array() {
+        s.workers = arr.iter().filter_map(|x| x.as_str()).map(str::to_string).collect();
+    }
+    if let Some(arr) = v["hiddenAgents"].as_array() {
+        s.hidden_agents = arr.iter().filter_map(|x| x.as_str()).map(str::to_string).collect();
+    }
+    if let Some(show) = v["showWorkerTiles"].as_bool() {
+        s.show_worker_tiles = show;
+    }
+    if let Err(e) = settings::save(&base, &s) {
+        return err_resp("io", &format!("save settings: {e}"));
+    }
+    let settings_json = settings_with_keys_json(&s, Some(&base));
+    ok_resp(serde_json::json!({ "settings": settings_json }))
+}
+
+fn handle_provider_save(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let preset = v["preset"].as_str().unwrap_or("").to_string();
+    let label = v["label"].as_str().unwrap_or("").to_string();
+    let base_url = v["baseUrl"].as_str().unwrap_or("").to_string();
+    let main_model = v["mainModel"].as_str().unwrap_or("").to_string();
+    let fast_model = v["fastModel"].as_str().unwrap_or("").to_string();
+    let api_key: Option<String> = v["apiKey"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+
+    if preset.is_empty() || label.is_empty() {
+        return err_resp("bad_request", "preset and label required");
+    }
+
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+
+    let mut s = settings::load(&base);
+
+    let id = if let Some(explicit_id) = v["id"].as_str().filter(|s| !s.is_empty()) {
+        if !s.providers.iter().any(|p| p.id == explicit_id) {
+            return err_resp("not_found", &format!("provider not found: {explicit_id}"));
+        }
+        explicit_id.to_string()
+    } else {
+        let existing_ids: Vec<String> = s.providers.iter().map(|p| p.id.clone()).collect();
+        settings::provider_id_for_label(&label, &existing_ids)
+    };
+
+    if let Some(key) = api_key {
+        if let Err(e) = secrets::set(&id, &key, Some(&base)) {
+            return err_resp("io", &format!("store key: {e}"));
+        }
+    }
+
+    let provider = settings::OrchProvider { id: id.clone(), preset, label, base_url, main_model, fast_model };
+
+    if let Some(existing) = s.providers.iter_mut().find(|p| p.id == id) {
+        *existing = provider.clone();
+    } else {
+        s.providers.push(provider.clone());
+    }
+
+    if let Err(e) = settings::save(&base, &s) {
+        return err_resp("io", &format!("save settings: {e}"));
+    }
+
+    let has_key = secrets::get(&id, Some(&base)).is_some();
+    ok_resp(serde_json::json!({
+        "provider": {
+            "id": provider.id,
+            "preset": provider.preset,
+            "label": provider.label,
+            "baseUrl": provider.base_url,
+            "mainModel": provider.main_model,
+            "fastModel": provider.fast_model,
+            "hasKey": has_key,
+        }
+    }))
+}
+
+fn handle_provider_delete(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let id = v["id"].as_str().unwrap_or("").to_string();
+    if id.is_empty() {
+        return err_resp("bad_request", "id required");
+    }
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let mut s = settings::load(&base);
+    s.providers.retain(|p| p.id != id);
+    if let Err(e) = settings::save(&base, &s) {
+        return err_resp("io", &format!("save settings: {e}"));
+    }
+    secrets::delete(&id, Some(&base));
+    ok_resp(serde_json::json!({}))
+}
+
+async fn handle_provider_test(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let id = v["id"].as_str().unwrap_or("").to_string();
+    if id.is_empty() {
+        return err_resp("bad_request", "id required");
+    }
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let s = settings::load(&base);
+    let Some(provider) = s.providers.iter().find(|p| p.id == id) else {
+        return err_resp("not_found", "provider not found");
+    };
+    let url = format!("{}/v1/messages", provider.base_url.trim_end_matches('/'));
+    let Some(key) = secrets::get(&id, Some(&base)) else {
+        return ok_resp(serde_json::json!({ "reachable": false, "message": "no API key stored" }));
+    };
+    let fast_model = provider.fast_model.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let req_body = serde_json::json!({
+            "model": fast_model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}]
+        });
+        ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(20))
+            .set("Authorization", &format!("Bearer {key}"))
+            .set("anthropic-version", "2023-06-01")
+            .set("Content-Type", "application/json")
+            .send_string(&req_body.to_string())
+    }).await;
+
+    match result {
+        Ok(Ok(_)) => ok_resp(serde_json::json!({ "reachable": true, "message": "ok" })),
+        Ok(Err(ureq::Error::Status(code, response))) => {
+            let excerpt: String = response.into_string().unwrap_or_default().chars().take(200).collect();
+            ok_resp(serde_json::json!({ "reachable": false, "status": code, "message": excerpt }))
+        }
+        Ok(Err(e)) => ok_resp(serde_json::json!({ "reachable": false, "message": e.to_string() })),
+        Err(_) => err_resp("io", "spawn_blocking panic"),
+    }
+}
+
+fn handle_agent_list() -> String {
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let s = settings::load(&base);
+    let profiles = load_profiles(&base);
+
+    let agents: Vec<Value> = profiles.iter().map(|profile| {
+        if profile.provider {
+            let provider = s.providers.iter().find(|p| p.id == profile.id);
+            let label = provider.map(|p| p.label.as_str()).unwrap_or(&profile.id).to_string();
+            let has_key = secrets::get(&profile.id, Some(&base)).is_some();
+            let available = has_key && crate::command_exists("claude");
+            let hidden = s.hidden_agents.contains(&profile.id);
+            let main = provider.map(|p| p.main_model.clone()).unwrap_or_default();
+            let fast = provider.map(|p| p.fast_model.clone()).unwrap_or_default();
+            let mut models = vec![main, fast];
+            models.dedup();
+            models.retain(|m| !m.is_empty());
+            serde_json::json!({
+                "id": profile.id, "kind": "provider", "label": label,
+                "available": available, "hidden": hidden, "models": models,
+            })
+        } else {
+            let available = crate::command_exists(&profile.exe);
+            let hidden = s.hidden_agents.contains(&profile.id);
+            let models: Vec<&str> = if profile.id == "claude" { vec!["haiku", "sonnet", "opus"] } else { vec![] };
+            serde_json::json!({
+                "id": profile.id, "kind": "builtin", "label": profile.id,
+                "available": available, "hidden": hidden, "models": models,
+            })
+        }
+    }).collect();
+
+    ok_resp(serde_json::json!({ "agents": agents }))
+}
+
+async fn handle_coordinator_set(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let tile_id = v["tileId"].as_str().unwrap_or("").to_string();
+    let on = v["on"].as_bool().unwrap_or(false);
+    if tile_id.is_empty() {
+        return err_resp("bad_request", "tileId required");
+    }
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let snapshot = {
+        let mut guard = coordinators().lock().unwrap_or_else(|e| e.into_inner());
+        if on { guard.insert(tile_id.clone()); } else { guard.remove(&tile_id); }
+        guard.clone()
+    };
+    if !on {
+        let runs_to_detach: Vec<String> = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.values()
+                .filter(|e| {
+                    !e.run.status.is_terminal()
+                        && e.run.coordinator_tile.as_deref() == Some(&tile_id)
+                })
+                .map(|e| e.run.id.clone())
+                .collect()
+        };
+        for run_id in runs_to_detach {
+            let run_id_c = run_id.clone();
+            let now = unix_ms();
+            let _ = commit(move |_| {
+                Ok(Cmd::RunSetCoordinator { run_id: run_id_c, tile_id: None, now })
+            }, run_id).await;
+        }
+    }
+    crate::ui::broadcast_orch_changed("");
+    if let Err(e) = save_coordinators(&base, &snapshot) {
+        return err_resp("io", &e);
+    }
+    ok_resp(serde_json::json!({}))
+}
+
+fn handle_coordinator_list() -> String {
+    let guard = coordinators().lock().unwrap_or_else(|e| e.into_inner());
+    let tiles: Vec<&String> = guard.iter().collect();
+    ok_resp(serde_json::json!({ "tiles": tiles }))
+}
+
+pub fn coordinator_context(tile_id: &str) -> Option<String> {
+    let in_set = coordinators().lock().unwrap_or_else(|e| e.into_inner()).contains(tile_id);
+    if !in_set {
+        return None;
+    }
+    let cli = crate::panorama_cli_path();
+    let Some(base) = crate::panorama_dir() else { return None };
+    let s = settings::load(&base);
+    let workers_line = s.workers.join(" -> ");
+
+    let board_lines: Vec<String> = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let mut boards: Vec<_> = guard.runs.values()
+            .filter(|e| {
+                matches!(e.run.status, RunStatus::Active | RunStatus::Paused)
+                    && e.run.coordinator_tile.as_deref() == Some(tile_id)
+            })
+            .collect();
+        boards.sort_by_key(|e| e.run.created_at);
+        boards.iter().map(|e| {
+            let mut running = 0usize;
+            let mut review = 0usize;
+            let mut queued_ids: Vec<&str> = vec![];
+            let mut needs_you_ids: Vec<&str> = vec![];
+            for t in e.tasks.values() {
+                match t.status {
+                    TaskStatus::Dispatched | TaskStatus::Verifying => running += 1,
+                    TaskStatus::Review => { review += 1; needs_you_ids.push(&t.id); }
+                    TaskStatus::Pending => queued_ids.push(&t.id),
+                    TaskStatus::Failed | TaskStatus::Blocked => needs_you_ids.push(&t.id),
+                    _ => {}
+                }
+            }
+            let queued_str = if queued_ids.is_empty() {
+                String::new()
+            } else {
+                format!(", {} queued ({})", queued_ids.len(), queued_ids.join(" "))
+            };
+            let needs_you_str = if needs_you_ids.is_empty() {
+                String::new()
+            } else {
+                format!(", needs you: {}", needs_you_ids.join(" "))
+            };
+            format!(
+                "Board \"{}\" ({}): {} running, {} review{}{}",
+                e.run.title, e.run.id, running, review, queued_str, needs_you_str
+            )
+        }).collect()
+    };
+
+    let boards_block = if board_lines.is_empty() {
+        format!("No active boards yet. Create one with {cli} orch run-create, or the user may create boards from the UI.")
+    } else {
+        board_lines.join("\n")
+    };
+
+    Some(format!(
+        "[Panorama] Orchestrate mode is ON in this terminal. You are the coordinator of a multi-agent run, not the implementer.\n\
+         - If the `panorama:orchestrate` skill is not loaded in this conversation yet, load it with the Skill tool and follow it.\n\
+         - Treat the user's message as work to split across workers. Do not edit project files yourself.\n\
+         - When the request is clear, state the plan in a few lines and dispatch right away; ask first only if it is ambiguous.\n\
+         - {boards_block}\n\
+         - Tasks owned by the user (owner: user) are not yours to dispatch.\n\
+         - Set --review on task-create only when the user asked to check results before the task counts as done.\n\
+         - review status means the task is waiting for the user; do not complete it yourself unless the user tells you to.\n\
+         - Read task details with {cli} orch run-show or {cli} orch task-list.\n\
+         - Default worker escalation: {workers_line}. Change it in Settings > Orchestration."
+    ))
 }
 
 #[cfg(test)]
@@ -2496,6 +3141,7 @@ mod tests {
             escalation: vec![],
             verify: vec![],
             review: false,
+            owner: None,
             status,
             result: None,
             integrated_sha: None,
@@ -2607,6 +3253,21 @@ mod tests {
         });
         assert_eq!(p, "opus");
         assert_eq!(m.as_deref(), Some("claude-opus-4-5"));
+    }
+
+    #[test]
+    fn pick_escalation_task_profile_with_model_split() {
+        let (p, m) = pick_escalation(EscalationInput {
+            escalation: &[],
+            attempt: 1,
+            explicit_profile: None,
+            explicit_model: None,
+            task_profile: Some("claude:sonnet"),
+            latest_profile: None,
+            latest_model: None,
+        });
+        assert_eq!(p, "claude");
+        assert_eq!(m.as_deref(), Some("sonnet"));
     }
 
     #[test]
@@ -2808,5 +3469,256 @@ mod tests {
         let md = report["text"].as_str().unwrap();
         assert!(md.contains("Conflict files:"), "markdown missing conflict files section");
         assert!(md.contains("src/a.ts"), "markdown missing conflict file name");
+    }
+
+    #[test]
+    fn task_cancel_running_stops_dispatch_then_cancels() {
+        let run_id = format!("r-cancel-run-{}", unix_ms());
+        let task_id = "t1".to_string();
+        let dispatch_id = format!("{run_id}.t1.1");
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let cmd = Cmd::RunCreate {
+            id: run_id.clone(), title: "test".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let cmd = Cmd::TaskCreate {
+            run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
+            spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
+            escalation: vec![], verify: vec![], review: false, owner: None, now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let cmd = Cmd::Dispatch {
+            run_id: run_id.clone(), id: dispatch_id.clone(), task_id: task_id.clone(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let cmd = Cmd::DispatchUpdate {
+            run_id: run_id.clone(), dispatch_id: dispatch_id.clone(),
+            status: DispatchStatus::Stopped, summary: None, now: 1_001_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let entry = guard.runs.get(&run_id).unwrap();
+        assert_eq!(entry.tasks.get("t1").unwrap().status, TaskStatus::Failed, "task->failed after dispatch stop");
+        assert_eq!(entry.dispatches.get(&dispatch_id).unwrap().status, DispatchStatus::Stopped);
+        let cmd = Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: task_id.clone(),
+            status: Some(TaskStatus::Cancelled), result: None, spec: None,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_002_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let entry = guard.runs.get(&run_id).unwrap();
+        assert_eq!(entry.tasks.get("t1").unwrap().status, TaskStatus::Cancelled);
+        let seq = entry.next_msg_seq();
+        let cmd = Cmd::Send {
+            run_id: run_id.clone(), seq, from: "user".to_string(),
+            to: vec!["coordinator".to_string()], msg_type: "note".to_string(),
+            task_id: Some(task_id.clone()), dispatch_id: None, reply_to: None,
+            body: Some("User cancelled task t1 (T1) from the run board. Do not retry it unless the user asks.".into()),
+            outcome: None, files_modified: vec![], summary: None, now: 1_003_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let entry = guard.runs.get(&run_id).unwrap();
+        let has_msg = entry.messages.iter().any(|m| m.to == "coordinator" && m.from == "user" && !m.acked);
+        assert!(has_msg, "coordinator message must be present and unacked");
+    }
+
+    #[test]
+    fn task_cancel_pending_cancels_and_posts_message() {
+        let run_id = format!("r-cancel-pend-{}", unix_ms());
+        let task_id = "t1".to_string();
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let cmd = Cmd::RunCreate {
+            id: run_id.clone(), title: "test".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let cmd = Cmd::TaskCreate {
+            run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
+            spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
+            escalation: vec![], verify: vec![], review: false, owner: None, now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let cmd = Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: task_id.clone(),
+            status: Some(TaskStatus::Cancelled), result: None, spec: None,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_001_000,
+        };
+        match guard.apply(&cmd) {
+            ApplyResult::Ok(k, d) => guard.replay(&k, &d).unwrap(),
+            ApplyResult::Err(e) => panic!("expected Ok, got Err: {}", e.message()),
+            ApplyResult::Stale(..) => panic!("expected Ok, got Stale"),
+        }
+        assert_eq!(guard.runs.get(&run_id).unwrap().tasks.get("t1").unwrap().status, TaskStatus::Cancelled);
+        let entry = guard.runs.get(&run_id).unwrap();
+        let seq = entry.next_msg_seq();
+        let cmd = Cmd::Send {
+            run_id: run_id.clone(), seq, from: "user".to_string(),
+            to: vec!["coordinator".to_string()], msg_type: "note".to_string(),
+            task_id: Some(task_id.clone()), dispatch_id: None, reply_to: None,
+            body: Some("User cancelled task t1".into()),
+            outcome: None, files_modified: vec![], summary: None, now: 1_002_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        let has_msg = guard.runs.get(&run_id).unwrap().messages.iter()
+            .any(|m| m.to == "coordinator" && m.from == "user");
+        assert!(has_msg);
+    }
+
+    #[test]
+    fn task_cancel_completed_returns_conflict() {
+        let run_id = format!("r-cancel-done-{}", unix_ms());
+        let task_id = "t1".to_string();
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let cmd = Cmd::RunCreate {
+            id: run_id.clone(), title: "test".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1_000_000,
+        };
+        if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
+        if let Some(entry) = guard.runs.get_mut(&run_id) {
+            let mut task = mk_task_entry(&task_id, TaskStatus::Completed, 1);
+            task.status = TaskStatus::Completed;
+            entry.tasks.insert(task_id.clone(), task);
+        }
+        let cmd = Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: task_id.clone(),
+            status: Some(TaskStatus::Cancelled), result: None, spec: None,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_001_000,
+        };
+        match guard.apply(&cmd) {
+            ApplyResult::Err(e) => assert!(
+                e.message().contains("terminal") || e.message().contains("invalid task status"),
+                "unexpected error: {}", e.message()
+            ),
+            ApplyResult::Ok(..) => panic!("expected Err for cancelling completed task, got Ok"),
+            ApplyResult::Stale(..) => panic!("expected Err for cancelling completed task, got Stale"),
+        }
+    }
+
+    #[test]
+    fn settings_defaults_when_file_missing() {
+        let ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("orch-mod-defaults-{ns}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = settings::load(&dir);
+        assert_eq!(s.coordinator, "claude:opus");
+        assert_eq!(s.workers, vec!["claude:haiku", "claude:sonnet"]);
+        assert!(s.providers.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn tmp_dir(label: &str) -> std::path::PathBuf {
+        let ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("orch-f8-{label}-{ns}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn coordinator_persist_load_roundtrip() {
+        let dir = tmp_dir("coord-rt");
+        let mut set = HashSet::new();
+        set.insert("tile-abc".to_string());
+        set.insert("tile-xyz".to_string());
+        save_coordinators(&dir, &set).unwrap();
+        let loaded = load_coordinators(&dir);
+        assert_eq!(loaded, set);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn coordinator_context_none_when_not_in_set() {
+        let tile = "tile-not-in-set-99881";
+        let result = coordinator_context(tile);
+        assert!(result.is_none(), "expected None for tile not in coordinator set");
+    }
+
+    #[test]
+    fn coordinator_context_some_no_active_run() {
+        let tile = format!("tile-coord-norun-{}", unix_ms());
+        coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
+        let result = coordinator_context(&tile);
+        if let Some(ctx) = result {
+            assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
+            assert!(ctx.contains("No active boards yet"), "expected no-boards line: {ctx}");
+            assert!(ctx.contains("Settings > Orchestration"), "missing workers line: {ctx}");
+        }
+    }
+
+    #[test]
+    fn coordinator_context_some_with_active_run() {
+        let tile = format!("tile-coord-run-{}", unix_ms());
+        let run_id = format!("r-ctx-{}", unix_ms());
+        coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
+        {
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let cmd = Cmd::RunCreate {
+                id: run_id.clone(),
+                title: "F8 test run".into(),
+                repo: "/tmp".into(),
+                base_ref: None,
+                base_sha: None,
+                setup: None,
+                coordinator_tile: Some(tile.clone()),
+                limits: Limits::default(),
+                now: unix_ms(),
+            };
+            match guard.apply(&cmd) {
+                ApplyResult::Ok(k, d) => guard.replay(&k, &d).expect("replay"),
+                _ => {}
+            }
+        }
+        let result = coordinator_context(&tile);
+        if let Some(ctx) = result {
+            assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
+            assert!(ctx.contains(&run_id), "missing run id: {ctx}");
+            assert!(ctx.contains("F8 test run"), "missing run title: {ctx}");
+            assert!(ctx.contains("running"), "missing board summary: {ctx}");
+        }
+    }
+
+    #[test]
+    fn run_list_open_gates_count() {
+        let run_id = format!("r-gates-{}", unix_ms());
+        setup_run_in_state(&run_id);
+        {
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = guard.runs.get_mut(&run_id) {
+                entry.gates.insert("g1".to_string(), crate::orch::model::Gate {
+                    id: "g1".to_string(),
+                    task_id: "t1".to_string(),
+                    question: "Should I proceed?".into(),
+                    options: vec!["yes".into(), "no".into()],
+                    resolution: None,
+                    created_at: 0,
+                    resolved_at: None,
+                });
+                entry.gates.insert("g2".to_string(), crate::orch::model::Gate {
+                    id: "g2".to_string(),
+                    task_id: "t1".to_string(),
+                    question: "Another question?".into(),
+                    options: vec!["a".into()],
+                    resolution: Some("a".into()),
+                    created_at: 0,
+                    resolved_at: Some(1),
+                });
+            }
+        }
+        let resp = handle_run_list();
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let run_row = v["runs"].as_array().unwrap()
+            .iter()
+            .find(|r| r["run"]["id"].as_str() == Some(&run_id))
+            .expect("run not found in list");
+        assert_eq!(run_row["openGates"].as_u64(), Some(1), "expected 1 open gate");
     }
 }

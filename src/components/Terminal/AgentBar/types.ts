@@ -4,6 +4,7 @@ import type { AgentType } from './parse';
 
 export interface AgentBarProps {
   tileId: string;
+  cwd?: string;
   sessionId: string;
   active: boolean;
   send: (data: string) => boolean;

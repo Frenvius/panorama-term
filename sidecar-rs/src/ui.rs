@@ -26,11 +26,14 @@ pub(crate) struct TileGroup<'a> {
     pub title: &'a str,
 }
 
-pub(crate) fn broadcast_grouped_tile_open(tile_id: &str, cwd: &str, group: TileGroup) {
-    send_event(json!({
-        "t": "tile.open", "tileId": tile_id, "cwd": cwd,
-        "group": { "id": group.id, "title": group.title }
-    }));
+pub(crate) fn broadcast_grouped_tile_open(tile_id: &str, cwd: &str, group: Option<TileGroup>) {
+    let mut event = json!({ "t": "tile.open", "tileId": tile_id, "cwd": cwd });
+    if let Some(g) = group {
+        if let Some(obj) = event.as_object_mut() {
+            obj.insert("group".into(), json!({ "id": g.id, "title": g.title }));
+        }
+    }
+    send_event(event);
 }
 
 pub(crate) fn broadcast_orch_changed(run_id: &str) {

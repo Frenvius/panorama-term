@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
+fn is_false(b: &bool) -> bool { !b }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -21,6 +23,8 @@ pub struct Profile {
     pub startup_answers: Vec<StartupAnswer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_text: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub provider: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +53,7 @@ fn cli_profile(id: &str, args: &[&str], model_flag: &str) -> Profile {
         ready_signal: ReadySignal::Quiet,
         startup_answers: Vec::new(),
         ready_text: None,
+        provider: false,
     }
 }
 
@@ -99,6 +104,12 @@ pub fn load_profiles(base: &Path) -> Vec<Profile> {
         .map(|p| (p.id.clone(), p))
         .collect();
 
+    let settings = crate::orch::settings::load(base);
+    for provider in &settings.providers {
+        let profile = provider_to_profile(provider);
+        map.insert(profile.id.clone(), profile);
+    }
+
     for p in overrides {
         map.insert(p.id.clone(), p);
     }
@@ -108,15 +119,55 @@ pub fn load_profiles(base: &Path) -> Vec<Profile> {
     result
 }
 
+fn provider_to_profile(provider: &crate::orch::settings::OrchProvider) -> Profile {
+    let claude_base = built_ins().into_iter().find(|p| p.id == "claude")
+        .expect("built-in claude profile must exist");
+
+    let mut env = HashMap::new();
+    env.insert("ANTHROPIC_BASE_URL".into(), format!("literal:{}", provider.base_url));
+    env.insert("ANTHROPIC_AUTH_TOKEN".into(), format!("secret:{}", provider.id));
+    env.insert("ANTHROPIC_API_KEY".into(), "literal:".into());
+    env.insert("ANTHROPIC_MODEL".into(), format!("literal:{}", provider.main_model));
+    env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), format!("literal:{}", provider.main_model));
+    env.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".into(), format!("literal:{}", provider.main_model));
+    env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), format!("literal:{}", provider.fast_model));
+    env.insert("CLAUDE_CODE_SUBAGENT_MODEL".into(), format!("literal:{}", provider.fast_model));
+    env.insert("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(), "literal:1".into());
+
+    for preset in crate::orch::settings::presets() {
+        if preset.id == provider.preset {
+            for (k, v) in preset.extra_env {
+                env.insert(k.to_string(), format!("literal:{v}"));
+            }
+            break;
+        }
+    }
+
+    Profile {
+        id: provider.id.clone(),
+        exe: "claude".into(),
+        args: claude_base.args.clone(),
+        model_flag: Some("--model".into()),
+        env,
+        notes: None,
+        ready_signal: ReadySignal::Status,
+        startup_answers: claude_base.startup_answers.clone(),
+        ready_text: None,
+        provider: true,
+    }
+}
+
 pub fn find_profile<'a>(profiles: &'a [Profile], id: &str) -> Option<&'a Profile> {
     profiles.iter().find(|p| p.id == id)
 }
 
-pub fn resolve_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
+pub fn resolve_env(env: &HashMap<String, String>, base: Option<&Path>) -> Vec<(String, String)> {
     env.iter()
         .filter_map(|(k, v)| {
             let val = if let Some(lit) = v.strip_prefix("literal:") {
                 lit.to_string()
+            } else if let Some(id) = v.strip_prefix("secret:") {
+                crate::orch::secrets::get(id, base)?
             } else {
                 std::env::var(v).ok()?
             };
@@ -226,7 +277,7 @@ mod tests {
     fn env_resolution_literal_prefix() {
         let mut env = HashMap::new();
         env.insert("MY_VAR".to_string(), "literal:hello world".to_string());
-        let resolved = resolve_env(&env);
+        let resolved = resolve_env(&env, None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0], ("MY_VAR".to_string(), "hello world".to_string()));
     }
@@ -235,8 +286,35 @@ mod tests {
     fn env_resolution_missing_var_skipped() {
         let mut env = HashMap::new();
         env.insert("MISSING_VAR_XYZ123".to_string(), "MISSING_ENV_VAR_XYZ123".to_string());
-        let resolved = resolve_env(&env);
+        let resolved = resolve_env(&env, None);
         assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn env_resolution_secret_missing_drops_var() {
+        let dir = tmp_dir("secret-miss");
+        let mut env = HashMap::new();
+        env.insert("SOME_KEY".to_string(), "secret:nonexistent-provider-xyz".to_string());
+        let resolved = resolve_env(&env, Some(&dir));
+        assert!(resolved.is_empty(), "missing secret must drop the var");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn provider_profile_env_uses_secret_prefix() {
+        let provider = crate::orch::settings::OrchProvider {
+            id: "myprovider".into(),
+            preset: "deepseek".into(),
+            label: "My Provider".into(),
+            base_url: "https://example.com".into(),
+            main_model: "fast-model".into(),
+            fast_model: "fast-model".into(),
+        };
+        let profile = super::provider_to_profile(&provider);
+        let token_val = profile.env.get("ANTHROPIC_AUTH_TOKEN").expect("ANTHROPIC_AUTH_TOKEN must be set");
+        assert!(token_val.starts_with("secret:"), "token must use secret: prefix, got {token_val}");
+        assert_eq!(token_val, "secret:myprovider");
+        assert!(profile.provider);
     }
 
     #[test]

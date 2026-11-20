@@ -996,6 +996,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
         {!readOnly && (
           <AgentBar
             tileId={tileId}
+            cwd={cwd}
             sessionId={sessionId ?? tileId}
             active={active}
             send={sendData}

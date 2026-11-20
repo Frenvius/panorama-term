@@ -394,7 +394,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           });
           setTiles((prev) => [
             ...prev,
-            { id, cwd, type: 'term' as const, x: result.x, y: result.y, width, height, zIndex }
+            { id, cwd, type: 'term' as const, runId: group.id, x: result.x, y: result.y, width, height, zIndex }
           ]);
           if (result.frame !== null) {
             const patch = result.frame;
@@ -418,7 +418,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           ]);
           setTiles((prev) => [
             ...prev,
-            { id, cwd, type: 'term' as const, x: cx, y: cy, width, height, zIndex }
+            { id, cwd, type: 'term' as const, runId: group.id, x: cx, y: cy, width, height, zIndex }
           ]);
         }
         return v;
@@ -516,6 +516,29 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
 
   const addEditor = React.useCallback((cwd: string, filePath: string) => addFile(cwd, filePath, 'editor'), [addFile]);
 
+  const addOrchBoard = React.useCallback((runId: string, nearTileId?: string, cwd?: string): void => {
+    const existing = tilesRef.current.find((t) => t.type === 'orch' && runId && t.runId === runId);
+    if (existing) {
+      setActiveTile(existing.id);
+      return;
+    }
+    const id = createId();
+    const nearTile = nearTileId ? tilesRef.current.find((t) => t.id === nearTileId) : undefined;
+    const resolvedCwd = cwd ?? nearTile?.cwd ?? '';
+    setView((v) => {
+      const cx = (window.innerWidth / 2 - v.x) / v.k;
+      const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
+      const x = nearTile ? nearTile.x + nearTile.width + 16 : cx - 360;
+      const y = nearTile ? nearTile.y : cy - 210;
+      setTiles((prev) => [
+        ...prev,
+        { id, type: 'orch' as const, runId, cwd: resolvedCwd, x, y, width: 720, height: 420, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
+      ]);
+      setActiveTile(id);
+      return v;
+    });
+  }, []);
+
   const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {
     setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
@@ -575,7 +598,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const closeTile = React.useCallback((id: string) => {
     clearAlert(id);
     const closing = tilesRef.current.find((t) => t.id === id);
-    if (closing && !closing.runCwd) {
+    const isWorker = closing?.type === 'term' && Boolean(closing.runId);
+    if (closing && !closing.runCwd && !isWorker) {
       const ws = wsIdRef.current;
       saveClosed(ws, [...loadClosed(ws), closing]);
     }
@@ -597,7 +621,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
         .map((t) => ((t.linkedTo ?? []).includes(id) ? { ...t, linkedTo: (t.linkedTo ?? []).filter((x) => x !== id) } : t))
     );
     setActiveTile((a) => (a === id ? null : a));
-    void killPtySession(id);
+    if (!isWorker) void killPtySession(id);
   }, [bindKey]);
 
   const reopenTile = React.useCallback(() => {
@@ -1007,11 +1031,15 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const removeFrameWithTiles = React.useCallback((id: string) => {
     const frame = framesRef.current.find((f) => f.id === id);
     if (!frame) return;
-    const members = new Set(tilesRef.current.filter((t) => tileInFrame(frame, t)).map((t) => t.id));
+    const memberTiles = tilesRef.current.filter((t) => tileInFrame(frame, t));
+    const members = new Set(memberTiles.map((t) => t.id));
     setFrames((prev) => prev.filter((f) => f.id !== id));
     setTiles((prev) => prev.filter((t) => !members.has(t.id)));
     setActiveTile((a) => (a && members.has(a) ? null : a));
-    for (const tid of members) void killPtySession(tid);
+    for (const tile of memberTiles) {
+      if (tile.type === 'term' && tile.runId) continue;
+      void killPtySession(tile.id);
+    }
   }, []);
 
   const fitFrame = React.useCallback((id: string) => {
@@ -1137,6 +1165,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     toggleSelect,
     clearSelection,
     addNote,
+    addOrchBoard,
     noteRenderDefault,
     focusTile,
     centerTile,

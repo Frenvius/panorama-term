@@ -62,16 +62,23 @@ where
 
 const SIDECAR_PORT: u16 = if cfg!(debug_assertions) { 9877 } else { 9777 };
 const HOST_PORT: u16 = if cfg!(debug_assertions) { 9878 } else { 9778 };
+// Release tiles export PANORAMA_SIDECAR_PORT/HOST_PORT to their shells, so a dev build started from
+// one would inherit the release ports and drive the release brain. Debug builds read DEV_ names.
+const SIDECAR_PORT_ENV: &str =
+    if cfg!(debug_assertions) { "PANORAMA_DEV_SIDECAR_PORT" } else { "PANORAMA_SIDECAR_PORT" };
+const HOST_PORT_ENV: &str =
+    if cfg!(debug_assertions) { "PANORAMA_DEV_HOST_PORT" } else { "PANORAMA_HOST_PORT" };
+
 fn configured_port(value: Option<&str>, default: u16) -> u16 {
     value.and_then(|v| v.parse::<u16>().ok()).filter(|p| *p != 0).unwrap_or(default)
 }
 
 fn sidecar_port() -> u16 {
-    configured_port(std::env::var("PANORAMA_SIDECAR_PORT").ok().as_deref(), SIDECAR_PORT)
+    configured_port(std::env::var(SIDECAR_PORT_ENV).ok().as_deref(), SIDECAR_PORT)
 }
 
 fn host_port() -> u16 {
-    configured_port(std::env::var("PANORAMA_HOST_PORT").ok().as_deref(), HOST_PORT)
+    configured_port(std::env::var(HOST_PORT_ENV).ok().as_deref(), HOST_PORT)
 }
 
 use remote::{

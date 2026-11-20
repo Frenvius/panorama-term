@@ -13,7 +13,6 @@ import { FolderGit2, FolderPlus, LayoutGrid, SquareTerminal } from 'lucide-react
 import styles from './styles.module.scss';
 import GitPanel from './GitPanel';
 import DockerPanel from './DockerPanel';
-import OrchPanel from '~/components/Canvas/Navigator/OrchPanel';
 import FilesPanel from './FilesPanel';
 import NotesPanel from './NotesPanel';
 import DockSidebar from './DockSidebar';
@@ -46,6 +45,8 @@ import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import { getBinding, isCapturing, formatCombo, matchCommand } from '~/usecase/util/keybindings';
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isDirty, requestFind, requestSave, dispatchSave, requestPreview } from '~/usecase/util/dirtyFiles';
+import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, getProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { coordinatorActions } from '~/usecase/hooks/useOrchCoordinator';
 
 let pendingFocusTileId: string | null = null;
 
@@ -101,13 +102,23 @@ const ProjectView = () => {
     setRightOpen,
     setRightWidth,
     toggleLeftSidebar,
-    toggleRightSidebar
+    toggleRightSidebar,
+    addOrchBoard
   } = useProjectView({ seed: activeState, wsId: activeId, onPersist: saveActiveState });
 
   const { layout, reset } = useDockLayout('project');
 
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
   const agents = React.useSyncExternalStore(subscribeAgentStatuses, getAgentStatuses);
+
+  const handleShowWorkerRef = React.useRef<(req: ShowWorkerRequest) => void>(() => {});
+
+  React.useEffect(() => {
+    const unsubBoard = onOrchBoardRequest(({ runId }) => addOrchBoard(runId));
+    const unsubWorker = onShowWorkerRequest((req) => handleShowWorkerRef.current(req));
+    const unsubDiff = onOrchDiffRequest(({ root, file }) => openDiff(root, file));
+    return () => { unsubBoard(); unsubWorker(); unsubDiff(); };
+  }, [addOrchBoard, openDiff]);
 
   const [hasDocker, setHasDocker] = React.useState(false);
   const [draggingTab, setDraggingTab] = React.useState<DraggingTabState | null>(null);
@@ -156,6 +167,16 @@ const ProjectView = () => {
     [tiles, activeProject, activateTile, addTerminal]
   );
   useRemoteTiles(openRemote);
+
+  const handleShowWorker = ({ tileId, cwd, group }: ShowWorkerRequest) => {
+    if (tiles.some((t) => t.id === tileId)) {
+      activateTile(tileId);
+      return;
+    }
+    addTerminal(cwd || undefined, undefined, undefined, tileId);
+    patchTile(tileId, { runId: group.id });
+  };
+  handleShowWorkerRef.current = handleShowWorker;
 
   React.useEffect(
     () =>
@@ -402,6 +423,17 @@ const ProjectView = () => {
       void setTabMode(activeTabId, 'canvas');
       return true;
     }
+    if (cmd === 'orch.toggleMode') {
+      if (activeTileId) coordinatorActions.toggle(activeTileId);
+      return true;
+    }
+    if (cmd === 'orch.boards') {
+      const tile = tiles.find((t) => t.id === activeTileId);
+      const cwd = tile?.cwd ?? activeProject ?? '';
+      const runId = getProjectLastBoard(cwd) ?? '';
+      addOrchBoard(runId, cwd);
+      return true;
+    }
     return false;
   };
   const runCommandRef = React.useRef(runCommand);
@@ -633,22 +665,6 @@ const ProjectView = () => {
   const handleLeftClose = React.useCallback(() => setLeftOpen(false), [setLeftOpen]);
   const handleRightClose = React.useCallback(() => setRightOpen(false), [setRightOpen]);
 
-  const handleOrchOpenDiff = React.useCallback(
-    (root: string, file: string, _opts?: { commit?: string; base?: string }) => openDiff(root, file),
-    [openDiff]
-  );
-
-  const handleShowWorker = React.useCallback(
-    ({ tileId, cwd }: { tileId: string; cwd: string; group: { id: string; title: string } }) => {
-      if (tiles.some((t) => t.id === tileId)) {
-        activateTile(tileId);
-        return;
-      }
-      addTerminal(cwd || undefined, undefined, undefined, tileId);
-    },
-    [tiles, activateTile, addTerminal]
-  );
-
   const renderPanel = React.useCallback(
     (id: PanelId): React.ReactNode => {
       switch (id) {
@@ -687,8 +703,6 @@ const ProjectView = () => {
           );
         case 'docker':
           return <DockerPanel />;
-        case 'orch':
-          return <OrchPanel onOpenDiff={handleOrchOpenDiff} onShowWorker={handleShowWorker} />;
         default:
           return null;
       }
@@ -710,9 +724,7 @@ const ProjectView = () => {
       projectNotes,
       handleInspectorNewNote,
       requestCloseTile,
-      handleSidebarActivateTile,
-      handleOrchOpenDiff,
-      handleShowWorker
+      handleSidebarActivateTile
     ]
   );
 

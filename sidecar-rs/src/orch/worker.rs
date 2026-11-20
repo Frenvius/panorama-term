@@ -39,7 +39,7 @@ pub struct BriefInput<'a> {
 pub struct WorkerLaunch<'a> {
     pub tile_id: &'a str,
     pub cwd: &'a str,
-    pub group: TileGroup<'a>,
+    pub group: Option<TileGroup<'a>>,
     pub profile: &'a Profile,
     pub model: Option<&'a str>,
     pub extra_env: Vec<(String, String)>,
@@ -93,6 +93,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
     content.push_str("## Contract\n\n");
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
+    content.push_str("Run each command below as written, on its own: no `cd`/`Set-Location` before it, nothing appended after it. Only that exact form is pre-approved; anything else stops you on a permission prompt nobody may be watching.\n\n");
     content.push_str(&format!(
         "Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" [--file path ...]\n```\n\n"
     ));
@@ -132,7 +133,12 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
 
     get_or_create(&params).await?;
 
-    broadcast_grouped_tile_open(tile_id, cwd, group);
+    let show_tiles = crate::panorama_dir()
+        .map(|base| crate::orch::settings::load(&base).show_worker_tiles)
+        .unwrap_or(false);
+    if show_tiles {
+        broadcast_grouped_tile_open(tile_id, cwd, group);
+    }
 
     tokio::time::sleep(Duration::from_millis(SHELL_SETTLE_MS)).await;
 
@@ -313,6 +319,7 @@ mod tests {
             escalation: vec![],
             verify: vec!["test -f hello.txt".into()],
             review: false,
+            owner: None,
             status: TaskStatus::Dispatched,
             result: None,
             integrated_sha: None,

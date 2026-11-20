@@ -1,6 +1,6 @@
 export type RunStatus = 'active' | 'paused' | 'completed' | 'cancelled';
 
-export type TaskStatus = 'pending' | 'dispatched' | 'verifying' | 'completed' | 'failed' | 'blocked' | 'cancelled';
+export type TaskStatus = 'pending' | 'dispatched' | 'verifying' | 'review' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
 export type DispatchStatus = 'starting' | 'running' | 'reported' | 'failed' | 'stopped' | 'stale';
 
@@ -36,6 +36,7 @@ export interface Task {
   escalation: string[];
   verify: string[];
   review: boolean;
+  owner?: string;
   status: TaskStatus;
   result?: string;
   integratedSha?: string;
@@ -59,6 +60,7 @@ export interface Dispatch {
   taskId: string;
   attempt: number;
   retryOf?: string;
+  waiting?: boolean;
   profile?: string;
   model?: string;
   tileId?: string;
@@ -87,9 +89,45 @@ export interface Gate {
   resolvedAt?: number;
 }
 
+export interface OrchProvider {
+  id: string;
+  preset: string;
+  label: string;
+  baseUrl: string;
+  mainModel: string;
+  fastModel: string;
+  hasKey: boolean;
+}
+
+export interface OrchPreset {
+  id: string;
+  label: string;
+  baseUrl: string;
+  mainModel: string;
+  fastModel: string;
+}
+
+export interface OrchSettings {
+  workers: string[];
+  coordinator: string;
+  hiddenAgents: string[];
+  providers: OrchProvider[];
+  showWorkerTiles: boolean;
+}
+
+export interface OrchAgent {
+  id: string;
+  kind: 'builtin' | 'provider';
+  label: string;
+  available: boolean;
+  hidden: boolean;
+  models: string[];
+}
+
 export interface RunSummary {
   run: Run;
   taskCounts: Record<string, number>;
+  openGates: number;
 }
 
 export interface RunDetail {

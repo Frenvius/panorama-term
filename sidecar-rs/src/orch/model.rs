@@ -68,6 +68,7 @@ pub enum TaskStatus {
     Pending,
     Dispatched,
     Verifying,
+    Review,
     Completed,
     Failed,
     Blocked,
@@ -94,6 +95,8 @@ pub struct Task {
     pub escalation: Vec<String>,
     pub verify: Vec<String>,
     pub review: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,

@@ -43,6 +43,8 @@ import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
+import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, getProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { coordinatorActions } from '~/usecase/hooks/useOrchCoordinator';
 import { onRefDiff } from '~/usecase/util/refDiff';
 import { touchTile } from '~/usecase/util/tileRecency';
 import { getCanvasSidebarMode, CANVAS_SIDEBAR_MODE_EVENT } from '~/usecase/util/canvasSidebars';
@@ -155,8 +157,17 @@ const Canvas = () => {
     setTileOscTitle,
     indicatorRef,
     onBgPointerMove,
-    onBgPointerDown
+    onBgPointerDown,
+    addOrchBoard
   } = useCanvas({ seed: activeState, wsId: activeId, tabId: activeTabId, onPersist: saveActiveState });
+
+  const handleShowWorkerRef = React.useRef<(req: ShowWorkerRequest) => void>(() => {});
+
+  React.useEffect(() => {
+    const unsubBoard = onOrchBoardRequest(({ runId, nearTileId }) => addOrchBoard(runId, nearTileId));
+    const unsubWorker = onShowWorkerRequest((req) => handleShowWorkerRef.current(req));
+    return () => { unsubBoard(); unsubWorker(); };
+  }, [addOrchBoard]);
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
@@ -383,6 +394,17 @@ const Canvas = () => {
     if (cmd === 'view.toggleMode') {
       if (!activeTabId) return false;
       void setTabMode(activeTabId, 'project');
+      return true;
+    }
+    if (cmd === 'orch.toggleMode') {
+      if (activeTile) coordinatorActions.toggle(activeTile);
+      return true;
+    }
+    if (cmd === 'orch.boards') {
+      const tile = tiles.find((t) => t.id === activeTile);
+      const cwd = tile?.cwd ?? '';
+      const runId = getProjectLastBoard(cwd) ?? '';
+      addOrchBoard(runId, activeTile ?? undefined, cwd);
       return true;
     }
     return false;
@@ -738,6 +760,11 @@ const Canvas = () => {
     []
   );
 
+  React.useEffect(
+    () => onOrchDiffRequest(({ root, file, commit, base }) => openEditorTab({ kind: 'diff', root, path: file, commit, base })),
+    []
+  );
+
   const pinEditorTab = (key: string) => setEditorTabs((prev) => pinTab(prev, key));
 
   React.useEffect(
@@ -768,6 +795,17 @@ const Canvas = () => {
       setTabsExit(false);
     }, DIFF_ANIM);
   };
+
+  const handleShowWorker = ({ tileId, cwd, group }: ShowWorkerRequest) => {
+    if (editorTabs.length > 0) closeEditorTabs();
+    if (tiles.some((t) => t.id === tileId)) {
+      activateAndClear(tileId);
+      focusTile(tileId, true);
+      return;
+    }
+    openRemoteTile(tileId, cwd, group);
+  };
+  handleShowWorkerRef.current = handleShowWorker;
 
   const tabToCanvas = (tab: EditorTab) => {
     if (tab.kind === 'diff') addCode(tab.root, tab.path);
@@ -839,25 +877,10 @@ const Canvas = () => {
     [moveTileToTab, tiles, frames, view]
   );
 
-  const openOrchDiff = (root: string, file: string, opts: { commit?: string; base?: string }) =>
-    openEditorTab({ kind: 'diff', root, path: file, ...opts });
-
-  const handleShowWorker = ({ tileId, cwd, group }: { tileId: string; cwd: string; group: { id: string; title: string } }) => {
-    if (editorTabs.length > 0) closeEditorTabs();
-    if (tiles.some((t) => t.id === tileId)) {
-      activateAndClear(tileId);
-      focusTile(tileId, true);
-      return;
-    }
-    openRemoteTile(tileId, cwd, group);
-  };
-
   const baseDockHandlers = {
     onDiffFiles: setDiffFiles,
     onOpenDiff: openDiff,
-    onOpenFile: openEditorFile,
-    onOpenOrchDiff: openOrchDiff,
-    onShowWorker: handleShowWorker
+    onOpenFile: openEditorFile
   };
 
   const leftDockHandlers: CanvasDockHandlers = { ...baseDockHandlers, onWidth: setNavWidth, onClose: hideNav };
@@ -1140,6 +1163,7 @@ const Canvas = () => {
               onToggleSelect={toggleSelect}
               onOpenRunOutput={addRunView}
               onMoveToTab={moveTileToTabWrapper}
+              onPatchRunId={(id, runId) => patchTile(id, { runId })}
               tabs={tabs}
               activeTabId={activeTabId}
               active={t.id === activeTile}

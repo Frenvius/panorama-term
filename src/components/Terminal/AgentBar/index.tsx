@@ -2,11 +2,13 @@ import React from 'react';
 import { Brain, Sparkles, ChevronDown } from 'lucide-react';
 
 import Shells from './Shells';
+import OrchChip from './OrchChip';
 import Suggest from './Suggest';
 import Subagents from './Subagents';
 import ModelMenu from './ModelMenu';
 import PiActions from './PiActions';
 import Magnifier from './Magnifier';
+import OrchToggle from './OrchToggle';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 import { subscribePromptRestore } from '~/usecase/util/promptRestore';
@@ -14,6 +16,7 @@ import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgen
 import { writeTempImage } from '~/adapter/clipboard/clipboard.client';
 import { visibleModels, rememberProviders, getHiddenProviders, AGENT_PROVIDERS_EVENT } from '~/usecase/util/agentProviders';
 import { submitPtyMessage } from '~/adapter/pty/sidecar.client';
+import { useOrchCoordinator } from '~/usecase/hooks/useOrchCoordinator';
 import { findModel, effortDesc, contextLabel, modelEfforts, hasOptional1M } from './model';
 import { NO_MATCH, modeKey, trackMode, inputTopRow, readFooter, slashScore, hasAgentUi, aliasLabel, prettyMode, prettyModel, declaredAgent, readInputText, type ModeTrack, type AgentType, countFrameInputChars, countInputImages, parseStatusLines, parseCodexFooter, detectAgentIdentity, detectSuggestTrigger } from './parse';
 import { BPM_END, draftKey, BPM_START, HISTORY_KEY, DOUBLE_ESC_MS, EFFORT_LEVELS, CLAUDE_MODELS, KIMI_SLASH_COMMANDS, CLAUDE_SLASH_COMMANDS, CODEX_SLASH_COMMANDS, FALLBACK_MODEL_CATALOG, ANTIGRAVITY_SLASH_COMMANDS } from './constants';
@@ -99,7 +102,7 @@ const clipboardImages = (e: React.ClipboardEvent): Blob[] => {
   return out;
 };
 
-const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive, onShiftPx }: AgentBarProps) => {
+const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, getStructured, focusTerminal, onAgentActive, onShiftPx }: AgentBarProps) => {
   const [agentType, setAgentType] = React.useState<AgentType | null>(null);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
   const [draft, setDraft] = React.useState(EMPTY_DRAFT);
@@ -1063,7 +1066,9 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
 
   const shells = agentType === 'claude' ? structured?.shells ?? [] : [];
-  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null || shells.length > 0);
+  const orchLabel = useOrchCoordinator(tileId).label;
+  const hasOrchChip = agentType === 'claude' && orchLabel != null;
+  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null || shells.length > 0 || hasOrchChip);
 
   React.useEffect(() => {
     if (!shells.length) setShellsOpen(false);
@@ -1079,7 +1084,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
 
   const focusEditor = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    if (target.closest('[data-imgpath]') || target.closest('[data-shells]') || target.closest(`.${styles.actions}`) || target.closest(`.${styles.editor}`)) return;
+    if (target.closest('[data-imgpath]') || target.closest('[data-shells]') || target.closest('[data-orch-chip]') || target.closest(`.${styles.actions}`) || target.closest(`.${styles.editor}`)) return;
     const el = editorRef.current;
     if (el) {
       el.focus({ preventScroll: true });
@@ -1288,6 +1293,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                     <ModelMenu catalog={modelCatalog} current={currentModelId} onFast={toggleFast} onPick={pickModel} />
                   )}
                 </div>
+                <OrchToggle tileId={tileId} cwd={cwd} />
               </div>
             )}
           </div>
@@ -1343,6 +1349,7 @@ const AgentBar = ({ tileId, sessionId, active, send, getLines, getFrame, getStru
                   <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
                 </button>
               )}
+              {agentType === 'claude' && <OrchChip tileId={tileId} />}
               {(parsed.progress != null || structured?.costUsd != null) && (
                 <span className={styles.meter}>
                   {structured?.costUsd != null && (

@@ -2,7 +2,7 @@ import type { PanelId } from '~/domain/interfaces/dock.interface';
 import type { LucideProps } from 'lucide-react';
 import type { ComponentType } from 'react';
 
-import { Workflow, Container, GitBranch, FolderGit2, FolderTree, StickyNote } from 'lucide-react';
+import { Container, GitBranch, FolderGit2, FolderTree, StickyNote } from 'lucide-react';
 
 export interface PanelDescriptor {
   id: PanelId;
@@ -15,6 +15,5 @@ export const PANEL_DESCRIPTORS: Record<PanelId, PanelDescriptor> = {
   files: { id: 'files', label: 'Files', icon: FolderTree },
   git: { id: 'git', label: 'Source Control', icon: GitBranch },
   notes: { id: 'notes', label: 'Project Notes', icon: StickyNote },
-  docker: { id: 'docker', label: 'Docker', icon: Container },
-  orch: { id: 'orch', label: 'Orchestration', icon: Workflow }
+  docker: { id: 'docker', label: 'Docker', icon: Container }
 };

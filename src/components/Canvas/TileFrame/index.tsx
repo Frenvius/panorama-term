@@ -10,6 +10,7 @@ import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import NoteTile from '~/components/Canvas/NoteTile';
+import OrchBoard from '~/components/Canvas/OrchBoard';
 import NoteTabs from '~/components/Canvas/NoteTabs';
 import EditorTile from '~/components/Canvas/EditorTile';
 import DiffViewer from '~/components/DiffViewer';
@@ -94,6 +95,7 @@ interface TileFrameProps {
   tabs: TabMeta[];
   activeTabId: string | null;
   onMoveToTab: (id: string, targetTabId: string) => void;
+  onPatchRunId: (id: string, runId: string) => void;
 }
 
 const EMBED = { embedded: true };
@@ -110,7 +112,7 @@ const commitCount = (n: number): string => (n > 99 ? '99+' : String(n));
 
 const tileCrash = (retry: () => void) => <CrashNotice title="This tile hit an error" action="Reload tile" onAction={retry} />;
 
-const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab }: TileFrameProps) => {
+const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab, onPatchRunId }: TileFrameProps) => {
   const k = view.k;
   const parts = useHeaderParts();
   const cellW = useTermCellWidth();
@@ -972,7 +974,15 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 onContextMenu={openMenu}
               />
             )}
-            {!note && !code && !editor && !term && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
+            {tile.type === 'orch' && (
+              <OrchBoard
+                runId={tile.runId ?? ''}
+                tileId={tile.id}
+                cwd={tile.cwd ?? ''}
+                onPatchRunId={(runId) => onPatchRunId(tile.id, runId)}
+              />
+            )}
+            {!note && !code && !editor && !term && tile.type !== 'orch' && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
           </ErrorBoundary>
         </div>
       </div>

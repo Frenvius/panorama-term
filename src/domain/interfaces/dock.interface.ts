@@ -2,7 +2,7 @@ export type DockSide = 'left' | 'right';
 
 export type DockMode = 'canvas' | 'project';
 
-export type PanelId = 'projects' | 'notes' | 'files' | 'git' | 'docker' | 'orch';
+export type PanelId = 'projects' | 'notes' | 'files' | 'git' | 'docker';
 
 export interface DockLayout {
   left: PanelId[];
