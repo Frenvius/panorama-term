@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0]
+
+### Added
+- Multi-agent orchestration: a coordinator agent splits work into tasks, runs worker agents (Claude, Codex, opencode, kimi, pi) in their own git worktrees, verifies their results and merges them.
+- Kanban boards for orchestration runs, with Needs you, Queued, Running, Verifying, Review and Done columns. Add tasks, pick the agent and model, start them yourself, review and accept or reopen with a note.
+- Orchestrate toggle in the AgentBar, plus an always-on hint that can suggest or start orchestration on its own (Settings > Orchestration).
+- Tasks are routed by role (explore, implement, test, review, mechanical), each with its own model chain, and the board shows the cost per task, role and model.
+- Boards belong to projects: right-click a tile, a frame or a project to open its boards or create a new one. A loose tile can be turned into a project first.
+- New terminals created inside a project frame start in the project folder.
+- Disk-backed scrollback and Ctrl+F search in terminals.
+- Terminal tiles and split panels snap to the terminal cell grid.
+- Closing a project view tab keeps its terminals running.
+- Redesigned settings, with grouped sections and search.
+
+### Fixed
+- The brain's local HTTP server rejects requests coming from web pages.
+- Run commands report the real exit code of PowerShell commands.
+- The terminal reports its real size after the host resizes it.
+- The native webview context menu no longer appears.
+- Stale Claude hooks left by the old sidecar binary are removed.
+- Panel gaps are aligned and dock resize handles are centered.
+
 ## [0.3.3]
 
 ### Added
