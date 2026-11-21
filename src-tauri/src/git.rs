@@ -461,6 +461,11 @@ fn repo_root(path: &str) -> Result<String, String> {
     run_git(path, &["rev-parse", "--show-toplevel"]).map(|out| out.trim().to_string())
 }
 
+#[tauri::command]
+pub fn git_root(path: &str) -> Result<String, String> {
+    repo_root(path)
+}
+
 const SCAN_SKIP: [&str; 8] = [
     "node_modules",
     "target",

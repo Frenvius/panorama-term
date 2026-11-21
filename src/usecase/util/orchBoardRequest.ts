@@ -1,3 +1,5 @@
+import { normalizeRepo } from '~/usecase/util/orch';
+
 export interface OrchBoardRequest {
   runId: string;
   nearTileId: string;
@@ -6,10 +8,11 @@ export interface OrchBoardRequest {
 const projectLastBoard = new Map<string, string>();
 
 export const setProjectLastBoard = (cwd: string, runId: string): void => {
-  if (cwd) projectLastBoard.set(cwd, runId);
+  const key = normalizeRepo(cwd);
+  if (key) projectLastBoard.set(key, runId);
 };
 
-export const getProjectLastBoard = (cwd: string): string | undefined => projectLastBoard.get(cwd);
+export const getProjectLastBoard = (cwd: string): string | undefined => projectLastBoard.get(normalizeRepo(cwd));
 
 export interface ShowWorkerRequest {
   tileId: string;
@@ -38,6 +41,23 @@ export const onShowWorkerRequest = (cb: (req: ShowWorkerRequest) => void): (() =
   const handler = (e: Event) => cb((e as CustomEvent<ShowWorkerRequest>).detail);
   window.addEventListener(WORKER_EVENT, handler);
   return () => window.removeEventListener(WORKER_EVENT, handler);
+};
+
+export interface NewBoardRequest {
+  repo: string;
+  tileId: string;
+}
+
+const NEW_BOARD_EVENT = 'orch:board:new';
+
+export const requestNewBoard = (req: NewBoardRequest): void => {
+  window.dispatchEvent(new CustomEvent(NEW_BOARD_EVENT, { detail: req }));
+};
+
+export const onNewBoardRequest = (cb: (req: NewBoardRequest) => void): (() => void) => {
+  const handler = (e: Event) => cb((e as CustomEvent<NewBoardRequest>).detail);
+  window.addEventListener(NEW_BOARD_EVENT, handler);
+  return () => window.removeEventListener(NEW_BOARD_EVENT, handler);
 };
 
 export interface OrchDiffRequest {

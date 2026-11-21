@@ -40,13 +40,15 @@ import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { setAlert, getAlerts, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { buildProjectGroups } from '~/usecase/util/projectGroups';
 import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
-import { projectName, DEFAULT_PROJECT, tileMatchesProject } from '~/usecase/util/projectLayout';
+import { projectName, DEFAULT_PROJECT, projectRootPath, tileMatchesProject } from '~/usecase/util/projectLayout';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import { getBinding, isCapturing, formatCombo, matchCommand } from '~/usecase/util/keybindings';
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isDirty, requestFind, requestSave, dispatchSave, requestPreview } from '~/usecase/util/dirtyFiles';
-import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, getProjectLastBoard } from '~/usecase/util/orchBoardRequest';
-import { coordinatorActions } from '~/usecase/hooks/useOrchCoordinator';
+import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
+import { normalizeRepo } from '~/usecase/util/orch';
+import NewBoardDialog from '~/components/commons/NewBoardDialog';
 
 let pendingFocusTileId: string | null = null;
 
@@ -117,7 +119,8 @@ const ProjectView = () => {
     const unsubBoard = onOrchBoardRequest(({ runId }) => addOrchBoard(runId));
     const unsubWorker = onShowWorkerRequest((req) => handleShowWorkerRef.current(req));
     const unsubDiff = onOrchDiffRequest(({ root, file }) => openDiff(root, file));
-    return () => { unsubBoard(); unsubWorker(); unsubDiff(); };
+    const unsubNewBoard = onNewBoardRequest(({ repo, tileId }) => setNewBoard({ repo: projectRootPath(repo), tileId }));
+    return () => { unsubBoard(); unsubWorker(); unsubDiff(); unsubNewBoard(); };
   }, [addOrchBoard, openDiff]);
 
   const [hasDocker, setHasDocker] = React.useState(false);
@@ -128,6 +131,9 @@ const ProjectView = () => {
   const [tileToClose, setTileToClose] = React.useState<{ id: string; path: string } | null>(null);
   const [noteEditors, setNoteEditors] = React.useState<Record<string, EditorView>>({});
   const [, setDiffFiles] = React.useState<string[]>([]);
+  const [newBoard, setNewBoard] = React.useState<{ repo: string; tileId?: string } | null>(null);
+
+  const allRuns = useOrchRuns();
 
   React.useEffect(() => {
     dockerAvailable()
@@ -217,6 +223,19 @@ const ProjectView = () => {
   );
 
   const activeTile = activeTileId ? (tileMap.get(activeTileId) ?? null) : null;
+
+  const handleNewBoardCreated = (runId: string) => {
+    if (!newBoard) return;
+    const { repo, tileId } = newBoard;
+    setNewBoard(null);
+    setProjectLastBoard(repo, runId);
+    const emptyBoard = tileId ? tileMap.get(tileId) : undefined;
+    if (emptyBoard?.type === 'orch' && !emptyBoard.runId) {
+      patchTile(emptyBoard.id, { runId });
+      return;
+    }
+    addOrchBoard(runId, repo);
+  };
   const activeDiff =
     activeTile?.type === 'code' && activeTile.cwd && activeTile.filePath ? fileKey(activeTile.cwd, activeTile.filePath) : null;
 
@@ -431,8 +450,14 @@ const ProjectView = () => {
     if (cmd === 'orch.boards') {
       const tile = tiles.find((t) => t.id === activeTileId);
       const cwd = tile?.cwd ?? activeProject ?? '';
-      const runId = getProjectLastBoard(cwd) ?? '';
-      addOrchBoard(runId, cwd);
+      if (!cwd) return false;
+      const norm = normalizeRepo(cwd);
+      const lastBoard = getProjectLastBoard(norm);
+      if (lastBoard) {
+        addOrchBoard(lastBoard, cwd);
+      } else {
+        setNewBoard({ repo: cwd });
+      }
       return true;
     }
     return false;
@@ -650,6 +675,15 @@ const ProjectView = () => {
     removeProjectOp: removeProject
   });
 
+  const projectActionsWithBoards = React.useMemo(() => ({
+    ...projectActions,
+    allRuns,
+    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, group.path ?? undefined),
+    onNewBoard: (group: ProjectGroup) => {
+      if (group.path) setNewBoard({ repo: group.path });
+    }
+  }), [projectActions, allRuns, addOrchBoard]);
+
   const pvActiveGroupKey = React.useMemo(() => {
     if (!activeProject) return null;
     const norm = activeProject.toLowerCase();
@@ -680,7 +714,7 @@ const ProjectView = () => {
               activeGroupKey={pvActiveGroupKey}
               recentProjects={recentProjects}
               signals={{ alerts: alertKinds, agents, detached: detachedTileIds }}
-              actions={projectActions}
+              actions={projectActionsWithBoards}
             />
           );
         case 'files':
@@ -719,7 +753,7 @@ const ProjectView = () => {
       alertKinds,
       agents,
       detachedTileIds,
-      projectActions,
+      projectActionsWithBoards,
       inspectorProject,
       openFile,
       activeDiff,
@@ -883,6 +917,14 @@ const ProjectView = () => {
 
       {tileToClose && (
         <UnsavedDialog paths={[tileToClose.path]} onSave={handleSaveTile} onDiscard={discardTile} onCancel={cancelCloseTile} />
+      )}
+
+      {newBoard && (
+        <NewBoardDialog
+          repo={newBoard.repo}
+          onClose={() => setNewBoard(null)}
+          onCreated={handleNewBoardCreated}
+        />
       )}
 
       {activeNote && activeNoteEditor && (

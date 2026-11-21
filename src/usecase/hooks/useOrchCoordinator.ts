@@ -92,6 +92,11 @@ const runLabel = (summary: RunSummary): { label: string | null; needsYou: number
   return { label: parts.length > 0 ? parts.join(' · ') : null, needsYou };
 };
 
+export const useOrchRuns = (): RunSummary[] => {
+  const snap = React.useSyncExternalStore(subscribe, getSnapshot);
+  return snap.runs;
+};
+
 export const useOrchCoordinator = (tileId: string): CoordinatorHookResult => {
   const snap = React.useSyncExternalStore(subscribe, getSnapshot);
   const toggle = React.useCallback(() => coordinatorActions.toggle(tileId), [tileId]);

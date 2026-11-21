@@ -7,7 +7,7 @@ import { revealPath } from '~/adapter/shell/shell.client';
 import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
 import Toasts from '~/components/commons/Toasts';
-import FrameBar from '~/components/Canvas/FrameBar';
+import FrameBar, { type FrameBoardProp } from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import CommandBar from '~/components/Canvas/CommandBar';
 import SplitHandle from '~/components/Canvas/SplitHandle';
@@ -29,13 +29,14 @@ import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
 import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
+import { TileHostProvider } from '~/usecase/context/TileHostContext';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH, TILE_WIDTH, TILE_HEIGHT, NOTE_WIDTH, NOTE_HEIGHT, TOOLBAR_HEIGHT } from '~/usecase/util/constants';
 import { showToast } from '~/usecase/util/toasts';
 import { buildProjectGroups } from '~/usecase/util/projectGroups';
 import { spawnInGroup, fixGroupFrame } from '~/usecase/util/projectGroupActions';
-import { syncProjectViewWithTiles, projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
+import { syncProjectViewWithTiles, projectName, projectRootPath, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
 import AddProjectModal from '~/components/ProjectView/AddProjectModal';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
@@ -43,8 +44,13 @@ import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
-import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, getProjectLastBoard } from '~/usecase/util/orchBoardRequest';
-import { coordinatorActions } from '~/usecase/hooks/useOrchCoordinator';
+import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
+import { tileBoardProject, projectBoards } from '~/usecase/util/boardProject';
+import { normalizeRepo } from '~/usecase/util/orch';
+import { gitRoot } from '~/adapter/git/git.client';
+import { frameOf } from '~/usecase/util/frame';
+import NewBoardDialog from '~/components/commons/NewBoardDialog';
 import { onRefDiff } from '~/usecase/util/refDiff';
 import { touchTile } from '~/usecase/util/tileRecency';
 import { getCanvasSidebarMode, CANVAS_SIDEBAR_MODE_EVENT } from '~/usecase/util/canvasSidebars';
@@ -166,7 +172,15 @@ const Canvas = () => {
   React.useEffect(() => {
     const unsubBoard = onOrchBoardRequest(({ runId, nearTileId }) => addOrchBoard(runId, nearTileId));
     const unsubWorker = onShowWorkerRequest((req) => handleShowWorkerRef.current(req));
-    return () => { unsubBoard(); unsubWorker(); };
+    const unsubNewBoard = onNewBoardRequest(({ repo, tileId }) => {
+      const proj = tileBoardProject(framesR.current, tilesR.current, tileId);
+      if (proj.kind === 'project') {
+        setNewBoard({ repo: proj.repo, nearTileId: tileId, frameId: proj.frameId });
+        return;
+      }
+      setNewBoard({ repo: projectRootPath(repo), nearTileId: tileId });
+    });
+    return () => { unsubBoard(); unsubWorker(); unsubNewBoard(); };
   }, [addOrchBoard]);
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
@@ -255,7 +269,11 @@ const Canvas = () => {
   viewR.current = view;
   const tilesR = React.useRef(tiles);
   tilesR.current = tiles;
+  const framesR = React.useRef(frames);
+  framesR.current = frames;
   const dragId = linkDrag?.srcId ?? null;
+  const allRuns = useOrchRuns();
+  const [newBoard, setNewBoard] = React.useState<{ repo: string; nearTileId?: string; frameId?: string } | null>(null);
 
   const startLinkDrag = React.useCallback((srcId: string, e: React.PointerEvent) => {
     e.stopPropagation();
@@ -401,10 +419,21 @@ const Canvas = () => {
       return true;
     }
     if (cmd === 'orch.boards') {
-      const tile = tiles.find((t) => t.id === activeTile);
-      const cwd = tile?.cwd ?? '';
-      const runId = getProjectLastBoard(cwd) ?? '';
-      addOrchBoard(runId, activeTile ?? undefined, cwd);
+      const tileId = activeTileRef.current;
+      if (!tileId) return false;
+      const proj = tileBoardProject(framesR.current, tilesR.current, tileId);
+      if (proj.kind === 'loose') {
+        boardCreateProject(tileId);
+      } else if (proj.kind === 'noFolder') {
+        projectActions.onSetFolder(proj.frameId);
+      } else {
+        const lastBoard = getProjectLastBoard(normalizeRepo(proj.repo));
+        if (lastBoard) {
+          addOrchBoard(lastBoard, tileId, proj.repo, proj.frameId);
+        } else {
+          setNewBoard({ repo: proj.repo, nearTileId: tileId, frameId: proj.frameId });
+        }
+      }
       return true;
     }
     return false;
@@ -572,7 +601,9 @@ const Canvas = () => {
   };
 
   const newTerminal = () => {
-    if (menu) addTile({ x: menu.wx, y: menu.wy });
+    if (!menu) return;
+    const frame = frameOf(framesR.current, { x: menu.wx, y: menu.wy, width: 0, height: 0 });
+    addTile({ x: menu.wx, y: menu.wy }, frame?.path);
   };
 
   const newNote = () => {
@@ -636,6 +667,8 @@ const Canvas = () => {
       return next;
     });
   }, []);
+
+  const patchOrchTile = React.useCallback((id: string, patch: { runId?: string; boardTitle?: string }) => patchTile(id, patch), [patchTile]);
 
   const activeNote = tiles.find((t) => t.id === activeTile && t.type === 'note') ?? null;
   const activeNoteEditor = activeNote ? noteEditors[activeNote.id] : null;
@@ -986,6 +1019,42 @@ const Canvas = () => {
     }
   }, [focusFrame, focusTile]);
 
+  const canvasGroupOpsRef = React.useRef(canvasGroupOps);
+  canvasGroupOpsRef.current = canvasGroupOps;
+  const getCanvasCenterRef = React.useRef(getCanvasCenter);
+  getCanvasCenterRef.current = getCanvasCenter;
+
+  const boardCreateProject = React.useCallback((tileId: string) => {
+    const tile = tilesR.current.find((t) => t.id === tileId);
+    if (!tile?.cwd) return;
+    const cwd = tile.cwd;
+    void gitRoot(cwd)
+      .catch(() => normalizeProjectPath(cwd))
+      .then((repo) => {
+        const near = getCanvasCenterRef.current();
+        const group: ProjectGroup = {
+          key: `path:${repo}`,
+          kind: 'path',
+          title: projectName(repo),
+          path: repo,
+          frameId: null,
+          tiles: [tile],
+          outside: [],
+          drifted: []
+        };
+        const frameId = fixGroupFrame({ ops: canvasGroupOpsRef.current, group, near });
+        setNewBoard({ repo, nearTileId: tileId, frameId });
+      });
+  }, []);
+
+  const boardOpenBoard = React.useCallback((runId: string, nearTileId?: string, repo?: string, frameId?: string) => {
+    addOrchBoard(runId, nearTileId, repo, frameId);
+  }, [addOrchBoard]);
+
+  const boardNewBoard = React.useCallback((repo: string, nearTileId?: string, frameId?: string) => {
+    setNewBoard({ repo, nearTileId, frameId });
+  }, []);
+
   const projectActions = useProjectsPanelActions({
     ops: canvasGroupOps,
     removeFrameOp: removeFrame,
@@ -1000,6 +1069,47 @@ const Canvas = () => {
     openFolderPicker,
     getViewCenter: getCanvasCenter
   });
+
+  const boards = React.useMemo(() => ({
+    allRuns,
+    projectOf: (tileId: string) => tileBoardProject(framesR.current, tilesR.current, tileId),
+    openBoard: boardOpenBoard,
+    newBoard: boardNewBoard,
+    createProject: boardCreateProject,
+    setFolder: projectActions.onSetFolder
+  }), [allRuns, boardOpenBoard, boardNewBoard, boardCreateProject, projectActions.onSetFolder]);
+
+  const handleNewBoardCreated = React.useCallback((runId: string) => {
+    if (!newBoard) return;
+    const { repo, nearTileId, frameId } = newBoard;
+    setNewBoard(null);
+    setProjectLastBoard(repo, runId);
+    const orchTile = nearTileId ? tilesR.current.find((t) => t.id === nearTileId && t.type === 'orch' && !t.runId) : null;
+    if (orchTile) {
+      patchTile(orchTile.id, { runId });
+    } else {
+      addOrchBoard(runId, nearTileId, repo, frameId);
+    }
+  }, [newBoard, addOrchBoard, patchTile]);
+
+  const boardPropsForFrame = React.useCallback((frame: { id: string; path?: string }): FrameBoardProp => {
+    const frameRuns = frame.path ? projectBoards(allRuns, frame.path) : [];
+    return {
+      runs: frameRuns,
+      onOpen: (runId, frameId) => addOrchBoard(runId, undefined, frame.path, frameId),
+      onNew: () => setNewBoard({ repo: frame.path ?? '', frameId: frame.id }),
+      onSetFolder: () => projectActions.onSetFolder(frame.id)
+    };
+  }, [allRuns, addOrchBoard, projectActions.onSetFolder]);
+
+  const projectActionsWithBoards = React.useMemo(() => ({
+    ...projectActions,
+    allRuns,
+    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, group.tiles[0]?.id, group.path ?? undefined, group.frameId ?? undefined),
+    onNewBoard: (group: ProjectGroup) => {
+      if (group.path) setNewBoard({ repo: group.path, frameId: group.frameId ?? undefined });
+    }
+  }), [projectActions, allRuns, addOrchBoard]);
 
   const activeGroupKey = React.useMemo(() => {
     if (!activeTile) return null;
@@ -1020,6 +1130,54 @@ const Canvas = () => {
     onAlert: addAlert,
     onClear: clearAlert
   });
+
+  const actions = React.useMemo(
+    () => ({
+      onSnap: snapTile,
+      onClose: requestCloseTile,
+      onReveal: revealTilePath,
+      onLink: linkNoteTo,
+      onCwd: setTileCwd,
+      onMove: moveTile,
+      onRename: setTileTitle,
+      onResize: resizeTile,
+      onActivate: activateAndClear,
+      onCopyNote: copyNote,
+      onCopyPath: copyTilePath,
+      onPasteNote: pasteNote,
+      onNoteTitle: setNoteTitle,
+      onOscTitle: setTileOscTitle,
+      onDuplicate: duplicateTile,
+      onFocusTile: focusTile,
+      onTogglePin: togglePin,
+      onToggleRaw: toggleNoteRaw,
+      onMoveToTab: moveTileToTabWrapper,
+      onPatchOrchTile: patchOrchTile,
+      onNoteChange: setNoteContent,
+      onNoteEditor: registerEditor,
+      onAgentState: setAgentState,
+      onLinkDragStart: startLinkDrag,
+      onOpenRunOutput: addRunView,
+      onToggleSelect: toggleSelect,
+      onToggleFullscreen: toggleFs,
+      onCopyNoteSelection: copyNoteSelection,
+      unlinkTerm: unlinkTermFrom,
+      unlinkNote: unlinkNoteFrom
+    }),
+    [
+      snapTile, requestCloseTile, revealTilePath, linkNoteTo, setTileCwd, moveTile,
+      setTileTitle, resizeTile, activateAndClear, copyNote, copyTilePath, pasteNote,
+      setNoteTitle, setTileOscTitle, duplicateTile, focusTile, togglePin, toggleNoteRaw,
+      moveTileToTabWrapper, patchOrchTile, setNoteContent, registerEditor, setAgentState,
+      startLinkDrag, addRunView, toggleSelect, toggleFs, copyNoteSelection,
+      unlinkTermFrom, unlinkNoteFrom
+    ]
+  );
+
+  const tileHostValue = React.useMemo(
+    () => ({ fsBox, tabs, exiting: fsExit, wsId: activeId, actions, activeTabId, boards }),
+    [fsBox, tabs, fsExit, activeId, actions, activeTabId, boards]
+  );
 
   return (
     <div className={fsId ? `${styles.root} ${styles.rootFs}` : styles.root} style={benchOffset}>
@@ -1104,80 +1262,52 @@ const Canvas = () => {
           </svg>
         )}
         {!fsId && frames.map((f) => <Frame key={f.id} frame={f} view={view} onSnap={snapFrame} onResize={resizeFrame} />)}
-        {tiles.map((t) => {
-          const vis = isVisible(t);
-          if (vis && (t.width - TILE_GAP) * view.k >= MIN_LIVE_WIDTH) activated.current.add(t.id);
-          const live = activated.current.has(t.id);
-          const linkedIds =
-            t.type === 'note'
-              ? (t.linkedTo ?? [])
-              : t.type === 'term' && !t.runCwd
-                ? [
-                    ...new Set([
-                      ...(t.linkedTo ?? []),
-                      ...tiles.filter((x) => x.type === 'term' && (x.linkedTo ?? []).includes(t.id)).map((x) => x.id)
-                    ])
-                  ]
-                : [];
-          const linkActive = t.type === 'note' && linkedIds.some((id) => id === activeTile || selected.has(id));
-          const cand = t.type === 'note' ? adjacentTerm(t, tiles) : null;
-          const linkCand = cand && !linkedIds.includes(cand.id) ? cand : null;
-          const linkedTerms = linkedIds
-            .map((id) => tiles.find((x) => x.id === id))
-            .filter((x): x is (typeof tiles)[number] => Boolean(x))
-            .map((term) => ({ id: term.id, name: termName(term) }));
-          return (
-            <TileFrame
-              key={t.id}
-              tile={t}
-              view={view}
-              wsId={activeId}
-              linkActive={linkActive}
-              linkTarget={linkCand ? { id: linkCand.id, name: termName(linkCand) } : null}
-              linkedTerms={linkedTerms}
-              onLink={linkNoteTo}
-              onUnlink={t.type === 'term' ? unlinkTermFrom : unlinkNoteFrom}
-              onLinkDragStart={startLinkDrag}
-              onMove={moveTile}
-              onSnap={snapTile}
-              onClose={requestCloseTile}
-              onResize={resizeTile}
-              onActivate={activateAndClear}
-              onFocusTile={focusTile}
-              onToggleFullscreen={toggleFs}
-              onCwd={setTileCwd}
-              onAgentState={setAgentState}
-              onOscTitle={setTileOscTitle}
-              onNoteChange={setNoteContent}
-              onNoteEditor={registerEditor}
-              onNoteTitle={setNoteTitle}
-              onCopyNote={copyNote}
-              onCopyNoteSelection={copyNoteSelection}
-              onPasteNote={pasteNote}
-              onToggleRaw={toggleNoteRaw}
-              onRename={setTileTitle}
-              onCopyPath={copyTilePath}
-              onReveal={revealTilePath}
-              onDuplicate={duplicateTile}
-              onTogglePin={togglePin}
-              onToggleSelect={toggleSelect}
-              onOpenRunOutput={addRunView}
-              onMoveToTab={moveTileToTabWrapper}
-              onPatchRunId={(id, runId) => patchTile(id, { runId })}
-              tabs={tabs}
-              activeTabId={activeTabId}
-              active={t.id === activeTile}
-              selected={selected.has(t.id)}
-              alert={alertKinds.get(t.id) ?? null}
-              visible={vis}
-              live={live}
-              fullscreen={t.id === fsId}
-              exiting={fsExit}
-              hidden={fsId !== null && t.id !== fsId}
-              fsBox={fsBox}
-            />
-          );
-        })}
+        <TileHostProvider value={tileHostValue}>
+          {tiles.map((t) => {
+            const vis = isVisible(t);
+            if (vis && (t.width - TILE_GAP) * view.k >= MIN_LIVE_WIDTH) activated.current.add(t.id);
+            const live = activated.current.has(t.id);
+            const linkedIds =
+              t.type === 'note'
+                ? (t.linkedTo ?? [])
+                : t.type === 'term' && !t.runCwd
+                  ? [
+                      ...new Set([
+                        ...(t.linkedTo ?? []),
+                        ...tiles.filter((x) => x.type === 'term' && (x.linkedTo ?? []).includes(t.id)).map((x) => x.id)
+                      ])
+                    ]
+                  : [];
+            const linkActive = t.type === 'note' && linkedIds.some((id) => id === activeTile || selected.has(id));
+            const cand = t.type === 'note' ? adjacentTerm(t, tiles) : null;
+            const linkCand = cand && !linkedIds.includes(cand.id) ? cand : null;
+            const linkedTerms = linkedIds
+              .map((id) => tiles.find((x) => x.id === id))
+              .filter((x): x is (typeof tiles)[number] => Boolean(x))
+              .map((term) => ({ id: term.id, name: termName(term) }));
+            return (
+              <TileFrame
+                key={t.id}
+                tile={t}
+                view={view}
+                status={{
+                  live,
+                  visible: vis,
+                  fullscreen: t.id === fsId,
+                  active: t.id === activeTile,
+                  selected: selected.has(t.id),
+                  alert: alertKinds.get(t.id) ?? null,
+                  hidden: fsId !== null && t.id !== fsId
+                }}
+                link={{
+                  linkedTerms,
+                  active: linkActive,
+                  target: linkCand ? { id: linkCand.id, name: termName(linkCand) } : null
+                }}
+              />
+            );
+          })}
+        </TileHostProvider>
         {!fsId &&
           frames.map((f) => (
             <FrameBar
@@ -1186,6 +1316,7 @@ const Canvas = () => {
               view={view}
               tiles={tiles}
               recede={receded.has(f.id)}
+              board={boardPropsForFrame(f)}
               onFit={fitFrame}
               onReorder={reorderFrame}
               onDrag={dragFrame}
@@ -1223,7 +1354,7 @@ const Canvas = () => {
           activeGroupKey={activeGroupKey}
           recentProjects={[]}
           handlers={leftDockHandlers}
-          projectActions={projectActions}
+          projectActions={projectActionsWithBoards}
         />
       )}
       {dockRightOpen && rightHasVisible && (
@@ -1240,7 +1371,7 @@ const Canvas = () => {
           activeGroupKey={activeGroupKey}
           recentProjects={[]}
           handlers={rightDockHandlers}
-          projectActions={projectActions}
+          projectActions={projectActionsWithBoards}
         />
       )}
       {splitting && <SplitHandle left={9 + navInset + fsWidth} onMove={moveSplit} />}
@@ -1307,6 +1438,13 @@ const Canvas = () => {
           existingProjects={canvasProjects}
           onSelect={handleFolderPickerSelect}
           onClose={handleFolderPickerClose}
+        />
+      )}
+      {newBoard && (
+        <NewBoardDialog
+          repo={newBoard.repo}
+          onClose={() => setNewBoard(null)}
+          onCreated={handleNewBoardCreated}
         />
       )}
     </div>

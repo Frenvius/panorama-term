@@ -15,6 +15,8 @@ import type {
   RepoOperationAction
 } from '~/domain/interfaces/git.interface';
 
+export const gitRoot = (path: string): Promise<string> => invoke<string>('git_root', { path });
+
 export const gitBranches = (path: string): Promise<BranchSnapshot> =>
   invoke<BranchSnapshot>('git_branches', { path });
 

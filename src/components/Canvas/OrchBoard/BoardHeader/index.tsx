@@ -13,14 +13,15 @@ interface BoardHeaderProps {
   cwd: string;
   dispatches: Dispatch[];
   projectRuns: RunSummary[];
-  onPatchRunId: (runId: string) => void;
+  onPatchOrchTile: (patch: { runId?: string; boardTitle?: string }) => void;
+  onNewBoard: () => void;
   onChanged: () => void;
   coordinatorCostUsd?: number;
   costByRole?: Record<string, CostEntry>;
   costByModel?: Record<string, CostEntry>;
 }
 
-const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChanged, coordinatorCostUsd, costByRole, costByModel }: BoardHeaderProps) => {
+const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNewBoard, onChanged, coordinatorCostUsd, costByRole, costByModel }: BoardHeaderProps) => {
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
   const [renaming, setRenaming] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState('');
@@ -76,13 +77,13 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChange
 
   const handleSwitchTo = (id: string) => {
     setSwitcherOpen(false);
-    onPatchRunId(id);
+    onPatchOrchTile({ runId: id });
     setProjectLastBoard(cwd, id);
   };
 
   const handleNewBoardNav = () => {
     setSwitcherOpen(false);
-    onPatchRunId('');
+    onNewBoard();
   };
 
   const handleRenameStart = () => {
@@ -121,7 +122,7 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchRunId, onChange
   const handleCloseConfirm = () => {
     setHeaderError(null);
     setRunStatus(run.id, 'cancelled')
-      .then(() => onPatchRunId(''))
+      .then(() => onPatchOrchTile({ runId: '' }))
       .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
   };
 

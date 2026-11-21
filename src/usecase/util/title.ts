@@ -34,7 +34,7 @@ export const tileLabel = (tile: Tile): string => {
     const t = tile.userTitle || parseFrontTitle(tile.content);
     return t ? `Note - ${t}` : 'Note';
   }
-  if (tile.type === 'orch') return tile.userTitle || 'Board';
+  if (tile.type === 'orch') return tile.userTitle || tile.boardTitle || 'Board';
   const osc = tile.oscTitle ? stripSpinner(stripStarPrefix(tile.oscTitle).trim()) : '';
   return tile.userTitle || notPath(osc) || notPath(tile.autoTitle) || folderName(tile.cwd) || FALLBACK[tile.type] || tile.type;
 };

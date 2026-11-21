@@ -6,13 +6,13 @@ export const withFrameCreated = (frames: Frame[], frame: Omit<Frame, 'id'>, id: 
 export const withFramePatched = (frames: Frame[], id: string, patch: Partial<Omit<Frame, 'id'>>): Frame[] =>
   frames.map((f) => (f.id === id ? { ...f, ...patch } : f));
 
-export const tileInFrame = (frame: Frame, tile: Tile): boolean => {
+export const tileInFrame = (frame: Frame, tile: Pick<Tile, 'x' | 'y' | 'width' | 'height'>): boolean => {
   const cx = tile.x + tile.width / 2;
   const cy = tile.y + tile.height / 2;
   return cx >= frame.x && cx <= frame.x + frame.width && cy >= frame.y && cy <= frame.y + frame.height;
 };
 
-export const frameOf = (frames: Frame[], tile: Tile): Frame | null => {
+export const frameOf = (frames: Frame[], tile: Pick<Tile, 'x' | 'y' | 'width' | 'height'>): Frame | null => {
   let best: Frame | null = null;
   let bestArea = Infinity;
   for (const frame of frames) {

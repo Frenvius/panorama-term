@@ -214,6 +214,16 @@ export const placeTileInFrame = ({
     }
   }
 
+  const grownBoth: Rect = {
+    x: frame.x,
+    y: frame.y,
+    width: Math.max(frame.width, tileX + width + pad - frame.x),
+    height: Math.max(frame.height, tileY + height + pad - frame.y)
+  };
+  const bothFree =
+    nonMemberTiles.every((t) => !centerInRect(t, grownBoth)) && otherFrames.every((f) => !rectsOverlap(grownBoth, f));
+  if (bothFree) return { x: tileX, y: tileY, frame: grownBoth, fitted: true };
+
   const allObstacles: Rect[] = [
     ...tiles.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
     ...frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))

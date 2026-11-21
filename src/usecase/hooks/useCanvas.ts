@@ -13,7 +13,7 @@ import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { snapTermSize } from '~/usecase/util/termGrid';
 import { clearAlert } from '~/usecase/util/alerts';
-import { tileInFrame } from '~/usecase/util/frame';
+import { tileInFrame, withFramePatched } from '~/usecase/util/frame';
 import { placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
@@ -516,20 +516,34 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
 
   const addEditor = React.useCallback((cwd: string, filePath: string) => addFile(cwd, filePath, 'editor'), [addFile]);
 
-  const addOrchBoard = React.useCallback((runId: string, nearTileId?: string, cwd?: string): void => {
+  const addOrchBoard = React.useCallback((runId: string, nearTileId?: string, cwd?: string, frameId?: string): string => {
     const existing = tilesRef.current.find((t) => t.type === 'orch' && runId && t.runId === runId);
     if (existing) {
       setActiveTile(existing.id);
-      return;
+      return existing.id;
     }
     const id = createId();
     const nearTile = nearTileId ? tilesRef.current.find((t) => t.id === nearTileId) : undefined;
-    const resolvedCwd = cwd ?? nearTile?.cwd ?? '';
+    const frame = frameId ? framesRef.current.find((f) => f.id === frameId) : undefined;
+    const resolvedCwd = cwd ?? nearTile?.cwd ?? frame?.path ?? '';
     setView((v) => {
       const cx = (window.innerWidth / 2 - v.x) / v.k;
       const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
-      const x = nearTile ? nearTile.x + nearTile.width + 16 : cx - 360;
-      const y = nearTile ? nearTile.y : cy - 210;
+      let x: number;
+      let y: number;
+      if (frame) {
+        const placed = placeTileInFrame({ frame, tiles: tilesRef.current, frames: framesRef.current, width: 720, height: 420, spacing: currentLayoutSpacing() });
+        x = placed.x;
+        y = placed.y;
+        const grown = placed.frame;
+        if (grown) setFrames((prev) => withFramePatched(prev, frame.id, grown));
+      } else if (nearTile) {
+        x = nearTile.x + nearTile.width + 16;
+        y = nearTile.y;
+      } else {
+        x = cx - 360;
+        y = cy - 210;
+      }
       setTiles((prev) => [
         ...prev,
         { id, type: 'orch' as const, runId, cwd: resolvedCwd, x, y, width: 720, height: 420, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
@@ -537,6 +551,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       setActiveTile(id);
       return v;
     });
+    return id;
   }, []);
 
   const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {

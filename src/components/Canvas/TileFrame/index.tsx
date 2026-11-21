@@ -1,14 +1,13 @@
 import { isRemote } from '~/adapter/transport';
 import React from 'react';
-import type { EditorView } from '@codemirror/view';
-import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
+import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, SquareKanban, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
-import type { Tile, View, FsBox } from '~/domain/interfaces/canvas.interface';
+import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { RunPhase } from '~/domain/interfaces/run.interface';
-import type { TabMeta } from '~/domain/interfaces/workspace.interface';
 import type { IdeInfo } from '~/adapter/shell/shell.client';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { NotifyKind } from '~/domain/interfaces/notify.interface';
+import { useTileHost } from '~/usecase/context/TileHostContext';
+import type { TileStatus, TileLink } from '~/usecase/context/TileHostContext';
 import NoteTile from '~/components/Canvas/NoteTile';
 import OrchBoard from '~/components/Canvas/OrchBoard';
 import NoteTabs from '~/components/Canvas/NoteTabs';
@@ -42,7 +41,9 @@ import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { operationTag } from '~/usecase/util/repoOperation';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
-import { stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
+import { tileLabel, stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
+import { projectBoards } from '~/usecase/util/boardProject';
+import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 import { TILE_GAP } from '~/usecase/util/constants';
 import { termGridOf } from '~/usecase/util/termGrid';
 import { getBinding, formatCombo } from '~/usecase/util/keybindings';
@@ -52,50 +53,8 @@ import styles from './styles.module.scss';
 interface TileFrameProps {
   tile: Tile;
   view: View;
-  active: boolean;
-  selected: boolean;
-  alert: NotifyKind | null;
-  visible: boolean;
-  live: boolean;
-  hidden: boolean;
-  fullscreen: boolean;
-  exiting: boolean;
-  fsBox: FsBox;
-  onClose: (id: string) => void;
-  onSnap: (id: string) => void;
-  onActivate: (id: string) => void;
-  onFocusTile: (id: string, zoomToMax?: boolean) => void;
-  onToggleFullscreen: (id: string) => void;
-  onMove: (id: string, dx: number, dy: number) => void;
-  onResize: (id: string, dir: string, dx: number, dy: number) => void;
-  onCwd: (id: string, cwd: string, branch?: string) => void;
-  onAgentState: (id: string, live: boolean, busy: boolean) => void;
-  onOscTitle: (id: string, title: string) => void;
-  onNoteChange: (id: string, content: string) => void;
-  onNoteEditor: (id: string, editor: EditorView | null) => void;
-  onNoteTitle: (id: string, title: string) => void;
-  onCopyNote: (id: string) => void;
-  onCopyNoteSelection: (id: string) => void;
-  onPasteNote: (id: string) => void;
-  onToggleRaw: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-  onCopyPath: (id: string) => void;
-  onReveal: (id: string) => void;
-  onDuplicate: (id: string) => void;
-  onTogglePin: (id: string) => void;
-  onToggleSelect: (id: string) => void;
-  onOpenRunOutput: (srcId: string, cwd: string, sessionId: string, cmd: string) => void;
-  wsId: string | null;
-  linkActive: boolean;
-  linkTarget: { id: string; name: string } | null;
-  linkedTerms: { id: string; name: string }[];
-  onLink: (noteId: string, termId: string) => void;
-  onUnlink: (noteId: string, termId: string) => void;
-  onLinkDragStart: (noteId: string, e: React.PointerEvent) => void;
-  tabs: TabMeta[];
-  activeTabId: string | null;
-  onMoveToTab: (id: string, targetTabId: string) => void;
-  onPatchRunId: (id: string, runId: string) => void;
+  link: TileLink;
+  status: TileStatus;
 }
 
 const EMBED = { embedded: true };
@@ -112,7 +71,18 @@ const commitCount = (n: number): string => (n > 99 ? '99+' : String(n));
 
 const tileCrash = (retry: () => void) => <CrashNotice title="This tile hit an error" action="Reload tile" onAction={retry} />;
 
-const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden, fullscreen, exiting, fsBox, onMove, onSnap, onClose, onResize, onActivate, onFocusTile, onToggleFullscreen, onCwd, onAgentState, onOscTitle, onNoteChange, onNoteEditor, onNoteTitle, onCopyNote, onCopyNoteSelection, onPasteNote, onToggleRaw, onRename, onCopyPath, onReveal, onDuplicate, onTogglePin, onToggleSelect, onOpenRunOutput, wsId, linkActive, linkTarget, linkedTerms, onLink, onUnlink, onLinkDragStart, tabs, activeTabId, onMoveToTab, onPatchRunId }: TileFrameProps) => {
+const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
+  const { actions, wsId, tabs, activeTabId, fsBox, exiting, boards } = useTileHost();
+  const { live, active, hidden, visible, selected, fullscreen, alert } = status;
+  const { active: linkActive, target: linkTarget, linkedTerms } = link;
+  const unlink = tile.type === 'term' ? actions.unlinkTerm : actions.unlinkNote;
+  const {
+    onSnap, onClose, onReveal, onLink, onCwd, onMove, onRename, onResize, onActivate,
+    onCopyNote, onCopyPath, onPasteNote, onNoteTitle, onOscTitle, onDuplicate, onFocusTile,
+    onTogglePin, onToggleRaw, onMoveToTab, onPatchOrchTile, onNoteChange, onNoteEditor,
+    onAgentState, onLinkDragStart, onOpenRunOutput, onToggleSelect, onToggleFullscreen,
+    onCopyNoteSelection
+  } = actions;
   const k = view.k;
   const parts = useHeaderParts();
   const cellW = useTermCellWidth();
@@ -206,6 +176,8 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
   const spinning = !tile.userTitle && agentBusy && hasSpinnerPrefix(oscTitle);
   const label = tile.runCwd
     ? tile.userTitle || tile.autoTitle || 'run'
+    : tile.type === 'orch'
+    ? tileLabel(tile)
     : tile.userTitle
       || (agentType && oscTitle && (spinning ? oscTitle : stripSpinner(oscTitle)))
       || (tile.type === 'editor' ? tile.autoTitle : tile.cwd)
@@ -587,7 +559,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     ...linkedTerms.map((lt) => ({
       label: `Unlink from ${lt.name}`,
       icon: <Link2Off size={15} strokeWidth={1.75} />,
-      onSelect: () => onUnlink(tile.id, lt.id)
+      onSelect: () => unlink(tile.id, lt.id)
     }))
   ];
   if (linkItems.length) linkItems.push('separator');
@@ -630,6 +602,28 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
     }
   }
 
+  const orch = tile.type === 'orch';
+  const boardProject = orch ? null : boards.projectOf(tile.id);
+  const activeBoards = boardProject?.kind === 'project' ? projectBoards(boards.allRuns, boardProject.repo) : [];
+
+  const boardSubmenuItems: ContextMenuEntry[] =
+    boardProject?.kind === 'project'
+      ? boardSubmenu(
+          activeBoards,
+          (runId) => boards.openBoard(runId, tile.id, boardProject.repo, boardProject.frameId),
+          () => boards.newBoard(boardProject.repo, tile.id, boardProject.frameId)
+        )
+      : boardProject?.kind === 'noFolder'
+      ? [{ label: 'Set folder...', onSelect: () => boards.setFolder(boardProject.frameId) }]
+      : [];
+
+  const boardMenuItem: ContextMenuEntry | null =
+    boardProject === null
+      ? null
+      : boardProject.kind === 'loose'
+      ? { label: 'Create project...', icon: <SquareKanban size={15} strokeWidth={1.75} />, onSelect: () => boards.createProject(tile.id) }
+      : { label: 'Board', icon: <SquareKanban size={15} strokeWidth={1.75} />, submenu: boardSubmenuItems };
+
   const menuItems: ContextMenuEntry[] = note
     ? noteMenuItems
     : runView
@@ -651,6 +645,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
           onSelect: toggleElevated
         },
         ...linkItems,
+        ...(boardMenuItem ? [boardMenuItem, 'separator'] as ContextMenuEntry[] : []),
         { label: 'Focus', icon: <Focus size={15} strokeWidth={1.75} />, onSelect: focusTile },
         fullscreenItem,
         'separator',
@@ -979,7 +974,7 @@ const TileFrame = ({ tile, view, active, selected, alert, visible, live, hidden,
                 runId={tile.runId ?? ''}
                 tileId={tile.id}
                 cwd={tile.cwd ?? ''}
-                onPatchRunId={(runId) => onPatchRunId(tile.id, runId)}
+                onPatchOrchTile={(patch) => onPatchOrchTile(tile.id, patch)}
               />
             )}
             {!note && !code && !editor && !term && tile.type !== 'orch' && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}

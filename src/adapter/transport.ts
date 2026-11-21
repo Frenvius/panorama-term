@@ -14,6 +14,7 @@ export const hostCommands = new Set([
   'create_entry',
   'watch_text_file',
   'unwatch_text_file',
+  'git_root',
   'git_branches',
   'git_watch_repo',
   'git_unwatch_repo',

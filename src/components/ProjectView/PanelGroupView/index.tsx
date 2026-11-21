@@ -22,6 +22,7 @@ import {
   GitCompare,
   StickyNote,
   ClipboardCopy,
+  SquareKanban,
   SquareTerminal
 } from 'lucide-react';
 
@@ -82,6 +83,7 @@ const renderTileTypeIcon = (tile: Tile, agentType: AgentType | null) => {
   if (tile.type === 'editor') return <FileCode size={13} strokeWidth={1.75} />;
   if (tile.type === 'code') return <GitCompare size={13} strokeWidth={1.75} />;
   if (tile.type === 'note') return <StickyNote size={13} strokeWidth={1.75} />;
+  if (tile.type === 'orch') return <SquareKanban size={13} strokeWidth={1.75} />;
   return <SquareTerminal size={13} strokeWidth={1.75} />;
 };
 
@@ -631,7 +633,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
                 runId={activeTile.runId ?? ''}
                 tileId={activeTile.id}
                 cwd={activeTile.cwd ?? ''}
-                onPatchRunId={(runId) => handlers.onPatchTile(activeTile.id, { runId })}
+                onPatchOrchTile={(patch) => handlers.onPatchTile(activeTile.id, patch)}
               />
             </div>
           )}

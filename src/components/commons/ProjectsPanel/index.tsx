@@ -22,6 +22,7 @@ import {
   ChevronRight,
   ClipboardCopy,
   SquareDashed,
+  SquareKanban,
   SquareTerminal,
   TriangleAlert
 } from 'lucide-react';
@@ -31,6 +32,8 @@ import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
+import { projectBoards } from '~/usecase/util/boardProject';
+import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { projectName } from '~/usecase/util/projectLayout';
@@ -61,6 +64,7 @@ const renderTileIcon = (tile: Tile) => {
   if (tile.type === 'note') return <StickyNote size={13} strokeWidth={1.75} />;
   if (tile.type === 'code') return <GitCompare size={13} strokeWidth={1.75} />;
   if (tile.type === 'editor') return <FileCode size={13} strokeWidth={1.75} />;
+  if (tile.type === 'orch') return <SquareKanban size={13} strokeWidth={1.75} />;
   return <SquareTerminal size={13} strokeWidth={1.75} />;
 };
 
@@ -571,19 +575,44 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         icon: <FolderPlus size={15} strokeWidth={1.75} />,
         onSelect: () => { if (group.frameId) actions.onSetFolder(group.frameId); }
       });
-      if (group.path) {
+    }
+
+    if (group.path) {
+      const groupRuns = actions.allRuns ? projectBoards(actions.allRuns, group.path) : [];
+      items.push('separator');
+      if (group.kind !== 'frame') {
+        items.push({
+          label: 'Create frame',
+          icon: <SquareDashed size={15} strokeWidth={1.75} />,
+          onSelect: () => actions.onFixFrame(group)
+        });
+        items.push('separator');
+      }
+      items.push({
+        label: 'Reveal in explorer',
+        icon: <FolderOpen size={15} strokeWidth={1.75} />,
+        onSelect: () => { if (group.path) revealPath(group.path); }
+      });
+      items.push({
+        label: 'Copy path',
+        icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
+        onSelect: () => { if (group.path) void writeClipboard(group.path); }
+      });
+      if (actions.onOpenBoard || actions.onNewBoard) {
         items.push('separator');
         items.push({
-          label: 'Reveal in explorer',
-          icon: <FolderOpen size={15} strokeWidth={1.75} />,
-          onSelect: () => { if (group.path) revealPath(group.path); }
-        });
-        items.push({
-          label: 'Copy path',
-          icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
-          onSelect: () => { if (group.path) void writeClipboard(group.path); }
+          label: 'Board',
+          icon: <SquareKanban size={15} strokeWidth={1.75} />,
+          submenu: boardSubmenu(
+            groupRuns,
+            (runId) => actions.onOpenBoard?.(runId, group),
+            () => actions.onNewBoard?.(group)
+          )
         });
       }
+    }
+
+    if (group.kind === 'frame' && group.frameId) {
       items.push('separator');
       items.push({
         label: 'Delete frame',
@@ -591,35 +620,14 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         danger: true,
         onSelect: () => { if (group.frameId) actions.onDeleteFrame(group.frameId); }
       });
-    } else {
-      if (group.path) {
-        items.push('separator');
-        items.push({
-          label: 'Create frame',
-          icon: <SquareDashed size={15} strokeWidth={1.75} />,
-          onSelect: () => actions.onFixFrame(group)
-        });
-        items.push('separator');
-        items.push({
-          label: 'Reveal in explorer',
-          icon: <FolderOpen size={15} strokeWidth={1.75} />,
-          onSelect: () => { if (group.path) revealPath(group.path); }
-        });
-        items.push({
-          label: 'Copy path',
-          icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
-          onSelect: () => { if (group.path) void writeClipboard(group.path); }
-        });
-        if (actions.onRemoveProject) {
-          items.push('separator');
-          items.push({
-            label: 'Remove project',
-            icon: <Trash2 size={15} strokeWidth={1.75} />,
-            danger: true,
-            onSelect: () => { if (group.path) actions.onRemoveProject!(group.path); }
-          });
-        }
-      }
+    } else if (group.path && actions.onRemoveProject) {
+      items.push('separator');
+      items.push({
+        label: 'Remove project',
+        icon: <Trash2 size={15} strokeWidth={1.75} />,
+        danger: true,
+        onSelect: () => { if (group.path) actions.onRemoveProject!(group.path); }
+      });
     }
 
     return items;

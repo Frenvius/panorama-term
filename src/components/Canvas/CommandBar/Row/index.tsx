@@ -14,8 +14,8 @@ import {
   Settings,
   LayoutGrid,
   StickyNote,
-  Workflow,
   SquareDashed,
+  SquareKanban,
   SquareTerminal
 } from 'lucide-react';
 
@@ -29,7 +29,7 @@ const TILE_ICON: Record<TileType, { Icon: LucideIcon; color: string }> = {
   image: { Icon: Image, color: '#c07a6e' },
   graph: { Icon: Network, color: '#c8a35a' },
   browser: { Icon: Globe, color: '#5c9bcf' },
-  orch: { Icon: Workflow, color: '#7a9cba' }
+  orch: { Icon: SquareKanban, color: '#7a9cba' }
 };
 
 const KIND_ICON: Record<Exclude<CommandBarKind, 'tile'>, LucideIcon> = {

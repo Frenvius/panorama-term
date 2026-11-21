@@ -17,6 +17,7 @@ export interface Tile {
   url?: string | null;
   filePath?: string;
   autoTitle?: string;
+  boardTitle?: string;
   oscTitle?: string;
   userTitle?: string;
   folderPath?: string;

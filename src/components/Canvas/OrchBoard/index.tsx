@@ -1,29 +1,29 @@
 import type { Task, RunDetail } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { Plus, RotateCcw } from 'lucide-react';
+import { Plus, RotateCcw, SquareKanban } from 'lucide-react';
 
 import TaskCard from './TaskCard';
 import TaskForm from './TaskForm';
 import GateBlock from './GateBlock';
-import BoardPicker from './BoardPicker';
 import BoardHeader from './BoardHeader';
 import styles from './styles.module.scss';
-import { normalizeRepo } from '~/usecase/util/orch';
+import { projectBoards } from '~/usecase/util/boardProject';
+import { projectRootPath } from '~/usecase/util/projectLayout';
 import { watchOrchEvents } from '~/adapter/ui/ui.client';
 import { showRun, resolveGate } from '~/adapter/orch/orch.client';
 import { useOrchCoordinator } from '~/usecase/hooks/useOrchCoordinator';
-import { setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { setProjectLastBoard, getProjectLastBoard, requestNewBoard } from '~/usecase/util/orchBoardRequest';
 import { type ColumnId, COLUMN_LABEL, COLUMNS, taskColumn } from './columns';
 
 interface OrchBoardProps {
   runId: string;
   tileId: string;
   cwd: string;
-  onPatchRunId: (runId: string) => void;
+  onPatchOrchTile: (patch: { runId?: string; boardTitle?: string }) => void;
 }
 
-const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
+const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
   const [detail, setDetail] = React.useState<RunDetail | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [resolvingGate, setResolvingGate] = React.useState<string | null>(null);
@@ -31,12 +31,12 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
   const [addingTask, setAddingTask] = React.useState(false);
 
   const { allRuns } = useOrchCoordinator(tileId);
-  const normCwd = normalizeRepo(cwd);
-  const projectRuns = normCwd
-    ? allRuns.filter(
-        (s) => normalizeRepo(s.run.repo) === normCwd && s.run.status !== 'completed' && s.run.status !== 'cancelled'
-      )
-    : [];
+  const repo = cwd ? projectRootPath(cwd) : '';
+  const projectRuns = repo ? projectBoards(allRuns, repo) : [];
+  const adoptId = runId
+    ? ''
+    : (projectRuns.find((s) => s.run.id === getProjectLastBoard(repo)) ??
+        [...projectRuns].sort((a, b) => b.run.updatedAt - a.run.updatedAt)[0])?.run.id ?? '';
 
   const fetchDetail = React.useCallback(() => {
     if (!runId) return;
@@ -53,7 +53,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
       setDetail(null);
       return;
     }
-    setProjectLastBoard(cwd, runId);
+    setProjectLastBoard(repo, runId);
     fetchDetail();
     return watchOrchEvents(
       (changedId) => {
@@ -61,7 +61,20 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
       },
       fetchDetail
     );
-  }, [runId, cwd, fetchDetail]);
+  }, [runId, repo, fetchDetail]);
+
+  React.useEffect(() => {
+    if (adoptId) onPatchOrchTile({ runId: adoptId });
+  }, [adoptId]);
+
+  React.useEffect(() => {
+    if (detail?.run.title) onPatchOrchTile({ boardTitle: detail.run.title });
+  }, [detail?.run.title]);
+
+  const handleNewBoard = React.useCallback(() => {
+    if (!repo) return;
+    requestNewBoard({ repo, tileId });
+  }, [repo, tileId]);
 
   const handleResolve = (gateId: string, resolution: string) => {
     if (!detail) return;
@@ -79,7 +92,12 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
   if (!runId) {
     return (
       <div className={styles.root}>
-        <BoardPicker cwd={cwd} projectRuns={projectRuns} onPatchRunId={onPatchRunId} />
+        <div className={styles.empty}>
+          <SquareKanban size={32} strokeWidth={1.5} className={styles.emptyIcon} />
+          <button type="button" className={styles.newBoardBtn} onClick={handleNewBoard}>
+            New board...
+          </button>
+        </div>
       </div>
     );
   }
@@ -120,10 +138,11 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchRunId }: OrchBoardProps) => {
     <div className={styles.root}>
       <BoardHeader
         run={run}
-        cwd={cwd}
+        cwd={repo}
         dispatches={dispatches}
         projectRuns={projectRuns}
-        onPatchRunId={onPatchRunId}
+        onPatchOrchTile={onPatchOrchTile}
+        onNewBoard={handleNewBoard}
         onChanged={fetchDetail}
         coordinatorCostUsd={detail.coordinatorCostUsd}
         costByRole={detail.costByRole}

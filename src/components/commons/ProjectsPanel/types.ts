@@ -1,5 +1,6 @@
 import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
+import type { RunSummary } from '~/domain/interfaces/orch.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 
 export interface ProjectsPanelSignals {
@@ -23,6 +24,9 @@ export interface ProjectsPanelActions {
   onDeleteFrame: (frameId: string) => void;
   onSetFolder: (frameId: string) => void;
   onRemoveProject?: (path: string) => void;
+  onOpenBoard?: (runId: string, group: ProjectGroup) => void;
+  onNewBoard?: (group: ProjectGroup) => void;
+  allRuns?: RunSummary[];
 }
 
 export interface ProjectsPanelProps {

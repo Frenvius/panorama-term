@@ -1,16 +1,28 @@
-import React from 'react';
-import { X, Trash2, Shrink, Palette, PenLine, LayoutGrid } from 'lucide-react';
-
+import type { RunSummary } from '~/domain/interfaces/orch.interface';
 import type { Tile, View, Frame as FrameData, FrameMember } from '~/domain/interfaces/canvas.interface';
+
+import React from 'react';
+import { X, Trash2, Shrink, Palette, PenLine, LayoutGrid, SquareKanban } from 'lucide-react';
+
 import ContextMenu from '~/components/commons/ContextMenu';
+import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
+import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 
 import styles from '~/components/Canvas/Frame/styles.module.scss';
+
+export interface FrameBoardProp {
+  runs: RunSummary[];
+  onOpen: (runId: string, frameId?: string) => void;
+  onNew: () => void;
+  onSetFolder: () => void;
+}
 
 interface FrameBarProps {
   frame: FrameData;
   view: View;
   tiles: Tile[];
   recede: boolean;
+  board?: FrameBoardProp;
   onFit: (id: string) => void;
   onReorder: (id: string) => void;
   onDragEnd: (id: string, memberIds: string[]) => void;
@@ -35,7 +47,7 @@ const inside = (f: FrameData, t: Tile): boolean => {
   return cx >= f.x && cx <= f.x + f.width && cy >= f.y && cy <= f.y + f.height;
 };
 
-const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onReorder, onDragEnd, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
+const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder, onDragEnd, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
   const k = view.k;
   const [editing, setEditing] = React.useState(false);
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
@@ -153,10 +165,22 @@ const FrameBar = ({ frame, view, tiles, recede, onFit, onDrag, onReorder, onDrag
             { label: 'Change color', icon: <Palette size={15} strokeWidth={1.75} />, onSelect: openColor },
             { label: 'Fit to contents', icon: <Shrink size={15} strokeWidth={1.75} />, onSelect: fit },
             { label: 'Reorder', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorder },
+            ...(board
+              ? ([
+                  'separator',
+                  {
+                    label: 'Board',
+                    icon: <SquareKanban size={15} strokeWidth={1.75} />,
+                    submenu: frame.path
+                      ? boardSubmenu(board.runs, (runId) => board.onOpen(runId, frame.id), board.onNew)
+                      : [{ label: 'Set folder...', onSelect: board.onSetFolder }]
+                  }
+                ] as ContextMenuEntry[])
+              : []),
             'separator',
             { label: 'Delete frame', icon: <X size={15} strokeWidth={1.75} />, onSelect: remove },
             { label: 'Delete frame and tiles', icon: <Trash2 size={15} strokeWidth={1.75} />, danger: true, onSelect: removeWithTiles }
-          ]}
+          ] as ContextMenuEntry[]}
         />
       )}
     </div>
