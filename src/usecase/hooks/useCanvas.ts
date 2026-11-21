@@ -1098,6 +1098,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     persistNowRef.current();
   }, []);
 
+  const setProjectsOrder = React.useCallback((paths: string[]) => {
+    const base = syncProjectViewWithTiles(initial.current.projectView, tilesRef.current);
+    initial.current = { ...initial.current, projectView: { ...base, projects: paths } };
+    persistNowRef.current();
+  }, []);
+
   const frameSelection = React.useCallback(() => {
     const sel = selectedRef.current;
     const members = tilesRef.current.filter((t) => sel.has(t.id));
@@ -1237,6 +1243,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     reorderFrame,
     reorderCanvas,
     reorderProjects,
+    setProjectsOrder,
     reorderFrameGroups,
     undoLayout: history.undo,
     redoLayout: history.redo,

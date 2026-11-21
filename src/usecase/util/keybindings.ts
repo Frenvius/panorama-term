@@ -30,7 +30,8 @@ export type CommandId =
   | 'diff.nextFile'
   | 'diff.editFile'
   | 'orch.toggleMode'
-  | 'orch.boards';
+  | 'orch.boards'
+  | 'projects.tidy';
 
 interface Command {
   id: CommandId;
@@ -70,7 +71,8 @@ export const KEYBINDINGS: Command[] = [
   { id: 'diff.nextFile', label: 'Next file', group: 'Diff viewer', defaultCombo: 'alt+arrowright' },
   { id: 'diff.editFile', label: 'Edit file', group: 'Diff viewer', defaultCombo: 'f4' },
   { id: 'orch.toggleMode', label: 'Toggle orchestrate mode', group: 'Canvas', defaultCombo: 'mod+shift+o' },
-  { id: 'orch.boards', label: 'Open boards', group: 'Canvas', defaultCombo: 'mod+shift+b' }
+  { id: 'orch.boards', label: 'Open boards', group: 'Canvas', defaultCombo: 'mod+shift+b' },
+  { id: 'projects.tidy', label: 'Tidy projects with AI', group: 'Canvas', defaultCombo: 'mod+alt+t' }
 ];
 
 const overrides = (): Record<string, string> => getSetting<Record<string, string>>(BINDINGS_KEY, {});

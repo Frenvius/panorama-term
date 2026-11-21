@@ -408,6 +408,14 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     });
   }, []);
 
+  const setProjectsOrder = React.useCallback((paths: string[]) => {
+    setProjectView((prev) => {
+      const next = { ...prev, projects: paths };
+      projectViewRef.current = next;
+      return next;
+    });
+  }, []);
+
   const reorderFrameGroups = React.useCallback((from: string, to: string, place: DropPlace) => {
     setFrames((prev) => {
       const next = moveFrameOrder({ frames: prev, from, to, place });
@@ -1232,6 +1240,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     addProject,
     removeProject,
     reorderProjects,
+    setProjectsOrder,
     reorderFrameGroups,
     panelState,
     activeTileId,

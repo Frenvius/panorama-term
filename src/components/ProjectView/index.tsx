@@ -47,6 +47,7 @@ import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usec
 import { isDirty, requestFind, requestSave, dispatchSave, requestPreview } from '~/usecase/util/dirtyFiles';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
+import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
 import NewBoardDialog from '~/components/commons/NewBoardDialog';
 
@@ -74,6 +75,7 @@ const ProjectView = () => {
     addProject,
     removeProject,
     reorderProjects,
+    setProjectsOrder,
     reorderFrameGroups,
     focusGroup,
     activateTile,
@@ -384,6 +386,8 @@ const ProjectView = () => {
     if (activeTabId) void setTabMode(activeTabId, 'canvas');
   }, [activeTabId, setTabMode]);
 
+  const tidyTriggerRef = React.useRef<() => void>(() => {});
+
   const runCommand = (cmd: CommandId): boolean => {
     if (cmd === 'tile.new') {
       addTerminal();
@@ -460,6 +464,10 @@ const ProjectView = () => {
       } else {
         setNewBoard({ repo: cwd });
       }
+      return true;
+    }
+    if (cmd === 'projects.tidy') {
+      tidyTriggerRef.current();
       return true;
     }
     return false;
@@ -625,6 +633,18 @@ const ProjectView = () => {
     [tiles, frames, createFrame, patchFrame, placeTiles]
   );
 
+  const tidyAI = useTidyAI({
+    projects,
+    tiles,
+    frames,
+    createFrame,
+    patchFrame,
+    removeFrame,
+    placeTiles,
+    setProjectsOrder
+  });
+  tidyTriggerRef.current = tidyAI.onTrigger;
+
   const pvRenameFrame = React.useCallback(
     (id: string, title: string) => patchFrame(id, { title }),
     [patchFrame]
@@ -719,6 +739,7 @@ const ProjectView = () => {
               recentProjects={recentProjects}
               signals={{ alerts: alertKinds, agents, detached: detachedTileIds }}
               actions={projectActionsWithBoards}
+              tidy={tidyAI}
             />
           );
         case 'files':

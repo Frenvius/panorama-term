@@ -7,7 +7,7 @@ import type { Creating } from '~/components/Canvas/Navigator/FileTree';
 import type { PanelDescriptor } from '~/components/commons/Dock/panels';
 import type { CanvasSidebarMode } from '~/usecase/util/canvasSidebars';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
-import type { ProjectsPanelActions } from '~/components/commons/ProjectsPanel/types';
+import type { ProjectsPanelActions, TidyState } from '~/components/commons/ProjectsPanel/types';
 
 import React from 'react';
 import {
@@ -63,6 +63,7 @@ interface CanvasDockProps {
   agents: Map<string, 'idle' | 'busy'>;
   handlers: CanvasDockHandlers;
   projectActions: ProjectsPanelActions;
+  tidy?: TidyState;
 }
 
 const LEFT_WIDTH_KEY = 'panorama:navWidth';
@@ -76,7 +77,7 @@ const savedWidth = (side: DockSide): number => {
   return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : 248;
 };
 
-const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff, activeGroupKey, recentProjects, alerts, agents, handlers, projectActions }: CanvasDockProps) => {
+const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff, activeGroupKey, recentProjects, alerts, agents, handlers, projectActions, tidy }: CanvasDockProps) => {
   const {
     onClose,
     onWidth,
@@ -229,6 +230,7 @@ const CanvasDock = ({ mode, side, tiles, groups, panels, activeTile, activeDiff,
           recentProjects={recentProjects}
           signals={tileSignals}
           actions={projectActions}
+          tidy={tidy}
         />
       )}
 
