@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.2]
+
+### Added
+- AI actions: generate commit messages from the Git tab with one click, using a configurable provider and model (Settings > AI actions), with per-action overrides.
+- Tidy projects with AI (Ctrl+Alt+T): proposes a cleaner grouping and order for projects and frames, applied after you review it.
+- Drag to reorder projects and frames in the projects list.
+
+### Fixed
+- Resolving a project's git root now works from remote and mobile sessions.
+
 ## [0.4.1]
 
 ### Added
