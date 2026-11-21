@@ -126,6 +126,30 @@ export interface CostEntry {
   dispatches: number;
 }
 
+export interface AiTarget {
+  provider: string;
+  model: string;
+}
+
+export interface AiActionsSettings {
+  default: AiTarget;
+  overrides: {
+    commitMessage?: AiTarget;
+    tidy?: AiTarget;
+  };
+}
+
+export interface TidyFrame {
+  title: string;
+  frameId?: string;
+  tileIds: string[];
+}
+
+export interface TidyPlan {
+  projectOrder: string[];
+  frames: TidyFrame[];
+}
+
 export interface OrchSettings {
   coordinator: string;
   hiddenAgents: string[];
@@ -133,6 +157,7 @@ export interface OrchSettings {
   showWorkerTiles: boolean;
   roles: RoleChains;
   orchestrateHint: OrchestrateHint;
+  aiActions: AiActionsSettings;
 }
 
 export interface OrchAgent {

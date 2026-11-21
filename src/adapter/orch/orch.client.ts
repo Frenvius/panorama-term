@@ -1,4 +1,4 @@
-import type { OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint } from '~/domain/interfaces/orch.interface';
+import type { AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -46,6 +46,7 @@ export interface SetSettingsOpts {
   showWorkerTiles?: boolean;
   roles?: Partial<RoleChains>;
   orchestrateHint?: OrchestrateHint;
+  aiActions?: Partial<AiActionsSettings>;
 }
 
 export const setSettings = (opts: SetSettingsOpts): Promise<{ ok: boolean; settings: OrchSettings }> =>
@@ -136,3 +137,9 @@ export interface StartWorkerOpts {
 
 export const startWorker = (opts: StartWorkerOpts): Promise<void> =>
   post('worker-start', opts).then(() => undefined);
+
+export const aiCommitMessage = (repo: string, files: string[]): Promise<string> =>
+  post<{ message: string }>('ai-commit-message', { repo, files }).then((r) => r.message);
+
+export const aiTidy = (snapshot: string): Promise<TidyPlan> =>
+  post<{ plan: TidyPlan }>('ai-tidy', { snapshot }).then((r) => r.plan);
