@@ -7,7 +7,7 @@ import { revealPath } from '~/adapter/shell/shell.client';
 import { readClipboard, writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import Frame from '~/components/Canvas/Frame';
 import Toasts from '~/components/commons/Toasts';
-import FrameBar, { type FrameBoardProp } from '~/components/Canvas/FrameBar';
+import FrameBar, { type FrameBoardProp, type FrameBarActions } from '~/components/Canvas/FrameBar';
 import Minimap from '~/components/Canvas/Minimap';
 import CommandBar from '~/components/Canvas/CommandBar';
 import SplitHandle from '~/components/Canvas/SplitHandle';
@@ -34,7 +34,7 @@ import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH, TILE_WIDTH, TILE_HEIGHT, NOTE_WIDTH, NOTE_HEIGHT, TOOLBAR_HEIGHT } from '~/usecase/util/constants';
 import { showToast } from '~/usecase/util/toasts';
-import { buildProjectGroups } from '~/usecase/util/projectGroups';
+import { projectsInUse, buildProjectGroups } from '~/usecase/util/projectGroups';
 import { spawnInGroup, fixGroupFrame } from '~/usecase/util/projectGroupActions';
 import { syncProjectViewWithTiles, projectName, projectRootPath, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
@@ -152,11 +152,13 @@ const Canvas = () => {
     placeTiles,
     resizeFrame,
     recolorFrame,
+    toggleFrameOrderLock,
     removeFrameWithTiles,
     fitFrame,
     reorderFrame,
     reorderCanvas,
     clusterCanvas,
+    planCluster,
     reorderProjects,
     setProjectsOrder,
     reorderFrameGroups,
@@ -939,8 +941,8 @@ const Canvas = () => {
   const [addProjectOpen, setAddProjectOpen] = React.useState(false);
 
   const canvasProjects = React.useMemo(
-    () => syncProjectViewWithTiles(activeState?.projectView, tiles).projects,
-    [activeState?.projectView, tiles]
+    () => projectsInUse({ frames, tiles, projects: syncProjectViewWithTiles(activeState?.projectView, tiles).projects }),
+    [activeState?.projectView, frames, tiles]
   );
 
   const canvasGroups = React.useMemo(
@@ -961,8 +963,8 @@ const Canvas = () => {
     patchFrame,
     removeFrame,
     patchTile,
-    placeTiles,
-    setProjectsOrder
+    setProjectsOrder,
+    planCluster
   });
   tidyTriggerRef.current = tidyAI.onTrigger;
 
@@ -1122,6 +1124,18 @@ const Canvas = () => {
       addOrchBoard(runId, nearTileId, repo, frameId);
     }
   }, [newBoard, addOrchBoard, patchTile]);
+
+  const frameBarActions = React.useMemo<FrameBarActions>(() => ({
+    onFit: fitFrame,
+    onDrag: dragFrame,
+    onRemove: removeFrame,
+    onRename: renameFrame,
+    onRecolor: recolorFrame,
+    onDragEnd: settleFrameDrag,
+    onReorder: reorderFrame,
+    onRemoveWithTiles: removeFrameWithTiles,
+    onToggleOrderLock: toggleFrameOrderLock
+  }), [fitFrame, dragFrame, removeFrame, renameFrame, recolorFrame, settleFrameDrag, reorderFrame, removeFrameWithTiles, toggleFrameOrderLock]);
 
   const boardPropsForFrame = React.useCallback((frame: { id: string; path?: string }): FrameBoardProp => {
     const frameRuns = frame.path ? projectBoards(allRuns, frame.path) : [];
@@ -1348,14 +1362,7 @@ const Canvas = () => {
               tiles={tiles}
               recede={receded.has(f.id)}
               board={boardPropsForFrame(f)}
-              onFit={fitFrame}
-              onReorder={reorderFrame}
-              onDrag={dragFrame}
-              onDragEnd={settleFrameDrag}
-              onRemove={removeFrame}
-              onRename={renameFrame}
-              onRecolor={recolorFrame}
-              onRemoveWithTiles={removeFrameWithTiles}
+              actions={frameBarActions}
             />
           ))}
         {marquee && (

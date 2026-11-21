@@ -30,9 +30,14 @@ export const dominantProject = (tiles: Tile[], projects: string[]): string | nul
 export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGroupsArgs): ProjectGroup[] => {
   const frameGroups: ProjectGroup[] = [];
   const frameGroupPathIndex = new Map<string, ProjectGroup>();
+  const framedProjects = new Set<string>();
 
   for (const frame of frames) {
     const memberTiles = tiles.filter((t) => frameOf(frames, t)?.id === frame.id);
+    for (const tile of memberTiles) {
+      const proj = tileProject(tile, projects);
+      if (proj) framedProjects.add(proj.toLowerCase());
+    }
 
     const path = frame.path ? normalizeProjectPath(frame.path) || null : dominantProject(memberTiles, projects);
 
@@ -107,7 +112,7 @@ export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGrou
     const norm = normalizeProjectPath(proj);
     if (!norm) continue;
     const normLower = norm.toLowerCase();
-    if (frameGroupPathIndex.has(normLower)) continue;
+    if (frameGroupPathIndex.has(normLower) || framedProjects.has(normLower)) continue;
     if (!pathGroups.has(normLower)) {
       pathGroups.set(normLower, {
         key: `path:${norm}`,
@@ -148,6 +153,14 @@ export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGrou
 
   return result;
 };
+
+export const projectsInUse = ({ frames, tiles, projects }: BuildProjectGroupsArgs): string[] =>
+  projects.filter((project) => {
+    const key = normalizeProjectPath(project).toLowerCase();
+    if (!key) return false;
+    if (frames.some((f) => f.path && normalizeProjectPath(f.path).toLowerCase() === key)) return true;
+    return tiles.some((t) => tileProject(t, projects)?.toLowerCase() === key);
+  });
 
 export const groupPathResolver = (groups: ProjectGroup[]): ((tile: Tile) => string | null) => {
   const pathByTile = new Map<string, string>();

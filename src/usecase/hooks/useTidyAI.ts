@@ -1,11 +1,12 @@
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { TidyPlan } from '~/domain/interfaces/orch.interface';
+import type { ClusterPlanner } from '~/usecase/util/tidy';
 
 import React from 'react';
 
 import { aiTidy, aiProgress } from '~/adapter/orch/orch.client';
 import { showToast, errorText } from '~/usecase/util/toasts';
-import { pinPathlessNotes, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from '~/usecase/util/tidy';
+import { pinPathlessNotes, settleTidyLayout, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from '~/usecase/util/tidy';
 
 export type TidyStatus = 'idle' | 'loading' | 'preview' | 'applying';
 
@@ -34,8 +35,8 @@ export interface UseTidyAIOpts {
   patchFrame: (id: string, patch: Partial<Omit<Frame, 'id'>>) => void;
   removeFrame: (id: string) => void;
   patchTile: (id: string, patch: Partial<Tile>) => void;
-  placeTiles: (moves: { id: string; x: number; y: number }[]) => void;
   setProjectsOrder: (paths: string[]) => void;
+  planCluster?: ClusterPlanner;
 }
 
 export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
@@ -104,9 +105,9 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
     const p = preview;
     if (!p) return;
 
-    const { tiles, frames, createFrame, patchFrame, patchTile, placeTiles, setProjectsOrder, projects } = optsRef.current;
+    const { tiles, frames, createFrame, patchFrame, removeFrame, patchTile, setProjectsOrder, projects, planCluster } = optsRef.current;
 
-    const undoTilePositions = tiles.map((t) => ({ id: t.id, x: t.x, y: t.y }));
+    const undoTileRects = tiles.map((t) => ({ id: t.id, rect: { x: t.x, y: t.y, width: t.width, height: t.height } }));
     const undoFrameStates = frames.map((f) => ({ ...f }));
     const undoProjectOrder = [...projects];
 
@@ -116,14 +117,12 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
     for (const pin of notePins) patchTile(pin.id, { workspacePath: pin.workspacePath });
 
     const layout = computeTidyLayout(p.plan, tiles, frames, projects);
-    if (layout.tileMoves.length) placeTiles(layout.tileMoves);
-    for (const fp of layout.framePatches) patchFrame(fp.id, fp.patch);
-
-    const createdFrameIds: string[] = [];
-    for (const nf of layout.newFrames) {
-      const id = createFrame(nf);
-      createdFrameIds.push(id);
-    }
+    const settled = settleTidyLayout(layout, tiles, frames, planCluster);
+    for (const [id, rect] of settled.tileRects) patchTile(id, rect);
+    for (const fp of settled.framePatches) patchFrame(fp.id, fp.patch);
+    for (const id of settled.removedFrameIds) removeFrame(id);
+    const createdFrameIds = settled.newFrames.map((nf) => createFrame(nf));
+    const removedFrames = undoFrameStates.filter((f) => settled.removedFrameIds.includes(f.id));
 
     setProjectsOrder(p.plan.projectOrder);
     setStatus('idle');
@@ -135,22 +134,17 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
       action: {
         label: 'Undo',
         run: () => {
-          optsRef.current.setProjectsOrder(undoProjectOrder);
-          optsRef.current.placeTiles(undoTilePositions);
-          for (const pin of notePins) optsRef.current.patchTile(pin.id, { workspacePath: undefined });
-          for (const id of createdFrameIds) optsRef.current.removeFrame(id);
+          const ops = optsRef.current;
+          ops.setProjectsOrder(undoProjectOrder);
+          for (const { id, rect } of undoTileRects) {
+            if (settled.tileRects.has(id)) ops.patchTile(id, rect);
+          }
+          for (const pin of notePins) ops.patchTile(pin.id, { workspacePath: undefined });
+          for (const id of createdFrameIds) ops.removeFrame(id);
+          for (const { id: _id, ...frame } of removedFrames) ops.createFrame(frame);
           for (const f of undoFrameStates) {
-            if (!createdFrameIds.includes(f.id)) {
-              optsRef.current.patchFrame(f.id, {
-                x: f.x,
-                y: f.y,
-                width: f.width,
-                height: f.height,
-                title: f.title,
-                color: f.color,
-                path: f.path
-              });
-            }
+            if (settled.removedFrameIds.includes(f.id)) continue;
+            ops.patchFrame(f.id, { x: f.x, y: f.y, width: f.width, height: f.height, title: f.title, color: f.color, path: f.path });
           }
         }
       }

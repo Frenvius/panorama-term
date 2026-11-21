@@ -2,7 +2,7 @@ import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 
 import { test, expect, describe } from 'bun:test';
 
-import { buildProjectGroups, tileOwnerResolver } from '~/usecase/util/projectGroups';
+import { projectsInUse, buildProjectGroups, tileOwnerResolver } from '~/usecase/util/projectGroups';
 
 const makeTile = (id: string, overrides: Partial<Tile> = {}): Tile => ({
   id,
@@ -162,6 +162,14 @@ describe('buildProjectGroups - empty project groups', () => {
     const pathGroups = groups.filter((g) => g.kind === 'path');
     expect(pathGroups).toHaveLength(0);
   });
+
+  test('does not emit empty path group for a project whose tiles sit in another project frame', () => {
+    const frame = makeFrame('f1', 0, 0, 1000, 1000, { path: '/game/client' });
+    const tiles = [makeTile('c', { x: 10, y: 10, cwd: '/game/client' }), makeTile('s', { x: 10, y: 400, cwd: '/game/server' })];
+    const groups = buildProjectGroups({ frames: [frame], tiles, projects: ['/game/client', '/game/server'] });
+    expect(groups.filter((g) => g.kind === 'path')).toHaveLength(0);
+    expect(groups[0]!.tiles.map((t) => t.id)).toEqual(['c', 's']);
+  });
 });
 
 describe('buildProjectGroups - ordering', () => {
@@ -219,5 +227,14 @@ describe('tileOwnerResolver', () => {
   test('falls back to the tile path outside frames', () => {
     const term = makeTile('t1', { x: 2000, y: 2000, cwd: '/a/foo' });
     expect(tileOwnerResolver({ frames: [], tiles: [term], projects: ['/a/foo', '/b/bar'] })(term)).toBe('/a/foo');
+  });
+});
+
+describe('projectsInUse', () => {
+  test('keeps projects backed by a frame or a tile and drops the rest', () => {
+    const frame = makeFrame('f1', 0, 0, 200, 200, { path: '/proj/framed' });
+    const tiles = [makeTile('t', { x: 500, y: 500, cwd: '/proj/tiled' })];
+    const projects = ['/proj/framed', '/proj/tiled', '/proj/empty'];
+    expect(projectsInUse({ frames: [frame], tiles, projects })).toEqual(['/proj/framed', '/proj/tiled']);
   });
 });

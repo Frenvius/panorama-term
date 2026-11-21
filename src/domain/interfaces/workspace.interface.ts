@@ -42,6 +42,7 @@ export interface Frame {
   color: string;
   path?: string;
   groupId?: string;
+  orderLocked?: boolean;
 }
 
 export interface Viewport {

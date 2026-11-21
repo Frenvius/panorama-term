@@ -3,7 +3,7 @@ import type { FrameArrangement } from '~/usecase/util/reorderLayout';
 import type { Tile, View, Frame as FrameData, FrameMember } from '~/domain/interfaces/canvas.interface';
 
 import React from 'react';
-import { X, Rows2, Trash2, Shrink, Grid2x2, Grid3x3, Palette, PenLine, Columns2, LayoutGrid, SquareKanban, WandSparkles } from 'lucide-react';
+import { X, Lock, Rows2, Trash2, Shrink, Grid2x2, Grid3x3, Palette, PenLine, Columns2, LayoutGrid, LockOpen, SquareKanban, WandSparkles } from 'lucide-react';
 
 import ContextMenu from '~/components/commons/ContextMenu';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
@@ -18,20 +18,25 @@ export interface FrameBoardProp {
   onSetFolder: () => void;
 }
 
+export interface FrameBarActions {
+  onFit: (id: string) => void;
+  onDrag: (id: string, x: number, y: number, members: FrameMember[]) => void;
+  onRemove: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onRecolor: (id: string, color: string) => void;
+  onDragEnd: (id: string, memberIds: string[]) => void;
+  onReorder: (id: string, arrangement: FrameArrangement) => void;
+  onRemoveWithTiles: (id: string) => void;
+  onToggleOrderLock: (id: string) => void;
+}
+
 interface FrameBarProps {
   frame: FrameData;
   view: View;
   tiles: Tile[];
   recede: boolean;
   board?: FrameBoardProp;
-  onFit: (id: string) => void;
-  onReorder: (id: string, arrangement: FrameArrangement) => void;
-  onDragEnd: (id: string, memberIds: string[]) => void;
-  onRemove: (id: string) => void;
-  onRemoveWithTiles: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-  onRecolor: (id: string, color: string) => void;
-  onDrag: (id: string, x: number, y: number, members: FrameMember[]) => void;
+  actions: FrameBarActions;
 }
 
 interface DragState {
@@ -56,7 +61,7 @@ const ARRANGEMENTS: { arrangement: FrameArrangement; label: string; icon: React.
   { arrangement: 'grid3', label: 'Grid 3x3', icon: <Grid3x3 size={15} strokeWidth={1.75} /> }
 ];
 
-const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder, onDragEnd, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
+const FrameBar = ({ frame, view, tiles, recede, board, actions }: FrameBarProps) => {
   const k = view.k;
   const [editing, setEditing] = React.useState(false);
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
@@ -80,26 +85,27 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
     if (!d) return;
     const dx = (e.clientX - d.sx) / k;
     const dy = (e.clientY - d.sy) / k;
-    onDrag(frame.id, d.fx + dx, d.fy + dy, d.members.map((m) => ({ id: m.id, x: m.sx + dx, y: m.sy + dy })));
+    actions.onDrag(frame.id, d.fx + dx, d.fy + dy, d.members.map((m) => ({ id: m.id, x: m.sx + dx, y: m.sy + dy })));
   };
   const endDrag = () => {
     const d = drag.current;
     if (!d) return;
     drag.current = null;
-    onDragEnd(frame.id, d.members.map((m) => m.id));
+    actions.onDragEnd(frame.id, d.members.map((m) => m.id));
   };
 
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   const openColor = () => colorRef.current?.click();
-  const recolor = (e: React.ChangeEvent<HTMLInputElement>) => onRecolor(frame.id, e.currentTarget.value);
-  const remove = () => onRemove(frame.id);
-  const removeWithTiles = () => onRemoveWithTiles(frame.id);
-  const fit = () => onFit(frame.id);
+  const recolor = (e: React.ChangeEvent<HTMLInputElement>) => actions.onRecolor(frame.id, e.currentTarget.value);
+  const remove = () => actions.onRemove(frame.id);
+  const removeWithTiles = () => actions.onRemoveWithTiles(frame.id);
+  const fit = () => actions.onFit(frame.id);
+  const toggleOrderLock = () => actions.onToggleOrderLock(frame.id);
 
   const reorderEntries: ContextMenuEntry[] = ARRANGEMENTS.map(({ arrangement, label, icon }) => ({
     label,
     icon,
-    onSelect: () => onReorder(frame.id, arrangement)
+    onSelect: () => actions.onReorder(frame.id, arrangement)
   }));
 
   const startRename = () => setEditing(true);
@@ -116,7 +122,7 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
     setMenu({ x: e.clientX, y: e.clientY });
   };
   const commitRename = (e: React.FocusEvent<HTMLInputElement> | React.KeyboardEvent<HTMLInputElement>) => {
-    onRename(frame.id, (e.currentTarget as HTMLInputElement).value.trim() || 'Frame');
+    actions.onRename(frame.id, (e.currentTarget as HTMLInputElement).value.trim() || 'Frame');
     setEditing(false);
   };
   const onRenameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -161,7 +167,10 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
             onPointerDown={stop}
           />
         ) : (
-          <span className={styles.title}>{frame.title}</span>
+          <span className={styles.title}>
+            {frame.orderLocked && <Lock size={11} strokeWidth={1.75} className={styles.lockIcon} />}
+            {frame.title}
+          </span>
         )}
         <button className={styles.colorBtn} onClick={openColor} onPointerDown={stop} aria-label="Frame color" />
         <input ref={colorRef} type="color" value={frame.color} className={styles.colorInput} onChange={recolor} />
@@ -179,6 +188,7 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
             { label: 'Change color', icon: <Palette size={15} strokeWidth={1.75} />, onSelect: openColor },
             { label: 'Fit to contents', icon: <Shrink size={15} strokeWidth={1.75} />, onSelect: fit },
             { label: 'Reorder', icon: <LayoutGrid size={15} strokeWidth={1.75} />, submenu: reorderEntries },
+            { label: frame.orderLocked ? 'Unlock order' : 'Lock order', icon: frame.orderLocked ? <LockOpen size={15} strokeWidth={1.75} /> : <Lock size={15} strokeWidth={1.75} />, onSelect: toggleOrderLock },
             ...(board
               ? ([
                   'separator',

@@ -136,6 +136,8 @@ const gridFrame = (frame: Frame): Rect => ({
 
 type MemberLayout = (boxes: Box[], origin: { x: number; y: number }, spacing: Spacing) => Map<string, Rect>;
 
+const keepLayout: MemberLayout = (boxes) => new Map(boxes.map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
+
 const arrangementLayout = (arrangement: FrameArrangement): MemberLayout =>
   arrangement === 'auto' ? packRows : (boxes, origin, spacing) => arrangeGrid(origin, boxes, GRID_COLUMNS[arrangement](boxes.length), spacing);
 
@@ -209,7 +211,7 @@ const collectBlocks = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs,
   const blocks: Box[] = [];
 
   for (const frame of frames) {
-    const plan = planFrame({ frame, members: (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW, layout });
+    const plan = planFrame({ frame, members: (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW, layout: frame.orderLocked ? keepLayout : layout });
     plan.tiles.forEach((rect, tid) => tileRects.set(tid, rect));
     const rect = plan.frames.get(frame.id)!;
     frameRects.set(frame.id, rect);
@@ -259,18 +261,15 @@ interface Segment {
   y: number;
 }
 
-const restingY = (skyline: Segment[], x: number, width: number): number =>
-  Math.max(...skyline.filter((s) => s.x < x + width && s.x + s.width > x).map((s) => s.y));
+const SKYLINE_EPSILON = 0.5;
 
-const lowestSpot = (skyline: Segment[], width: number, limit: number): { x: number; y: number } => {
-  let best = { x: 0, y: Infinity };
-  for (const { x } of skyline) {
-    if (x + width > limit) break;
-    const y = restingY(skyline, x, width);
-    if (y < best.y) best = { x, y };
-  }
-  return best;
-};
+const mergeLevels = (skyline: Segment[]): Segment[] =>
+  skyline.reduce<Segment[]>((merged, s) => {
+    const last = merged[merged.length - 1];
+    if (last && Math.abs(last.y - s.y) < SKYLINE_EPSILON) last.width = s.x + s.width - last.x;
+    else merged.push({ ...s });
+    return merged;
+  }, []);
 
 const raiseSkyline = (skyline: Segment[], placed: Segment): Segment[] => {
   const end = placed.x + placed.width;
@@ -280,7 +279,16 @@ const raiseSkyline = (skyline: Segment[], placed: Segment): Segment[] => {
     const right = s.x + s.width > end ? [{ x: end, width: s.x + s.width - end, y: s.y }] : [];
     return [...left, ...right];
   });
-  return [...pieces, placed].sort((a, b) => a.x - b.x);
+  return mergeLevels([...pieces, placed].sort((a, b) => a.x - b.x));
+};
+
+const lowestWell = (skyline: Segment[]): number =>
+  skyline.reduce((best, s, i) => (s.y < skyline[best]!.y - SKYLINE_EPSILON ? i : best), 0);
+
+const fillWell = (skyline: Segment[], index: number): Segment[] => {
+  const neighbors = [skyline[index - 1], skyline[index + 1]].filter((s): s is Segment => !!s);
+  const level = Math.min(...neighbors.map((s) => s.y));
+  return mergeLevels(skyline.map((s, i) => (i === index ? { ...s, y: level } : s)));
 };
 
 const packSkyline = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
@@ -289,12 +297,26 @@ const packSkyline = (boxes: Box[], aspect: number, spacing: Spacing): Map<string
   const area = boxes.reduce((sum, b) => sum + footprint(b).width * footprint(b).height, 0);
   const limit = Math.max(...boxes.map((b) => footprint(b).width), Math.sqrt(area * aspect));
   let skyline: Segment[] = [{ x: 0, width: limit, y: 0 }];
+  const pending = readingRows(boxes).flat();
   const placed = new Map<string, Rect>();
-  for (const box of [...boxes].sort((a, b) => outerHeight(b) - outerHeight(a))) {
+  while (pending.length) {
+    const index = lowestWell(skyline);
+    const well = skyline[index]!;
+    const fitting = pending.filter((b) => footprint(b).width <= well.width + SKYLINE_EPSILON);
+    if (!fitting.length) {
+      skyline = fillWell(skyline, index);
+      continue;
+    }
+    const box = fitting.reduce((best, b) =>
+      outerHeight(b) > outerHeight(best) + SKYLINE_EPSILON ||
+      (Math.abs(outerHeight(b) - outerHeight(best)) < SKYLINE_EPSILON && footprint(b).width > footprint(best).width + SKYLINE_EPSILON)
+        ? b
+        : best
+    );
+    pending.splice(pending.indexOf(box), 1);
     const { width, height } = footprint(box);
-    const spot = lowestSpot(skyline, width, limit);
-    placed.set(box.id, { x: spot.x, y: edge(spot.y + box.lead), width: box.width, height: box.height });
-    skyline = raiseSkyline(skyline, { x: spot.x, width, y: spot.y + height });
+    placed.set(box.id, { x: well.x, y: edge(well.y + box.lead), width: box.width, height: box.height });
+    skyline = raiseSkyline(skyline, { x: well.x, width, y: well.y + height });
   }
   return placed;
 };

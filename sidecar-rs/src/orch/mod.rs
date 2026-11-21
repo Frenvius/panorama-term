@@ -3743,10 +3743,13 @@ async fn handle_ai_tidy(body: &[u8]) -> String {
     let prompt = format!(
         "Given this workspace snapshot, return ONLY a JSON object with this exact shape:\n\
          {{\"projectOrder\":[\"<projectId>\",...],\"frames\":[{{\"title\":\"<short>\",\"frameId\":\"<existingId>\",\"path\":\"<projectPath>\",\"tileIds\":[\"<id>\",...]}}, ...]}}\n\
-         Rules: order projects sensibly, group tiles by project then by topic/work area, never mix projects in one frame. \
+         Rules: order projects sensibly and group tiles by context: one frame per product or work area. \
+         Projects that are parts of the same product share ONE frame titled after the product, e.g. sibling folders under a common parent \
+         (game/client, game/server, game/map-editor) or paths naming the same product in different places (a game's mods and its dedicated server). \
+         Unrelated projects never share a frame. \
          A frame with a path already represents that project: reuse it via frameId for that project's tiles instead of creating another. \
          Reuse other existing frames via frameId when they fit (omit frameId for new frames). \
-         Set path to the projects[].path the frame belongs to, or omit it for frames outside any project. \
+         Set path to the projects[].path only when the frame holds a single project; omit it for multi-project frames and frames outside any project. \
          Short titles (2-4 words), never invent tile, frame or project ids.\n\
          Return ONLY the JSON object, no prose.\n\n\
          {snapshot}"

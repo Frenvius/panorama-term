@@ -30,6 +30,7 @@ import { planFrameReorder, planCanvasCluster, planCanvasReorder } from '~/usecas
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { syncProjectViewWithTiles } from '~/usecase/util/projectLayout';
+import { projectsInUse } from '~/usecase/util/projectGroups';
 import {
   CELL,
   SNAP_PX,
@@ -225,17 +226,19 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const persistNow = () => {
     pendingSaveRef.current = false;
     applied.current = { tiles: tilesRef.current, frames: framesRef.current };
-    onPersistRef.current(
-      toStored({
-        tiles: tilesRef.current,
-        view: viewRef.current,
-        frames: framesRef.current,
-        projectView: initial.current.projectView
-      })
-    );
+    const projectView = initial.current.projectView && {
+      ...initial.current.projectView,
+      projects: projectsInUse({ frames: framesRef.current, tiles: tilesRef.current, projects: initial.current.projectView.projects })
+    };
+    onPersistRef.current(toStored({ tiles: tilesRef.current, view: viewRef.current, frames: framesRef.current, projectView }));
   };
   const persistNowRef = React.useRef(persistNow);
   persistNowRef.current = persistNow;
+
+  const [projectViewRevision, setProjectViewRevision] = React.useState(0);
+  React.useEffect(() => {
+    if (projectViewRevision) persistNowRef.current();
+  }, [projectViewRevision]);
 
   React.useEffect(() => {
     if (interacting || !shouldPersist(applied.current, { tiles, frames }, isRemote())) return;
@@ -1043,6 +1046,10 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, color } : f)));
   }, []);
 
+  const toggleFrameOrderLock = React.useCallback((id: string) => {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, orderLocked: !f.orderLocked } : f)));
+  }, []);
+
   const removeFrame = React.useCallback((id: string) => {
     setFrames((prev) => prev.filter((f) => f.id !== id));
   }, []);
@@ -1090,13 +1097,16 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     [applyReorder]
   );
 
-  const clusterCanvas = React.useCallback(() => {
+  const planCluster = React.useCallback((tiles: Tile[], frames: Frame[]) => {
     const rect = bgRef.current?.getBoundingClientRect();
     const aspect = rect?.height ? rect.width / rect.height : 16 / 9;
-    applyReorder(
-      planCanvasCluster({ aspect, tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })
-    );
-  }, [applyReorder]);
+    return planCanvasCluster({ aspect, tiles, frames, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() });
+  }, []);
+
+  const clusterCanvas = React.useCallback(
+    () => applyReorder(planCluster(tilesRef.current, framesRef.current)),
+    [applyReorder, planCluster]
+  );
 
   const reorderFrameGroups = React.useCallback((from: string, to: string, place: DropPlace) => {
     setFrames((prev) => moveFrameOrder({ frames: prev, from, to, place }));
@@ -1106,13 +1116,13 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const base = syncProjectViewWithTiles(initial.current.projectView, tilesRef.current);
     const projects = moveProject({ projects: base.projects, from, to, place });
     initial.current = { ...initial.current, projectView: { ...base, projects } };
-    persistNowRef.current();
+    setProjectViewRevision((r) => r + 1);
   }, []);
 
   const setProjectsOrder = React.useCallback((paths: string[]) => {
     const base = syncProjectViewWithTiles(initial.current.projectView, tilesRef.current);
     initial.current = { ...initial.current, projectView: { ...base, projects: paths } };
-    persistNowRef.current();
+    setProjectViewRevision((r) => r + 1);
   }, []);
 
   const frameSelection = React.useCallback(() => {
@@ -1249,11 +1259,13 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     renameFrame,
     resizeFrame,
     recolorFrame,
+    toggleFrameOrderLock,
     removeFrameWithTiles,
     fitFrame,
     reorderFrame,
     reorderCanvas,
     clusterCanvas,
+    planCluster,
     reorderProjects,
     setProjectsOrder,
     reorderFrameGroups,

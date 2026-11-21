@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 
-import { pinPathlessNotes, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from './tidy';
+import { pinPathlessNotes, settleTidyLayout, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from './tidy';
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { TidyPlan } from '~/domain/interfaces/orch.interface';
 
@@ -286,5 +286,96 @@ describe('tidy notes', () => {
     const frame = makeFrame('f1', { x: 0, y: 0, width: 800, height: 600, path: '/b/bar' });
     const tiles = [note('n1', { x: 20, y: 20, width: 200, height: 200 })];
     expect(pinPathlessNotes({ projects: ['/a/foo', '/b/bar'], frames: [frame], tiles })).toEqual([{ id: 'n1', workspacePath: '/b/bar' }]);
+  });
+});
+
+describe('settleTidyLayout', () => {
+  const tiles = [makeTile('a', { x: 20, y: 20 }), makeTile('b', { x: 520, y: 20 })];
+  const frames = [makeFrame('old', { x: 0, y: 0, width: 400, height: 300 }), makeFrame('other', { x: 500, y: 0 })];
+  const layout = {
+    tileMoves: [{ id: 'a', x: 2000, y: 20 }],
+    framePatches: [],
+    newFrames: [{ x: 1980, y: 0, width: 400, height: 300, title: 'New', color: '#000' }]
+  };
+
+  it('removes frames emptied by the tidy and keeps the others', () => {
+    const settled = settleTidyLayout(layout, tiles, frames);
+    expect(settled.removedFrameIds).toEqual(['old']);
+    expect(settled.tileRects.get('a')).toEqual({ x: 2000, y: 20, width: 300, height: 200 });
+    expect(settled.tileRects.has('b')).toBe(false);
+  });
+
+  it('packs the result with the cluster planner, new frames included', () => {
+    const cluster = (_tiles: Tile[], next: Frame[]) => ({
+      tiles: new Map([['a', { x: 0, y: 0, width: 300, height: 200 }]]),
+      frames: new Map(next.map((f, i) => [f.id, { x: i * 500, y: 0, width: f.width, height: f.height }]))
+    });
+    const settled = settleTidyLayout(layout, tiles, frames, cluster);
+    expect(settled.tileRects.get('a')).toEqual({ x: 0, y: 0, width: 300, height: 200 });
+    expect(settled.framePatches).toEqual([{ id: 'other', patch: { x: 0, y: 0, width: 400, height: 300 } }]);
+    expect(settled.newFrames[0]).toMatchObject({ title: 'New', x: 500, y: 0 });
+  });
+});
+
+describe('sanitizeTidyPlan locked frames', () => {
+  it('removes locked frame members from plan frames and never resolves to a locked frame', () => {
+    const lockedFrame = makeFrame('lf', { x: 0, y: 0, width: 500, height: 400, orderLocked: true });
+    const lockedTile = makeTile('lt', { x: 20, y: 20 });
+    const freeTile = makeTile('ft');
+    const known = {
+      projectPaths: [],
+      tiles: [lockedTile, freeTile],
+      frames: [lockedFrame]
+    };
+    const plan: TidyPlan = {
+      projectOrder: [],
+      frames: [
+        { title: 'Other', frameId: 'lf', tileIds: ['lt', 'ft'] }
+      ]
+    };
+    const result = sanitizeTidyPlan(plan, known);
+    const tileIds = result.frames.flatMap((f) => f.tileIds);
+    expect(tileIds).not.toContain('lt');
+    const frameIds = result.frames.map((f) => f.frameId).filter(Boolean);
+    expect(frameIds).not.toContain('lf');
+  });
+});
+
+describe('sanitizeTidyPlan nested projects', () => {
+  it('folds a subproject frame into its parent project frame', () => {
+    const projectPaths = ['D:/work/app', 'D:/work/app/front', 'D:/work/other'];
+    const tiles = [
+      makeTile('root', { cwd: 'D:/work/app' }),
+      makeTile('front', { cwd: 'D:/work/app/front' }),
+      makeTile('other', { cwd: 'D:/work/other' })
+    ];
+    const plan: TidyPlan = {
+      projectOrder: projectPaths,
+      frames: [
+        { title: 'App', path: 'D:/work/app', tileIds: ['root'] },
+        { title: 'Front', path: 'D:/work/app/front', tileIds: ['front'] },
+        { title: 'Other', path: 'D:/work/other', tileIds: ['other'] }
+      ]
+    };
+    const result = sanitizeTidyPlan(plan, { projectPaths, tiles, frames: [] });
+    expect(result.frames.map((f) => [f.title, f.tileIds])).toEqual([
+      ['App', ['root', 'front']],
+      ['Other', ['other']]
+    ]);
+  });
+});
+
+describe('sanitizeTidyPlan context frames', () => {
+  it('leaves a multi-project frame without a path and keeps each project together', () => {
+    const projectPaths = ['D:/game/client', 'D:/game/server'];
+    const tiles = [
+      makeTile('c1', { cwd: 'D:/game/client' }),
+      makeTile('s1', { cwd: 'D:/game/server' }),
+      makeTile('c2', { cwd: 'D:/game/client' })
+    ];
+    const plan: TidyPlan = { projectOrder: projectPaths, frames: [{ title: 'Game', path: 'D:/game/client', tileIds: ['c1', 's1', 'c2'] }] };
+    const [frame] = sanitizeTidyPlan(plan, { projectPaths, tiles, frames: [] }).frames;
+    expect(frame!.path).toBeUndefined();
+    expect(frame!.tileIds).toEqual(['c1', 'c2', 's1']);
   });
 });

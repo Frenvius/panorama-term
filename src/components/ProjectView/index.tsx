@@ -642,7 +642,6 @@ const ProjectView = () => {
     patchFrame,
     removeFrame,
     patchTile,
-    placeTiles,
     setProjectsOrder
   });
   tidyTriggerRef.current = tidyAI.onTrigger;

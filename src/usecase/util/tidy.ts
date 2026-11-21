@@ -1,7 +1,8 @@
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { TidyPlan, TidyFrame } from '~/domain/interfaces/orch.interface';
+import type { Rect, ReorderPlan } from '~/usecase/util/reorderLayout';
 
-import { frameOf } from '~/usecase/util/frame';
+import { frameOf, groupByFrame } from '~/usecase/util/frame';
 import { dominantProject, tileOwnerResolver } from '~/usecase/util/projectGroups';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { projectName, tileProject, tileCandidatePath, normalizeProjectPath } from '~/usecase/util/projectLayout';
@@ -84,29 +85,62 @@ const frameResolver = ({ known, claimed }: FrameResolverArgs) => {
   return (planFrame: TidyFrame, members: Tile[]): { frameId?: string; path?: string } => {
     const requested = planFrame.frameId && frameById.has(planFrame.frameId) && !claimed.has(planFrame.frameId) ? planFrame.frameId : undefined;
     const fixedPath = requested ? frameById.get(requested)!.path : undefined;
-    const path = (fixedPath && normalizeProjectPath(fixedPath)) || matchProject(planFrame.path, known.projectPaths) || dominantProject(members, known.projectPaths);
+    const spansProjects = new Set(members.map((t) => tileProject(t, known.projectPaths)?.toLowerCase()).filter(Boolean)).size > 1;
+    const guessedPath = spansProjects ? null : matchProject(planFrame.path, known.projectPaths) || dominantProject(members, known.projectPaths);
+    const path = (fixedPath && normalizeProjectPath(fixedPath)) || guessedPath;
     const frameId = requested ?? (path ? frameForProject(path) : undefined);
     if (frameId) claimed.add(frameId);
     return { frameId, path: path ?? undefined };
   };
 };
 
+const byProject = (tiles: Tile[], projectPaths: string[]): Tile[] => {
+  const rank = new Map<string, number>();
+  for (const t of tiles) {
+    const key = tileProject(t, projectPaths)?.toLowerCase() ?? '';
+    if (!rank.has(key)) rank.set(key, rank.size);
+  }
+  return [...tiles].sort((a, b) => rank.get(tileProject(a, projectPaths)?.toLowerCase() ?? '')! - rank.get(tileProject(b, projectPaths)?.toLowerCase() ?? '')!);
+};
+
+const isInside = (child: string, parent: string): boolean => child.toLowerCase().startsWith(`${parent.toLowerCase()}/`);
+
+const mergeNestedProjects = (frames: TidyFrame[]): TidyFrame[] => {
+  const merged = frames.map((f) => ({ ...f, tileIds: [...f.tileIds] }));
+  const byDepth = [...merged].sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0));
+  const absorbed = new Set<TidyFrame>();
+  for (const child of byDepth) {
+    const parent = byDepth
+      .filter((f) => f !== child && !absorbed.has(f) && f.path && child.path && isInside(child.path, f.path))
+      .reduce<TidyFrame | undefined>((best, f) => (!best || f.path!.length > best.path!.length ? f : best), undefined);
+    if (!parent) continue;
+    parent.tileIds.push(...child.tileIds);
+    absorbed.add(child);
+  }
+  return merged.filter((f) => !absorbed.has(f));
+};
+
 export const sanitizeTidyPlan = (plan: TidyPlan, known: TidyKnown): TidyPlan => {
   const tileById = new Map(known.tiles.filter((t) => !isNote(t)).map((t) => [t.id, t]));
   const assignedTileIds = new Set<string>();
-  const resolveFrame = frameResolver({ known, claimed: new Set<string>() });
+  const lockedFrameIds = new Set(known.frames.filter((f) => f.orderLocked).map((f) => f.id));
+  const lockedTileIds = new Set(
+    known.frames.filter((f) => f.orderLocked).flatMap((f) => frameMembers(f, known.frames, known.tiles).map((t) => t.id))
+  );
+  const resolveFrame = frameResolver({ known, claimed: new Set<string>(lockedFrameIds) });
   const frames: TidyFrame[] = [];
 
   for (const frame of plan.frames) {
-    const validTileIds = frame.tileIds.filter((id) => tileById.has(id) && !assignedTileIds.has(id));
+    const validTileIds = frame.tileIds.filter((id) => tileById.has(id) && !assignedTileIds.has(id) && !lockedTileIds.has(id));
     if (validTileIds.length === 0) continue;
     for (const id of validTileIds) assignedTileIds.add(id);
     const members = validTileIds.map((id) => tileById.get(id)!);
     const { frameId, path } = resolveFrame(frame, members);
-    frames.push({ title: frame.title, tileIds: validTileIds, ...(frameId && { frameId }), ...(path && { path }) });
+    const tileIds = byProject(members, known.projectPaths).map((t) => t.id);
+    frames.push({ title: frame.title, tileIds, ...(frameId && { frameId }), ...(path && { path }) });
   }
 
-  return { projectOrder: orderProjects(plan.projectOrder, known.projectPaths), frames };
+  return { projectOrder: orderProjects(plan.projectOrder, known.projectPaths), frames: mergeNestedProjects(frames) };
 };
 
 export const pinPathlessNotes = (opts: TidySnapshotOpts): { id: string; workspacePath: string }[] => {
@@ -249,4 +283,65 @@ export const computeTidyLayout = (plan: TidyPlan, tiles: Tile[], frames: Frame[]
   }
 
   return { tileMoves, framePatches, newFrames: newFrameList };
+};
+
+export type ClusterPlanner = (tiles: Tile[], frames: Frame[]) => ReorderPlan | null;
+
+export interface SettledTidyLayout {
+  tileRects: Map<string, Rect>;
+  framePatches: { id: string; patch: Partial<Omit<Frame, 'id'>> }[];
+  newFrames: Omit<Frame, 'id'>[];
+  removedFrameIds: string[];
+}
+
+const NEW_FRAME_PREFIX = 'tidy-new-';
+
+const sameRect = (tile: Tile, rect: Rect): boolean =>
+  tile.x === rect.x && tile.y === rect.y && tile.width === rect.width && tile.height === rect.height;
+
+const centerOf = (rects: Rect[]): { x: number; y: number } => {
+  const left = Math.min(...rects.map((r) => r.x));
+  const top = Math.min(...rects.map((r) => r.y));
+  const right = Math.max(...rects.map((r) => r.x + r.width));
+  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  return { x: (left + right) / 2, y: (top + bottom) / 2 };
+};
+
+const recenter = (plan: ReorderPlan | null | undefined, target: { x: number; y: number }): ReorderPlan | null => {
+  if (!plan) return null;
+  const current = centerOf([...plan.tiles.values(), ...plan.frames.values()]);
+  const dx = Math.round((target.x - current.x) / CELL) * CELL;
+  const dy = Math.round((target.y - current.y) / CELL) * CELL;
+  const shift = (rects: Map<string, Rect>) => new Map([...rects].map(([id, r]) => [id, { ...r, x: r.x + dx, y: r.y + dy }]));
+  return { tiles: shift(plan.tiles), frames: shift(plan.frames) };
+};
+
+export const settleTidyLayout = (layout: TidyLayoutResult, tiles: Tile[], frames: Frame[], cluster?: ClusterPlanner): SettledTidyLayout => {
+  const moves = new Map(layout.tileMoves.map((m) => [m.id, m]));
+  const patches = new Map(layout.framePatches.map((p) => [p.id, p.patch]));
+  const movedTiles = tiles.map((t) => ({ ...t, ...moves.get(t.id) }));
+  const created = layout.newFrames.map((f, i) => ({ ...f, id: `${NEW_FRAME_PREFIX}${i}` }));
+  const nextFrames = [...frames.map((f) => ({ ...f, ...patches.get(f.id) })), ...created];
+
+  const before = groupByFrame(frames, tiles).members;
+  const after = groupByFrame(nextFrames, movedTiles).members;
+  const removed = new Set(frames.filter((f) => before.get(f.id)?.length && !after.get(f.id)?.length).map((f) => f.id));
+  const keptFrames = nextFrames.filter((f) => !removed.has(f.id));
+  const packed = recenter(cluster?.(movedTiles, keptFrames), centerOf([...tiles, ...frames]));
+
+  const tileRects = new Map<string, Rect>();
+  for (const [i, tile] of movedTiles.entries()) {
+    const rect = packed?.tiles.get(tile.id) ?? tile;
+    const target = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    if (!sameRect(tiles[i]!, target)) tileRects.set(tile.id, target);
+  }
+
+  const framePatches = frames.flatMap((f) => {
+    if (removed.has(f.id)) return [];
+    const patch = { ...patches.get(f.id), ...packed?.frames.get(f.id) };
+    return Object.keys(patch).length ? [{ id: f.id, patch }] : [];
+  });
+  const newFrames = created.map(({ id, ...frame }) => ({ ...frame, ...packed?.frames.get(id) }));
+
+  return { tileRects, framePatches, newFrames, removedFrameIds: [...removed] };
 };

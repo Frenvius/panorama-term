@@ -117,6 +117,41 @@ describe('planCanvasReorder', () => {
   });
 });
 
+describe('locked frame order', () => {
+  test('planCanvasReorder keeps member relative offsets inside a locked frame', () => {
+    const f1 = makeFrame('f1', 0, 0, 500, 500);
+    const f1Locked = { ...f1, orderLocked: true };
+    const tiles = [makeTile('top', 20, 40), makeTile('bot', 20, 240)];
+    const plan = planCanvasReorder({ tiles, frames: [f1Locked], cellW: CELL_W, spacing: COMPACT })!;
+    const top = plan.tiles.get('top')!;
+    const bot = plan.tiles.get('bot')!;
+    expect(bot.x - top.x).toBe(0);
+    expect(bot.y - top.y).toBe(200);
+  });
+
+  test('planCanvasReorder reflowed unlocked frame compacts members to origin, changing relative offsets', () => {
+    const f1 = makeFrame('f1', 0, 0, 500, 500);
+    const tiles = [makeTile('top', 20, 40), makeTile('bot', 20, 240)];
+    const plan = planCanvasReorder({ tiles, frames: [f1], cellW: CELL_W, spacing: COMPACT })!;
+    const top = plan.tiles.get('top')!;
+    const bot = plan.tiles.get('bot')!;
+    expect(top.x).toBe(0);
+    expect(top.y).toBe(0);
+    expect(bot.y - top.y).toBe(160);
+  });
+
+  test('planCanvasCluster keeps member relative offsets inside a locked frame', () => {
+    const f1 = makeFrame('f1', 0, 0, 500, 500);
+    const f1Locked = { ...f1, orderLocked: true };
+    const tiles = [makeTile('top', 20, 40), makeTile('bot', 20, 240)];
+    const plan = planCanvasCluster({ tiles, frames: [f1Locked], aspect: 16 / 9, cellW: CELL_W, spacing: COMPACT })!;
+    const top = plan.tiles.get('top')!;
+    const bot = plan.tiles.get('bot')!;
+    expect(bot.x - top.x).toBe(0);
+    expect(bot.y - top.y).toBe(200);
+  });
+});
+
 describe('planCanvasCluster', () => {
   test('wraps a vertical stack into rows centered on the original bounds', () => {
     const tiles = [makeTile('a', 0, 0), makeTile('b', 0, 160), makeTile('c', 0, 320), makeTile('d', 0, 480)];
