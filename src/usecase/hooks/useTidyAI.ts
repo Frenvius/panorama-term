@@ -54,7 +54,7 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
 
     void aiTidy(snapshot).then(
       (rawPlan) => {
-        const plan = sanitizeTidyPlan(rawPlan, { projectPaths: projects, tileIds: tiles.map((t) => t.id) });
+        const plan = sanitizeTidyPlan(rawPlan, { projectPaths: projects, tiles, frames });
         const knownFrameIds = new Set(frames.map((f) => f.id));
         const framesNew = plan.frames.filter((f) => !f.frameId || !knownFrameIds.has(f.frameId)).length;
 
@@ -87,7 +87,7 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
 
     setStatus('applying');
 
-    const layout = computeTidyLayout(p.plan, tiles, frames);
+    const layout = computeTidyLayout(p.plan, tiles, frames, projects);
     if (layout.tileMoves.length) placeTiles(layout.tileMoves);
     for (const fp of layout.framePatches) patchFrame(fp.id, fp.patch);
 

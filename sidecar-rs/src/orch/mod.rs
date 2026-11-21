@@ -3729,8 +3729,12 @@ async fn handle_ai_tidy(body: &[u8]) -> String {
 
     let prompt = format!(
         "Given this workspace snapshot, return ONLY a JSON object with this exact shape:\n\
-         {{\"projectOrder\":[\"<projectId>\",...],\"frames\":[{{\"title\":\"<short>\",\"frameId\":\"<existingId>\",\"tileIds\":[\"<id>\",...]}}, ...]}}\n\
-         Rules: order projects sensibly, group tiles by topic/work area, reuse existing frames via frameId when they fit (omit frameId for new frames), short titles (2-4 words), never invent tile or project ids.\n\
+         {{\"projectOrder\":[\"<projectId>\",...],\"frames\":[{{\"title\":\"<short>\",\"frameId\":\"<existingId>\",\"path\":\"<projectPath>\",\"tileIds\":[\"<id>\",...]}}, ...]}}\n\
+         Rules: order projects sensibly, group tiles by project then by topic/work area, never mix projects in one frame. \
+         A frame with a path already represents that project: reuse it via frameId for that project's tiles instead of creating another. \
+         Reuse other existing frames via frameId when they fit (omit frameId for new frames). \
+         Set path to the projects[].path the frame belongs to, or omit it for frames outside any project. \
+         Short titles (2-4 words), never invent tile, frame or project ids.\n\
          Return ONLY the JSON object, no prose.\n\n\
          {snapshot}"
     );

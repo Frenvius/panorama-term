@@ -10,6 +10,23 @@ interface BuildProjectGroupsArgs {
   projects: string[];
 }
 
+export const dominantProject = (tiles: Tile[], projects: string[]): string | null => {
+  const freq = new Map<string, number>();
+  for (const tile of tiles) {
+    const proj = tileProject(tile, projects);
+    if (proj !== null) freq.set(proj, (freq.get(proj) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [proj, count] of freq) {
+    if (count > bestCount) {
+      best = proj;
+      bestCount = count;
+    }
+  }
+  return best;
+};
+
 export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGroupsArgs): ProjectGroup[] => {
   const frameGroups: ProjectGroup[] = [];
   const frameGroupPathIndex = new Map<string, ProjectGroup>();
@@ -17,31 +34,7 @@ export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGrou
   for (const frame of frames) {
     const memberTiles = tiles.filter((t) => frameOf(frames, t)?.id === frame.id);
 
-    let path: string | null = null;
-    if (frame.path) {
-      path = normalizeProjectPath(frame.path) || null;
-    } else {
-      const freq = new Map<string, number>();
-      const firstSeen = new Map<string, number>();
-      for (const tile of memberTiles) {
-        const proj = tileProject(tile, projects);
-        if (proj !== null) {
-          freq.set(proj, (freq.get(proj) ?? 0) + 1);
-          if (!firstSeen.has(proj)) firstSeen.set(proj, firstSeen.size);
-        }
-      }
-      if (freq.size > 0) {
-        let best: string | null = null;
-        let bestCount = 0;
-        for (const [p, count] of freq) {
-          if (count > bestCount || (count === bestCount && best !== null && firstSeen.get(p)! < firstSeen.get(best)!)) {
-            best = p;
-            bestCount = count;
-          }
-        }
-        path = best;
-      }
-    }
+    const path = frame.path ? normalizeProjectPath(frame.path) || null : dominantProject(memberTiles, projects);
 
     const drifted: string[] = [];
     if (path !== null) {

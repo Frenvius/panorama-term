@@ -65,7 +65,8 @@ describe('buildTidySnapshot', () => {
 describe('sanitizeTidyPlan', () => {
   const known = {
     projectPaths: ['/a/foo', '/b/bar', '/c/baz'],
-    tileIds: ['t1', 't2', 't3', 't4']
+    tiles: ['t1', 't2', 't3', 't4'].map((id) => makeTile(id)),
+    frames: []
   };
 
   it('orders projects according to AI plan', () => {
@@ -157,7 +158,7 @@ describe('computeTidyLayout', () => {
     }
   });
 
-  it('places colliding existing frame to the right without intersecting other frames', () => {
+  it('moves a colliding existing frame to the right instead of duplicating it', () => {
     const tiles = [
       makeTile('t1', { width: 150, height: 100 }),
       makeTile('t2', { width: 150, height: 100 }),
@@ -174,12 +175,82 @@ describe('computeTidyLayout', () => {
     };
     const { framePatches, newFrames } = computeTidyLayout(plan, tiles, frames);
 
-    expect(framePatches).toHaveLength(0);
-    expect(newFrames).toHaveLength(1);
+    expect(newFrames).toHaveLength(0);
+    const moved = framePatches.find((p) => p.id === 'f1')!.patch as Frame;
+    for (const f of frames) {
+      expect(noIntersect(moved.x, moved.y, moved.width, moved.height, f.x, f.y, f.width, f.height)).toBe(true);
+    }
+  });
 
-    const nf = newFrames[0];
-    const f2 = frames[1];
-    expect(noIntersect(nf.x, nf.y, nf.width, nf.height, f2.x, f2.y, f2.width, f2.height)).toBe(true);
-    expect(noIntersect(nf.x, nf.y, nf.width, nf.height, frames[0].x, frames[0].y, frames[0].width, frames[0].height)).toBe(true);
+  it('keeps unplanned members inside a reused frame', () => {
+    const frames = [makeFrame('f1', { x: 0, y: 0, width: 2000, height: 1000 })];
+    const tiles = [makeTile('t1', { x: 40, y: 40 }), makeTile('keep', { x: 400, y: 40 })];
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'F', frameId: 'f1', tileIds: ['t1'] }] };
+    const { tileMoves } = computeTidyLayout(plan, tiles, frames);
+    expect(tileMoves.map((m) => m.id).sort()).toEqual(['keep', 't1']);
+  });
+
+  it('gives new frames the project path', () => {
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: '', path: '/a/foo', tileIds: ['t1'] }] };
+    const { newFrames } = computeTidyLayout(plan, [makeTile('t1')], []);
+    expect(newFrames[0]).toMatchObject({ path: '/a/foo', title: 'foo' });
+  });
+
+  it('completes path and title on frames the plan did not touch', () => {
+    const frames = [makeFrame('f1', { title: '', width: 2000, height: 1000 })];
+    const tiles = [makeTile('t1', { x: 40, y: 40, cwd: '/a/foo/src' })];
+    const plan: TidyPlan = { projectOrder: [], frames: [] };
+    const { framePatches } = computeTidyLayout(plan, tiles, frames, ['/a/foo']);
+    expect(framePatches).toEqual([{ id: 'f1', patch: { path: '/a/foo', title: 'foo' } }]);
+  });
+
+  it('leaves complete project frames untouched', () => {
+    const frames = [makeFrame('f1', { title: 'foo', path: '/a/foo', width: 2000, height: 1000 })];
+    const tiles = [makeTile('t1', { x: 40, y: 40, cwd: '/a/foo' })];
+    const { framePatches } = computeTidyLayout({ projectOrder: [], frames: [] }, tiles, frames, ['/a/foo']);
+    expect(framePatches).toHaveLength(0);
+  });
+});
+
+describe('sanitizeTidyPlan frame recognition', () => {
+  const projects = ['/a/foo', '/b/bar'];
+  const fooTile = makeTile('t1', { x: 40, y: 40, cwd: '/a/foo' });
+  const barTile = makeTile('t2', { x: 3000, y: 40, cwd: '/b/bar' });
+
+  it('reuses the existing project frame when the AI omits frameId', () => {
+    const frames = [makeFrame('f1', { path: '/a/foo', width: 2000, height: 1000 })];
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'Foo', tileIds: ['t1'] }] };
+    const result = sanitizeTidyPlan(plan, { projectPaths: projects, tiles: [fooTile], frames });
+    expect(result.frames[0]).toMatchObject({ frameId: 'f1', path: '/a/foo' });
+  });
+
+  it('recognizes a pathless frame by its member tiles', () => {
+    const frames = [makeFrame('f1', { width: 2000, height: 1000 })];
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'Foo', tileIds: ['t1'] }] };
+    const result = sanitizeTidyPlan(plan, { projectPaths: projects, tiles: [fooTile], frames });
+    expect(result.frames[0]).toMatchObject({ frameId: 'f1', path: '/a/foo' });
+  });
+
+  it('drops unknown frame ids and claims each frame once', () => {
+    const frames = [makeFrame('f1', { path: '/a/foo', width: 2000, height: 1000 })];
+    const plan: TidyPlan = {
+      projectOrder: [],
+      frames: [
+        { title: 'A', frameId: 'f1', tileIds: ['t1'] },
+        { title: 'B', frameId: 'f1', tileIds: ['t2'] },
+        { title: 'C', frameId: 'ghost', tileIds: [] }
+      ]
+    };
+    const result = sanitizeTidyPlan(plan, { projectPaths: projects, tiles: [fooTile, barTile], frames });
+    expect(result.frames).toHaveLength(2);
+    expect(result.frames[0].frameId).toBe('f1');
+    expect(result.frames[1].frameId).toBeUndefined();
+    expect(result.frames[1].path).toBe('/b/bar');
+  });
+
+  it('canonicalizes the AI project path', () => {
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'X', path: '/A/FOO/', tileIds: ['t2'] }] };
+    const result = sanitizeTidyPlan(plan, { projectPaths: projects, tiles: [barTile], frames: [] });
+    expect(result.frames[0].path).toBe('/a/foo');
   });
 });

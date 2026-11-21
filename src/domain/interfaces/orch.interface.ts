@@ -145,6 +145,7 @@ export interface AiActionsSettings {
 export interface TidyFrame {
   title: string;
   frameId?: string;
+  path?: string;
   tileIds: string[];
 }
 
