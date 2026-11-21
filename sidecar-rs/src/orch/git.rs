@@ -64,7 +64,10 @@ fn remove_orphan_dir(path: &str) -> Result<(), String> {
 }
 
 fn normalize_path(path: &str) -> String {
-    let p = path.replace('\\', "/").trim_end_matches('/').to_string();
+    let resolved = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+        .unwrap_or_else(|_| path.to_string());
+    let p = resolved.replace('\\', "/").trim_end_matches('/').to_string();
     if cfg!(windows) { p.to_lowercase() } else { p }
 }
 
