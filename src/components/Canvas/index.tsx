@@ -47,6 +47,7 @@ import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, reques
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { tileBoardProject, projectBoards } from '~/usecase/util/boardProject';
+import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
 import { gitRoot } from '~/adapter/git/git.client';
 import { frameOf } from '~/usecase/util/frame';
@@ -156,6 +157,7 @@ const Canvas = () => {
     reorderFrame,
     reorderCanvas,
     reorderProjects,
+    setProjectsOrder,
     reorderFrameGroups,
     undoLayout,
     redoLayout,
@@ -350,6 +352,8 @@ const Canvas = () => {
 
   React.useEffect(() => () => clearTimeout(fsTimer.current), []);
 
+  const tidyTriggerRef = React.useRef<() => void>(() => {});
+
   const runCommand = (cmd: CommandId): boolean => {
     if (cmd === 'tile.fullscreen') {
       const id = fsIdRef.current ?? activeTileRef.current;
@@ -436,6 +440,10 @@ const Canvas = () => {
           setNewBoard({ repo: proj.repo, nearTileId: tileId, frameId: proj.frameId });
         }
       }
+      return true;
+    }
+    if (cmd === 'projects.tidy') {
+      tidyTriggerRef.current();
       return true;
     }
     return false;
@@ -939,6 +947,18 @@ const Canvas = () => {
     [tiles, frames, createFrame, patchFrame, placeTiles]
   );
 
+  const tidyAI = useTidyAI({
+    projects: canvasProjects,
+    tiles,
+    frames,
+    createFrame,
+    patchFrame,
+    removeFrame,
+    placeTiles,
+    setProjectsOrder
+  });
+  tidyTriggerRef.current = tidyAI.onTrigger;
+
   const getCanvasCenter = React.useCallback(() => {
     const cx = (window.innerWidth / 2 - view.x) / view.k;
     const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - view.y) / view.k;
@@ -1359,6 +1379,7 @@ const Canvas = () => {
           recentProjects={[]}
           handlers={leftDockHandlers}
           projectActions={projectActionsWithBoards}
+          tidy={tidyAI}
         />
       )}
       {dockRightOpen && rightHasVisible && (
@@ -1376,6 +1397,7 @@ const Canvas = () => {
           recentProjects={[]}
           handlers={rightDockHandlers}
           projectActions={projectActionsWithBoards}
+          tidy={tidyAI}
         />
       )}
       {splitting && <SplitHandle left={9 + navInset + fsWidth} onMove={moveSplit} />}

@@ -11,8 +11,10 @@ import {
   Plus,
   Clock,
   Folder,
+  Loader,
   Search,
   Trash2,
+  Wand2,
   FileCode,
   GitBranch,
   FolderOpen,
@@ -450,7 +452,7 @@ interface TileMenuState {
   tile: Tile;
 }
 
-const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, signals, actions }: ProjectsPanelProps) => {
+const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, signals, actions, tidy }: ProjectsPanelProps) => {
   const [query, setQuery] = React.useState('');
   const [sort, setSort] = React.useState<Sort>(savedSort);
   const [collapsed, setCollapsed] = React.useState<Set<string>>(savedCollapsed);
@@ -699,6 +701,23 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           >
             <FolderPlus size={14} strokeWidth={1.75} />
           </button>
+          {tidy && (
+            <button
+              type="button"
+              className={styles.iconBtn}
+              onClick={tidy.status === 'idle' ? tidy.onTrigger : undefined}
+              disabled={tidy.status === 'loading' || tidy.status === 'applying'}
+              aria-label="Tidy with AI"
+              data-tooltip="Tidy with AI"
+              data-tooltip-place="bottom"
+            >
+              {tidy.status === 'loading' ? (
+                <Loader size={14} strokeWidth={1.75} className={styles.spin} />
+              ) : (
+                <Wand2 size={14} strokeWidth={1.75} />
+              )}
+            </button>
+          )}
           <button
             type="button"
             className={styles.iconBtn}
@@ -711,6 +730,33 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           </button>
         </div>
       </div>
+
+      {tidy?.status === 'preview' && tidy.preview && (
+        <div className={styles.tidyConfirm}>
+          <span className={styles.tidyConfirmText}>
+            {tidy.preview.projectsReordered > 0
+              ? `${tidy.preview.projectsReordered} projects reordered, `
+              : ''}
+            {tidy.preview.framesTotal} frame{tidy.preview.framesTotal !== 1 ? 's' : ''}
+            {tidy.preview.framesNew > 0 ? ` (${tidy.preview.framesNew} new)` : ''}
+          </span>
+          <div className={styles.tidyConfirmActions}>
+            <button type="button" className={styles.tidyApplyBtn} onClick={tidy.onApply}>
+              Apply
+            </button>
+            <button type="button" className={styles.tidyCancelBtn} onClick={tidy.onCancel}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tidy?.error && (
+        <div className={styles.tidyError}>
+          <TriangleAlert size={12} strokeWidth={2} />
+          {tidy.error}
+        </div>
+      )}
 
       <div className={styles.toolbarWrap}>
         <div className={styles.filter}>

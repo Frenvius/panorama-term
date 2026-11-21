@@ -3,6 +3,7 @@ import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import type { RunSummary } from '~/domain/interfaces/orch.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import type { DropPlace } from '~/usecase/util/projectOrder';
+import type { TidyState } from '~/usecase/hooks/useTidyAI';
 
 export interface ProjectsPanelSignals {
   alerts: Map<string, NotifyKind>;
@@ -39,4 +40,7 @@ export interface ProjectsPanelProps {
   recentProjects: string[];
   signals: ProjectsPanelSignals;
   actions: ProjectsPanelActions;
+  tidy?: TidyState;
 }
+
+export type { TidyState };

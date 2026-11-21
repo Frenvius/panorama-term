@@ -64,6 +64,77 @@
   }
 }
 
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tidyConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--hover-soft);
+}
+
+.tidyConfirmText {
+  font-size: 11.5px;
+  color: var(--text-1);
+  line-height: 1.4;
+}
+
+.tidyConfirmActions {
+  display: flex;
+  gap: 8px;
+}
+
+.tidyApplyBtn {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text-on-accent, #fff);
+  border: none;
+  border-radius: 5px;
+  background: var(--accent-1, #3b82f6);
+  transition: opacity 0.12s ease;
+
+  &:hover { opacity: 0.85; }
+}
+
+.tidyCancelBtn {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-1);
+  border: 1px solid var(--border-2);
+  border-radius: 5px;
+  background: transparent;
+  transition: background 0.12s ease;
+
+  &:hover { background: var(--hover-1); }
+}
+
+.tidyError {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px;
+  font-size: 11.5px;
+  color: var(--text-error, #ef4444);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--hover-soft);
+}
+
 .toolbarWrap {
   display: flex;
   flex-direction: column;
