@@ -17,7 +17,8 @@ import {
   ChevronRight,
   ListCollapse,
   LoaderCircle,
-  GitCompareArrows
+  GitCompareArrows,
+  Sparkles
 } from 'lucide-react';
 
 import type { TreeNode } from '~/usecase/util/fileTree';
@@ -51,6 +52,7 @@ import {
   gitLogMessages,
   gitUnpushedCommits
 } from '~/adapter/git/git.client';
+import { aiCommitMessage } from '~/adapter/orch/orch.client';
 import { matchCombo, getBinding, formatCombo } from '~/usecase/util/keybindings';
 
 import styles from './styles.module.scss';
@@ -173,6 +175,7 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   const [msg, setMsg] = React.useState('');
   const [amend, setAmend] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [aiGenBusy, setAiGenBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [unpushed, setUnpushed] = React.useState<Record<string, number>>({});
   const [pushing, setPushing] = React.useState(false);
@@ -708,6 +711,18 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
   const doCommit = () => commit(false);
   const doCommitPush = () => commit(true);
 
+  const generateMsg = () => {
+    const repos = selectedByRepo();
+    if (repos.length === 0) return;
+    const [repo, files] = repos[0];
+    setAiGenBusy(true);
+    setError(null);
+    aiCommitMessage(repo, files)
+      .then(setMsg)
+      .catch((err: unknown) => setError(message(err)))
+      .finally(() => setAiGenBusy(false));
+  };
+
   const push = () => {
     setPushing(true);
     setError(null);
@@ -945,6 +960,19 @@ const GitTab = ({ root, query, active, onFiles, onOpenDiff, onOpenFile }: GitTab
               aria-label="Recent messages"
             >
               <History size={12} strokeWidth={2} />
+            </button>
+            <button
+              className={styles.tool}
+              onClick={generateMsg}
+              disabled={blocked || selected.size === 0 || aiGenBusy}
+              title="Generate commit message"
+              aria-label="Generate commit message"
+            >
+              {aiGenBusy ? (
+                <LoaderCircle size={12} strokeWidth={2} className={styles.spinning} />
+              ) : (
+                <Sparkles size={12} strokeWidth={2} />
+              )}
             </button>
           </div>
 

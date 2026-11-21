@@ -7,6 +7,7 @@ export type SettingsSection =
   | 'notifications'
   | 'agents'
   | 'orchestration'
+  | 'aiActions'
   | 'devices'
   | 'remote'
   | 'plugins'
@@ -21,6 +22,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; group: Set
   { id: 'notifications', label: 'Notifications', group: 'WORKSPACE' },
   { id: 'agents', label: 'Agents', group: 'AGENTS' },
   { id: 'orchestration', label: 'Orchestration', group: 'AGENTS' },
+  { id: 'aiActions', label: 'AI actions', group: 'AGENTS' },
   { id: 'devices', label: 'Devices', group: 'CONNECTIONS' },
   { id: 'remote', label: 'Remote host', group: 'CONNECTIONS' },
   { id: 'plugins', label: 'Plugins', group: 'SYSTEM' },
@@ -57,6 +59,9 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { id: 'orchestration.hint', section: 'orchestration', label: 'Orchestrate hint', keywords: ['hint', 'orchestration', 'auto', 'suggest'] },
   { id: 'orchestration.roles', section: 'orchestration', label: 'Role chains', keywords: ['role', 'chain', 'model'] },
   { id: 'orchestration.providers', section: 'orchestration', label: 'Providers', keywords: ['provider', 'api', 'custom'] },
+  { id: 'aiActions.default', section: 'aiActions', label: 'Default provider', keywords: ['ai', 'provider', 'model', 'default'] },
+  { id: 'aiActions.commitMessage', section: 'aiActions', label: 'Commit message', keywords: ['ai', 'commit', 'message'] },
+  { id: 'aiActions.tidy', section: 'aiActions', label: 'Tidy projects', keywords: ['ai', 'tidy', 'projects'] },
   { id: 'plugins.installed', section: 'plugins', label: 'Installed plugins', keywords: ['plugin', 'extension'] },
   { id: 'plugins.folder', section: 'plugins', label: 'Plugins folder', keywords: ['plugin', 'folder', 'directory'] },
   ...KEYBINDINGS.map((kb) => ({
