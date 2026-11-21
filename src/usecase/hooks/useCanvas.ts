@@ -26,7 +26,7 @@ import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import { shouldPersist, listenPointerInteraction } from '~/usecase/util/storeSync';
-import { planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
+import { planFrameReorder, planCanvasCluster, planCanvasReorder } from '~/usecase/util/reorderLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { syncProjectViewWithTiles } from '~/usecase/util/projectLayout';
@@ -1089,6 +1089,14 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     [applyReorder]
   );
 
+  const clusterCanvas = React.useCallback(() => {
+    const rect = bgRef.current?.getBoundingClientRect();
+    const aspect = rect?.height ? rect.width / rect.height : 16 / 9;
+    applyReorder(
+      planCanvasCluster({ aspect, tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })
+    );
+  }, [applyReorder]);
+
   const reorderFrameGroups = React.useCallback((from: string, to: string, place: DropPlace) => {
     setFrames((prev) => moveFrameOrder({ frames: prev, from, to, place }));
   }, []);
@@ -1244,6 +1252,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    clusterCanvas,
     reorderProjects,
     setProjectsOrder,
     reorderFrameGroups,

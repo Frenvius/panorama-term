@@ -3,7 +3,7 @@ import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import { test, expect, describe } from 'bun:test';
 
 import { CELL } from '~/usecase/util/constants';
-import { layoutSpacing, planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
+import { layoutSpacing, planFrameReorder, planCanvasCluster, planCanvasReorder } from '~/usecase/util/reorderLayout';
 
 const SPACED = layoutSpacing('default', CELL);
 const COMPACT = layoutSpacing('compact', CELL);
@@ -114,5 +114,27 @@ describe('planCanvasReorder', () => {
 
   test('returns null for an empty canvas', () => {
     expect(planCanvasReorder({ tiles: [], frames: [], cellW: CELL_W, spacing: SPACED })).toBeNull();
+  });
+});
+
+describe('planCanvasCluster', () => {
+  test('wraps a vertical stack into rows centered on the original bounds', () => {
+    const tiles = [makeTile('a', 0, 0), makeTile('b', 0, 160), makeTile('c', 0, 320), makeTile('d', 0, 480)];
+    const plan = planCanvasCluster({ tiles, frames: [], aspect: 16 / 9, cellW: CELL_W, spacing: COMPACT })!;
+    expect(plan.tiles.get('a')).toEqual(rect(-100, 160));
+    expect(plan.tiles.get('b')).toEqual(rect(100, 160));
+    expect(plan.tiles.get('c')).toEqual(rect(-100, 320));
+    expect(plan.tiles.get('d')).toEqual(rect(100, 320));
+  });
+
+  test('centers a shorter last row under the wider ones', () => {
+    const tiles = [makeTile('a', 0, 0), makeTile('b', 0, 160), makeTile('c', 0, 320)];
+    const plan = planCanvasCluster({ tiles, frames: [], aspect: 2, cellW: CELL_W, spacing: COMPACT })!;
+    expect(plan.tiles.get('a')!.y).toBe(plan.tiles.get('b')!.y);
+    expect(plan.tiles.get('c')!.x).toBe((plan.tiles.get('a')!.x + plan.tiles.get('b')!.x) / 2);
+  });
+
+  test('returns null for an empty canvas', () => {
+    expect(planCanvasCluster({ tiles: [], frames: [], aspect: 1, cellW: CELL_W, spacing: SPACED })).toBeNull();
   });
 });

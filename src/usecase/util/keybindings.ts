@@ -9,6 +9,7 @@ export type CommandId =
   | 'tile.reopen'
   | 'tile.focus'
   | 'canvas.reorder'
+  | 'canvas.cluster'
   | 'canvas.undo'
   | 'canvas.redo'
   | 'canvas.redoAlt'
@@ -50,6 +51,7 @@ export const KEYBINDINGS: Command[] = [
   { id: 'tile.fullscreen', label: 'Toggle fullscreen', group: 'Canvas', defaultCombo: 'mod+shift+f' },
   { id: 'tile.focus', label: 'Focus active tile', group: 'Canvas', defaultCombo: 'alt+f' },
   { id: 'canvas.reorder', label: 'Reorder canvas', group: 'Canvas', defaultCombo: '' },
+  { id: 'canvas.cluster', label: 'Cluster canvas at center', group: 'Canvas', defaultCombo: '' },
   { id: 'canvas.undo', label: 'Undo layout change', group: 'Canvas', defaultCombo: 'mod+z' },
   { id: 'canvas.redo', label: 'Redo layout change', group: 'Canvas', defaultCombo: 'mod+shift+z' },
   { id: 'canvas.redoAlt', label: 'Redo layout change (alternate)', group: 'Canvas', defaultCombo: 'mod+y' },

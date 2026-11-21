@@ -176,7 +176,14 @@ interface PlanCanvasReorderArgs {
   spacing: Spacing;
 }
 
-export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs): ReorderPlan | null => {
+interface CanvasBlocks {
+  blocks: Box[];
+  tileRects: Map<string, Rect>;
+  frameRects: Map<string, Rect>;
+  memberIds: Map<string, string[]>;
+}
+
+const collectBlocks = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs): CanvasBlocks => {
   const { members, loose } = groupByFrame(frames, tiles);
   const tileRects = new Map<string, Rect>();
   const frameRects = new Map<string, Rect>();
@@ -196,11 +203,10 @@ export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasR
     tileRects.set(tile.id, box);
     blocks.push(box);
   }
-  if (!blocks.length) return null;
+  return { blocks, tileRects, frameRects, memberIds };
+};
 
-  const origin = { x: toGrid(Math.min(...blocks.map((b) => b.x))), y: toGrid(Math.min(...blocks.map((b) => b.y - b.lead))) };
-  const placedBlocks = packRows(blocks, origin, spacing);
-
+const moveBlocks = ({ blocks, tileRects, frameRects, memberIds }: CanvasBlocks, placedBlocks: Map<string, Rect>): ReorderPlan => {
   for (const block of blocks) {
     const target = placedBlocks.get(block.id)!;
     const frame = frameRects.get(block.id);
@@ -217,4 +223,70 @@ export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasR
     }
   }
   return { tiles: tileRects, frames: frameRects };
+};
+
+export const planCanvasReorder = (args: PlanCanvasReorderArgs): ReorderPlan | null => {
+  const collected = collectBlocks(args);
+  const { blocks } = collected;
+  if (!blocks.length) return null;
+  const origin = { x: toGrid(Math.min(...blocks.map((b) => b.x))), y: toGrid(Math.min(...blocks.map((b) => b.y - b.lead))) };
+  return moveBlocks(collected, packRows(blocks, origin, args.spacing));
+};
+
+const outerHeight = (box: Box): number => box.lead + box.height;
+
+const wrapRows = (boxes: Box[], maxWidth: number, gap: number): Box[][] => {
+  const rows: Box[][] = [];
+  let width = 0;
+  for (const box of boxes) {
+    const row = rows[rows.length - 1];
+    if (row && width + gap + box.width <= maxWidth) {
+      row.push(box);
+      width += gap + box.width;
+      continue;
+    }
+    rows.push([box]);
+    width = box.width;
+  }
+  return rows;
+};
+
+const packCentered = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
+  const { gap } = spacing;
+  const edge = edgeOf(spacing);
+  const area = boxes.reduce((sum, b) => sum + (b.width + gap) * (outerHeight(b) + gap), 0);
+  const maxWidth = Math.max(...boxes.map((b) => b.width), Math.sqrt(area * aspect));
+  const rows = wrapRows(readingRows(boxes).flat(), maxWidth, gap);
+  const rowWidth = (row: Box[]): number => row.reduce((sum, b) => sum + b.width, 0) + gap * (row.length - 1);
+  const rowHeight = (row: Box[]): number => Math.max(...row.map(outerHeight));
+  const clusterWidth = Math.max(...rows.map(rowWidth));
+  const clusterHeight = rows.reduce((sum, row) => sum + rowHeight(row), 0) + gap * (rows.length - 1);
+  const left = Math.min(...boxes.map((b) => b.x));
+  const top = Math.min(...boxes.map((b) => b.y - b.lead));
+  const right = Math.max(...boxes.map((b) => b.x + b.width));
+  const bottom = Math.max(...boxes.map((b) => b.y + b.height));
+  const originX = toGrid((left + right - clusterWidth) / 2);
+  let y = toGrid((top + bottom - clusterHeight) / 2);
+  const placed = new Map<string, Rect>();
+  for (const row of rows) {
+    const height = rowHeight(row);
+    let x = edge(originX + (clusterWidth - rowWidth(row)) / 2);
+    for (const box of row) {
+      const boxY = edge(y + (height - outerHeight(box)) / 2 + box.lead);
+      placed.set(box.id, { x, y: boxY, width: box.width, height: box.height });
+      x = edge(x + box.width + gap);
+    }
+    y = edge(y + height + gap);
+  }
+  return placed;
+};
+
+interface PlanCanvasClusterArgs extends PlanCanvasReorderArgs {
+  aspect: number;
+}
+
+export const planCanvasCluster = ({ aspect, ...args }: PlanCanvasClusterArgs): ReorderPlan | null => {
+  const collected = collectBlocks(args);
+  if (!collected.blocks.length) return null;
+  return moveBlocks(collected, packCentered(collected.blocks, aspect, args.spacing));
 };

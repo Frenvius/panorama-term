@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { Group, LayoutGrid, StickyNote, SquareDashed, SquareTerminal } from 'lucide-react';
+import { Group, LayoutGrid, StickyNote, SquareDashed, SquareTerminal, LayoutDashboard } from 'lucide-react';
 
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
@@ -156,6 +156,7 @@ const Canvas = () => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    clusterCanvas,
     reorderProjects,
     setProjectsOrder,
     reorderFrameGroups,
@@ -382,6 +383,11 @@ const Canvas = () => {
     if (cmd === 'canvas.reorder') {
       if (fsIdRef.current) return false;
       reorderCanvas();
+      return true;
+    }
+    if (cmd === 'canvas.cluster') {
+      if (fsIdRef.current) return false;
+      clusterCanvas();
       return true;
     }
     if (cmd === 'canvas.undo') return !fsIdRef.current && undoLayout();
@@ -1451,7 +1457,14 @@ const Canvas = () => {
             { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
             { label: 'New note', icon: <StickyNote size={15} strokeWidth={1.75} />, onSelect: newNote },
             { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame },
-            { label: 'Reorder canvas', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorderCanvas },
+            {
+              label: 'Reorder',
+              icon: <LayoutGrid size={15} strokeWidth={1.75} />,
+              submenu: [
+                { label: 'Tidy rows', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorderCanvas },
+                { label: 'Cluster at center', icon: <LayoutDashboard size={15} strokeWidth={1.75} />, onSelect: clusterCanvas }
+              ]
+            },
             ...(selected.size
               ? [{ label: 'Frame selection', icon: <Group size={15} strokeWidth={1.75} />, onSelect: frameSelection }]
               : [])
