@@ -1,11 +1,12 @@
 import type { Task, Dispatch, RunStatus } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { Play, Square, ExternalLink, GitCompare, Pencil } from 'lucide-react';
+import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, ExternalLink } from 'lucide-react';
 
+import EditForm from './EditForm';
 import styles from './styles.module.scss';
 import ReopenForm from './ReopenForm';
-import EditForm from './EditForm';
+import CardButton from './CardButton';
 import { latestDispatch } from '../columns';
 import { cancelTask, updateTask, startWorker, workerStop, OrchError } from '~/adapter/orch/orch.client';
 import { totalCost, formatDuration } from '~/usecase/util/orch';
@@ -26,6 +27,7 @@ type InlineView = 'reopen' | 'edit' | 'confirm-retry' | null;
 const FLAGGED_STATUS: Partial<Record<Task['status'], string>> = {
   failed: 'failed',
   blocked: 'blocked',
+  verifying: 'verifying',
   cancelled: 'cancelled'
 };
 
@@ -182,12 +184,84 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
   const handleInlineCancel = () => setInlineView(null);
 
   const isClickable = live && !!dispatch?.tileId;
+  const hasDiff = fileCount > 0;
+  const hasMeta = !!(flag || task.role || profile || elapsed || task.attempts > 1 || hasDiff || taskCost != null);
 
-  const showBtn = isClickable && (
-    <button type="button" className={styles.cardBtn} onClick={handleShowBtnClick}>
-      <ExternalLink size={11} strokeWidth={1.75} />
-      Show
-    </button>
+  const showBtn = isClickable && <CardButton label="Show worker" icon={ExternalLink} onClick={handleShowBtnClick} />;
+  const diffBtn = hasDiff && <CardButton label="Diff" icon={GitCompare} onClick={handleDiffBtnClick} />;
+  const cancelBtn = <CardButton label="Cancel task" icon={X} tone="stop" onClick={handleCancelBtnClick} />;
+
+  const actions = (
+    <>
+      {task.status === 'pending' && (
+        <>
+          <CardButton
+            tone="play"
+            label="Start"
+            icon={Play}
+            disabled={acting || runPaused || !task.ready}
+            hint={runPaused ? 'Run is paused' : !task.ready ? 'Dependencies not done' : 'Start this task'}
+            onClick={handlePlayClick}
+          />
+          {showBtn}
+          <CardButton label="Edit" icon={Pencil} onClick={handleEditClick} />
+          {cancelBtn}
+        </>
+      )}
+
+      {task.status === 'dispatched' && (
+        <>
+          {showBtn}
+          <CardButton label="Stop" icon={Square} tone="stop" onClick={handleCancelBtnClick} />
+        </>
+      )}
+
+      {task.status === 'verifying' && (
+        <>
+          {showBtn}
+          {diffBtn}
+        </>
+      )}
+
+      {task.status === 'review' && (
+        <>
+          <CardButton label="Accept" icon={Check} tone="accept" disabled={acting} onClick={handleAcceptClick} />
+          <CardButton label="Reopen with a note" icon={Undo2} onClick={handleReopenClick} />
+          {showBtn}
+          {diffBtn}
+        </>
+      )}
+
+      {task.status === 'failed' && isClickable && (
+        <>
+          {showBtn}
+          <CardButton label="Stop worker" icon={Square} tone="stop" onClick={handleStopWorker} />
+        </>
+      )}
+
+      {task.status === 'failed' && !isClickable && (
+        <>
+          <CardButton
+            tone="play"
+            label="Retry"
+            icon={RotateCcw}
+            disabled={acting || runPaused}
+            hint={runPaused ? 'Run is paused' : 'Retry this task'}
+            onClick={handlePlayAgainClick}
+          />
+          {cancelBtn}
+        </>
+      )}
+
+      {task.status === 'blocked' && (
+        <>
+          {showBtn}
+          {cancelBtn}
+        </>
+      )}
+
+      {task.status === 'completed' && diffBtn}
+    </>
   );
 
   return (
@@ -198,25 +272,12 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
         {task.owner === 'user' && <span className={styles.ownerBadge}>you</span>}
       </div>
 
-      {(flag || task.role || profile || elapsed || task.attempts > 1 || fileCount > 0 || taskCost != null) && (
-        <div className={styles.cardMeta}>
-          {flag && <span className={styles.flagChip} data-status={task.status}>{flag}</span>}
-          {task.role && <span className={styles.roleChip}>{task.role}</span>}
-          {profile && <span className={styles.metaChip}>{profile}</span>}
-          {task.attempts > 1 && <span className={styles.metaChip}>attempt {task.attempts}</span>}
-          {starting ? (
-            <span className={styles.startingChip}>starting</span>
-          ) : (
-            live && <span className={styles.liveDot} />
-          )}
-          {elapsed && <span className={styles.metaDim}>{elapsed}</span>}
-          {fileCount > 0 && <span className={styles.metaDim}>{fileCount} {fileCount === 1 ? 'file' : 'files'}</span>}
-          {taskCost != null && <span className={styles.metaDim}>${taskCost.toFixed(4)}</span>}
-        </div>
-      )}
-
       {(task.status === 'failed' || task.status === 'blocked') && failureReason && (
         <div className={styles.failureReason} title={dispatch?.summary}>{failureReason}</div>
+      )}
+
+      {task.status === 'failed' && live && inlineView === null && (
+        <div className={styles.infoMsg}>failed, but the agent is still running</div>
       )}
 
       {inlineView === 'reopen' && (
@@ -244,130 +305,24 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
         </div>
       )}
 
-      {inlineView === null && (
-        <>
-          {task.status === 'failed' && live && (
-            <div className={styles.infoMsg}>failed, but the agent is still running</div>
-          )}
-          <div className={styles.cardActions}>
-            {task.status === 'pending' && (
-              <>
-                <button
-                  type="button"
-                  className={`${styles.cardBtn} ${styles.playBtn}`}
-                  disabled={acting || runPaused || !task.ready}
-                  title={runPaused ? 'Run is paused' : !task.ready ? 'Dependencies not done' : 'Start this task'}
-                  onClick={handlePlayClick}
-                >
-                  <Play size={11} strokeWidth={2} />
-                  Play
-                </button>
-                {showBtn}
-                <button type="button" className={styles.cardBtn} onClick={handleEditClick}>
-                  <Pencil size={11} strokeWidth={1.75} />
-                  Edit
-                </button>
-                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                  <Square size={11} strokeWidth={1.75} />
-                  Cancel
-                </button>
-              </>
+      {(hasMeta || inlineView === null) && (
+        <div className={styles.cardFoot}>
+          <div className={styles.cardMeta}>
+            {flag && <span className={styles.flagChip} data-status={task.status}>{flag}</span>}
+            {task.role && <span className={styles.roleChip}>{task.role}</span>}
+            {profile && <span className={styles.metaChip}>{profile}</span>}
+            {task.attempts > 1 && <span className={styles.metaChip}>#{task.attempts}</span>}
+            {starting ? (
+              <span className={styles.startingChip}>starting</span>
+            ) : (
+              live && <span className={styles.liveDot} />
             )}
-
-            {task.status === 'dispatched' && (
-              <>
-                {showBtn}
-                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                  <Square size={11} strokeWidth={1.75} />
-                  Stop
-                </button>
-              </>
-            )}
-
-            {task.status === 'verifying' && (
-              <>
-                {showBtn}
-                {fileCount > 0 && (
-                  <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-                    <GitCompare size={11} strokeWidth={1.75} />
-                    Diff
-                  </button>
-                )}
-              </>
-            )}
-
-            {task.status === 'review' && (
-              <>
-                <button
-                  type="button"
-                  className={`${styles.cardBtn} ${styles.acceptBtn}`}
-                  disabled={acting}
-                  onClick={handleAcceptClick}
-                >
-                  Accept
-                </button>
-                <button type="button" className={styles.cardBtn} onClick={handleReopenClick}>
-                  Reopen
-                </button>
-                {showBtn}
-                {fileCount > 0 && (
-                  <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-                    <GitCompare size={11} strokeWidth={1.75} />
-                    Diff
-                  </button>
-                )}
-              </>
-            )}
-
-            {task.status === 'failed' && (
-              <>
-                {isClickable ? (
-                  <>
-                    {showBtn}
-                    <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleStopWorker}>
-                      <Square size={11} strokeWidth={1.75} />
-                      Stop
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className={`${styles.cardBtn} ${styles.playBtn}`}
-                      disabled={acting || runPaused}
-                      title={runPaused ? 'Run is paused' : 'Retry this task'}
-                      onClick={handlePlayAgainClick}
-                    >
-                      <Play size={11} strokeWidth={2} />
-                      Play again
-                    </button>
-                    <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                      <Square size={11} strokeWidth={1.75} />
-                      Cancel
-                    </button>
-                  </>
-                )}
-              </>
-            )}
-
-            {task.status === 'blocked' && (
-              <>
-                {showBtn}
-                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                  <Square size={11} strokeWidth={1.75} />
-                  Cancel
-                </button>
-              </>
-            )}
-
-            {task.status === 'completed' && fileCount > 0 && (
-              <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-                <GitCompare size={11} strokeWidth={1.75} />
-                Diff
-              </button>
-            )}
+            {elapsed && <span className={styles.metaDim}>{elapsed}</span>}
+            {hasDiff && <span className={styles.metaDim}>{fileCount} {fileCount === 1 ? 'file' : 'files'}</span>}
+            {taskCost != null && <span className={styles.metaDim}>${taskCost.toFixed(4)}</span>}
           </div>
-        </>
+          {inlineView === null && <div className={styles.cardActions}>{actions}</div>}
+        </div>
       )}
 
       {actionError && <div className={styles.stopError}>{actionError}</div>}

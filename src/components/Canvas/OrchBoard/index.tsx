@@ -122,10 +122,8 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
   const openGates = gates.filter((g) => g.resolution == null);
 
   const byColumn: Record<ColumnId, Task[]> = {
-    needsYou: [],
-    queued: [],
+    todo: [],
     running: [],
-    verifying: [],
     review: [],
     done: []
   };
@@ -151,7 +149,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
       <div className={styles.board}>
         {COLUMNS.map((col) => {
           const colTasks = byColumn[col];
-          const count = colTasks.length + (col === 'needsYou' ? openGates.length : 0) +
+          const count = colTasks.length + (col === 'review' ? openGates.length : 0) +
             (col === 'done' ? cancelled.length : 0);
           return (
             <div key={col} className={styles.column} data-col={col}>
@@ -159,7 +157,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
                 <span className={styles.colDot} />
                 <span className={styles.colLabel}>{COLUMN_LABEL[col]}</span>
                 {count > 0 && <span className={styles.colCount}>{count}</span>}
-                {col === 'queued' && !addingTask && (
+                {col === 'todo' && !addingTask && (
                   <button type="button" className={styles.colAddBtn} onClick={handleAddTaskOpen}>
                     <Plus size={12} strokeWidth={2} />
                     New
@@ -167,8 +165,8 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
                 )}
               </div>
               <div className={styles.colBody}>
-                {col === 'queued' && addingTask && <TaskForm runId={runId} onClose={handleAddTaskClose} />}
-                {col === 'needsYou' && openGates.length > 0 && (
+                {col === 'todo' && addingTask && <TaskForm runId={runId} onClose={handleAddTaskClose} />}
+                {col === 'review' && openGates.length > 0 && (
                   <>
                     {gateError && <div className={styles.gateError}>{gateError}</div>}
                     {openGates.map((gate) => (
@@ -206,7 +204,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
                     />
                   </div>
                 ))}
-                {col === 'queued' && !addingTask && colTasks.length === 0 && (
+                {col === 'todo' && !addingTask && colTasks.length === 0 && (
                   <button type="button" className={styles.emptyAdd} onClick={handleAddTaskOpen}>
                     <Plus size={12} strokeWidth={2} />
                     Add a task

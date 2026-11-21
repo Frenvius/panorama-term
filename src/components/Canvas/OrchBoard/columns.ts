@@ -1,24 +1,20 @@
 import type { Task, Dispatch } from '~/domain/interfaces/orch.interface';
 
-export type ColumnId = 'needsYou' | 'queued' | 'running' | 'verifying' | 'review' | 'done';
+export type ColumnId = 'todo' | 'running' | 'review' | 'done';
 
 export const COLUMN_LABEL: Record<ColumnId, string> = {
-  needsYou: 'Needs you',
-  queued: 'Queued',
+  todo: 'To do',
   running: 'Running',
-  verifying: 'Verifying',
   review: 'Review',
   done: 'Done'
 };
 
-export const COLUMNS: ColumnId[] = ['needsYou', 'queued', 'running', 'verifying', 'review', 'done'];
+export const COLUMNS: ColumnId[] = ['todo', 'running', 'review', 'done'];
 
 export const taskColumn = (task: Task): ColumnId => {
-  if (task.status === 'failed' || task.status === 'blocked') return 'needsYou';
-  if (task.status === 'pending') return 'queued';
-  if (task.status === 'dispatched') return 'running';
-  if (task.status === 'verifying') return 'verifying';
-  if (task.status === 'review') return 'review';
+  if (task.status === 'pending') return 'todo';
+  if (task.status === 'dispatched' || task.status === 'verifying') return 'running';
+  if (task.status === 'review' || task.status === 'failed' || task.status === 'blocked') return 'review';
   return 'done';
 };
 

@@ -28,20 +28,12 @@
   border-radius: 8px;
   background: var(--surface-1);
 
-  &[data-col='needsYou'] {
-    --col-color: #e07a30;
-  }
-
   &[data-col='running'] {
     --col-color: var(--accent);
   }
 
-  &[data-col='verifying'] {
-    --col-color: #e8b84a;
-  }
-
   &[data-col='review'] {
-    --col-color: #a78bfa;
+    --col-color: #e07a30;
   }
 
   &[data-col='done'] {

@@ -1,0 +1,59 @@
+.button {
+  --tone: var(--text-1);
+
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: transparent;
+
+  &:hover {
+    color: var(--tone);
+    background: var(--hover-2);
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+    }
+  }
+
+  &[data-tone='play'] {
+    --tone: var(--accent);
+
+    color: var(--accent);
+  }
+
+  &[data-tone='accept'] {
+    --tone: #6fb14e;
+
+    color: #6fb14e;
+  }
+
+  &[data-tone='play'],
+  &[data-tone='accept'],
+  &[data-tone='stop'] {
+    &:hover {
+      background: color-mix(in srgb, var(--tone) 14%, transparent);
+    }
+  }
+
+  &[data-tone='stop'] {
+    --tone: var(--danger);
+  }
+}

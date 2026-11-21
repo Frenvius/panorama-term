@@ -2,8 +2,8 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 8px;
   border: 1px solid var(--border-2);
   border-radius: 6px;
   cursor: default;
@@ -51,6 +51,11 @@
     color: #e07a30;
     background: color-mix(in srgb, #e07a30 14%, transparent);
   }
+
+  &[data-status='verifying'] {
+    color: #e8b84a;
+    background: color-mix(in srgb, #e8b84a 14%, transparent);
+  }
 }
 
 .cardTitle {
@@ -62,11 +67,20 @@
   word-break: break-word;
 }
 
-.cardMeta {
+.cardFoot {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-height: 24px;
+}
+
+.cardMeta {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
 }
 
 .metaChip {
@@ -86,8 +100,9 @@
 
 .cardActions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex: none;
+  gap: 2px;
+  margin-right: -4px;
 
   &:empty {
     display: none;
@@ -133,40 +148,6 @@
   background: transparent;
 }
 
-.playBtn {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-
-  &:hover {
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 24%, transparent);
-  }
-
-  &:disabled {
-    opacity: 0.4;
-    cursor: default;
-
-    &:hover {
-      color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 14%, transparent);
-    }
-  }
-}
-
-.acceptBtn {
-  color: #6fb14e;
-  background: color-mix(in srgb, #6fb14e 14%, transparent);
-
-  &:hover {
-    color: #6fb14e;
-    background: color-mix(in srgb, #6fb14e 24%, transparent);
-  }
-
-  &:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-}
 
 .roleChip {
   padding: 1px 6px;
@@ -200,7 +181,6 @@
   letter-spacing: 0.04em;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-
 
 .failureReason {
   overflow: hidden;

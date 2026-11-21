@@ -87,7 +87,7 @@ const runLabel = (summary: RunSummary): { label: string | null; needsYou: number
   const parts: string[] = [];
   if (running > 0) parts.push(`${running} running`);
   if (needsYou > 0) parts.push(`${needsYou} needs you`);
-  if (parts.length === 0 && count('pending') > 0) parts.push(`${count('pending')} queued`);
+  if (parts.length === 0 && count('pending') > 0) parts.push(`${count('pending')} to do`);
   if (parts.length === 0 && count('completed') > 0) parts.push('done');
   return { label: parts.length > 0 ? parts.join(' · ') : null, needsYou };
 };
