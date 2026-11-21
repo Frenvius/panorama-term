@@ -331,6 +331,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "dispatch-adopt" => handle_dispatch_adopt(body).await,
         "ai-commit-message" => handle_ai_commit_message(body).await,
         "ai-tidy" => handle_ai_tidy(body).await,
+        "ai-progress" => handle_ai_progress(body),
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -3655,7 +3656,7 @@ async fn handle_ai_commit_message(body: &[u8]) -> String {
          {diff}"
     );
 
-    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { provider, model, prompt })).await {
+    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { action: "commitMessage", provider, model, prompt })).await {
         Ok(Ok(raw)) => {
             let message = ai::clean_commit_message(&raw);
             if message.is_empty() {
@@ -3715,6 +3716,17 @@ fn build_commit_diff(repo: &str, files: &[String]) -> Result<String, String> {
     }
 }
 
+fn handle_ai_progress(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let Some(action) = v["action"].as_str() else {
+        return err_resp("bad_request", "action required");
+    };
+    match ai::progress(action) {
+        Some((step, elapsed_ms)) => ok_resp(serde_json::json!({ "progress": { "step": step, "elapsedMs": elapsed_ms } })),
+        None => ok_resp(serde_json::json!({ "progress": null })),
+    }
+}
+
 async fn handle_ai_tidy(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let snapshot = match v["snapshot"].as_str().filter(|s| !s.is_empty()) {
@@ -3740,7 +3752,7 @@ async fn handle_ai_tidy(body: &[u8]) -> String {
          {snapshot}"
     );
 
-    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { provider, model, prompt })).await {
+    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { action: "tidy", provider, model, prompt })).await {
         Ok(Ok(raw)) => {
             match ai::extract_json_object(&raw) {
                 Ok(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {

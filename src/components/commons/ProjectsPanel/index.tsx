@@ -751,6 +751,13 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         </div>
       )}
 
+      {tidy?.status === 'loading' && tidy.progress && (
+        <div className={styles.tidyProgress} aria-live="polite">
+          <Loader size={12} strokeWidth={2} className={styles.spin} />
+          <span>{tidy.progress}</span>
+        </div>
+      )}
+
       {tidy?.error && (
         <div className={styles.tidyError}>
           <TriangleAlert size={12} strokeWidth={2} />

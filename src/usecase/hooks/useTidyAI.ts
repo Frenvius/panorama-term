@@ -3,7 +3,7 @@ import type { TidyPlan } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
 
-import { aiTidy } from '~/adapter/orch/orch.client';
+import { aiTidy, aiProgress } from '~/adapter/orch/orch.client';
 import { showToast, errorText } from '~/usecase/util/toasts';
 import { buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from '~/usecase/util/tidy';
 
@@ -20,6 +20,7 @@ export interface TidyState {
   status: TidyStatus;
   preview: TidyPreview | null;
   error: string | null;
+  progress: string | null;
   onTrigger: () => void;
   onApply: () => void;
   onCancel: () => void;
@@ -41,8 +42,31 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
   const [preview, setPreview] = React.useState<TidyPreview | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
+  const [progress, setProgress] = React.useState<string | null>(null);
+
   const optsRef = React.useRef(opts);
   optsRef.current = opts;
+
+  React.useEffect(() => {
+    if (status !== 'loading') {
+      setProgress(null);
+      return;
+    }
+    const startedAt = Date.now();
+    let step = 'Starting';
+    const poll = () => {
+      setProgress(`${step} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+      void aiProgress('tidy').then(
+        (p) => {
+          if (p) step = p.step;
+        },
+        () => {}
+      );
+    };
+    poll();
+    const timer = window.setInterval(poll, 1000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   const onTrigger = React.useCallback(() => {
     if (optsRef.current.projects.length === 0) return;
@@ -133,5 +157,5 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
     setPreview(null);
   }, []);
 
-  return { status, preview, error, onTrigger, onApply, onCancel };
+  return { status, preview, error, progress, onTrigger, onApply, onCancel };
 };

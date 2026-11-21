@@ -1,4 +1,4 @@
-import type { AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan } from '~/domain/interfaces/orch.interface';
+import type { AiProgress, AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -163,3 +163,6 @@ export const aiCommitMessage = (repo: string, files: string[]): Promise<string> 
 
 export const aiTidy = (snapshot: string): Promise<TidyPlan> =>
   post<{ plan: TidyPlan }>('ai-tidy', { snapshot }).then((r) => r.plan);
+
+export const aiProgress = (action: string): Promise<AiProgress | null> =>
+  post<{ progress: AiProgress | null }>('ai-progress', { action }).then((r) => r.progress);

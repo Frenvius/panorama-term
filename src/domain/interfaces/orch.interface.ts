@@ -149,6 +149,11 @@ export interface TidyFrame {
   tileIds: string[];
 }
 
+export interface AiProgress {
+  step: string;
+  elapsedMs: number;
+}
+
 export interface TidyPlan {
   projectOrder: string[];
   frames: TidyFrame[];

@@ -1,11 +1,14 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::orch::cli_env::{cli_command, kill_tree};
 use crate::orch::settings::{AiActions, AiTarget, OrchSettings};
 
 pub struct OneShotOpts {
+    pub action: &'static str,
     pub provider: String,
     pub model: String,
     pub prompt: String,
@@ -18,8 +21,67 @@ struct ProcOutput {
     timed_out: bool,
 }
 
-fn run_proc(mut cmd: std::process::Command, stdin_input: &str) -> Result<ProcOutput, String> {
-    use std::io::Read;
+struct ProgressEntry {
+    started: Instant,
+    step: String,
+}
+
+fn progress_map() -> &'static Mutex<HashMap<&'static str, ProgressEntry>> {
+    static MAP: OnceLock<Mutex<HashMap<&'static str, ProgressEntry>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn set_step(action: &'static str, step: &str) {
+    let mut map = progress_map().lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(action)
+        .and_modify(|e| e.step = step.to_string())
+        .or_insert_with(|| ProgressEntry { started: Instant::now(), step: step.to_string() });
+}
+
+fn clear_progress(action: &str) {
+    progress_map().lock().unwrap_or_else(|e| e.into_inner()).remove(action);
+}
+
+pub fn progress(action: &str) -> Option<(String, u64)> {
+    let map = progress_map().lock().unwrap_or_else(|e| e.into_inner());
+    map.get(action).map(|e| (e.step.clone(), e.started.elapsed().as_millis() as u64))
+}
+
+fn truncate_step(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line = line.trim_matches('*').trim();
+    if line.chars().count() <= 60 {
+        return line.to_string();
+    }
+    format!("{}...", line.chars().take(57).collect::<String>())
+}
+
+fn codex_step(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let kind = v["type"].as_str()?;
+    let item = &v["item"];
+    let item_type = item["type"].as_str().unwrap_or("");
+    match (kind, item_type) {
+        ("thread.started", _) => Some("Session started".into()),
+        ("turn.started", _) => Some("Thinking".into()),
+        ("item.started", "command_execution") => {
+            Some(format!("Running {}", truncate_step(item["command"].as_str().unwrap_or("command"))))
+        }
+        ("item.started", "mcp_tool_call") => Some("Calling a tool".into()),
+        ("item.started", "web_search") => Some("Searching the web".into()),
+        ("item.completed", "reasoning") => {
+            let text = truncate_step(item["text"].as_str().unwrap_or(""));
+            Some(if text.is_empty() { "Thinking".into() } else { text })
+        }
+        ("item.started" | "item.updated", "agent_message") => Some("Writing the answer".into()),
+        _ => None,
+    }
+}
+
+type LineHook = Box<dyn FnMut(&str) + Send>;
+
+fn run_proc(mut cmd: std::process::Command, stdin_input: &str, on_line: Option<LineHook>) -> Result<ProcOutput, String> {
+    use std::io::{BufRead, Read};
     use std::process::Stdio;
 
     cmd.stdin(Stdio::piped())
@@ -32,18 +94,28 @@ fn run_proc(mut cmd: std::process::Command, stdin_input: &str) -> Result<ProcOut
         let _ = stdin.write_all(stdin_input.as_bytes());
     }
 
-    let mut stdout_pipe = child.stdout.take().expect("stdout pipe");
+    let stdout_pipe = child.stdout.take().expect("stdout pipe");
     let mut stderr_pipe = child.stderr.take().expect("stderr pipe");
 
     let stdout_thread = std::thread::spawn(move || {
+        let mut on_line = on_line;
         let mut buf = String::new();
-        let _ = stdout_pipe.read_to_string(&mut buf);
+        let mut reader = std::io::BufReader::new(stdout_pipe);
+        let mut raw = Vec::new();
+        while reader.read_until(b'\n', &mut raw).unwrap_or(0) > 0 {
+            let line = String::from_utf8_lossy(&raw);
+            if let Some(hook) = on_line.as_mut() {
+                hook(line.trim_end());
+            }
+            buf.push_str(&line);
+            raw.clear();
+        }
         buf
     });
     let stderr_thread = std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stderr_pipe.read_to_string(&mut buf);
-        buf
+        let mut raw = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut raw);
+        String::from_utf8_lossy(&raw).into_owned()
     });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
@@ -78,23 +150,45 @@ fn tmp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("panorama-{prefix}-{nanos}.txt"))
 }
 
-fn stderr_tail(stderr: &str) -> String {
-    let lines: Vec<&str> = stderr.lines().rev().take(5).collect();
+fn output_tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().rev().take(5).collect();
     lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn failure_tail(out: &ProcOutput) -> String {
+    let tail = output_tail(&out.stderr);
+    if !tail.trim().is_empty() {
+        return tail;
+    }
+    let tail = output_tail(&out.stdout);
+    if !tail.trim().is_empty() {
+        return tail;
+    }
+    format!("exit code {:?} with no output", out.exit_code)
 }
 
 pub fn run_oneshot(opts: OneShotOpts) -> Result<String, String> {
     let Some(base) = crate::panorama_dir() else {
         return Err("io:no panorama dir".to_string());
     };
-    match opts.provider.as_str() {
-        "claude" => run_oneshot_claude(&opts.model, &opts.prompt),
-        "codex" => run_oneshot_codex(&opts.model, &opts.prompt),
-        id => run_oneshot_custom(id, &opts.model, &opts.prompt, &base),
-    }
+    let action = opts.action;
+    clear_progress(action);
+    set_step(action, &format!("Starting {}", opts.provider));
+    let result = match opts.provider.as_str() {
+        "claude" => run_oneshot_claude(action, &opts.model, &opts.prompt),
+        "codex" => run_oneshot_codex(action, &opts.model, &opts.prompt),
+        id => run_oneshot_custom(action, id, &opts.model, &opts.prompt, &base),
+    };
+    clear_progress(action);
+    result
 }
 
-fn run_oneshot_claude(model: &str, prompt: &str) -> Result<String, String> {
+fn waiting_hook(action: &'static str) -> LineHook {
+    set_step(action, "Waiting for the model");
+    Box::new(move |_| set_step(action, "Writing the answer"))
+}
+
+fn run_oneshot_claude(action: &'static str, model: &str, prompt: &str) -> Result<String, String> {
     let mut cmd = cli_command("claude");
     cmd.args([
         "-p", "--output-format", "text",
@@ -104,18 +198,18 @@ fn run_oneshot_claude(model: &str, prompt: &str) -> Result<String, String> {
         cmd.args(["--model", model]);
     }
     cmd.env("CLAUDE_CODE_PLUGIN_DIRS", "");
-    let out = run_proc(cmd, prompt)?;
+    let out = run_proc(cmd, prompt, Some(waiting_hook(action)))?;
     if out.timed_out {
         return Err("timeout:claude oneshot timed out after 120s".to_string());
     }
     if out.exit_code == Some(0) {
         Ok(out.stdout)
     } else {
-        Err(format!("nonzero_exit:{}", stderr_tail(&out.stderr)))
+        Err(format!("nonzero_exit:{}", failure_tail(&out)))
     }
 }
 
-fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
+fn run_oneshot_codex(action: &'static str, model: &str, prompt: &str) -> Result<String, String> {
     let out_file = tmp_path("codex-out");
     let out_path = out_file.to_string_lossy().into_owned();
 
@@ -125,13 +219,22 @@ fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
         "--skip-git-repo-check",
         "-s", "read-only",
         "--ephemeral",
+        "--json",
+        "-c", "project_doc_max_bytes=0",
+        "-c", "features.shell_tool=false",
+        "-c", "web_search=\"disabled\"",
         "-o", &out_path,
     ]);
     if !model.is_empty() {
         cmd.args(["-m", model]);
     }
 
-    let proc = run_proc(cmd, prompt)?;
+    let hook: LineHook = Box::new(move |line| {
+        if let Some(step) = codex_step(line) {
+            set_step(action, &step);
+        }
+    });
+    let proc = run_proc(cmd, prompt, Some(hook))?;
 
     if proc.timed_out {
         let _ = std::fs::remove_file(&out_file);
@@ -139,7 +242,7 @@ fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
     }
     if proc.exit_code != Some(0) {
         let _ = std::fs::remove_file(&out_file);
-        return Err(format!("nonzero_exit:{}", stderr_tail(&proc.stderr)));
+        return Err(format!("nonzero_exit:{}", failure_tail(&proc)));
     }
 
     let content = std::fs::read_to_string(&out_file)
@@ -148,7 +251,7 @@ fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
     Ok(content)
 }
 
-fn run_oneshot_custom(provider_id: &str, model: &str, prompt: &str, base: &Path) -> Result<String, String> {
+fn run_oneshot_custom(action: &'static str, provider_id: &str, model: &str, prompt: &str, base: &Path) -> Result<String, String> {
     let profiles = crate::orch::profiles::load_profiles(base);
     let profile = crate::orch::profiles::find_profile(&profiles, provider_id)
         .ok_or_else(|| format!("not_found:provider not found: {provider_id}"))?;
@@ -168,14 +271,14 @@ fn run_oneshot_custom(provider_id: &str, model: &str, prompt: &str, base: &Path)
         cmd.env(k, v);
     }
 
-    let out = run_proc(cmd, prompt)?;
+    let out = run_proc(cmd, prompt, Some(waiting_hook(action)))?;
     if out.timed_out {
         return Err("timeout:oneshot timed out after 120s".to_string());
     }
     if out.exit_code == Some(0) {
         Ok(out.stdout)
     } else {
-        Err(format!("nonzero_exit:{}", stderr_tail(&out.stderr)))
+        Err(format!("nonzero_exit:{}", failure_tail(&out)))
     }
 }
 
@@ -295,6 +398,17 @@ mod tests {
     }
 
     #[test]
+    fn codex_step_maps_events() {
+        assert_eq!(codex_step(r#"{"type":"turn.started"}"#).as_deref(), Some("Thinking"));
+        let cmd = r#"{"type":"item.started","item":{"type":"command_execution","command":"ls src"}}"#;
+        assert_eq!(codex_step(cmd).as_deref(), Some("Running ls src"));
+        let reasoning = r#"{"type":"item.completed","item":{"type":"reasoning","text":"**Grouping tiles**\nmore"}}"#;
+        assert_eq!(codex_step(reasoning).as_deref(), Some("Grouping tiles"));
+        assert_eq!(codex_step(r#"{"type":"item.completed","item":{"type":"error"}}"#), None);
+        assert_eq!(codex_step("not json"), None);
+    }
+
+    #[test]
     fn extract_json_no_object_errors() {
         assert!(extract_json_object("no json here").is_err());
     }
@@ -354,6 +468,7 @@ mod tests {
     #[ignore]
     fn ai_oneshot_real_claude_haiku() {
         let out = run_oneshot(OneShotOpts {
+            action: "test",
             provider: "claude".into(),
             model: "haiku".into(),
             prompt: "Reply with exactly the words: hello world".into(),
@@ -368,6 +483,7 @@ mod tests {
     #[ignore]
     fn ai_oneshot_real_codex() {
         let out = run_oneshot(OneShotOpts {
+            action: "test",
             provider: "codex".into(),
             model: String::new(),
             prompt: "Reply with exactly the words: hello world".into(),
