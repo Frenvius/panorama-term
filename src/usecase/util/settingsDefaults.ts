@@ -48,6 +48,10 @@ export const resetOrchestration = (): void => {
   void orchSettingsActions.updateSettings({ showWorkerTiles: false, orchestrateHint: 'suggest' });
 };
 
+export const resetAiActions = (): void => {
+  void orchSettingsActions.updateSettings({ aiActions: { default: { provider: 'claude', model: 'haiku' }, overrides: {} } });
+};
+
 export const resetShortcuts = (): void => {
   for (const kb of KEYBINDINGS) void resetBinding(kb.id);
 };
@@ -59,5 +63,6 @@ export const RESET_DESCRIPTIONS: Partial<Record<string, string>> = {
   notifications: 'Toast corner and display monitor.',
   agents: 'Model provider visibility list and idle compaction setting.',
   orchestration: 'Worker tile visibility and orchestrate hint. Role chains and providers are not changed.',
+  aiActions: 'Default provider and model, and all action overrides.',
   shortcuts: 'All keyboard shortcuts back to their defaults.'
 };
