@@ -500,6 +500,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           onReady: (info) => {
             const w = wsRef.current;
             if (w) {
+              sendPtyResize(w, colsRef.current, rowsRef.current);
               sendPtyFocus(w, activeRef.current && document.hasFocus());
               sendPtyVisible(w, visibleRef.current && !document.hidden);
             }
