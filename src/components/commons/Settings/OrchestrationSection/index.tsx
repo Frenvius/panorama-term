@@ -2,7 +2,7 @@ import type { OrchProvider, Role, OrchestrateHint, RoleChains } from '~/domain/i
 import type { SaveProviderOpts } from '~/adapter/orch/orch.client';
 
 import React from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, RefreshCw } from 'lucide-react';
 
 import { ROLES, ROLE_META } from '~/usecase/util/orch';
 import { orchSettingsActions, useOrchSettings } from '~/usecase/hooks/useOrchSettings';
@@ -30,7 +30,7 @@ const HINT_DESCRIPTIONS: Record<OrchestrateHint, string> = {
 };
 
 const OrchestrationSection = () => {
-  const { settings, presets, agents, loading } = useOrchSettings();
+  const { settings, presets, agents, loading, refreshingModels } = useOrchSettings();
   const [editingProvider, setEditingProvider] = React.useState<OrchProvider | null | 'new'>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
 
@@ -125,7 +125,21 @@ const OrchestrationSection = () => {
           <Segmented options={HINT_OPTIONS} value={hint} onChange={setOrchestrateHint} label="Orchestrate hint" />
         </Row>
       </Group>
-      <Group label="Roles">
+      <Group
+        label="Roles"
+        action={
+          <Button
+            size="sm"
+            icon={RefreshCw}
+            disabled={refreshingModels}
+            busy={refreshingModels}
+            busyLabel="Refreshing..."
+            onClick={orchSettingsActions.refreshModels}
+          >
+            Refresh models
+          </Button>
+        }
+      >
         {ROLES.map((role) => {
           const handleChange = (chain: string[]) => saveRoleChain(role, chain);
           const chain = settings.roles?.[role] ?? [];

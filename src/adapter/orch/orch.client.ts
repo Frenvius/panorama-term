@@ -55,6 +55,7 @@ export interface SetSettingsOpts {
   showWorkerTiles?: boolean;
   roles?: Partial<RoleChains>;
   orchestrateHint?: OrchestrateHint;
+  customModels?: Record<string, string[]>;
 }
 
 export const setSettings = (opts: SetSettingsOpts): Promise<{ ok: boolean; settings: OrchSettings }> =>
@@ -79,7 +80,8 @@ export const deleteProvider = (id: string): Promise<void> =>
 export const testProvider = (id: string): Promise<{ ok: boolean; reachable: boolean; status?: number; message: string }> =>
   post('provider-test', { id });
 
-export const listAgents = (): Promise<{ ok: boolean; agents: OrchAgent[] }> => post('agent-list', {});
+export const listAgents = (opts?: { refresh?: boolean }): Promise<{ ok: boolean; agents: OrchAgent[] }> =>
+  post('agent-list', opts ?? {});
 
 export const setCoordinator = (tileId: string, on: boolean): Promise<{ ok: boolean }> =>
   post('coordinator-set', { tileId, on });

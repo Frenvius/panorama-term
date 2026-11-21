@@ -136,6 +136,7 @@ export interface OrchSettings {
   showWorkerTiles: boolean;
   roles: RoleChains;
   orchestrateHint: OrchestrateHint;
+  customModels: Record<string, string[]>;
 }
 
 export interface OrchAgent {
@@ -145,6 +146,7 @@ export interface OrchAgent {
   available: boolean;
   hidden: boolean;
   models: string[];
+  customModels: string[];
 }
 
 export interface RunSummary {

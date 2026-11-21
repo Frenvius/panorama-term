@@ -6,14 +6,22 @@ import React from 'react';
 import { getSettings, setSettings, saveProvider, deleteProvider, listAgents } from '~/adapter/orch/orch.client';
 
 interface OrchSettingsState {
-  settings: OrchSettings | null;
-  presets: OrchPreset[];
   agents: OrchAgent[];
-  loading: boolean;
   error: string | null;
+  loading: boolean;
+  presets: OrchPreset[];
+  settings: OrchSettings | null;
+  refreshingModels: boolean;
 }
 
-const DEFAULT: OrchSettingsState = { settings: null, presets: [], agents: [], loading: false, error: null };
+const DEFAULT: OrchSettingsState = {
+  agents: [],
+  error: null,
+  loading: false,
+  presets: [],
+  settings: null,
+  refreshingModels: false
+};
 
 let state: OrchSettingsState = DEFAULT;
 
@@ -36,7 +44,7 @@ const load = (): void => {
   notify();
   Promise.all([getSettings(), listAgents()])
     .then(([s, a]) => {
-      state = { settings: s.settings, presets: s.presets, agents: a.agents, loading: false, error: null };
+      state = { settings: s.settings, presets: s.presets, agents: a.agents, loading: false, error: null, refreshingModels: false };
       notify();
     })
     .catch(setError);
@@ -66,6 +74,20 @@ const refreshAgents = (): void => {
 export const orchSettingsActions = {
   refresh: load,
 
+  refreshModels: (): void => {
+    state = { ...state, refreshingModels: true, error: null };
+    notify();
+    listAgents({ refresh: true })
+      .then((r) => {
+        state = { ...state, agents: r.agents, refreshingModels: false };
+        notify();
+      })
+      .catch((err) => {
+        state = { ...state, refreshingModels: false, error: err instanceof Error ? err.message : String(err) };
+        notify();
+      });
+  },
+
   updateSettings: (opts: SetSettingsOpts): Promise<void> =>
     setSettings(opts).then((r) => {
       state = { ...state, settings: r.settings };
@@ -91,7 +113,41 @@ export const orchSettingsActions = {
       state = { ...state, settings: { ...state.settings, providers } };
       notify();
       refreshAgents();
-    }).catch(setError)
+    }).catch(setError),
+
+  addCustomModel: (agentId: string, model: string): Promise<void> => {
+    if (!state.settings) {
+      setError(new Error('orch settings not loaded'));
+      return Promise.resolve();
+    }
+    const current = state.settings.customModels ?? {};
+    const existing = current[agentId] ?? [];
+    if (existing.includes(model)) return Promise.resolve();
+    const next = { ...current, [agentId]: [...existing, model] };
+    return setSettings({ customModels: next }).then((r) => {
+      state = { ...state, settings: r.settings };
+      notify();
+      refreshAgents();
+    }).catch(setError);
+  },
+
+  removeCustomModel: (agentId: string, model: string): Promise<void> => {
+    if (!state.settings) {
+      setError(new Error('orch settings not loaded'));
+      return Promise.resolve();
+    }
+    const current = state.settings.customModels ?? {};
+    const existing = current[agentId] ?? [];
+    const updated = existing.filter((m) => m !== model);
+    const next = updated.length > 0
+      ? { ...current, [agentId]: updated }
+      : Object.fromEntries(Object.entries(current).filter(([k]) => k !== agentId));
+    return setSettings({ customModels: next }).then((r) => {
+      state = { ...state, settings: r.settings };
+      notify();
+      refreshAgents();
+    }).catch(setError);
+  }
 };
 
 export const useOrchSettings = (): OrchSettingsState => {

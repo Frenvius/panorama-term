@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,8 @@ pub struct OrchSettings {
     pub providers: Vec<OrchProvider>,
     #[serde(default)]
     pub show_worker_tiles: bool,
+    #[serde(default)]
+    pub custom_models: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for OrchSettings {
@@ -78,6 +81,7 @@ impl Default for OrchSettings {
             hidden_agents: Vec::new(),
             providers: Vec::new(),
             show_worker_tiles: false,
+            custom_models: BTreeMap::new(),
         }
     }
 }
@@ -277,6 +281,7 @@ mod tests {
             orchestrate_hint: OrchestrateHint::Auto,
             hidden_agents: vec!["codex".into()],
             show_worker_tiles: true,
+            custom_models: BTreeMap::new(),
             providers: vec![OrchProvider {
                 id: "myds".into(),
                 preset: "deepseek".into(),
@@ -365,6 +370,22 @@ mod tests {
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
         assert_eq!(loaded.orchestrate_hint, OrchestrateHint::Off);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn custom_models_roundtrip_and_default() {
+        let dir = tmp_dir("custom-models");
+        let loaded_empty = load(&dir);
+        assert!(loaded_empty.custom_models.is_empty(), "default must be empty");
+
+        let mut s = OrchSettings::default();
+        s.custom_models.insert("codex".into(), vec!["test-model-x".into(), "other".into()]);
+        save(&dir, &s).unwrap();
+        let loaded = load(&dir);
+        let got = loaded.custom_models.get("codex").map(|v| v.as_slice()).unwrap_or(&[]);
+        assert_eq!(got, &["test-model-x", "other"]);
+        assert!(loaded.custom_models.get("claude").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

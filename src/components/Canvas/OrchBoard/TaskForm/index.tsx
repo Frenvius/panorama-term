@@ -1,44 +1,24 @@
-import type { OrchAgent } from '~/domain/interfaces/orch.interface';
-
 import React from 'react';
 import { X } from 'lucide-react';
 
+import ModelCombobox from '~/components/commons/ModelCombobox';
 import styles from './styles.module.scss';
-import { listAgents, createTask } from '~/adapter/orch/orch.client';
+import { createTask } from '~/adapter/orch/orch.client';
+import { useOrchSettings } from '~/usecase/hooks/useOrchSettings';
 
 interface TaskFormProps {
   runId: string;
   onClose: () => void;
 }
 
-const buildAgentOptions = (agents: OrchAgent[]): { value: string; label: string }[] => {
-  const opts: { value: string; label: string }[] = [{ value: '', label: 'Default' }];
-  for (const agent of agents) {
-    if (!agent.available || agent.hidden) continue;
-    opts.push({ value: agent.id, label: agent.label });
-    for (const model of agent.models) {
-      opts.push({ value: `${agent.id}:${model}`, label: `${agent.label} / ${model}` });
-    }
-  }
-  return opts;
-};
-
 const TaskForm = ({ runId, onClose }: TaskFormProps) => {
   const [title, setTitle] = React.useState('');
   const [spec, setSpec] = React.useState('');
   const [profile, setProfile] = React.useState('');
   const [review, setReview] = React.useState(false);
-  const [agents, setAgents] = React.useState<OrchAgent[]>([]);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    listAgents()
-      .then(({ agents: a }) => setAgents(a))
-      .catch(() => void 0);
-  }, []);
-
-  const agentOptions = React.useMemo(() => buildAgentOptions(agents), [agents]);
+  const { agents } = useOrchSettings();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,7 +35,6 @@ const TaskForm = ({ runId, onClose }: TaskFormProps) => {
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value);
   const handleSpecChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => setSpec(e.target.value);
-  const handleProfileChange = (e: React.ChangeEvent<HTMLSelectElement>) => setProfile(e.target.value);
   const handleReviewChange = (e: React.ChangeEvent<HTMLInputElement>) => setReview(e.target.checked);
 
   return (
@@ -81,11 +60,15 @@ const TaskForm = ({ runId, onClose }: TaskFormProps) => {
         className={styles.textarea}
         onChange={handleSpecChange}
       />
-      <select value={profile} className={styles.select} onChange={handleProfileChange}>
-        {agentOptions.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
+      {profile && (
+        <div className={styles.profileChip}>
+          <span>{profile}</span>
+          <button type="button" onClick={() => setProfile('')}>
+            <X size={10} strokeWidth={2} />
+          </button>
+        </div>
+      )}
+      <ModelCombobox agents={agents} placeholder={profile ? 'Change agent...' : 'Default agent'} onPick={setProfile} />
       <label className={styles.checkLabel}>
         <input type="checkbox" checked={review} onChange={handleReviewChange} className={styles.check} />
         Stop in review

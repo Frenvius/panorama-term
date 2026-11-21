@@ -1,4 +1,5 @@
 mod model;
+mod model_catalog;
 mod reducer;
 mod store;
 pub mod cli;
@@ -322,7 +323,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "provider-save" => handle_provider_save(body),
         "provider-delete" => handle_provider_delete(body),
         "provider-test" => handle_provider_test(body).await,
-        "agent-list" => handle_agent_list(),
+        "agent-list" => handle_agent_list(body).await,
         "coordinator-set" => handle_coordinator_set(body).await,
         "coordinator-list" => handle_coordinator_list(),
         "dispatch-adopt" => handle_dispatch_adopt(body).await,
@@ -3245,6 +3246,7 @@ fn settings_with_keys_json(s: &settings::OrchSettings, base: Option<&std::path::
         "hiddenAgents": s.hidden_agents,
         "providers": providers,
         "showWorkerTiles": s.show_worker_tiles,
+        "customModels": s.custom_models,
     })
 }
 
@@ -3326,6 +3328,24 @@ fn handle_settings_set(body: &[u8]) -> String {
                 }
             }
         }
+    }
+    if let Some(map) = v.get("customModels").filter(|v| v.is_object()) {
+        let mut new_map = std::collections::BTreeMap::new();
+        for (agent_id, arr) in map.as_object().unwrap() {
+            let models: Vec<String> = arr.as_array()
+                .map(|a| a.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect())
+                .unwrap_or_default();
+            if !models.is_empty() {
+                let mut deduped = models;
+                deduped.dedup();
+                new_map.insert(agent_id.clone(), deduped);
+            }
+        }
+        s.custom_models = new_map;
     }
     if let Err(e) = settings::save(&base, &s) {
         return err_resp("io", &format!("save settings: {e}"));
@@ -3456,12 +3476,27 @@ async fn handle_provider_test(body: &[u8]) -> String {
     }
 }
 
-fn handle_agent_list() -> String {
+async fn handle_agent_list(body: &[u8]) -> String {
     let Some(base) = crate::panorama_dir() else {
         return err_resp("io", "no panorama dir");
     };
+    let refresh = parse_body(body).ok()
+        .and_then(|v| v["refresh"].as_bool())
+        .unwrap_or(false);
+
     let s = settings::load(&base);
     let profiles = load_profiles(&base);
+
+    let available_builtin_ids: Vec<String> = profiles.iter()
+        .filter(|p| !p.provider && crate::command_exists(&p.exe))
+        .map(|p| p.id.clone())
+        .collect();
+
+    let base_c = base.clone();
+    let prepared = tokio::task::spawn_blocking(move || model_catalog::prepare(available_builtin_ids, base_c, refresh)).await;
+    if prepared.is_err() {
+        return err_resp("io", "model discovery panicked");
+    }
 
     let agents: Vec<Value> = profiles.iter().map(|profile| {
         if profile.provider {
@@ -3475,17 +3510,21 @@ fn handle_agent_list() -> String {
             let mut models = vec![main, fast];
             models.dedup();
             models.retain(|m| !m.is_empty());
+            let custom_models: Vec<String> = s.custom_models.get(&profile.id).cloned().unwrap_or_default();
             serde_json::json!({
                 "id": profile.id, "kind": "provider", "label": label,
                 "available": available, "hidden": hidden, "models": models,
+                "customModels": custom_models,
             })
         } else {
             let available = crate::command_exists(&profile.exe);
             let hidden = s.hidden_agents.contains(&profile.id);
-            let models: Vec<&str> = if profile.id == "claude" { vec!["haiku", "sonnet", "opus"] } else { vec![] };
+            let models = if available { model_catalog::models_for(&profile.id, &base) } else { vec![] };
+            let custom_models: Vec<String> = s.custom_models.get(&profile.id).cloned().unwrap_or_default();
             serde_json::json!({
                 "id": profile.id, "kind": "builtin", "label": profile.id,
                 "available": available, "hidden": hidden, "models": models,
+                "customModels": custom_models,
             })
         }
     }).collect();

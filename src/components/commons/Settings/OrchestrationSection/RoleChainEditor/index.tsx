@@ -2,7 +2,7 @@ import type { Role, OrchAgent } from '~/domain/interfaces/orch.interface';
 
 import { X, ChevronUp, ChevronDown } from 'lucide-react';
 
-import Select from '~/components/commons/Settings/Select';
+import ModelCombobox from '~/components/commons/ModelCombobox';
 import styles from '../styles.module.scss';
 
 interface RoleChainEditorProps {
@@ -12,22 +12,7 @@ interface RoleChainEditorProps {
   onChange: (chain: string[]) => void;
 }
 
-const allProfiles = (agents: OrchAgent[]): string[] => {
-  const result: string[] = [];
-  for (const a of agents) {
-    if (a.hidden || !a.available) continue;
-    if (a.models.length === 0) {
-      result.push(a.id);
-    } else {
-      for (const m of a.models) result.push(`${a.id}:${m}`);
-    }
-  }
-  return result;
-};
-
 const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps) => {
-  const profileOptions = allProfiles(agents);
-
   const moveUp = (i: number) => {
     if (i === 0) return;
     const next = [...chain];
@@ -50,10 +35,6 @@ const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps
     if (!val) return;
     onChange([...chain, val]);
   };
-
-  const selectOptions = profileOptions
-    .filter((p) => !chain.includes(p))
-    .map((p) => ({ value: p, label: p }));
 
   return (
     <div data-role={role}>
@@ -94,16 +75,9 @@ const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps
           })}
         </div>
       )}
-      {selectOptions.length > 0 && (
-        <div className={styles.chainAddRow}>
-          <Select
-            options={[{ value: '', label: 'Add model...' }, ...selectOptions]}
-            value=""
-            onChange={addEntry}
-            placeholder="Add model..."
-          />
-        </div>
-      )}
+      <div className={styles.chainAddRow}>
+        <ModelCombobox agents={agents} exclude={chain} placeholder="Add model..." onPick={addEntry} />
+      </div>
     </div>
   );
 };

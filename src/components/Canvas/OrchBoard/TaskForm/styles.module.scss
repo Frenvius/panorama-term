@@ -72,18 +72,29 @@
   }
 }
 
-.select {
-  height: 26px;
-  padding: 0 6px;
+.profileChip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-1);
   border: 1px solid var(--border-2);
   border-radius: 4px;
-  color: var(--text-1);
-  font-size: 11px;
-  background: var(--surface-1);
-  outline: none;
 
-  &:focus {
-    border-color: var(--accent);
+  button {
+    display: flex;
+    align-items: center;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-dim);
+
+    &:hover {
+      color: var(--text-1);
+    }
   }
 }
 
