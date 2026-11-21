@@ -10,10 +10,10 @@ it('names Claude model ids by family and version', () => {
 });
 
 it('reads Codex model, effort, Plan mode and measured context from the TUI footer', () => {
-  const base = ['› Ask Codex to do anything', '  GPT-6-Sol medium · D:\\workspace\\repo', '  ? for shortcuts'];
+  const base = ['› Ask Codex to do anything', '  GPT-6-Sol medium · C:\\code\\repo', '  ? for shortcuts'];
   expect(parseCodexFooter(base)).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'default' });
   expect(parseCodexFooter([base[0], '  GPT-6-Sol medium · 72% context left · Plan mode', base[2]])).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'plan', progress: 28 });
-  expect(parseCodexFooter([base[0], '  GPT-6-Sol medium · Context 97% left · D:\\workspace\\repo', base[2]])).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'default', progress: 3 });
+  expect(parseCodexFooter([base[0], '  GPT-6-Sol medium · Context 97% left · C:\\code\\repo', base[2]])).toEqual({ model: 'GPT-6-Sol', effort: 'medium', mode: 'default', progress: 3 });
   expect(parseCodexFooter(['› Ask Codex', '  ? for shortcuts'])).toEqual({});
 });
 
@@ -134,7 +134,7 @@ describe('pi footer', () => {
     RULE,
     '   ',
     RULE,
-    '~/workspace/projects/panorama-term (main)',
+    '~/code/panorama-term (main)',
     '$0.000 (sub) 12.4%/272k (auto)                          (openai-codex) gpt-5.6-sol • medium'
   ];
 
@@ -221,7 +221,7 @@ describe('declaredAgent', () => {
 describe('pi placeholder model', () => {
   it('ignores the bridged placeholder id and keeps the rest of the footer', () => {
     const status = parseStatusLines([
-      '~/workspace/projects/panorama-term (main)',
+      '~/code/panorama-term (main)',
       '$0.000 (sub) 4.0%/1.0M (auto)                          (claude-bridge) <synthetic> • medium'
     ]);
     expect(status.model).toBeUndefined();

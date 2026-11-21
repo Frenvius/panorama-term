@@ -5594,7 +5594,7 @@ mod tests {
             "modelAlias": "k2",
             "thinkingEffort": "high",
             "models": [{ "id": "k2", "provider": "kimi", "efforts": ["off", "high"] }],
-            "cwd": "D:\\workspace\\projects\\panorama-term",
+            "cwd": "C:\\code\\panorama-term",
             "gitBranch": "main",
             "permissionMode": "yolo",
             "planMode": false,
@@ -5614,7 +5614,7 @@ mod tests {
         assert_eq!(v["contextPercent"], 10.0);
         assert_eq!(
             super::kimi_status_line(&input),
-            "Kimi K2 thinking: high  projects/panorama-term  (main)"
+            "Kimi K2 thinking: high  code/panorama-term  (main)"
         );
     }
 
@@ -6009,7 +6009,7 @@ mod tests {
 
     #[test]
     fn cwd_slug_replaces_separators() {
-        assert_eq!(super::cwd_slug("D:/workspace/panorama-term"), "D--workspace-panorama-term");
+        assert_eq!(super::cwd_slug("C:/code/panorama-term"), "C--code-panorama-term");
     }
 
     #[test]
@@ -6057,8 +6057,8 @@ mod tests {
     fn osc7_parses_windows_and_unix_paths() {
         use super::parse_osc7;
         assert_eq!(
-            parse_osc7(b"file://HOST/D:/workspace/panorama-term").as_deref(),
-            Some("D:/workspace/panorama-term")
+            parse_osc7(b"file://HOST/C:/code/panorama-term").as_deref(),
+            Some("C:/code/panorama-term")
         );
         assert_eq!(
             parse_osc7(b"file://host/home/u/my%20dir").as_deref(),

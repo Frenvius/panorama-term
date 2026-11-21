@@ -33,7 +33,7 @@ const makeTile = (id: string, overrides: Partial<Tile> = {}): Tile => ({
 
 describe('project path helpers', () => {
   test('normalizeProjectPath normalizes slashes and trailing slashes', () => {
-    expect(normalizeProjectPath('D:\\workspace\\panorama\\')).toBe('D:/workspace/panorama');
+    expect(normalizeProjectPath('C:\\code\\panorama\\')).toBe('C:/code/panorama');
     expect(normalizeProjectPath('/Users/dev/project///')).toBe('/Users/dev/project');
     expect(normalizeProjectPath('/')).toBe('/');
     expect(normalizeProjectPath('   ')).toBe('');
@@ -56,7 +56,7 @@ describe('project path helpers', () => {
   });
 
   test('projectName extracts folder basename', () => {
-    expect(projectName('D:\\workspace\\panorama\\')).toBe('panorama');
+    expect(projectName('C:\\code\\panorama\\')).toBe('panorama');
     expect(projectName('/Users/dev/my-app')).toBe('my-app');
     expect(projectName('/')).toBe('/');
   });

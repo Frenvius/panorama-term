@@ -4,7 +4,7 @@ import React from 'react';
 import { X, Check, Clock, Folder, Search, ArrowUp, FolderPlus, ChevronRight } from 'lucide-react';
 
 import styles from './styles.module.scss';
-import { readDir } from '~/adapter/fs/fs.client';
+import { readDir, homeDir } from '~/adapter/fs/fs.client';
 import { projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
 
 export interface AddProjectModalProps {
@@ -29,7 +29,7 @@ const parentDir = (raw: string): string => {
 const resolveStartDir = (initialPath?: string | null, recentProjects: string[] = []): string => {
   if (initialPath?.trim()) return initialPath.trim();
   if (recentProjects.length > 0 && recentProjects[0]) return parentDir(recentProjects[0]);
-  return 'D:\\workspace';
+  return '';
 };
 
 const AddProjectModal = ({ recentProjects, existingProjects, initialPath, onSelect, onClose }: AddProjectModalProps) => {
@@ -38,7 +38,6 @@ const AddProjectModal = ({ recentProjects, existingProjects, initialPath, onSele
   const [entries, setEntries] = React.useState<DirEntry[]>([]);
   const [filter, setFilter] = React.useState('');
   const [loading, setLoading] = React.useState(false);
-  const triedFallback = React.useRef(false);
 
   const existingSet = React.useMemo(
     () => new Set(existingProjects.map((p) => normalizeProjectPath(p).toLowerCase())),
@@ -58,14 +57,17 @@ const AddProjectModal = ({ recentProjects, existingProjects, initialPath, onSele
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
+    if (!currentPath) {
+      void homeDir().then((home) => {
+        if (alive) setCurrentPath(home || '/');
+      });
+      return () => {
+        alive = false;
+      };
+    }
     void readDir(currentPath).then((list) => {
       if (!alive) return;
       const dirs = list.filter((e) => e.dir);
-      if (dirs.length === 0 && !triedFallback.current && currentPath === 'D:\\workspace') {
-        triedFallback.current = true;
-        setCurrentPath('C:\\Users');
-        return;
-      }
       setEntries(dirs);
       setLoading(false);
     });

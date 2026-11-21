@@ -294,8 +294,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn same_dir_ignores_verbatim_prefix_separators_and_case() {
-        assert!(same_dir(r"\\?\D:\workspace\projects\x", "d:/workspace/projects/x/"));
-        assert!(!same_dir(r"D:\workspace\projects\x", r"D:\workspace\projects\xy"));
+        assert!(same_dir(r"\\?\C:\code\x", "c:/code/x/"));
+        assert!(!same_dir(r"C:\code\x", r"C:\code\xy"));
     }
 
     #[test]
