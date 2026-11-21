@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::orch::cli_env::{cli_command, kill_tree};
 use crate::orch::settings::{AiActions, AiTarget, OrchSettings};
 
 pub struct OneShotOpts {
@@ -15,20 +16,6 @@ struct ProcOutput {
     stderr: String,
     exit_code: Option<i32>,
     timed_out: bool,
-}
-
-#[cfg(windows)]
-fn spawn_hidden(program: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut c = std::process::Command::new(program);
-    c.creation_flags(CREATE_NO_WINDOW);
-    c
-}
-
-#[cfg(not(windows))]
-fn spawn_hidden(program: &str) -> std::process::Command {
-    std::process::Command::new(program)
 }
 
 fn run_proc(mut cmd: std::process::Command, stdin_input: &str) -> Result<ProcOutput, String> {
@@ -65,14 +52,13 @@ fn run_proc(mut cmd: std::process::Command, stdin_input: &str) -> Result<ProcOut
             Ok(Some(s)) => break (s.code(), false),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_tree(&mut child);
                     break (None, true);
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
             Err(e) => {
-                let _ = child.kill();
+                kill_tree(&mut child);
                 return Err(format!("io:{e}"));
             }
         }
@@ -109,7 +95,7 @@ pub fn run_oneshot(opts: OneShotOpts) -> Result<String, String> {
 }
 
 fn run_oneshot_claude(model: &str, prompt: &str) -> Result<String, String> {
-    let mut cmd = spawn_hidden("claude");
+    let mut cmd = cli_command("claude");
     cmd.args([
         "-p", "--output-format", "text",
         "--tools", "", "--no-session-persistence", "--strict-mcp-config",
@@ -133,7 +119,7 @@ fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
     let out_file = tmp_path("codex-out");
     let out_path = out_file.to_string_lossy().into_owned();
 
-    let mut cmd = spawn_hidden("codex");
+    let mut cmd = cli_command("codex");
     cmd.args([
         "exec",
         "--skip-git-repo-check",
@@ -169,7 +155,7 @@ fn run_oneshot_custom(provider_id: &str, model: &str, prompt: &str, base: &Path)
 
     let resolved_env = crate::orch::profiles::resolve_env(&profile.env, Some(base));
 
-    let mut cmd = spawn_hidden("claude");
+    let mut cmd = cli_command("claude");
     cmd.args([
         "-p", "--output-format", "text",
         "--tools", "", "--no-session-persistence", "--strict-mcp-config",
@@ -375,6 +361,19 @@ mod tests {
         .expect("oneshot should succeed");
         eprintln!("real claude haiku output:\n{out}");
         assert!(!out.trim().is_empty());
+        assert!(out.to_lowercase().contains("hello"));
+    }
+
+    #[test]
+    #[ignore]
+    fn ai_oneshot_real_codex() {
+        let out = run_oneshot(OneShotOpts {
+            provider: "codex".into(),
+            model: String::new(),
+            prompt: "Reply with exactly the words: hello world".into(),
+        })
+        .expect("oneshot should succeed");
+        eprintln!("real codex output:\n{out}");
         assert!(out.to_lowercase().contains("hello"));
     }
 }

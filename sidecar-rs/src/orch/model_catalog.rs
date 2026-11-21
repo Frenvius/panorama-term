@@ -37,41 +37,10 @@ fn save_disk_cache(base: &Path, map: &HashMap<String, Vec<String>>) {
     let _ = std::fs::write(catalog_path(base), json);
 }
 
-#[cfg(windows)]
 fn cli_command(exe: &str, args: &[&str]) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut cmd_args: Vec<String> = vec!["/c".into(), exe.into()];
-    cmd_args.extend(args.iter().map(|a| a.to_string()));
-    let mut c = std::process::Command::new("cmd.exe");
-    c.args(&cmd_args);
-    c.creation_flags(CREATE_NO_WINDOW);
-    c
-}
-
-#[cfg(not(windows))]
-fn cli_command(exe: &str, args: &[&str]) -> std::process::Command {
-    let mut c = std::process::Command::new(exe);
+    let mut c = crate::orch::cli_env::cli_command(exe);
     c.args(args);
     c
-}
-
-#[cfg(windows)]
-fn kill_tree(child: &mut std::process::Child) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(not(windows))]
-fn kill_tree(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn run_cmd(mut cmd: std::process::Command) -> Result<String, String> {
@@ -91,7 +60,7 @@ fn run_cmd(mut cmd: std::process::Command) -> Result<String, String> {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     while child.try_wait().map_err(|e| e.to_string())?.is_none() {
         if Instant::now() >= deadline {
-            kill_tree(&mut child);
+            crate::orch::cli_env::kill_tree(&mut child);
             return Err("timeout".into());
         }
         std::thread::sleep(Duration::from_millis(50));

@@ -489,6 +489,7 @@ pub async fn brain_main() {
     if let Some(path) = fresh_path() {
         std::env::set_var("PATH", path);
     }
+    orch::cli_env::prewarm();
     tokio::task::block_in_place(|| reconnect_sessions());
     uninstall_claude_hook();
     install_claude_mod();
@@ -1181,6 +1182,14 @@ fn fresh_path() -> Option<String> {
 #[cfg(not(windows))]
 fn fresh_path() -> Option<String> {
     None
+}
+
+fn session_path() -> Option<String> {
+    if cfg!(windows) {
+        fresh_path()
+    } else {
+        orch::cli_env::cli_path()
+    }
 }
 
 fn norm_cwd(cwd: &str) -> String {
@@ -2258,12 +2267,44 @@ fn codex_hook_cmd() {
     }
 }
 
+fn is_launchable(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "exe" | "cmd" | "bat" | "com")
+}
+
+fn original_codex(wrapper_dir: &Path) -> Option<String> {
+    let mut cmd = if cfg!(windows) {
+        hidden_command("where.exe")
+    } else {
+        let mut c = hidden_command("which");
+        c.arg("-a");
+        c
+    };
+    cmd.arg("codex");
+    if let Some(path) = orch::cli_env::cli_path() {
+        cmd.env("PATH", path);
+    }
+    let out = cmd.output().ok()?;
+    let wrapper_dir = wrapper_dir.to_string_lossy().to_ascii_lowercase();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .find(|l| {
+            let path = Path::new(l);
+            let dir = path.parent().map(|d| d.to_string_lossy().to_ascii_lowercase());
+            dir.as_deref() != Some(wrapper_dir.as_str()) && is_launchable(path)
+        })
+        .map(str::to_string)
+}
+
 #[cfg(windows)]
 fn codex_wrapper() -> Option<(PathBuf, String)> {
-    let bin = std::process::Command::new("where.exe").arg("codex").output().ok()?;
-    let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
-    if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex.cmd");
+    let original = original_codex(wrapper.parent()?)?;
     let exe = hook_exe()?;
     let body = format!("@echo off\r\n\"{}\" codex-launch %*\r\nexit /b %ERRORLEVEL%\r\n", exe.display());
     let ps_wrapper = wrapper.with_extension("ps1");
@@ -2281,10 +2322,8 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
 #[cfg(not(windows))]
 fn codex_wrapper() -> Option<(PathBuf, String)> {
     use std::os::unix::fs::PermissionsExt;
-    let bin = std::process::Command::new("which").arg("codex").output().ok()?;
-    let original = String::from_utf8_lossy(&bin.stdout).lines().next()?.trim().to_string();
-    if original.is_empty() { return None; }
     let wrapper = panorama_dir()?.join("bin").join("codex");
+    let original = original_codex(wrapper.parent()?)?;
     let exe = hook_exe()?;
     let body = format!("#!/bin/sh\nexec \"{}\" codex-launch \"$@\"\n", exe.display());
     std::fs::create_dir_all(wrapper.parent()?).ok()?;
@@ -3466,7 +3505,7 @@ fn spawn_session(
         env.push((k.clone(), v.clone()));
     }
     if let Some((wrapper, original)) = codex_wrapper() {
-        let path = fresh_path().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
+        let path = session_path().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
         let sep = if cfg!(windows) { ';' } else { ':' };
         env.push(("PATH".into(), format!("{}{sep}{path}", wrapper.display())));
         env.push(("PANORAMA_CODEX_ORIGINAL".into(), original));
@@ -3486,7 +3525,7 @@ fn spawn_session(
         env.push(("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS".into(), IDLE_COMPACT_OFF_TOKENS.into()));
     }
     if p.spawn_cmd.is_some() && !env.iter().any(|(k, _)| k == "PATH") {
-        if let Some(path) = fresh_path() {
+        if let Some(path) = session_path() {
             env.push(("PATH".into(), path));
         }
     }
@@ -5393,7 +5432,7 @@ mod tests {
     use super::{
         dim, resize_parser, view_shift, AtomicUsize,
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
-        codex_hook_state, codex_launch_args, history, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
+        codex_hook_state, codex_launch_args, history, is_launchable, original_codex, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
         strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
         SCROLLBACK_LINES, render_disk_row, DEFAULT_FG,
     };
@@ -5423,6 +5462,24 @@ mod tests {
         let wire: serde_json::Value = serde_json::from_str(&wire).unwrap();
         assert_eq!(wire["agent"], "codex");
         assert_eq!(wire["model"], "gpt-test");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launchable_skips_extensionless_npm_shims() {
+        assert!(is_launchable(Path::new(r"C:\node\codex.cmd")));
+        assert!(is_launchable(Path::new(r"C:\bin\codex.EXE")));
+        assert!(!is_launchable(Path::new(r"C:\node\codex")));
+        assert!(!is_launchable(Path::new(r"C:\node\codex.ps1")));
+    }
+
+    #[test]
+    #[ignore]
+    fn original_codex_skips_wrapper_dir() {
+        let wrapper_dir = crate::panorama_dir().unwrap().join("bin");
+        let original = original_codex(&wrapper_dir).expect("codex should resolve");
+        eprintln!("original codex: {original}");
+        assert!(!original.to_ascii_lowercase().starts_with(&wrapper_dir.to_string_lossy().to_ascii_lowercase()));
     }
 
     #[test]
