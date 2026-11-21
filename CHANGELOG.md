@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.5]
+
+### Added
+- Tidy with AI shows live progress below the projects header: the current step and elapsed seconds, so a long run no longer looks stuck.
+- New canvas reorder that clusters tiles around the center.
+- The run board uses four columns with compact task cards.
+
+### Fixed
+- AI actions and orchestration workers no longer fail with "not recognized" when the merged PATH grew past the Windows command line limit.
+- AI action errors now show the CLI's real message instead of an empty one.
+
+### Performance
+- Tidy with Codex skips project docs, shell commands and web search, so it answers faster and no longer explores folders.
+
 ## [0.4.4]
 
 ### Fixed
