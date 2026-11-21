@@ -71,12 +71,13 @@ const buildUseRows = (query: string, agents: OrchAgent[], allOptions: OptionMeta
 
 interface ModelComboboxProps {
   agents: OrchAgent[];
+  value?: string;
   exclude?: string[];
   placeholder?: string;
   onPick: (value: string) => void;
 }
 
-const ModelCombobox = ({ agents, exclude, placeholder, onPick }: ModelComboboxProps) => {
+const ModelCombobox = ({ agents, value, exclude, placeholder, onPick }: ModelComboboxProps) => {
   const [query, setQuery] = React.useState('');
   const [open, setOpen] = React.useState(false);
   const [cursor, setCursor] = React.useState(0);
@@ -199,7 +200,7 @@ const ModelCombobox = ({ agents, exclude, placeholder, onPick }: ModelComboboxPr
         aria-expanded={open}
         className={`${styles.trigger} ${open ? styles.open : ''}`}
       >
-        <span className={styles.placeholder}>{placeholder ?? 'Add model...'}</span>
+        <span className={value ? undefined : styles.placeholder}>{value || (placeholder ?? 'Add model...')}</span>
         <ChevronDown size={14} strokeWidth={1.75} className={styles.chevron} />
       </button>
       {open && (

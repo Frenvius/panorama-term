@@ -111,9 +111,12 @@ pub fn run_oneshot(opts: OneShotOpts) -> Result<String, String> {
 fn run_oneshot_claude(model: &str, prompt: &str) -> Result<String, String> {
     let mut cmd = spawn_hidden("claude");
     cmd.args([
-        "-p", "--output-format", "text", "--model", model,
+        "-p", "--output-format", "text",
         "--tools", "", "--no-session-persistence", "--strict-mcp-config",
     ]);
+    if !model.is_empty() {
+        cmd.args(["--model", model]);
+    }
     cmd.env("CLAUDE_CODE_PLUGIN_DIRS", "");
     let out = run_proc(cmd, prompt)?;
     if out.timed_out {
@@ -136,9 +139,11 @@ fn run_oneshot_codex(model: &str, prompt: &str) -> Result<String, String> {
         "--skip-git-repo-check",
         "-s", "read-only",
         "--ephemeral",
-        "-m", model,
         "-o", &out_path,
     ]);
+    if !model.is_empty() {
+        cmd.args(["-m", model]);
+    }
 
     let proc = run_proc(cmd, prompt)?;
 
@@ -166,9 +171,12 @@ fn run_oneshot_custom(provider_id: &str, model: &str, prompt: &str, base: &Path)
 
     let mut cmd = spawn_hidden("claude");
     cmd.args([
-        "-p", "--output-format", "text", "--model", model,
+        "-p", "--output-format", "text",
         "--tools", "", "--no-session-persistence", "--strict-mcp-config",
     ]);
+    if !model.is_empty() {
+        cmd.args(["--model", model]);
+    }
     cmd.env("CLAUDE_CODE_PLUGIN_DIRS", "");
     for (k, v) in resolved_env {
         cmd.env(k, v);

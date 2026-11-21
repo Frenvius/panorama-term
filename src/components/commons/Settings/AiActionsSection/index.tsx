@@ -1,18 +1,13 @@
-import type { AiTarget, OrchProvider } from '~/domain/interfaces/orch.interface';
+import type { AiTarget, OrchAgent, OrchProvider } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
 
 import { orchSettingsActions, useOrchSettings } from '~/usecase/hooks/useOrchSettings';
+import ModelCombobox from '~/components/commons/ModelCombobox';
+import Select from '~/components/commons/Settings/Select';
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
-import Select from '~/components/commons/Settings/Select';
 import styles from './styles.module.scss';
-
-const CLAUDE_MODELS = [
-  { value: 'haiku', label: 'Haiku' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'opus', label: 'Opus' }
-];
 
 const DEFAULT_AI_ACTIONS = {
   default: { provider: 'claude', model: 'haiku' },
@@ -27,95 +22,69 @@ const buildProviderOptions = (providers: OrchProvider[]) => [
 
 const buildOverrideOptions = (providers: OrchProvider[]) => [
   { value: '', label: 'Use default' },
-  { value: 'claude', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' },
-  ...providers.map((p) => ({ value: p.id, label: p.label }))
+  ...buildProviderOptions(providers)
 ];
+
+const defaultModelFor = (provider: string): string => (provider === 'claude' ? 'haiku' : '');
+
+interface ModelFieldProps {
+  target: AiTarget;
+  agents: OrchAgent[];
+  onChange: (t: AiTarget) => void;
+}
+
+const ModelField = ({ target, agents, onChange }: ModelFieldProps) => {
+  const providerAgents = React.useMemo(
+    () => agents.filter((a) => a.id === target.provider).map((a) => ({ ...a, hidden: false })),
+    [agents, target.provider]
+  );
+
+  const onPick = (value: string) => {
+    const colon = value.indexOf(':');
+    onChange({ ...target, model: colon < 0 ? '' : value.slice(colon + 1) });
+  };
+
+  return <ModelCombobox agents={providerAgents} value={target.model} placeholder="CLI default model" onPick={onPick} />;
+};
 
 interface TargetControlProps {
   target: AiTarget;
+  agents: OrchAgent[];
   providers: OrchProvider[];
   onChange: (t: AiTarget) => void;
 }
 
-const TargetControl = ({ target, providers, onChange }: TargetControlProps) => {
-  const isClaude = target.provider === 'claude';
-  const opts = buildProviderOptions(providers);
-
-  const onProvider = (v: string) => {
-    onChange({ provider: v, model: v === 'claude' ? 'haiku' : target.model });
-  };
-
-  const onModel = (v: string) => onChange({ ...target, model: v });
-
-  const onModelInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...target, model: e.target.value });
-  };
+const TargetControl = ({ target, agents, providers, onChange }: TargetControlProps) => {
+  const onProvider = (v: string) => onChange({ provider: v, model: defaultModelFor(v) });
 
   return (
     <div className={styles.targetControl}>
-      <Select options={opts} value={target.provider} onChange={onProvider} />
-      {isClaude ? (
-        <Select options={CLAUDE_MODELS} value={target.model} onChange={onModel} />
-      ) : (
-        <input
-          className={styles.modelInput}
-          value={target.model}
-          onChange={onModelInput}
-          placeholder="Model name"
-          spellCheck={false}
-        />
-      )}
+      <Select options={buildProviderOptions(providers)} value={target.provider} onChange={onProvider} />
+      <ModelField target={target} agents={agents} onChange={onChange} />
     </div>
   );
 };
 
 interface OverrideControlProps {
   override: AiTarget | undefined;
+  agents: OrchAgent[];
   providers: OrchProvider[];
   onChange: (t: AiTarget | undefined) => void;
 }
 
-const OverrideControl = ({ override, providers, onChange }: OverrideControlProps) => {
-  const opts = buildOverrideOptions(providers);
-  const provider = override?.provider ?? '';
-
-  const onProvider = (v: string) => {
-    if (!v) { onChange(undefined); return; }
-    onChange({ provider: v, model: v === 'claude' ? 'haiku' : (override?.model ?? '') });
-  };
-
-  const onModel = (v: string) => {
-    if (!override) return;
-    onChange({ ...override, model: v });
-  };
-
-  const onModelInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!override) return;
-    onChange({ ...override, model: e.target.value });
-  };
+const OverrideControl = ({ override, agents, providers, onChange }: OverrideControlProps) => {
+  const onProvider = (v: string) => onChange(v ? { provider: v, model: defaultModelFor(v) } : undefined);
 
   return (
     <div className={styles.targetControl}>
-      <Select options={opts} value={provider} onChange={onProvider} />
-      {override && override.provider === 'claude' && (
-        <Select options={CLAUDE_MODELS} value={override.model} onChange={onModel} />
-      )}
-      {override && override.provider !== 'claude' && (
-        <input
-          className={styles.modelInput}
-          value={override.model}
-          onChange={onModelInput}
-          placeholder="Model name"
-          spellCheck={false}
-        />
-      )}
+      <Select options={buildOverrideOptions(providers)} value={override?.provider ?? ''} onChange={onProvider} />
+      {override && <ModelField target={override} agents={agents} onChange={onChange} />}
     </div>
   );
 };
 
 const AiActionsSection = () => {
-  const { settings, loading } = useOrchSettings();
+  const { settings, agents, loading } = useOrchSettings();
 
   if (loading && !settings) {
     return (
@@ -159,7 +128,7 @@ const AiActionsSection = () => {
           description="Used when no action-specific provider is set."
           stacked
         >
-          <TargetControl target={aiActions.default} providers={providers} onChange={saveDefault} />
+          <TargetControl target={aiActions.default} agents={agents} providers={providers} onChange={saveDefault} />
         </Row>
       </Group>
       <Group label="Actions">
@@ -169,7 +138,7 @@ const AiActionsSection = () => {
           description="Provider for generating commit messages."
           stacked
         >
-          <OverrideControl override={aiActions.overrides.commitMessage} providers={providers} onChange={saveCommit} />
+          <OverrideControl override={aiActions.overrides.commitMessage} agents={agents} providers={providers} onChange={saveCommit} />
         </Row>
         <Row
           settingId="aiActions.tidy"
@@ -177,7 +146,7 @@ const AiActionsSection = () => {
           description="Provider for the tidy layout action."
           stacked
         >
-          <OverrideControl override={aiActions.overrides.tidy} providers={providers} onChange={saveTidy} />
+          <OverrideControl override={aiActions.overrides.tidy} agents={agents} providers={providers} onChange={saveTidy} />
         </Row>
       </Group>
     </>
