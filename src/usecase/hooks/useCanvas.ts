@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
+import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { ReorderPlan } from '~/usecase/util/reorderLayout';
 import type { Layout } from '~/usecase/util/layoutHistory';
 import { drawGrid } from '~/usecase/util/gridUtils';
@@ -27,6 +28,8 @@ import { toStored, toRuntime, type RuntimeCanvas } from '~/usecase/util/workspac
 import { shouldPersist, listenPointerInteraction } from '~/usecase/util/storeSync';
 import { planFrameReorder, planCanvasReorder } from '~/usecase/util/reorderLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
+import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
+import { syncProjectViewWithTiles } from '~/usecase/util/projectLayout';
 import {
   CELL,
   SNAP_PX,
@@ -1084,6 +1087,17 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     [applyReorder]
   );
 
+  const reorderFrameGroups = React.useCallback((from: string, to: string, place: DropPlace) => {
+    setFrames((prev) => moveFrameOrder({ frames: prev, from, to, place }));
+  }, []);
+
+  const reorderProjects = React.useCallback((from: string, to: string, place: DropPlace) => {
+    const base = syncProjectViewWithTiles(initial.current.projectView, tilesRef.current);
+    const projects = moveProject({ projects: base.projects, from, to, place });
+    initial.current = { ...initial.current, projectView: { ...base, projects } };
+    persistNowRef.current();
+  }, []);
+
   const frameSelection = React.useCallback(() => {
     const sel = selectedRef.current;
     const members = tilesRef.current.filter((t) => sel.has(t.id));
@@ -1222,6 +1236,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    reorderProjects,
+    reorderFrameGroups,
     undoLayout: history.undo,
     redoLayout: history.redo,
     frameSelection,

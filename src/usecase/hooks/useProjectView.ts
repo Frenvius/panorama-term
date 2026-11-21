@@ -1,3 +1,4 @@
+import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { MoveTileOpts } from '~/usecase/util/projectLayout';
 import type { RuntimeCanvas } from '~/usecase/util/workspaceCanvas';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
@@ -13,6 +14,7 @@ import { getPref, setPref } from '~/usecase/util/prefs';
 import { touchTile } from '~/usecase/util/tileRecency';
 import { placeTileInFrame } from '~/usecase/util/frameLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
+import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { toStored, toRuntime } from '~/usecase/util/workspaceCanvas';
 import { workspaceService } from '~/usecase/service/workspace.service';
@@ -397,6 +399,22 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     },
     [pushRecentProjects, projectSlot]
   );
+
+  const reorderProjects = React.useCallback((from: string, to: string, place: DropPlace) => {
+    setProjectView((prev) => {
+      const next = { ...prev, projects: moveProject({ projects: prev.projects, from, to, place }) };
+      projectViewRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const reorderFrameGroups = React.useCallback((from: string, to: string, place: DropPlace) => {
+    setFrames((prev) => {
+      const next = moveFrameOrder({ frames: prev, from, to, place });
+      framesRef.current = next;
+      return next;
+    });
+  }, []);
 
   const removeProject = React.useCallback((path: string) => {
     const norm = normalizeProjectPath(path);
@@ -1213,6 +1231,8 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     selectProject,
     addProject,
     removeProject,
+    reorderProjects,
+    reorderFrameGroups,
     panelState,
     activeTileId,
     focusGroup,

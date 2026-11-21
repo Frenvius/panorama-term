@@ -73,6 +73,8 @@ const ProjectView = () => {
     selectProject,
     addProject,
     removeProject,
+    reorderProjects,
+    reorderFrameGroups,
     focusGroup,
     activateTile,
     splitGroup,
@@ -672,7 +674,9 @@ const ProjectView = () => {
     onAddProject: openAddProjectModal,
     openFolderPicker,
     getViewCenter: pvGetViewCenter,
-    removeProjectOp: removeProject
+    removeProjectOp: removeProject,
+    reorderProjectOp: reorderProjects,
+    reorderFrameOp: reorderFrameGroups
   });
 
   const projectActionsWithBoards = React.useMemo(() => ({

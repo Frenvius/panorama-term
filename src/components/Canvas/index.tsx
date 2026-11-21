@@ -155,6 +155,8 @@ const Canvas = () => {
     fitFrame,
     reorderFrame,
     reorderCanvas,
+    reorderProjects,
+    reorderFrameGroups,
     undoLayout,
     redoLayout,
     frameSelection,
@@ -1067,7 +1069,9 @@ const Canvas = () => {
     selectGroupOp: canvasSelectGroupOp,
     onAddProject: canvasOnAddProject,
     openFolderPicker,
-    getViewCenter: getCanvasCenter
+    getViewCenter: getCanvasCenter,
+    reorderProjectOp: reorderProjects,
+    reorderFrameOp: reorderFrameGroups
   });
 
   const boards = React.useMemo(() => ({
