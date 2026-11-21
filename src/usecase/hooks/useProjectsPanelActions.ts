@@ -8,6 +8,7 @@ import React from 'react';
 import { findFreeRect } from '~/usecase/util/frameLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { fixGroupFrame, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
+import type { DropPlace } from '~/usecase/util/projectOrder';
 import { projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
 
@@ -25,6 +26,8 @@ export interface UseProjectsPanelActionsOpts {
   openFolderPicker: () => Promise<string | null>;
   getViewCenter: () => { x: number; y: number };
   removeProjectOp?: (path: string) => void;
+  reorderProjectOp: (from: string, to: string, place: DropPlace) => void;
+  reorderFrameOp: (from: string, to: string, place: DropPlace) => void;
 }
 
 export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): ProjectsPanelActions => {
@@ -93,6 +96,14 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
 
   const hasRemoveProject = Boolean(opts.removeProjectOp);
 
+  const onReorderProject = React.useCallback((path: string, targetPath: string, place: DropPlace) => {
+    ref.current.reorderProjectOp(path, targetPath, place);
+  }, []);
+
+  const onReorderFrame = React.useCallback((frameId: string, targetFrameId: string, place: DropPlace) => {
+    ref.current.reorderFrameOp(frameId, targetFrameId, place);
+  }, []);
+
   return React.useMemo(
     () => ({
       onActivateTile,
@@ -108,7 +119,9 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onRenameFrame,
       onDeleteFrame,
       onSetFolder,
-      onRemoveProject: hasRemoveProject ? onRemoveProject : undefined
+      onRemoveProject: hasRemoveProject ? onRemoveProject : undefined,
+      onReorderProject,
+      onReorderFrame
     }),
     [
       hasRemoveProject,
@@ -124,6 +137,8 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onRemoveProject,
       onRenameFrame,
       onRenameTile,
+      onReorderFrame,
+      onReorderProject,
       onSelectGroup,
       onSetFolder
     ]

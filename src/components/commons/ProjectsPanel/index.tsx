@@ -1,5 +1,6 @@
 import { isRemote } from '~/adapter/transport';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
+import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import type { ProjectsPanelProps, ProjectsPanelSignals, ProjectsPanelActions } from './types';
@@ -28,6 +29,7 @@ import {
 } from 'lucide-react';
 
 import styles from './styles.module.scss';
+import { useGroupReorder } from './useGroupReorder';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
@@ -320,6 +322,7 @@ const GroupRow = ({
         className={styles.groupRow}
         onContextMenu={handleContextMenu}
         data-active={isActive || undefined}
+        data-group-key={group.key}
       >
         <div className={styles.groupMain}>
           <button
@@ -536,6 +539,15 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
 
   const totalGroups = groups.length;
 
+  const reorderable = sort === 'projects' && !needle;
+
+  const reorderGroup = (from: ProjectGroup, to: ProjectGroup, place: DropPlace) => {
+    if (from.kind === 'frame' && from.frameId && to.frameId) actions.onReorderFrame(from.frameId, to.frameId, place);
+    if (from.kind === 'path' && from.path && to.path) actions.onReorderProject(from.path, to.path, place);
+  };
+
+  const { drop, bodyHandlers } = useGroupReorder({ enabled: reorderable, groups, onReorder: reorderGroup });
+
   const openGroupContextMenu = (e: React.MouseEvent, group: ProjectGroup) => {
     e.preventDefault();
     setGroupMenu({ x: e.clientX, y: e.clientY, group });
@@ -734,7 +746,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         </div>
       </div>
 
-      <div className={styles.body}>
+      <div className={styles.body} {...bodyHandlers}>
         {isEmpty ? (
           <div className={styles.emptyState}>
             <span className={styles.emptyText}>No projects or tiles yet</span>
@@ -765,19 +777,20 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           </div>
         ) : sort === 'projects' ? (
           groups.map((group) => (
-            <GroupRow
-              key={group.key}
-              group={group}
-              query={needle}
-              isOpen={!collapsed.has(group.key)}
-              isActive={group.key === activeGroupKey}
-              activeTileId={activeTileId}
-              signals={signals}
-              actions={actions}
-              onToggle={toggleCollapsed}
-              onGroupContextMenu={openGroupContextMenu}
-              onTileContextMenu={openTileContextMenu}
-            />
+            <div key={group.key} className={styles.groupSlot} data-drop={drop?.group.key === group.key ? drop.place : undefined}>
+              <GroupRow
+                group={group}
+                query={needle}
+                isOpen={!collapsed.has(group.key)}
+                isActive={group.key === activeGroupKey}
+                activeTileId={activeTileId}
+                signals={signals}
+                actions={actions}
+                onToggle={toggleCollapsed}
+                onGroupContextMenu={openGroupContextMenu}
+                onTileContextMenu={openTileContextMenu}
+              />
+            </div>
           ))
         ) : sortedFlatTiles.length === 0 ? (
           <div className={styles.empty}>No tiles</div>
