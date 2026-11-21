@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1]
+
+### Added
+- Frame Reorder submenu with Auto, Horizontal, Vertical, Grid 2x2 and Grid 3x3 arrangements. Tiles keep their size and the frame wraps around them.
+- Orchestration discovers each agent's models live and accepts custom model names, with a searchable model picker.
+
+### Fixed
+- Compact reorder no longer leaves gaps between tiles or inside the frame.
+- Orchestration boards stay in sync with live workers.
+- Defaults and fixtures no longer contain local workspace paths.
+
 ## [0.4.0]
 
 ### Added
