@@ -136,7 +136,11 @@ const gridFrame = (frame: Frame): Rect => ({
 
 type MemberLayout = (boxes: Box[], origin: { x: number; y: number }, spacing: Spacing) => Map<string, Rect>;
 
-const keepLayout: MemberLayout = (boxes) => new Map(boxes.map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
+const keepLayout: MemberLayout = (boxes, origin) => {
+  const dx = origin.x - Math.min(...boxes.map((b) => b.x));
+  const dy = origin.y - Math.min(...boxes.map((b) => b.y));
+  return new Map(boxes.map((b) => [b.id, { x: b.x + dx, y: b.y + dy, width: b.width, height: b.height }]));
+};
 
 const arrangementLayout = (arrangement: FrameArrangement): MemberLayout =>
   arrangement === 'auto' ? packRows : (boxes, origin, spacing) => arrangeGrid(origin, boxes, GRID_COLUMNS[arrangement](boxes.length), spacing);
@@ -263,6 +267,8 @@ interface Segment {
 
 const SKYLINE_EPSILON = 0.5;
 
+const SKYLINE_SLACK = 2;
+
 const mergeLevels = (skyline: Segment[]): Segment[] =>
   skyline.reduce<Segment[]>((merged, s) => {
     const last = merged[merged.length - 1];
@@ -291,11 +297,14 @@ const fillWell = (skyline: Segment[], index: number): Segment[] => {
   return mergeLevels(skyline.map((s, i) => (i === index ? { ...s, y: level } : s)));
 };
 
-const packSkyline = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
+const footprintOf = (box: Box, spacing: Spacing): { width: number; height: number } => {
   const edge = edgeOf(spacing);
-  const footprint = (box: Box) => ({ width: edge(box.width + spacing.gap), height: edge(outerHeight(box) + spacing.gap) });
-  const area = boxes.reduce((sum, b) => sum + footprint(b).width * footprint(b).height, 0);
-  const limit = Math.max(...boxes.map((b) => footprint(b).width), Math.sqrt(area * aspect));
+  return { width: edge(box.width + spacing.gap), height: edge(outerHeight(box) + spacing.gap) };
+};
+
+const packSkyline = (boxes: Box[], limit: number, spacing: Spacing): Map<string, Rect> => {
+  const edge = edgeOf(spacing);
+  const footprint = (box: Box) => footprintOf(box, spacing);
   let skyline: Segment[] = [{ x: 0, width: limit, y: 0 }];
   const pending = readingRows(boxes).flat();
   const placed = new Map<string, Rect>();
@@ -321,11 +330,31 @@ const packSkyline = (boxes: Box[], aspect: number, spacing: Spacing): Map<string
   return placed;
 };
 
+const LIMIT_FACTORS = Array.from({ length: 31 }, (_, i) => 1 + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.05);
+
+const ASPECT_WEIGHT = 0.5;
+
+const extentOf = (placed: Map<string, Rect>): { width: number; height: number } => {
+  const rects = [...placed.values()];
+  return { width: Math.max(...rects.map((r) => r.x + r.width)), height: Math.max(...rects.map((r) => r.y + r.height)) };
+};
+
+const packingCost = (placed: Map<string, Rect>, aspect: number): number => {
+  const { width, height } = extentOf(placed);
+  return width * height * (1 + ASPECT_WEIGHT * Math.abs(Math.log(width / height / aspect)));
+};
+
+const packBest = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
+  const area = boxes.reduce((sum, b) => sum + footprintOf(b, spacing).width * footprintOf(b, spacing).height, 0);
+  const widest = Math.max(...boxes.map((b) => footprintOf(b, spacing).width));
+  const ideal = Math.sqrt(area * aspect);
+  const candidates = LIMIT_FACTORS.map((f) => packSkyline(boxes, Math.max(widest, ideal * f) + SKYLINE_SLACK, spacing));
+  return candidates.reduce((best, c) => (packingCost(c, aspect) < packingCost(best, aspect) ? c : best));
+};
+
 const packCentered = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
-  const packed = packSkyline(boxes, aspect, spacing);
-  const rects = [...packed.values()];
-  const clusterWidth = Math.max(...rects.map((r) => r.x + r.width));
-  const clusterHeight = Math.max(...rects.map((r) => r.y + r.height));
+  const packed = packBest(boxes, aspect, spacing);
+  const { width: clusterWidth, height: clusterHeight } = extentOf(packed);
   const left = Math.min(...boxes.map((b) => b.x));
   const top = Math.min(...boxes.map((b) => b.y - b.lead));
   const right = Math.max(...boxes.map((b) => b.x + b.width));

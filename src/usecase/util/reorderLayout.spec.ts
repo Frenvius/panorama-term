@@ -150,6 +150,17 @@ describe('locked frame order', () => {
     expect(bot.x - top.x).toBe(0);
     expect(bot.y - top.y).toBe(200);
   });
+
+  test('planCanvasCluster drops leading slack inside a locked frame so it packs flush', () => {
+    const f1Locked = { ...makeFrame('f1', 0, 0, 213, 173), orderLocked: true };
+    const plan = planCanvasCluster({ tiles: [makeTile('a', 5, 13)], frames: [f1Locked], aspect: 1, cellW: CELL_W, spacing: COMPACT })!;
+    const frame = plan.frames.get('f1')!;
+    const tile = plan.tiles.get('a')!;
+    expect(tile.x - frame.x).toBe(0);
+    expect(tile.y - frame.y).toBe(0);
+    expect(frame.width).toBe(200);
+    expect(frame.height).toBe(160);
+  });
 });
 
 describe('planCanvasCluster', () => {
