@@ -28,7 +28,7 @@ describe('planFrameReorder', () => {
   test('keeps reading order and closes gaps on the grid in default mode', () => {
     const frame = makeFrame('f', 0, 0, 2000, 1000);
     const tiles = [makeTile('b', 900, 40), makeTile('a', 100, 60), makeTile('c', 300, 500)];
-    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], cellW: CELL_W, spacing: SPACED })!;
+    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], arrangement: 'auto', cellW: CELL_W, spacing: SPACED })!;
     expect(plan.tiles.get('a')).toEqual(rect(20, 20));
     expect(plan.tiles.get('b')).toEqual(rect(240, 20));
     expect(plan.tiles.get('c')).toEqual(rect(20, 200));
@@ -38,7 +38,7 @@ describe('planFrameReorder', () => {
   test('compact mode leaves no gap and no padding', () => {
     const frame = makeFrame('f', 0, 0, 2000, 1000);
     const tiles = [makeTile('a', 100, 60), makeTile('b', 900, 40), makeTile('c', 300, 500)];
-    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], cellW: CELL_W, spacing: COMPACT })!;
+    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], arrangement: 'auto', cellW: CELL_W, spacing: COMPACT })!;
     expect(plan.tiles.get('a')).toEqual(rect(0, 0));
     expect(plan.tiles.get('b')).toEqual(rect(200, 0));
     expect(plan.tiles.get('c')).toEqual(rect(0, 160));
@@ -48,16 +48,44 @@ describe('planFrameReorder', () => {
   test('puts off-grid frames and tile sizes back on the grid', () => {
     const frame = makeFrame('f', 13, 27, 900, 600);
     const tiles = [makeTile('a', 40, 60, 207, 163), makeTile('b', 400, 60, 200, 160)];
-    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], cellW: CELL_W, spacing: COMPACT })!;
+    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], arrangement: 'auto', cellW: CELL_W, spacing: COMPACT })!;
     expect(plan.tiles.get('a')).toEqual(rect(20, 20, 200, 160));
     expect(plan.tiles.get('b')).toEqual(rect(220, 20));
     expect(plan.frames.get('f')).toEqual(rect(20, 20, 400, 160));
   });
 
+  test('compact mode abuts terminal tiles of uneven snapped size and wraps the frame exactly', () => {
+    const frame = makeFrame('f', 0, 0, 2000, 2000);
+    const term = (id: string, y: number, w: number, h: number): Tile => ({ ...makeTile(id, 0, y, w, h), type: 'term' });
+    const tiles = [term('a', 0, 600, 500), term('b', 600, 650, 400)];
+    const plan = planFrameReorder({ id: 'f', tiles, frames: [frame], arrangement: 'auto', cellW: CELL_W, spacing: COMPACT })!;
+    const a = plan.tiles.get('a')!;
+    const b = plan.tiles.get('b')!;
+    const f = plan.frames.get('f')!;
+    expect(b.y).toBe(a.y + a.height);
+    expect(f.width).toBe(Math.max(a.width, b.width));
+    expect(f.height).toBe(b.y + b.height);
+  });
+
+  test('arrangements keep tile sizes and wrap the frame around them', () => {
+    const frame = makeFrame('f', 0, 0, 2000, 2000);
+    const tiles = [makeTile('a', 0, 0), makeTile('b', 300, 0, 300, 140), makeTile('c', 0, 300), makeTile('d', 300, 300)];
+    const plan = (arrangement: 'horizontal' | 'vertical' | 'grid2', spacing = COMPACT) =>
+      planFrameReorder({ id: 'f', tiles, frames: [frame], arrangement, cellW: CELL_W, spacing })!;
+    expect(plan('horizontal').tiles.get('d')).toEqual(rect(700, 0));
+    expect(plan('horizontal').frames.get('f')).toEqual(rect(0, 0, 900, 160));
+    expect(plan('vertical').tiles.get('c')).toEqual(rect(0, 300));
+    expect(plan('vertical').frames.get('f')).toEqual(rect(0, 0, 300, 620));
+    expect(plan('grid2').tiles.get('b')).toEqual(rect(200, 0, 300, 140));
+    expect(plan('grid2').tiles.get('d')).toEqual(rect(200, 160));
+    expect(plan('grid2').frames.get('f')).toEqual(rect(0, 0, 500, 320));
+    expect(plan('grid2', SPACED).tiles.get('d')).toEqual(rect(240, 200));
+  });
+
   test('skips pinned tiles and empty frames', () => {
     const frame = makeFrame('f', 0, 0, 1000, 1000);
     const pinned = { ...makeTile('p', 300, 300), pinned: true };
-    expect(planFrameReorder({ id: 'f', tiles: [pinned], frames: [frame], cellW: CELL_W, spacing: COMPACT })).toBeNull();
+    expect(planFrameReorder({ id: 'f', tiles: [pinned], frames: [frame], arrangement: 'auto', cellW: CELL_W, spacing: COMPACT })).toBeNull();
   });
 });
 

@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import type { Tile, View, Frame, FrameMember } from '~/domain/interfaces/canvas.interface';
 import type { CanvasState } from '~/domain/interfaces/workspace.interface';
-import type { ReorderPlan } from '~/usecase/util/reorderLayout';
+import type { ReorderPlan, FrameArrangement } from '~/usecase/util/reorderLayout';
 import type { Layout } from '~/usecase/util/layoutHistory';
 import { drawGrid } from '~/usecase/util/gridUtils';
 import { termMetrics } from '~/usecase/util/fonts';
@@ -1074,8 +1074,10 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   }, [animateLayout]);
 
   const reorderFrame = React.useCallback(
-    (id: string) =>
-      applyReorder(planFrameReorder({ id, tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })),
+    (id: string, arrangement: FrameArrangement) =>
+      applyReorder(
+        planFrameReorder({ id, arrangement, tiles: tilesRef.current, frames: framesRef.current, cellW: termMetrics.cellW, spacing: currentLayoutSpacing() })
+      ),
     [applyReorder]
   );
 

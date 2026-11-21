@@ -1,8 +1,9 @@
 import type { RunSummary } from '~/domain/interfaces/orch.interface';
+import type { FrameArrangement } from '~/usecase/util/reorderLayout';
 import type { Tile, View, Frame as FrameData, FrameMember } from '~/domain/interfaces/canvas.interface';
 
 import React from 'react';
-import { X, Trash2, Shrink, Palette, PenLine, LayoutGrid, SquareKanban } from 'lucide-react';
+import { X, Rows2, Trash2, Shrink, Grid2x2, Grid3x3, Palette, PenLine, Columns2, LayoutGrid, SquareKanban, WandSparkles } from 'lucide-react';
 
 import ContextMenu from '~/components/commons/ContextMenu';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
@@ -24,7 +25,7 @@ interface FrameBarProps {
   recede: boolean;
   board?: FrameBoardProp;
   onFit: (id: string) => void;
-  onReorder: (id: string) => void;
+  onReorder: (id: string, arrangement: FrameArrangement) => void;
   onDragEnd: (id: string, memberIds: string[]) => void;
   onRemove: (id: string) => void;
   onRemoveWithTiles: (id: string) => void;
@@ -46,6 +47,14 @@ const inside = (f: FrameData, t: Tile): boolean => {
   const cy = t.y + t.height / 2;
   return cx >= f.x && cx <= f.x + f.width && cy >= f.y && cy <= f.y + f.height;
 };
+
+const ARRANGEMENTS: { arrangement: FrameArrangement; label: string; icon: React.ReactNode }[] = [
+  { arrangement: 'auto', label: 'Auto', icon: <WandSparkles size={15} strokeWidth={1.75} /> },
+  { arrangement: 'horizontal', label: 'Horizontal', icon: <Columns2 size={15} strokeWidth={1.75} /> },
+  { arrangement: 'vertical', label: 'Vertical', icon: <Rows2 size={15} strokeWidth={1.75} /> },
+  { arrangement: 'grid2', label: 'Grid 2x2', icon: <Grid2x2 size={15} strokeWidth={1.75} /> },
+  { arrangement: 'grid3', label: 'Grid 3x3', icon: <Grid3x3 size={15} strokeWidth={1.75} /> }
+];
 
 const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder, onDragEnd, onRename, onRecolor, onRemove, onRemoveWithTiles }: FrameBarProps) => {
   const k = view.k;
@@ -86,7 +95,12 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
   const remove = () => onRemove(frame.id);
   const removeWithTiles = () => onRemoveWithTiles(frame.id);
   const fit = () => onFit(frame.id);
-  const reorder = () => onReorder(frame.id);
+
+  const reorderEntries: ContextMenuEntry[] = ARRANGEMENTS.map(({ arrangement, label, icon }) => ({
+    label,
+    icon,
+    onSelect: () => onReorder(frame.id, arrangement)
+  }));
 
   const startRename = () => setEditing(true);
   const onBarDoubleClick = (e: React.MouseEvent) => {
@@ -164,7 +178,7 @@ const FrameBar = ({ frame, view, tiles, recede, board, onFit, onDrag, onReorder,
             { label: 'Rename', icon: <PenLine size={15} strokeWidth={1.75} />, onSelect: startRename },
             { label: 'Change color', icon: <Palette size={15} strokeWidth={1.75} />, onSelect: openColor },
             { label: 'Fit to contents', icon: <Shrink size={15} strokeWidth={1.75} />, onSelect: fit },
-            { label: 'Reorder', icon: <LayoutGrid size={15} strokeWidth={1.75} />, onSelect: reorder },
+            { label: 'Reorder', icon: <LayoutGrid size={15} strokeWidth={1.75} />, submenu: reorderEntries },
             ...(board
               ? ([
                   'separator',

@@ -6,6 +6,8 @@ import { CELL, TILE_MIN_WIDTH, FRAME_BAR_SPACE, FRAME_MIN_WIDTH, TILE_MIN_HEIGHT
 
 export type ReorderMode = 'default' | 'compact';
 
+export type FrameArrangement = 'auto' | 'horizontal' | 'vertical' | 'grid2' | 'grid3';
+
 export interface Rect {
   x: number;
   y: number;
@@ -64,17 +66,22 @@ const readingRows = (boxes: Box[]): Box[][] => {
   return rows.map((row) => row.sort((a, b) => a.x - b.x));
 };
 
-const packRows = (boxes: Box[], origin: { x: number; y: number }, gap: number): Map<string, Rect> => {
+const isTight = (spacing: Spacing): boolean => spacing.gap === 0;
+
+const edgeOf = (spacing: Spacing): ((value: number) => number) => (isTight(spacing) ? (value) => value : ceilGrid);
+
+const packRows = (boxes: Box[], origin: { x: number; y: number }, spacing: Spacing): Map<string, Rect> => {
   const placed = new Map<string, Rect>();
+  const edge = edgeOf(spacing);
   let bottom = origin.y;
   let first = true;
   for (const row of readingRows(boxes)) {
     const lead = Math.max(...row.map((b) => b.lead));
-    const y = ceilGrid(bottom + Math.max(first ? 0 : gap, lead));
+    const y = edge(bottom + Math.max(first ? 0 : spacing.gap, lead));
     let x = origin.x;
     for (const box of row) {
       placed.set(box.id, { x, y, width: box.width, height: box.height });
-      x = ceilGrid(x + box.width + gap);
+      x = edge(x + box.width + spacing.gap);
     }
     bottom = y + Math.max(...row.map((b) => b.height));
     first = false;
@@ -82,18 +89,41 @@ const packRows = (boxes: Box[], origin: { x: number; y: number }, gap: number): 
   return placed;
 };
 
-const reorderMembers = (frame: Rect, members: Tile[], spacing: Spacing, cellW: number): Map<string, Rect> =>
-  packRows(members.map((t) => gridTile(t, cellW)), { x: frame.x + spacing.pad, y: frame.y + spacing.pad }, spacing.gap);
+const GRID_COLUMNS: Record<Exclude<FrameArrangement, 'auto'>, (count: number) => number> = {
+  horizontal: (count) => count,
+  vertical: () => 1,
+  grid2: () => 2,
+  grid3: () => 3
+};
 
-const frameAroundPlaced = (frame: Rect, placed: Map<string, Rect>, pad: number): Rect => {
+const arrangeGrid = (origin: { x: number; y: number }, boxes: Box[], columns: number, spacing: Spacing): Map<string, Rect> => {
+  const order = readingRows(boxes).flat();
+  const edge = edgeOf(spacing);
+  const colWidths = Array.from({ length: Math.min(columns, order.length) }, (_, c) =>
+    Math.max(...order.filter((_, i) => i % columns === c).map((b) => b.width))
+  );
+  const rowHeights = Array.from({ length: Math.ceil(order.length / columns) }, (_, r) =>
+    Math.max(...order.slice(r * columns, (r + 1) * columns).map((b) => b.height))
+  );
+  const starts = (sizes: number[], from: number): number[] =>
+    sizes.reduce<number[]>((acc, _, i) => [...acc, i ? edge(acc[i - 1]! + sizes[i - 1]! + spacing.gap) : from], []);
+  const xs = starts(colWidths, origin.x);
+  const ys = starts(rowHeights, origin.y);
+  const placed = new Map<string, Rect>();
+  order.forEach((box, i) => placed.set(box.id, { x: xs[i % columns]!, y: ys[Math.floor(i / columns)]!, width: box.width, height: box.height }));
+  return placed;
+};
+
+const frameAroundPlaced = (frame: Rect, placed: Map<string, Rect>, spacing: Spacing): Rect => {
   const rects = [...placed.values()];
+  const edge = edgeOf(spacing);
   const right = Math.max(...rects.map((r) => r.x + r.width));
   const bottom = Math.max(...rects.map((r) => r.y + r.height));
   return {
     x: frame.x,
     y: frame.y,
-    width: Math.max(FRAME_MIN_WIDTH, ceilGrid(right + pad - frame.x)),
-    height: Math.max(FRAME_MIN_HEIGHT, ceilGrid(bottom + pad - frame.y))
+    width: Math.max(FRAME_MIN_WIDTH, edge(right + spacing.pad - frame.x)),
+    height: Math.max(FRAME_MIN_HEIGHT, edge(bottom + spacing.pad - frame.y))
   };
 };
 
@@ -104,27 +134,39 @@ const gridFrame = (frame: Frame): Rect => ({
   height: Math.max(FRAME_MIN_HEIGHT, toGrid(frame.height))
 });
 
-const planFrame = (frame: Frame, members: Tile[], spacing: Spacing, cellW: number): ReorderPlan => {
+interface PlanFrameArgs {
+  frame: Frame;
+  members: Tile[];
+  spacing: Spacing;
+  cellW: number;
+  arrangement: FrameArrangement;
+}
+
+const planFrame = ({ frame, members, spacing, cellW, arrangement }: PlanFrameArgs): ReorderPlan => {
   const rect = gridFrame(frame);
   if (!members.length) return { tiles: new Map(), frames: new Map([[frame.id, rect]]) };
-  const placed = reorderMembers(rect, members, spacing, cellW);
-  return { tiles: placed, frames: new Map([[frame.id, frameAroundPlaced(rect, placed, spacing.pad)]]) };
+  const boxes = members.map((t) => gridTile(t, cellW));
+  const origin = { x: rect.x + spacing.pad, y: rect.y + spacing.pad };
+  const placed =
+    arrangement === 'auto' ? packRows(boxes, origin, spacing) : arrangeGrid(origin, boxes, GRID_COLUMNS[arrangement](boxes.length), spacing);
+  return { tiles: placed, frames: new Map([[frame.id, frameAroundPlaced(rect, placed, spacing)]]) };
 };
 
 interface PlanFrameReorderArgs {
   id: string;
+  arrangement: FrameArrangement;
   cellW: number;
   tiles: Tile[];
   frames: Frame[];
   spacing: Spacing;
 }
 
-export const planFrameReorder = ({ id, cellW, tiles, frames, spacing }: PlanFrameReorderArgs): ReorderPlan | null => {
+export const planFrameReorder = ({ id, cellW, tiles, frames, spacing, arrangement }: PlanFrameReorderArgs): ReorderPlan | null => {
   const frame = frames.find((f) => f.id === id);
   if (!frame) return null;
   const members = (groupByFrame(frames, tiles).members.get(id) ?? []).filter(isMovable);
   if (!members.length) return null;
-  return planFrame(frame, members, spacing, cellW);
+  return planFrame({ frame, members, spacing, cellW, arrangement });
 };
 
 interface PlanCanvasReorderArgs {
@@ -142,7 +184,7 @@ export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasR
   const blocks: Box[] = [];
 
   for (const frame of frames) {
-    const plan = planFrame(frame, (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW);
+    const plan = planFrame({ frame, members: (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW, arrangement: 'auto' });
     plan.tiles.forEach((rect, tid) => tileRects.set(tid, rect));
     const rect = plan.frames.get(frame.id)!;
     frameRects.set(frame.id, rect);
@@ -157,7 +199,7 @@ export const planCanvasReorder = ({ tiles, frames, cellW, spacing }: PlanCanvasR
   if (!blocks.length) return null;
 
   const origin = { x: toGrid(Math.min(...blocks.map((b) => b.x))), y: toGrid(Math.min(...blocks.map((b) => b.y - b.lead))) };
-  const placedBlocks = packRows(blocks, origin, spacing.gap);
+  const placedBlocks = packRows(blocks, origin, spacing);
 
   for (const block of blocks) {
     const target = placedBlocks.get(block.id)!;
