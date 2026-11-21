@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.3]
+
+### Added
+- AI actions settings use the same model picker as orchestration: discovered models per provider, plus any model name you type. Leaving the model empty uses the CLI default.
+
+### Fixed
+- Tidy projects now reuses existing project frames instead of creating duplicates, and fills in a missing project path, title or color on frames.
+- Tiles already in a frame stay inside it when Tidy rearranges that frame.
+- Terminals resend their size once the connection is ready, so they no longer start at the wrong size.
+- Settings dropdowns close when clicking outside them.
+
+### Changed
+- Release builds are published for Windows and Linux only for now.
+
 ## [0.4.2]
 
 ### Added
