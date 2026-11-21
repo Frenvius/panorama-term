@@ -93,9 +93,23 @@ pub fn cli_path() -> Option<String> {
     let current = std::env::var("PATH").ok();
     let sep = if cfg!(windows) { ";" } else { ":" };
     match (login, current) {
-        (Some(l), Some(c)) => Some(format!("{l}{sep}{c}")),
+        (Some(l), Some(c)) => Some(merge_paths(&l, &c, sep)),
         (l, c) => l.or(c),
     }
+}
+
+fn merge_paths(first: &str, second: &str, sep: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    first
+        .split(sep)
+        .chain(second.split(sep))
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            let key = entry.trim_end_matches(['\\', '/']);
+            seen.insert(if cfg!(windows) { key.to_lowercase() } else { key.to_string() })
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 #[cfg(windows)]
@@ -130,4 +144,21 @@ pub fn kill_tree(child: &mut std::process::Child) {
 pub fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_paths;
+
+    #[test]
+    fn merge_paths_drops_duplicates_keeping_first_order() {
+        let merged = merge_paths("/a;/b/;/c", "/b;/d;;/a", ";");
+        assert_eq!(merged, "/a;/b/;/c;/d");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn merge_paths_is_case_insensitive_on_windows() {
+        assert_eq!(merge_paths(r"C:\Bin", r"c:\bin\;D:\x", ";"), r"C:\Bin;D:\x");
+    }
 }
