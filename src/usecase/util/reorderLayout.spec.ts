@@ -127,11 +127,45 @@ describe('planCanvasCluster', () => {
     expect(plan.tiles.get('d')).toEqual(rect(100, 320));
   });
 
-  test('centers a shorter last row under the wider ones', () => {
+  test('fills the space beside a tall block instead of leaving a gap', () => {
+    const tiles = [makeTile('tall', 0, 0, 200, 480), makeTile('a', 0, 500), makeTile('b', 0, 700), makeTile('c', 0, 900)];
+    const plan = planCanvasCluster({ tiles, frames: [], aspect: 1, cellW: CELL_W, spacing: COMPACT })!;
+    const tall = plan.tiles.get('tall')!;
+    const ys = ['a', 'b', 'c'].map((id) => plan.tiles.get(id)!.y - tall.y).sort((p, q) => p - q);
+    expect(ys).toEqual([0, 160, 320]);
+    expect(['a', 'b', 'c'].every((id) => plan.tiles.get(id)!.x === tall.x + 200)).toBe(true);
+  });
+
+  test('reflows a long single-row frame into a balanced grid', () => {
+    const frame = makeFrame('f', 0, 0, 1400, 160);
+    const tiles = Array.from({ length: 6 }, (_, i) => makeTile(`t${i}`, i * 200, 0));
+    const plan = planCanvasCluster({ tiles, frames: [frame], aspect: 16 / 9, cellW: CELL_W, spacing: COMPACT })!;
+    expect(plan.frames.get('f')!.width).toBe(600);
+    expect(plan.frames.get('f')!.height).toBe(320);
+  });
+
+  test('picks the column count that leaves no empty cell in a frame', () => {
+    const frame = makeFrame('f', 0, 0, 200, 480);
     const tiles = [makeTile('a', 0, 0), makeTile('b', 0, 160), makeTile('c', 0, 320)];
-    const plan = planCanvasCluster({ tiles, frames: [], aspect: 2, cellW: CELL_W, spacing: COMPACT })!;
-    expect(plan.tiles.get('a')!.y).toBe(plan.tiles.get('b')!.y);
-    expect(plan.tiles.get('c')!.x).toBe((plan.tiles.get('a')!.x + plan.tiles.get('b')!.x) / 2);
+    const plan = planCanvasCluster({ tiles, frames: [frame], aspect: 16 / 9, cellW: CELL_W, spacing: COMPACT })!;
+    expect(plan.frames.get('f')!.width).toBe(600);
+    expect(plan.frames.get('f')!.height).toBe(160);
+  });
+
+  test('never overlaps blocks in spaced mode', () => {
+    const f1 = makeFrame('f1', 0, 0, 700, 900);
+    const f2 = makeFrame('f2', 800, 0, 1500, 200);
+    const tiles = [
+      ...Array.from({ length: 9 }, (_, i) => makeTile(`a${i}`, (i % 3) * 220 + 20, Math.floor(i / 3) * 180 + 20)),
+      ...Array.from({ length: 7 }, (_, i) => makeTile(`b${i}`, 820 + i * 210, 20)),
+      makeTile('loose', 3000, 0, 300, 600)
+    ];
+    const plan = planCanvasCluster({ tiles, frames: [f1, f2], aspect: 16 / 9, cellW: CELL_W, spacing: SPACED })!;
+    const blocks = [...plan.frames.values(), plan.tiles.get('loose')!];
+    const overlaps = blocks.some((p, i) =>
+      blocks.some((q, j) => i < j && p.x < q.x + q.width && q.x < p.x + p.width && p.y < q.y + q.height && q.y < p.y + p.height)
+    );
+    expect(overlaps).toBe(false);
   });
 
   test('returns null for an empty canvas', () => {

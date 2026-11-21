@@ -134,21 +134,39 @@ const gridFrame = (frame: Frame): Rect => ({
   height: Math.max(FRAME_MIN_HEIGHT, toGrid(frame.height))
 });
 
+type MemberLayout = (boxes: Box[], origin: { x: number; y: number }, spacing: Spacing) => Map<string, Rect>;
+
+const arrangementLayout = (arrangement: FrameArrangement): MemberLayout =>
+  arrangement === 'auto' ? packRows : (boxes, origin, spacing) => arrangeGrid(origin, boxes, GRID_COLUMNS[arrangement](boxes.length), spacing);
+
+const balancedColumns = (boxes: Box[], aspect: number): number => {
+  const width = boxes.reduce((sum, b) => sum + b.width, 0);
+  const height = boxes.reduce((sum, b) => sum + b.height, 0);
+  const ideal = Math.min(boxes.length, Math.max(1, Math.sqrt((boxes.length * aspect * height) / width)));
+  const emptyCells = (columns: number): number => Math.ceil(boxes.length / columns) * columns - boxes.length;
+  const [low, high] = [Math.floor(ideal), Math.ceil(ideal)];
+  if (emptyCells(low) !== emptyCells(high)) return emptyCells(low) < emptyCells(high) ? low : high;
+  return Math.round(ideal);
+};
+
+const balancedLayout =
+  (aspect: number): MemberLayout =>
+  (boxes, origin, spacing) =>
+    arrangeGrid(origin, boxes, balancedColumns(boxes, aspect), spacing);
+
 interface PlanFrameArgs {
   frame: Frame;
   members: Tile[];
   spacing: Spacing;
   cellW: number;
-  arrangement: FrameArrangement;
+  layout: MemberLayout;
 }
 
-const planFrame = ({ frame, members, spacing, cellW, arrangement }: PlanFrameArgs): ReorderPlan => {
+const planFrame = ({ frame, members, spacing, cellW, layout }: PlanFrameArgs): ReorderPlan => {
   const rect = gridFrame(frame);
   if (!members.length) return { tiles: new Map(), frames: new Map([[frame.id, rect]]) };
   const boxes = members.map((t) => gridTile(t, cellW));
-  const origin = { x: rect.x + spacing.pad, y: rect.y + spacing.pad };
-  const placed =
-    arrangement === 'auto' ? packRows(boxes, origin, spacing) : arrangeGrid(origin, boxes, GRID_COLUMNS[arrangement](boxes.length), spacing);
+  const placed = layout(boxes, { x: rect.x + spacing.pad, y: rect.y + spacing.pad }, spacing);
   return { tiles: placed, frames: new Map([[frame.id, frameAroundPlaced(rect, placed, spacing)]]) };
 };
 
@@ -166,7 +184,7 @@ export const planFrameReorder = ({ id, cellW, tiles, frames, spacing, arrangemen
   if (!frame) return null;
   const members = (groupByFrame(frames, tiles).members.get(id) ?? []).filter(isMovable);
   if (!members.length) return null;
-  return planFrame({ frame, members, spacing, cellW, arrangement });
+  return planFrame({ frame, members, spacing, cellW, layout: arrangementLayout(arrangement) });
 };
 
 interface PlanCanvasReorderArgs {
@@ -183,7 +201,7 @@ interface CanvasBlocks {
   memberIds: Map<string, string[]>;
 }
 
-const collectBlocks = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs): CanvasBlocks => {
+const collectBlocks = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs, layout: MemberLayout): CanvasBlocks => {
   const { members, loose } = groupByFrame(frames, tiles);
   const tileRects = new Map<string, Rect>();
   const frameRects = new Map<string, Rect>();
@@ -191,7 +209,7 @@ const collectBlocks = ({ tiles, frames, cellW, spacing }: PlanCanvasReorderArgs)
   const blocks: Box[] = [];
 
   for (const frame of frames) {
-    const plan = planFrame({ frame, members: (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW, arrangement: 'auto' });
+    const plan = planFrame({ frame, members: (members.get(frame.id) ?? []).filter(isMovable), spacing, cellW, layout });
     plan.tiles.forEach((rect, tid) => tileRects.set(tid, rect));
     const rect = plan.frames.get(frame.id)!;
     frameRects.set(frame.id, rect);
@@ -226,7 +244,7 @@ const moveBlocks = ({ blocks, tileRects, frameRects, memberIds }: CanvasBlocks, 
 };
 
 export const planCanvasReorder = (args: PlanCanvasReorderArgs): ReorderPlan | null => {
-  const collected = collectBlocks(args);
+  const collected = collectBlocks(args, packRows);
   const { blocks } = collected;
   if (!blocks.length) return null;
   const origin = { x: toGrid(Math.min(...blocks.map((b) => b.x))), y: toGrid(Math.min(...blocks.map((b) => b.y - b.lead))) };
@@ -235,49 +253,65 @@ export const planCanvasReorder = (args: PlanCanvasReorderArgs): ReorderPlan | nu
 
 const outerHeight = (box: Box): number => box.lead + box.height;
 
-const wrapRows = (boxes: Box[], maxWidth: number, gap: number): Box[][] => {
-  const rows: Box[][] = [];
-  let width = 0;
-  for (const box of boxes) {
-    const row = rows[rows.length - 1];
-    if (row && width + gap + box.width <= maxWidth) {
-      row.push(box);
-      width += gap + box.width;
-      continue;
-    }
-    rows.push([box]);
-    width = box.width;
+interface Segment {
+  x: number;
+  width: number;
+  y: number;
+}
+
+const restingY = (skyline: Segment[], x: number, width: number): number =>
+  Math.max(...skyline.filter((s) => s.x < x + width && s.x + s.width > x).map((s) => s.y));
+
+const lowestSpot = (skyline: Segment[], width: number, limit: number): { x: number; y: number } => {
+  let best = { x: 0, y: Infinity };
+  for (const { x } of skyline) {
+    if (x + width > limit) break;
+    const y = restingY(skyline, x, width);
+    if (y < best.y) best = { x, y };
   }
-  return rows;
+  return best;
+};
+
+const raiseSkyline = (skyline: Segment[], placed: Segment): Segment[] => {
+  const end = placed.x + placed.width;
+  const pieces = skyline.flatMap((s) => {
+    if (s.x + s.width <= placed.x || s.x >= end) return [s];
+    const left = s.x < placed.x ? [{ x: s.x, width: placed.x - s.x, y: s.y }] : [];
+    const right = s.x + s.width > end ? [{ x: end, width: s.x + s.width - end, y: s.y }] : [];
+    return [...left, ...right];
+  });
+  return [...pieces, placed].sort((a, b) => a.x - b.x);
+};
+
+const packSkyline = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
+  const edge = edgeOf(spacing);
+  const footprint = (box: Box) => ({ width: edge(box.width + spacing.gap), height: edge(outerHeight(box) + spacing.gap) });
+  const area = boxes.reduce((sum, b) => sum + footprint(b).width * footprint(b).height, 0);
+  const limit = Math.max(...boxes.map((b) => footprint(b).width), Math.sqrt(area * aspect));
+  let skyline: Segment[] = [{ x: 0, width: limit, y: 0 }];
+  const placed = new Map<string, Rect>();
+  for (const box of [...boxes].sort((a, b) => outerHeight(b) - outerHeight(a))) {
+    const { width, height } = footprint(box);
+    const spot = lowestSpot(skyline, width, limit);
+    placed.set(box.id, { x: spot.x, y: edge(spot.y + box.lead), width: box.width, height: box.height });
+    skyline = raiseSkyline(skyline, { x: spot.x, width, y: spot.y + height });
+  }
+  return placed;
 };
 
 const packCentered = (boxes: Box[], aspect: number, spacing: Spacing): Map<string, Rect> => {
-  const { gap } = spacing;
-  const edge = edgeOf(spacing);
-  const area = boxes.reduce((sum, b) => sum + (b.width + gap) * (outerHeight(b) + gap), 0);
-  const maxWidth = Math.max(...boxes.map((b) => b.width), Math.sqrt(area * aspect));
-  const rows = wrapRows(readingRows(boxes).flat(), maxWidth, gap);
-  const rowWidth = (row: Box[]): number => row.reduce((sum, b) => sum + b.width, 0) + gap * (row.length - 1);
-  const rowHeight = (row: Box[]): number => Math.max(...row.map(outerHeight));
-  const clusterWidth = Math.max(...rows.map(rowWidth));
-  const clusterHeight = rows.reduce((sum, row) => sum + rowHeight(row), 0) + gap * (rows.length - 1);
+  const packed = packSkyline(boxes, aspect, spacing);
+  const rects = [...packed.values()];
+  const clusterWidth = Math.max(...rects.map((r) => r.x + r.width));
+  const clusterHeight = Math.max(...rects.map((r) => r.y + r.height));
   const left = Math.min(...boxes.map((b) => b.x));
   const top = Math.min(...boxes.map((b) => b.y - b.lead));
   const right = Math.max(...boxes.map((b) => b.x + b.width));
   const bottom = Math.max(...boxes.map((b) => b.y + b.height));
   const originX = toGrid((left + right - clusterWidth) / 2);
-  let y = toGrid((top + bottom - clusterHeight) / 2);
+  const originY = toGrid((top + bottom - clusterHeight) / 2);
   const placed = new Map<string, Rect>();
-  for (const row of rows) {
-    const height = rowHeight(row);
-    let x = edge(originX + (clusterWidth - rowWidth(row)) / 2);
-    for (const box of row) {
-      const boxY = edge(y + (height - outerHeight(box)) / 2 + box.lead);
-      placed.set(box.id, { x, y: boxY, width: box.width, height: box.height });
-      x = edge(x + box.width + gap);
-    }
-    y = edge(y + height + gap);
-  }
+  packed.forEach((rect, id) => placed.set(id, { ...rect, x: originX + rect.x, y: originY + rect.y }));
   return placed;
 };
 
@@ -286,7 +320,7 @@ interface PlanCanvasClusterArgs extends PlanCanvasReorderArgs {
 }
 
 export const planCanvasCluster = ({ aspect, ...args }: PlanCanvasClusterArgs): ReorderPlan | null => {
-  const collected = collectBlocks(args);
+  const collected = collectBlocks(args, balancedLayout(aspect));
   if (!collected.blocks.length) return null;
   return moveBlocks(collected, packCentered(collected.blocks, aspect, args.spacing));
 };
