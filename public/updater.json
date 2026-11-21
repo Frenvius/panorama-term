@@ -1,23 +1,23 @@
 {
-  "version": "0.4.4",
-  "notes": "### Fixed\n- AI actions (Tidy, commit message) and model discovery now find agent CLIs installed through version managers or shell profiles, instead of failing with errors from a broken shim.\n- Codex terminals resolve the same codex binary your shell would, so hooks keep working when codex is only on the profile PATH.\n- Run configurations on macOS and Linux see the PATH set up by your shell rc files.",
-  "pub_date": "2026-11-21T06:15:40Z",
+  "version": "0.4.5",
+  "notes": "### Added\n- Tidy with AI shows live progress below the projects header: the current step and elapsed seconds, so a long run no longer looks stuck.\n- New canvas reorder that clusters tiles around the center.\n- The run board uses four columns with compact task cards.\n\n### Fixed\n- AI actions and orchestration workers no longer fail with \"not recognized\" when the merged PATH grew past the Windows command line limit.\n- AI action errors now show the CLI's real message instead of an empty one.\n\n### Performance\n- Tidy with Codex skips project docs, shell commands and web search, so it answers faster and no longer explores folders.",
+  "pub_date": "2026-11-21T16:18:05Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.4/Panorama_0.4.4_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGhza3lpK1ZRd3BTazdta2pYZSttVEh2SmlpeDFVKzFFa0lMWHA5VlRDSUJTTmtwNnE0TDZZdXNpd3ZNNE53anl5VkJsUXlTZmxHVmdMYlcrbjdMMndjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQxMzcyCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC40CkdiSEIyZ1ZyNVczUDhXQlU4V05mdnVMOFpjM1BXK0VONmsxM2tKQkxZaWw4MUN2eldkVkpuazZoVGtHQWpGT1VQT3pjamJ3U0licXhQaWEvcSt5NUR3PT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGl2NEJtMTMvMG94eGZMRmlRcHp3Qld5UDYxdkZnTmtVTzBaQURFeG1mMnIrQ0VxeUtObmQyTzdRZ0NjZFdqRlpRTzcxVExBWmFPNENkbkVhVlZMSXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3NDI5CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC41CjZpd0lyNitmYlhjSWw2aVZDMUZuc21RYlNBN1B4dzhqNDliRUZIVGZ0V0Z6S2kzWStaS0NPTVRiVDU1REFVOFVMNm84UWhGTUNjUy93R1hIbU15RUFBPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.4/Panorama_0.4.4_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGh4VmZ3empEYUpQb2F0YjRhTGNJWndWTUUzK3hiM1dzdkRBcGViUjNLSFFqeDhBbVQra21YZHFwWFA0c3dJcFBXa1dVOUxuR1J4RXkwWjdHSmZMYmdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQxNDUwCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC40Ck42OXdPQWdmdm1oMW80ZjNWN2tVcnJjNmlxUnZqZlRXd29QK0gwb01IM244SHBPUUpxUDFIeW5HZWpFdEhVUWlmU2hTa2lBQnhNOE5GbnNGM2lGVUJRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHMrc2VxWUxaTDJzOWFJWXZKazErbmFKSi9HMHo2TG03ZnpRZG44SWdDU0dzQnlQcDVWMHpPdTl2L1RNekdVN0JPd0U2NUhjTnNaU3RSZjJ2VkZxcndzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3NTA3CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC41CjlmYzFjbXluLytUVTFNVHU5emM2djhYUytjQ1o3YTRlRTd6WTNFWjJKUFZmQ0RzZUZXamZKR1Jmc3FObm95aUxFOWNOOG5oNnZXVWJpWmQyRE1kTkJBPT0K"
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.4/Panorama_0.4.4_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNjVHIzajZHR1p4NmxLNGFtdmVkN1BIU21PeFNxcFFXa292QTE2dUVuS0gxQkcvQWZZaFY1VzNUVkZzNGU5dzJaMnpGRGlXL2xmMDU4YmFpQmZ4QlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQxNjEzCWZpbGU6UGFub3JhbWFfMC40LjRfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjQuNAp2R01XNFhobWwvdW92VnpPVjN2VFlmSGxiY21Bd25ObHRoTmN3TXNIYklsWkRhcVZpdVR6SVU3UkFaeU0xR3JkdEdKcm12SEFHRnFjbzZzeGhSWnNEdz09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGt1TXArTC9aRWJRckhrTmpQUjNIRWJtWXJQZnQ5amZjUEE4Q0o5RkZSNnlvS25TbDB1U0Vvc0VsQWNvR1ZrSUhvQW1wbHpWbzEyQXlmeE83RGVMUVEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3Njk4CWZpbGU6UGFub3JhbWFfMC40LjVfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjQuNQpvN3lqOFR0MmQ1dWorTEJrSHliMDVwZFppRHJlWmlvcVRGMDJ1RW1DaVpOaDFwWHcreWJUT09zNE9Ub1RsNkRZS3lKZzNmeWQ0Rzd3QjB0QVhkdEpDUT09Cg=="
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.4/Panorama_0.4.4_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHJLSlFFVkFQSGZETS9KeXJpaHF2dUYzMHpOYll0SHVIeVJpUTVkbzNSUXN3aWczOEJudGZKUUlUemtMNTFjOU1YcTVJZC91L20yZVcyblVxdno2bXdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQxNjkyCWZpbGU6UGFub3JhbWFfMC40LjRfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC40CnpERHdUVVFOWC9KY0tyTzBObUZHNjlOMjg3cU9CUnlFTklLYXl4VkNZWEpqeE9YU1NwRzRKZUNLRkxNUzYyUGIrcHRzM3kxUHNNVG1DaThMeXAyL0NBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFWaWZZa1ZlU1BZWHZjZnhLOXBTTDM3SVVrRjFoY0lCbVJmeXY5dXd0WXlnOWd6NGtWUkxUejZUKzdBZEkray91dVNxV0VuNGhJaW9vOG12K2ZWYkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3ODE3CWZpbGU6UGFub3JhbWFfMC40LjVfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC41CjhLNm80My9YakUxK2hHdCtpY2kxeG5pNElVekpsbmMxeVR0ZThhSFE0eGw3Tzg0bGVIRzJsZnNhQTRmSHdadkxiQk5zRXhTc3B3dWtZcW4rZFRDN0NRPT0K"
     }
   }
 }
