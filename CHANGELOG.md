@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4]
+
+### Fixed
+- AI actions (Tidy, commit message) and model discovery now find agent CLIs installed through version managers or shell profiles, instead of failing with errors from a broken shim.
+- Codex terminals resolve the same codex binary your shell would, so hooks keep working when codex is only on the profile PATH.
+- Run configurations on macOS and Linux see the PATH set up by your shell rc files.
+
 ## [0.4.3]
 
 ### Added
