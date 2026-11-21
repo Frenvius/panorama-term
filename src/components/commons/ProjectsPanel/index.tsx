@@ -1,5 +1,6 @@
 import { isRemote } from '~/adapter/transport';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
+import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import type { ProjectsPanelProps, ProjectsPanelSignals, ProjectsPanelActions } from './types';
@@ -10,8 +11,10 @@ import {
   Plus,
   Clock,
   Folder,
+  Loader,
   Search,
   Trash2,
+  Wand2,
   FileCode,
   GitBranch,
   FolderOpen,
@@ -28,6 +31,7 @@ import {
 } from 'lucide-react';
 
 import styles from './styles.module.scss';
+import { useGroupReorder } from './useGroupReorder';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
@@ -320,6 +324,7 @@ const GroupRow = ({
         className={styles.groupRow}
         onContextMenu={handleContextMenu}
         data-active={isActive || undefined}
+        data-group-key={group.key}
       >
         <div className={styles.groupMain}>
           <button
@@ -447,7 +452,7 @@ interface TileMenuState {
   tile: Tile;
 }
 
-const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, signals, actions }: ProjectsPanelProps) => {
+const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, signals, actions, tidy }: ProjectsPanelProps) => {
   const [query, setQuery] = React.useState('');
   const [sort, setSort] = React.useState<Sort>(savedSort);
   const [collapsed, setCollapsed] = React.useState<Set<string>>(savedCollapsed);
@@ -535,6 +540,15 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
   );
 
   const totalGroups = groups.length;
+
+  const reorderable = sort === 'projects' && !needle;
+
+  const reorderGroup = (from: ProjectGroup, to: ProjectGroup, place: DropPlace) => {
+    if (from.kind === 'frame' && from.frameId && to.frameId) actions.onReorderFrame(from.frameId, to.frameId, place);
+    if (from.kind === 'path' && from.path && to.path) actions.onReorderProject(from.path, to.path, place);
+  };
+
+  const { drop, bodyHandlers } = useGroupReorder({ enabled: reorderable, groups, onReorder: reorderGroup });
 
   const openGroupContextMenu = (e: React.MouseEvent, group: ProjectGroup) => {
     e.preventDefault();
@@ -687,6 +701,23 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           >
             <FolderPlus size={14} strokeWidth={1.75} />
           </button>
+          {tidy && (
+            <button
+              type="button"
+              className={styles.iconBtn}
+              onClick={tidy.status === 'idle' ? tidy.onTrigger : undefined}
+              disabled={tidy.status === 'loading' || tidy.status === 'applying'}
+              aria-label="Tidy with AI"
+              data-tooltip="Tidy with AI"
+              data-tooltip-place="bottom"
+            >
+              {tidy.status === 'loading' ? (
+                <Loader size={14} strokeWidth={1.75} className={styles.spin} />
+              ) : (
+                <Wand2 size={14} strokeWidth={1.75} />
+              )}
+            </button>
+          )}
           <button
             type="button"
             className={styles.iconBtn}
@@ -699,6 +730,33 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           </button>
         </div>
       </div>
+
+      {tidy?.status === 'preview' && tidy.preview && (
+        <div className={styles.tidyConfirm}>
+          <span className={styles.tidyConfirmText}>
+            {tidy.preview.projectsReordered > 0
+              ? `${tidy.preview.projectsReordered} projects reordered, `
+              : ''}
+            {tidy.preview.framesTotal} frame{tidy.preview.framesTotal !== 1 ? 's' : ''}
+            {tidy.preview.framesNew > 0 ? ` (${tidy.preview.framesNew} new)` : ''}
+          </span>
+          <div className={styles.tidyConfirmActions}>
+            <button type="button" className={styles.tidyApplyBtn} onClick={tidy.onApply}>
+              Apply
+            </button>
+            <button type="button" className={styles.tidyCancelBtn} onClick={tidy.onCancel}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tidy?.error && (
+        <div className={styles.tidyError}>
+          <TriangleAlert size={12} strokeWidth={2} />
+          {tidy.error}
+        </div>
+      )}
 
       <div className={styles.toolbarWrap}>
         <div className={styles.filter}>
@@ -734,7 +792,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         </div>
       </div>
 
-      <div className={styles.body}>
+      <div className={styles.body} {...bodyHandlers}>
         {isEmpty ? (
           <div className={styles.emptyState}>
             <span className={styles.emptyText}>No projects or tiles yet</span>
@@ -765,19 +823,20 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           </div>
         ) : sort === 'projects' ? (
           groups.map((group) => (
-            <GroupRow
-              key={group.key}
-              group={group}
-              query={needle}
-              isOpen={!collapsed.has(group.key)}
-              isActive={group.key === activeGroupKey}
-              activeTileId={activeTileId}
-              signals={signals}
-              actions={actions}
-              onToggle={toggleCollapsed}
-              onGroupContextMenu={openGroupContextMenu}
-              onTileContextMenu={openTileContextMenu}
-            />
+            <div key={group.key} className={styles.groupSlot} data-drop={drop?.group.key === group.key ? drop.place : undefined}>
+              <GroupRow
+                group={group}
+                query={needle}
+                isOpen={!collapsed.has(group.key)}
+                isActive={group.key === activeGroupKey}
+                activeTileId={activeTileId}
+                signals={signals}
+                actions={actions}
+                onToggle={toggleCollapsed}
+                onGroupContextMenu={openGroupContextMenu}
+                onTileContextMenu={openTileContextMenu}
+              />
+            </div>
           ))
         ) : sortedFlatTiles.length === 0 ? (
           <div className={styles.empty}>No tiles</div>

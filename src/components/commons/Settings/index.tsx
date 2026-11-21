@@ -1,10 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
 
 import React from 'react';
-import { X, Bot, Bell, Search, Puzzle, Palette, Workflow, Keyboard, Monitor, Smartphone, LayoutGrid, SquareTerminal } from 'lucide-react';
+import { X, Bot, Bell, Search, Puzzle, Palette, Workflow, Keyboard, Monitor, Sparkles, Smartphone, LayoutGrid, SquareTerminal } from 'lucide-react';
 
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from '~/usecase/util/settingsNav';
-import { resetCanvas, resetAppearance, resetTerminal, resetNotifications, resetAgents, resetOrchestration, resetShortcuts, RESET_DESCRIPTIONS } from '~/usecase/util/settingsDefaults';
+import { resetCanvas, resetAppearance, resetTerminal, resetNotifications, resetAgents, resetOrchestration, resetAiActions, resetShortcuts, RESET_DESCRIPTIONS } from '~/usecase/util/settingsDefaults';
 import Button from './Button';
 import ConfirmDialog from './ConfirmDialog';
 import CanvasSection from './CanvasSection';
@@ -15,6 +15,7 @@ import DevicesSection from './DevicesSection';
 import TerminalSection from './TerminalSection';
 import ShortcutsSection from './ShortcutsSection';
 import AppearanceSection from './AppearanceSection';
+import AiActionsSection from './AiActionsSection';
 import OrchestrationSection from './OrchestrationSection';
 import NotificationsSection from './NotificationsSection';
 import styles from './styles.module.scss';
@@ -31,6 +32,7 @@ const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
   notifications: Bell,
   agents: Bot,
   orchestration: Workflow,
+  aiActions: Sparkles,
   devices: Smartphone,
   remote: Monitor,
   plugins: Puzzle,
@@ -50,6 +52,7 @@ const SECTION_META: Record<SettingsSection, SectionMeta> = {
   notifications: { title: 'Notifications', subtitle: 'Toast display position and monitor.', hasReset: true },
   agents: { title: 'Agents', subtitle: 'Model picker and Claude Code settings.', hasReset: true },
   orchestration: { title: 'Orchestration', subtitle: 'Agents and models used for multi-agent runs.', hasReset: true },
+  aiActions: { title: 'AI actions', subtitle: 'Provider and model for AI-powered actions.', hasReset: true },
   devices: { title: 'Devices', subtitle: 'Manage phone and desktop connections.' },
   remote: { title: 'Remote host', subtitle: 'Use the workspace and terminals of a paired desktop.' },
   plugins: { title: 'Plugins', subtitle: 'Extend Panorama with themes, fonts and more.' },
@@ -70,6 +73,7 @@ const SECTION_RESET_FNS: Partial<Record<SettingsSection, () => void>> = {
   notifications: resetNotifications,
   agents: resetAgents,
   orchestration: resetOrchestration,
+  aiActions: resetAiActions,
   shortcuts: resetShortcuts
 };
 
@@ -243,6 +247,7 @@ const Settings = ({ initialSection = 'canvas', onClose }: SettingsProps) => {
             {section === 'notifications' && <NotificationsSection key={resetKey} />}
             {section === 'agents' && <AgentsSection key={resetKey} />}
             {section === 'orchestration' && <OrchestrationSection key={resetKey} />}
+            {section === 'aiActions' && <AiActionsSection key={resetKey} />}
             {section === 'devices' && <DevicesSection />}
             {section === 'remote' && <RemoteSection />}
             {section === 'plugins' && <PluginsSection />}

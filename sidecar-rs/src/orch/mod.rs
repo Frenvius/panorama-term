@@ -2,6 +2,7 @@ mod model;
 mod model_catalog;
 mod reducer;
 mod store;
+pub mod ai;
 pub mod cli;
 pub mod exec;
 pub mod git;
@@ -327,6 +328,8 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "coordinator-set" => handle_coordinator_set(body).await,
         "coordinator-list" => handle_coordinator_list(),
         "dispatch-adopt" => handle_dispatch_adopt(body).await,
+        "ai-commit-message" => handle_ai_commit_message(body).await,
+        "ai-tidy" => handle_ai_tidy(body).await,
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -3247,6 +3250,20 @@ fn settings_with_keys_json(s: &settings::OrchSettings, base: Option<&std::path::
         "providers": providers,
         "showWorkerTiles": s.show_worker_tiles,
         "customModels": s.custom_models,
+        "aiActions": {
+            "default": {
+                "provider": s.ai_actions.default.provider,
+                "model": s.ai_actions.default.model,
+            },
+            "overrides": {
+                "commitMessage": s.ai_actions.overrides.commit_message.as_ref().map(|t| {
+                    serde_json::json!({"provider": t.provider, "model": t.model})
+                }),
+                "tidy": s.ai_actions.overrides.tidy.as_ref().map(|t| {
+                    serde_json::json!({"provider": t.provider, "model": t.model})
+                }),
+            }
+        },
     })
 }
 
@@ -3346,6 +3363,34 @@ fn handle_settings_set(body: &[u8]) -> String {
             }
         }
         s.custom_models = new_map;
+    }
+    if let Some(ai_obj) = v.get("aiActions").filter(|v| v.is_object()) {
+        if let Some(def_obj) = ai_obj.get("default").filter(|v| v.is_object()) {
+            if let Some(p) = def_obj["provider"].as_str() {
+                s.ai_actions.default.provider = p.to_string();
+            }
+            if let Some(m) = def_obj["model"].as_str() {
+                s.ai_actions.default.model = m.to_string();
+            }
+        }
+        if let Some(ov_obj) = ai_obj.get("overrides").filter(|v| v.is_object()) {
+            if ov_obj.get("commitMessage").map(|v| v.is_null()).unwrap_or(false) {
+                s.ai_actions.overrides.commit_message = None;
+            } else if let Some(cm) = ov_obj.get("commitMessage").filter(|v| v.is_object()) {
+                s.ai_actions.overrides.commit_message = Some(settings::AiTarget {
+                    provider: cm["provider"].as_str().unwrap_or("claude").to_string(),
+                    model: cm["model"].as_str().unwrap_or("haiku").to_string(),
+                });
+            }
+            if ov_obj.get("tidy").map(|v| v.is_null()).unwrap_or(false) {
+                s.ai_actions.overrides.tidy = None;
+            } else if let Some(td) = ov_obj.get("tidy").filter(|v| v.is_object()) {
+                s.ai_actions.overrides.tidy = Some(settings::AiTarget {
+                    provider: td["provider"].as_str().unwrap_or("claude").to_string(),
+                    model: td["model"].as_str().unwrap_or("haiku").to_string(),
+                });
+            }
+        }
     }
     if let Err(e) = settings::save(&base, &s) {
         return err_resp("io", &format!("save settings: {e}"));
@@ -3579,6 +3624,132 @@ fn handle_coordinator_list() -> String {
     ok_resp(serde_json::json!({ "tiles": tiles }))
 }
 
+async fn handle_ai_commit_message(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let repo = match v["repo"].as_str().filter(|s| !s.is_empty()) {
+        Some(r) => r.to_string(),
+        None => return err_resp("bad_request", "repo required"),
+    };
+    let files = str_arr_field(&v, "files");
+
+    let repo_c = repo.clone();
+    let files_c = files.clone();
+    let diff = match tokio::task::spawn_blocking(move || build_commit_diff(&repo_c, &files_c)).await {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => return err_resp("git_error", &e),
+        Err(_) => return err_resp("io", "spawn_blocking panic"),
+    };
+
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let s = settings::load(&base);
+    let (provider, model) = ai::resolve_ai_target(&s, Some("commitMessage"));
+
+    let prompt = format!(
+        "Write a single-line semantic commit message for this diff.\n\
+         Format: type: description\n\
+         Rules: under 72 chars, English, no body, no quotes.\n\
+         Return ONLY the commit message line, nothing else.\n\n\
+         {diff}"
+    );
+
+    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { provider, model, prompt })).await {
+        Ok(Ok(raw)) => {
+            let message = ai::clean_commit_message(&raw);
+            if message.is_empty() {
+                return err_resp("bad_response", "AI returned empty commit message");
+            }
+            ok_resp(serde_json::json!({ "message": message }))
+        }
+        Ok(Err(e)) => err_from_str(&e),
+        Err(_) => err_resp("io", "spawn_blocking panic"),
+    }
+}
+
+fn build_commit_diff(repo: &str, files: &[String]) -> Result<String, String> {
+    use crate::git_glance::git;
+
+    let head_exists = git(repo, &["rev-parse", "--verify", "HEAD"]).is_ok();
+
+    let mut parts: Vec<String> = Vec::new();
+
+    let mut diff_args: Vec<String> = if head_exists {
+        vec!["diff".into(), "HEAD".into(), "--".into()]
+    } else {
+        vec!["diff".into(), "--cached".into(), "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(), "--".into()]
+    };
+    diff_args.extend(files.iter().cloned());
+    let diff_refs: Vec<&str> = diff_args.iter().map(|s| s.as_str()).collect();
+    let diff_bytes = git(repo, &diff_refs).unwrap_or_default();
+    let diff_str = String::from_utf8_lossy(&diff_bytes).into_owned();
+    if !diff_str.is_empty() {
+        parts.push(diff_str);
+    }
+
+    if !files.is_empty() {
+        let mut ls_args: Vec<String> = vec![
+            "ls-files".into(), "--others".into(), "--exclude-standard".into(), "--".into(),
+        ];
+        ls_args.extend(files.iter().cloned());
+        let ls_refs: Vec<&str> = ls_args.iter().map(|s| s.as_str()).collect();
+        let untracked_bytes = git(repo, &ls_refs).unwrap_or_default();
+        let untracked = String::from_utf8_lossy(&untracked_bytes).into_owned();
+        for path in untracked.lines().filter(|l| !l.trim().is_empty()) {
+            let full_path = std::path::Path::new(repo).join(path);
+            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                parts.push(format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n{content}"));
+            }
+        }
+    }
+
+    let combined = parts.join("\n");
+    const LIMIT: usize = 60_000;
+    if combined.len() > LIMIT {
+        let safe = (0..=LIMIT).rev().find(|&i| combined.is_char_boundary(i)).unwrap_or(0);
+        let cut = combined[..safe].rfind('\n').unwrap_or(safe);
+        Ok(format!("{}\n[diff truncated]", &combined[..cut]))
+    } else {
+        Ok(combined)
+    }
+}
+
+async fn handle_ai_tidy(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let snapshot = match v["snapshot"].as_str().filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => return err_resp("bad_request", "snapshot required"),
+    };
+
+    let Some(base) = crate::panorama_dir() else {
+        return err_resp("io", "no panorama dir");
+    };
+    let s = settings::load(&base);
+    let (provider, model) = ai::resolve_ai_target(&s, Some("tidy"));
+
+    let prompt = format!(
+        "Given this workspace snapshot, return ONLY a JSON object with this exact shape:\n\
+         {{\"projectOrder\":[\"<projectId>\",...],\"frames\":[{{\"title\":\"<short>\",\"frameId\":\"<existingId>\",\"tileIds\":[\"<id>\",...]}}, ...]}}\n\
+         Rules: order projects sensibly, group tiles by topic/work area, reuse existing frames via frameId when they fit (omit frameId for new frames), short titles (2-4 words), never invent tile or project ids.\n\
+         Return ONLY the JSON object, no prose.\n\n\
+         {snapshot}"
+    );
+
+    match tokio::task::spawn_blocking(move || ai::run_oneshot(ai::OneShotOpts { provider, model, prompt })).await {
+        Ok(Ok(raw)) => {
+            match ai::extract_json_object(&raw) {
+                Ok(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {
+                    Ok(plan) => ok_resp(serde_json::json!({ "plan": plan })),
+                    Err(e) => err_resp("bad_response", &format!("AI returned invalid JSON: {e}")),
+                },
+                Err(e) => err_resp("bad_response", &e),
+            }
+        }
+        Ok(Err(e)) => err_from_str(&e),
+        Err(_) => err_resp("io", "spawn_blocking panic"),
+    }
+}
+
 pub fn orch_context(tile_id: &str) -> Option<String> {
     let in_set = coordinators().lock().unwrap_or_else(|e| e.into_inner()).contains(tile_id);
     if in_set {
@@ -3697,6 +3868,19 @@ fn chain_display(chain: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::orch::model::Limits;
+
+    #[test]
+    fn build_commit_diff_truncates_on_char_boundary() {
+        let mut s = String::from("a");
+        while s.len() < 60_010 {
+            s.push('\u{20AC}');
+        }
+        const LIMIT: usize = 60_000;
+        assert!(!s.is_char_boundary(LIMIT), "test requires mid-char boundary at LIMIT");
+        let safe = (0..=LIMIT).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        let _ = &s[..safe];
+        assert!(safe < LIMIT);
+    }
 
     fn setup_run_in_state(run_id: &str) {
         let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());

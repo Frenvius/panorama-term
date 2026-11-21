@@ -88,6 +88,7 @@ pub async fn dispatch(command: &str, args: &Value) -> Result<Value, String> {
             value(crate::git::git_log_graph(arg(args, "path")?, arg(args, "limit")?).await?)
         }
         "git_remote_url" => value(crate::git::git_remote_url(arg(args, "path")?).await?),
+        "git_root" => value(crate::git::git_root(&arg::<String>(args, "path")?)?),
         "git_unpushed_commits" => {
             value(crate::git::git_unpushed_commits(arg(args, "path")?).await?)
         }

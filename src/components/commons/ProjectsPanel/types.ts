@@ -2,6 +2,8 @@ import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import type { RunSummary } from '~/domain/interfaces/orch.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
+import type { DropPlace } from '~/usecase/util/projectOrder';
+import type { TidyState } from '~/usecase/hooks/useTidyAI';
 
 export interface ProjectsPanelSignals {
   alerts: Map<string, NotifyKind>;
@@ -24,6 +26,8 @@ export interface ProjectsPanelActions {
   onDeleteFrame: (frameId: string) => void;
   onSetFolder: (frameId: string) => void;
   onRemoveProject?: (path: string) => void;
+  onReorderProject: (path: string, targetPath: string, place: DropPlace) => void;
+  onReorderFrame: (frameId: string, targetFrameId: string, place: DropPlace) => void;
   onOpenBoard?: (runId: string, group: ProjectGroup) => void;
   onNewBoard?: (group: ProjectGroup) => void;
   allRuns?: RunSummary[];
@@ -36,4 +40,7 @@ export interface ProjectsPanelProps {
   recentProjects: string[];
   signals: ProjectsPanelSignals;
   actions: ProjectsPanelActions;
+  tidy?: TidyState;
 }
+
+export type { TidyState };

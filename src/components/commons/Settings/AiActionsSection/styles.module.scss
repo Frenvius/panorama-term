@@ -1,0 +1,27 @@
+.targetControl {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.modelInput {
+  height: 30px;
+  min-width: 120px;
+  padding: 0 10px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-size: 13px;
+
+  &::placeholder {
+    color: var(--text-dim);
+  }
+
+  &:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-color: transparent;
+  }
+}
