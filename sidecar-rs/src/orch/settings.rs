@@ -66,6 +66,8 @@ pub struct OrchSettings {
     pub providers: Vec<OrchProvider>,
     #[serde(default)]
     pub show_worker_tiles: bool,
+    #[serde(default)]
+    pub ai_actions: AiActions,
 }
 
 impl Default for OrchSettings {
@@ -78,7 +80,50 @@ impl Default for OrchSettings {
             hidden_agents: Vec::new(),
             providers: Vec::new(),
             show_worker_tiles: false,
+            ai_actions: AiActions::default(),
         }
+    }
+}
+
+fn default_ai_provider() -> String { "claude".into() }
+fn default_ai_model() -> String { "haiku".into() }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTarget {
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+}
+
+impl Default for AiTarget {
+    fn default() -> Self {
+        Self { provider: default_ai_provider(), model: default_ai_model() }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiActionOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_message: Option<AiTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tidy: Option<AiTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiActions {
+    #[serde(default)]
+    pub default: AiTarget,
+    #[serde(default)]
+    pub overrides: AiActionOverrides,
+}
+
+impl Default for AiActions {
+    fn default() -> Self {
+        Self { default: AiTarget::default(), overrides: AiActionOverrides::default() }
     }
 }
 
@@ -285,6 +330,7 @@ mod tests {
                 main_model: "ds-fast".into(),
                 fast_model: "ds-fast".into(),
             }],
+            ai_actions: AiActions::default(),
         };
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
