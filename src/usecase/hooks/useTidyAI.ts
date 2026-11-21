@@ -5,7 +5,7 @@ import React from 'react';
 
 import { aiTidy, aiProgress } from '~/adapter/orch/orch.client';
 import { showToast, errorText } from '~/usecase/util/toasts';
-import { buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from '~/usecase/util/tidy';
+import { pinPathlessNotes, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from '~/usecase/util/tidy';
 
 export type TidyStatus = 'idle' | 'loading' | 'preview' | 'applying';
 
@@ -33,6 +33,7 @@ export interface UseTidyAIOpts {
   createFrame: (frame: Omit<Frame, 'id'>) => string;
   patchFrame: (id: string, patch: Partial<Omit<Frame, 'id'>>) => void;
   removeFrame: (id: string) => void;
+  patchTile: (id: string, patch: Partial<Tile>) => void;
   placeTiles: (moves: { id: string; x: number; y: number }[]) => void;
   setProjectsOrder: (paths: string[]) => void;
 }
@@ -103,13 +104,16 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
     const p = preview;
     if (!p) return;
 
-    const { tiles, frames, createFrame, patchFrame, placeTiles, setProjectsOrder, projects } = optsRef.current;
+    const { tiles, frames, createFrame, patchFrame, patchTile, placeTiles, setProjectsOrder, projects } = optsRef.current;
 
     const undoTilePositions = tiles.map((t) => ({ id: t.id, x: t.x, y: t.y }));
     const undoFrameStates = frames.map((f) => ({ ...f }));
     const undoProjectOrder = [...projects];
 
     setStatus('applying');
+
+    const notePins = pinPathlessNotes({ projects, frames, tiles });
+    for (const pin of notePins) patchTile(pin.id, { workspacePath: pin.workspacePath });
 
     const layout = computeTidyLayout(p.plan, tiles, frames, projects);
     if (layout.tileMoves.length) placeTiles(layout.tileMoves);
@@ -133,6 +137,7 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
         run: () => {
           optsRef.current.setProjectsOrder(undoProjectOrder);
           optsRef.current.placeTiles(undoTilePositions);
+          for (const pin of notePins) optsRef.current.patchTile(pin.id, { workspacePath: undefined });
           for (const id of createdFrameIds) optsRef.current.removeFrame(id);
           for (const f of undoFrameStates) {
             if (!createdFrameIds.includes(f.id)) {
@@ -157,5 +162,8 @@ export const useTidyAI = (opts: UseTidyAIOpts): TidyState => {
     setPreview(null);
   }, []);
 
-  return { status, preview, error, progress, onTrigger, onApply, onCancel };
+  return React.useMemo(
+    () => ({ status, preview, error, progress, onTrigger, onApply, onCancel }),
+    [status, preview, error, progress, onTrigger, onApply, onCancel]
+  );
 };

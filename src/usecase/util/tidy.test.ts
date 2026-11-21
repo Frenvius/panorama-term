@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 
-import { buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from './tidy';
+import { pinPathlessNotes, buildTidySnapshot, sanitizeTidyPlan, computeTidyLayout } from './tidy';
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { TidyPlan } from '~/domain/interfaces/orch.interface';
 
@@ -252,5 +252,39 @@ describe('sanitizeTidyPlan frame recognition', () => {
     const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'X', path: '/A/FOO/', tileIds: ['t2'] }] };
     const result = sanitizeTidyPlan(plan, { projectPaths: projects, tiles: [barTile], frames: [] });
     expect(result.frames[0].path).toBe('/a/foo');
+  });
+});
+
+describe('tidy notes', () => {
+  const note = (id: string, overrides: Partial<Tile> = {}) => makeTile(id, { type: 'note', ...overrides });
+
+  it('leaves notes out of the snapshot', () => {
+    const result = JSON.parse(buildTidySnapshot({ projects: [], frames: [], tiles: [makeTile('t1'), note('n1')] }));
+    expect(result.tiles.map((t: { id: string }) => t.id)).toEqual(['t1']);
+  });
+
+  it('drops notes the plan tries to move', () => {
+    const known = { projectPaths: [], tiles: [makeTile('t1'), note('n1')], frames: [] };
+    const plan: TidyPlan = { projectOrder: [], frames: [{ title: 'F', tileIds: ['t1', 'n1'] }] };
+    expect(sanitizeTidyPlan(plan, known).frames[0].tileIds).toEqual(['t1']);
+  });
+
+  it('keeps a note inside its reused frame', () => {
+    const frame = makeFrame('f1', { x: 0, y: 0, width: 800, height: 600 });
+    const tiles = [makeTile('t1', { x: 20, y: 20 }), note('n1', { x: 400, y: 20, width: 200, height: 200 })];
+    const layout = computeTidyLayout({ projectOrder: [], frames: [{ title: 'F', frameId: 'f1', tileIds: ['t1'] }] }, tiles, [frame]);
+    expect(layout.tileMoves.map((m) => m.id)).toContain('n1');
+    expect(layout.newFrames).toHaveLength(0);
+  });
+
+  it('pins pathless notes to the project they show under before a reorder', () => {
+    const tiles = [note('n1'), note('n2', { cwd: '/b/bar' }), makeTile('t1')];
+    expect(pinPathlessNotes({ projects: ['/a/foo', '/b/bar'], frames: [], tiles })).toEqual([{ id: 'n1', workspacePath: '/a/foo' }]);
+  });
+
+  it('pins a pathless note to the project of the frame it sits in', () => {
+    const frame = makeFrame('f1', { x: 0, y: 0, width: 800, height: 600, path: '/b/bar' });
+    const tiles = [note('n1', { x: 20, y: 20, width: 200, height: 200 })];
+    expect(pinPathlessNotes({ projects: ['/a/foo', '/b/bar'], frames: [frame], tiles })).toEqual([{ id: 'n1', workspacePath: '/b/bar' }]);
   });
 });

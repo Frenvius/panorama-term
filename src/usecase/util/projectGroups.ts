@@ -157,3 +157,8 @@ export const groupPathResolver = (groups: ProjectGroup[]): ((tile: Tile) => stri
   }
   return (tile) => pathByTile.get(tile.id) ?? null;
 };
+
+export const tileOwnerResolver = (args: BuildProjectGroupsArgs): ((tile: Tile) => string | null) => {
+  const fromGroups = groupPathResolver(buildProjectGroups(args));
+  return (tile) => fromGroups(tile) ?? tileProject(tile, args.projects);
+};

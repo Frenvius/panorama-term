@@ -38,9 +38,9 @@ import { dockerAvailable } from '~/adapter/docker/docker.client';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { setAlert, getAlerts, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
-import { buildProjectGroups } from '~/usecase/util/projectGroups';
+import { buildProjectGroups, tileOwnerResolver } from '~/usecase/util/projectGroups';
 import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
-import { projectName, DEFAULT_PROJECT, projectRootPath, tileMatchesProject } from '~/usecase/util/projectLayout';
+import { projectName, DEFAULT_PROJECT, projectRootPath } from '~/usecase/util/projectLayout';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import { getBinding, isCapturing, formatCombo, matchCommand } from '~/usecase/util/keybindings';
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
@@ -221,10 +221,11 @@ const ProjectView = () => {
     return new Set(tiles.filter((t) => t.type === 'term' && !docked.has(t.id)).map((t) => t.id));
   }, [projectView.byProject, tiles]);
 
-  const projectNotes = React.useMemo(
-    () => (activeProject ? tiles.filter((t) => t.type === 'note' && tileMatchesProject(t, activeProject, projects)) : []),
-    [activeProject, projects, tiles]
-  );
+  const projectNotes = React.useMemo(() => {
+    if (!activeProject) return [];
+    const ownerOf = tileOwnerResolver({ frames, tiles, projects });
+    return tiles.filter((t) => t.type === 'note' && ownerOf(t)?.toLowerCase() === activeProject.toLowerCase());
+  }, [activeProject, projects, frames, tiles]);
 
   const activeTile = activeTileId ? (tileMap.get(activeTileId) ?? null) : null;
 
@@ -640,6 +641,7 @@ const ProjectView = () => {
     createFrame,
     patchFrame,
     removeFrame,
+    patchTile,
     placeTiles,
     setProjectsOrder
   });
@@ -779,6 +781,7 @@ const ProjectView = () => {
       agents,
       detachedTileIds,
       projectActionsWithBoards,
+      tidyAI,
       inspectorProject,
       openFile,
       activeDiff,

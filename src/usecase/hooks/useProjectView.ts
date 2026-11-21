@@ -22,13 +22,11 @@ import { unlinkNote, deleteNote, unlinkTerm } from '~/adapter/notes/notes.client
 import { withFrameCreated, withFramePatched } from '~/usecase/util/frame';
 import { CELL, TILE_WIDTH, NOTE_WIDTH, NOTE_HEIGHT, TILE_HEIGHT } from '~/usecase/util/constants';
 import {
-  tileProject,
   closePanelGroup,
   DEFAULT_PROJECT,
   splitPanelGroup,
   projectRootPath,
   updateSplitRatio,
-  tileMatchesProject,
   normalizeProjectPath,
   activateTileInProject,
   moveTileBetweenGroups,
@@ -36,12 +34,17 @@ import {
   syncProjectViewWithTiles,
   removeTileFromPanelState
 } from '~/usecase/util/projectLayout';
-import { buildProjectGroups, groupPathResolver } from '~/usecase/util/projectGroups';
+import { buildProjectGroups, groupPathResolver, tileOwnerResolver } from '~/usecase/util/projectGroups';
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
 
 const syncWithFrames = (view: ProjectViewState | undefined, tiles: Tile[], frames: Frame[]): ProjectViewState =>
   syncProjectViewWithTiles(view, tiles, groupPathResolver(buildProjectGroups({ frames, tiles, projects: view?.projects ?? [] })));
+
+const ownedBy = (tiles: Tile[], frames: Frame[], projects: string[], project: string): Tile[] => {
+  const ownerOf = tileOwnerResolver({ frames, tiles, projects });
+  return tiles.filter((t) => ownerOf(t)?.toLowerCase() === project.toLowerCase());
+};
 
 const CLOSED_KEY = 'panorama:closedTiles';
 const CLOSED_MAX = 20;
@@ -323,7 +326,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const existing = prev.projects.find((p) => p.toLowerCase() === norm.toLowerCase());
         const canonical = existing ?? norm;
         const nextProjects = existing ? prev.projects : [...prev.projects, canonical];
-        const matchingIds = tilesRef.current.filter((t) => tileMatchesProject(t, canonical, nextProjects)).map((t) => t.id);
+        const matchingIds = ownedBy(tilesRef.current, framesRef.current, nextProjects, canonical).map((t) => t.id);
         const panel = prev.byProject[canonical] ?? emptyProjectPanelState(matchingIds);
         const next: ProjectViewState = {
           ...prev,
@@ -351,7 +354,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const existing = currentPv.projects.find((p) => p.toLowerCase() === norm.toLowerCase());
       const canonical = existing ?? norm;
       const nextProjects = existing ? currentPv.projects : [...currentPv.projects, canonical];
-      const existingMatching = tilesRef.current.filter((t) => tileMatchesProject(t, canonical, nextProjects));
+      const existingMatching = ownedBy(tilesRef.current, framesRef.current, nextProjects, canonical);
 
       let spawnedTileId: string | null = null;
       if (existingMatching.length === 0) {
@@ -498,7 +501,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       }
       if (!targetProj) {
         const tile = tilesRef.current.find((t) => t.id === tileId);
-        if (tile) targetProj = tileProject(tile, prev.projects);
+        if (tile) targetProj = tileOwnerResolver({ frames: framesRef.current, tiles: tilesRef.current, projects: prev.projects })(tile);
       }
       targetProj = targetProj ?? activeProj;
       if (!targetProj) return prev;
@@ -902,7 +905,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const prevTiles = tilesRef.current;
       const src = prevTiles.find((t) => t.id === srcId);
       const targetProj =
-        (src ? tileProject(src, projectViewRef.current.projects) : null) ??
+        (src ? tileOwnerResolver({ frames: framesRef.current, tiles: prevTiles, projects: projectViewRef.current.projects })(src) : null) ??
         projectViewRef.current.activeProject ??
         projectRootPath(cwd);
       const id = createId();
@@ -1034,7 +1037,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj =
         (restored.workspacePath ? normalizeProjectPath(restored.workspacePath) : null) ??
-        tileProject(restored, prev.projects) ??
+        tileOwnerResolver({ frames: framesRef.current, tiles: nextTiles, projects: prev.projects })(restored) ??
         prev.activeProject;
       if (!proj) {
         const next = syncWithFrames(prev, nextTiles, framesRef.current);

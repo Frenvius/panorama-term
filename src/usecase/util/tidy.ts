@@ -2,9 +2,9 @@ import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { TidyPlan, TidyFrame } from '~/domain/interfaces/orch.interface';
 
 import { frameOf } from '~/usecase/util/frame';
-import { dominantProject } from '~/usecase/util/projectGroups';
+import { dominantProject, tileOwnerResolver } from '~/usecase/util/projectGroups';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
-import { projectName, tileProject, normalizeProjectPath } from '~/usecase/util/projectLayout';
+import { projectName, tileProject, tileCandidatePath, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { CELL, FRAME_COLOR, FRAME_MIN_WIDTH, FRAME_MIN_HEIGHT } from '~/usecase/util/constants';
 
 export interface TidySnapshotOpts {
@@ -12,6 +12,8 @@ export interface TidySnapshotOpts {
   frames: Frame[];
   tiles: Tile[];
 }
+
+const isNote = (tile: Tile): boolean => tile.type === 'note';
 
 const tileTitle = (tile: Tile): string =>
   tile.userTitle ?? tile.oscTitle ?? tile.autoTitle ?? tile.type;
@@ -36,7 +38,7 @@ export const buildTidySnapshot = ({ projects, frames, tiles }: TidySnapshotOpts)
       title: f.title,
       path: frameProject(f, frameMembers(f, frames, tiles), projects)
     })),
-    tiles: tiles.map((t) => ({
+    tiles: tiles.filter((t) => !isNote(t)).map((t) => ({
       id: t.id,
       type: t.type,
       title: tileTitle(t),
@@ -90,7 +92,7 @@ const frameResolver = ({ known, claimed }: FrameResolverArgs) => {
 };
 
 export const sanitizeTidyPlan = (plan: TidyPlan, known: TidyKnown): TidyPlan => {
-  const tileById = new Map(known.tiles.map((t) => [t.id, t]));
+  const tileById = new Map(known.tiles.filter((t) => !isNote(t)).map((t) => [t.id, t]));
   const assignedTileIds = new Set<string>();
   const resolveFrame = frameResolver({ known, claimed: new Set<string>() });
   const frames: TidyFrame[] = [];
@@ -105,6 +107,15 @@ export const sanitizeTidyPlan = (plan: TidyPlan, known: TidyKnown): TidyPlan => 
   }
 
   return { projectOrder: orderProjects(plan.projectOrder, known.projectPaths), frames };
+};
+
+export const pinPathlessNotes = (opts: TidySnapshotOpts): { id: string; workspacePath: string }[] => {
+  const ownerOf = tileOwnerResolver(opts);
+  return opts.tiles.flatMap((t) => {
+    if (!isNote(t) || tileCandidatePath(t)) return [];
+    const project = ownerOf(t);
+    return project ? [{ id: t.id, workspacePath: project }] : [];
+  });
 };
 
 const GRID_COLS = 3;

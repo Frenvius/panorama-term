@@ -960,6 +960,7 @@ const Canvas = () => {
     createFrame,
     patchFrame,
     removeFrame,
+    patchTile,
     placeTiles,
     setProjectsOrder
   });
@@ -1029,12 +1030,12 @@ const Canvas = () => {
     if (group.kind === 'frame' && group.frameId) {
       const result = spawnInGroup({ ops: canvasGroupOps, group, width: NOTE_WIDTH, height: NOTE_HEIGHT });
       if (result) {
-        addNote({ x: result.x + NOTE_WIDTH / 2, y: result.y + NOTE_HEIGHT / 2 });
+        addNote({ x: result.x + NOTE_WIDTH / 2, y: result.y + NOTE_HEIGHT / 2 }, group.path ?? undefined);
       } else {
-        addNote();
+        addNote(undefined, group.path ?? undefined);
       }
     } else {
-      addNote();
+      addNote(undefined, group.path ?? undefined);
     }
   }, [canvasGroupOps, addNote]);
 

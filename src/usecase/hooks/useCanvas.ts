@@ -469,13 +469,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     });
   }, []);
 
-  const addNote = React.useCallback((center?: { x: number; y: number }) => {
+  const addNote = React.useCallback((center?: { x: number; y: number }, projectPath?: string) => {
     setView((v) => {
       const cx = center ? center.x : (window.innerWidth / 2 - v.x) / v.k;
       const cy = center ? center.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
-      setTiles((prev) => [
-        ...prev,
-        {
+      setTiles((prev) => {
+        const note: Tile = {
           id: createId(),
           type: 'note',
           x: cx - NOTE_WIDTH / 2,
@@ -486,8 +485,10 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           content: '',
           renderOnly: noteRenderDefault.current,
           zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1
-        }
-      ]);
+        };
+        const project = projectPath ?? framesRef.current.find((f) => f.path && tileInFrame(f, note))?.path;
+        return [...prev, project ? { ...note, folderPath: project, workspacePath: project } : note];
+      });
       return v;
     });
   }, []);

@@ -2,7 +2,7 @@ import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 
 import { test, expect, describe } from 'bun:test';
 
-import { buildProjectGroups } from '~/usecase/util/projectGroups';
+import { buildProjectGroups, tileOwnerResolver } from '~/usecase/util/projectGroups';
 
 const makeTile = (id: string, overrides: Partial<Tile> = {}): Tile => ({
   id,
@@ -200,5 +200,24 @@ describe('buildProjectGroups - ordering', () => {
     const groups = buildProjectGroups({ frames: [], tiles, projects: ['/proj/a'] });
     const pg = groups.find((g) => g.kind === 'path')!;
     expect(pg.key).toBe('path:/proj/a');
+  });
+});
+
+describe('tileOwnerResolver', () => {
+  test('gives a pathless note inside a project frame to that frame project', () => {
+    const frame: Frame = { id: 'f1', x: 0, y: 0, width: 800, height: 600, title: 'B', color: '#6b7280', path: '/b/bar' };
+    const note = makeTile('n1', { x: 20, y: 20, type: 'note' });
+    expect(tileOwnerResolver({ frames: [frame], tiles: [note], projects: ['/a/foo', '/b/bar'] })(note)).toBe('/b/bar');
+  });
+
+  test('lets the frame win over a terminal path, like the canvas groups do', () => {
+    const frame: Frame = { id: 'f1', x: 0, y: 0, width: 800, height: 600, title: 'B', color: '#6b7280', path: '/b/bar' };
+    const term = makeTile('t1', { x: 20, y: 20, cwd: '/a/foo' });
+    expect(tileOwnerResolver({ frames: [frame], tiles: [term], projects: ['/a/foo', '/b/bar'] })(term)).toBe('/b/bar');
+  });
+
+  test('falls back to the tile path outside frames', () => {
+    const term = makeTile('t1', { x: 2000, y: 2000, cwd: '/a/foo' });
+    expect(tileOwnerResolver({ frames: [], tiles: [term], projects: ['/a/foo', '/b/bar'] })(term)).toBe('/a/foo');
   });
 });
