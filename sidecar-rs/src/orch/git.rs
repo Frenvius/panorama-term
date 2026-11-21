@@ -148,6 +148,10 @@ pub(crate) fn merge_no_ff(path: &str, branch: &str) -> Result<MergeOutcome, Stri
     }
 }
 
+pub(crate) fn reset_hard(path: &str, rev: &str) -> Result<(), String> {
+    git(path, &["reset", "--hard", rev]).map(|_| ())
+}
+
 pub(crate) fn is_merged_into(repo: &str, branch: &str, into_branch: &str) -> bool {
     git(repo, &["merge-base", "--is-ancestor", branch, into_branch]).is_ok()
 }
@@ -429,6 +433,33 @@ mod tests {
         let result = rev_parse(dir.to_str().unwrap(), "HEAD");
         assert!(result.is_err(), "rev_parse must fail for non-git dir");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reset_hard_undoes_merge() {
+        let repo = tmp_dir("wt-reset-hard");
+        init_repo(&repo);
+        let base = write_commit(&repo, "init.txt", "init");
+        let repo_s = repo.to_str().unwrap();
+
+        let wt = worktree_path(repo_s, "r1", "t1", 1);
+        let br = worktree_branch("r1", "t1", 1);
+        worktree_add(repo_s, &wt, &br, &base).expect("wt add");
+        write_commit_in(&wt, "work.txt", "work");
+
+        let int_path = integration_worktree_path(repo_s, "r1");
+        let int_branch = integration_branch("r1");
+        worktree_add(repo_s, &int_path, &int_branch, &base).expect("int add");
+        merge_no_ff(&int_path, &br).expect("merge");
+
+        assert!(std::path::Path::new(&format!("{int_path}/work.txt")).exists(), "work.txt present after merge");
+
+        reset_hard(&int_path, "ORIG_HEAD").expect("reset_hard");
+
+        assert!(!std::path::Path::new(&format!("{int_path}/work.txt")).exists(), "work.txt gone after reset");
+        let sha_after = head_sha(&int_path).unwrap();
+        assert_eq!(sha_after, base, "head back to base after reset");
+        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]

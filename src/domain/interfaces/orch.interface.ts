@@ -66,6 +66,9 @@ export interface Dispatch {
   attempt: number;
   retryOf?: string;
   waiting?: boolean;
+  live: boolean;
+  agentStatus?: string;
+  starting: boolean;
   profile?: string;
   model?: string;
   tileId?: string;

@@ -7,6 +7,15 @@ interface OkResponse {
   error?: { code: string; message: string };
 }
 
+export class OrchError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = 'OrchError';
+    this.code = code;
+  }
+}
+
 const post = async <T>(command: string, body: unknown): Promise<T> => {
   let res: Response;
   try {
@@ -21,7 +30,7 @@ const post = async <T>(command: string, body: unknown): Promise<T> => {
   } catch {
     throw new Error('Panorama brain is outdated: restart it to enable orchestration');
   }
-  if (!json.ok) throw new Error(json.error?.message ?? command);
+  if (!json.ok) throw new OrchError(json.error?.message ?? command, json.error?.code);
   return json;
 };
 
@@ -132,7 +141,16 @@ export interface StartWorkerOpts {
   taskId: string;
   by: string;
   retryOf?: string;
+  stopLive?: boolean;
 }
 
 export const startWorker = (opts: StartWorkerOpts): Promise<void> =>
   post('worker-start', opts).then(() => undefined);
+
+export interface WorkerStopOpts {
+  runId: string;
+  dispatchId: string;
+}
+
+export const workerStop = (opts: WorkerStopOpts): Promise<void> =>
+  post('worker-stop', opts).then(() => undefined);

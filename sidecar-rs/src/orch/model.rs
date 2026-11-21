@@ -203,6 +203,13 @@ pub struct Dispatch {
     pub cost_source: Option<String>,
 }
 
+impl Dispatch {
+    pub fn accepts_reports(&self) -> bool {
+        self.status == DispatchStatus::Running
+            || (self.status == DispatchStatus::Failed && self.outcome.is_none())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {

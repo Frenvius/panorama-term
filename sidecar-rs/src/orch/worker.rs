@@ -44,6 +44,37 @@ pub struct WorkerLaunch<'a> {
     pub model: Option<&'a str>,
     pub extra_env: Vec<(String, String)>,
     pub brief_path: &'a Path,
+    pub settings_path: Option<String>,
+}
+
+const ALLOWED_WORKER_COMMANDS: &[&str] = &[
+    "cargo test:*",
+    "bun test:*",
+    "bun x tsc:*",
+    "codex exec --help",
+    "claude --help",
+];
+
+pub fn build_worker_settings(verify_commands: &[String]) -> serde_json::Value {
+    let mut allow: Vec<String> = vec!["Read(~/.claude/skills/**)".into()];
+    let commands = ALLOWED_WORKER_COMMANDS.iter().map(|c| c.to_string()).chain(verify_commands.iter().cloned());
+    for cmd in commands {
+        for tool in ["Bash", "PowerShell"] {
+            let rule = format!("{tool}({cmd})");
+            if !allow.contains(&rule) {
+                allow.push(rule);
+            }
+        }
+    }
+    serde_json::json!({ "permissions": { "allow": allow } })
+}
+
+pub fn write_worker_settings(brief_path: &Path, verify_commands: &[String]) -> Result<PathBuf, String> {
+    let path = brief_path.with_file_name("claude-settings.json");
+    let json = build_worker_settings(verify_commands);
+    let text = serde_json::to_string_pretty(&json).map_err(|e| format!("serialize worker settings: {e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("write worker settings: {e}"))?;
+    Ok(path)
 }
 
 pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
@@ -113,7 +144,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 }
 
 pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
-    let WorkerLaunch { tile_id, cwd, group, profile, model, extra_env, brief_path } = launch;
+    let WorkerLaunch { tile_id, cwd, group, profile, model, extra_env, brief_path, settings_path } = launch;
     let params = Params {
         tile_id: tile_id.to_string(),
         cols: WORKER_COLS,
@@ -143,10 +174,14 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
     tokio::time::sleep(Duration::from_millis(SHELL_SETTLE_MS)).await;
 
     let cli = crate::panorama_cli_path();
-    let tokens: Vec<String> = build_command_line(profile, model)
+    let mut tokens: Vec<String> = build_command_line(profile, model)
         .into_iter()
         .map(|t| t.replace(CLI_PLACEHOLDER, &cli))
         .collect();
+    if let Some(sp) = settings_path.filter(|_| profile.exe == "claude") {
+        tokens.push("--settings".to_string());
+        tokens.push(sp);
+    }
     send_to_tile(tile_id, &tokens_to_command(&tokens))?;
 
     wait_for_agent_ready(tile_id, profile).await?;
@@ -297,6 +332,18 @@ mod tests {
     use super::*;
     use crate::orch::model::{Task, TaskStatus, Dispatch, DispatchStatus};
     use std::path::PathBuf;
+
+    #[test]
+    fn worker_settings_allow_rules() {
+        let verify = vec!["bun x tsc --noEmit".to_string(), "cargo test:*".to_string()];
+        let json = build_worker_settings(&verify);
+        let allow: Vec<&str> = json["permissions"]["allow"].as_array().unwrap()
+            .iter().filter_map(|v| v.as_str()).collect();
+        assert!(allow.contains(&"Read(~/.claude/skills/**)"));
+        assert!(allow.contains(&"Bash(bun x tsc --noEmit)"));
+        assert!(allow.contains(&"PowerShell(cargo test:*)"));
+        assert_eq!(allow.iter().filter(|r| **r == "Bash(cargo test:*)").count(), 1);
+    }
 
     fn tmp_dir(suffix: &str) -> PathBuf {
         let ms = std::time::SystemTime::now()

@@ -23,6 +23,7 @@ use crate::ui::TileGroup;
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static NOTIFIES: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> = OnceLock::new();
 static COORDINATORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static STARTING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
@@ -34,6 +35,10 @@ fn notifies() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Notify>>> {
 
 fn coordinators() -> &'static Mutex<HashSet<String>> {
     COORDINATORS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn starting() -> &'static Mutex<HashSet<String>> {
+    STARTING.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 fn coordinators_path(base: &std::path::Path) -> std::path::PathBuf {
@@ -320,6 +325,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "agent-list" => handle_agent_list(),
         "coordinator-set" => handle_coordinator_set(body).await,
         "coordinator-list" => handle_coordinator_list(),
+        "dispatch-adopt" => handle_dispatch_adopt(body).await,
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -346,7 +352,7 @@ pub fn on_agent_idle(tile_id: &str) {
         }
         for dispatch in entry.dispatches.values() {
             if let Some(ref dtile) = dispatch.tile_id {
-                if dtile == tile_id && dispatch.status == DispatchStatus::Running {
+                if dtile == tile_id && dispatch.accepts_reports() {
                     let unacked: usize = entry.messages.iter()
                         .filter(|m| !m.acked && m.to.as_str() == dispatch.id.as_str())
                         .count();
@@ -371,7 +377,7 @@ pub fn on_agent_waiting(tile_id: &str) {
         if entry.run.status.is_terminal() { continue; }
         for dispatch in entry.dispatches.values() {
             if let Some(ref dtile) = dispatch.tile_id {
-                if dtile == tile_id && dispatch.status == DispatchStatus::Running {
+                if dtile == tile_id && dispatch.accepts_reports() {
                     let run_id = run_id.clone();
                     let dispatch_id = dispatch.id.clone();
                     drop(guard);
@@ -564,39 +570,107 @@ fn handle_run_show(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
-    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(entry) = guard.runs.get(&run_id) else {
-        return err_resp("not_found", "run not found");
-    };
-    let tasks: Vec<Value> = entry.tasks.values().map(|t| {
-        let ready = entry.task_ready(t);
-        let mut tv = serde_json::to_value(t).unwrap_or_default();
-        if let Some(obj) = tv.as_object_mut() {
-            obj.insert("ready".into(), ready.into());
-        }
-        tv
-    }).collect();
-    let mut dispatches: Vec<Value> = entry.dispatches.values()
-        .map(|d| serde_json::to_value(d).unwrap_or_default())
-        .collect();
-    let gates: Vec<Value> = entry.gates.values()
-        .map(|g| serde_json::to_value(g).unwrap_or_default())
-        .collect();
-    let run = serde_json::to_value(&entry.run).unwrap_or_default();
-    let running_tiles: Vec<(usize, String)> = entry.dispatches.values().enumerate()
-        .filter(|(_, d)| d.status == DispatchStatus::Running)
-        .filter_map(|(i, d)| d.tile_id.clone().map(|t| (i, t)))
-        .collect();
-    let (cost_by_role, cost_by_model) = cost_aggregates(entry);
-    let coord_cost = coordinator_cost_usd(entry);
-    drop(guard);
-    for (i, tile) in running_tiles {
-        if let Some(obj) = dispatches[i].as_object_mut() {
-            obj.insert("waiting".into(), is_tile_waiting(&tile).into());
-        }
+    let brief_mode = v["brief"].as_bool().unwrap_or(false);
+
+    struct DispatchRow {
+        val: Value,
+        tile_id: Option<String>,
+        dispatch_id: String,
+        is_running: bool,
     }
+
+    let (run_val, tasks, dispatch_rows, gates, cost_by_role, cost_by_model, coord_cost) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = guard.runs.get(&run_id) else {
+            return err_resp("not_found", "run not found");
+        };
+        let tasks: Vec<Value> = entry.tasks.values().map(|t| {
+            let ready = entry.task_ready(t);
+            let mut tv = serde_json::to_value(t).unwrap_or_default();
+            if let Some(obj) = tv.as_object_mut() {
+                obj.insert("ready".into(), ready.into());
+            }
+            tv
+        }).collect();
+        let dispatch_rows: Vec<DispatchRow> = entry.dispatches.values().map(|d| {
+            DispatchRow {
+                val: serde_json::to_value(d).unwrap_or_default(),
+                tile_id: d.tile_id.clone(),
+                dispatch_id: d.id.clone(),
+                is_running: d.status == DispatchStatus::Running,
+            }
+        }).collect();
+        let gates: Vec<Value> = entry.gates.values()
+            .map(|g| serde_json::to_value(g).unwrap_or_default())
+            .collect();
+        let run_val = serde_json::to_value(&entry.run).unwrap_or_default();
+        let (cost_by_role, cost_by_model) = cost_aggregates(entry);
+        let coord_cost = coordinator_cost_usd(entry);
+        (run_val, tasks, dispatch_rows, gates, cost_by_role, cost_by_model, coord_cost)
+    };
+
+    let starting_set = starting().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dispatches: Vec<Value> = dispatch_rows.into_iter().map(|row| {
+        let mut val = row.val;
+        let live = row.tile_id.as_deref().map(|t| crate::lookup_live(t).is_some()).unwrap_or(false);
+        let agent_status = row.tile_id.as_deref()
+            .and_then(|t| crate::sessions().lock().unwrap().get(t).cloned())
+            .and_then(|s| crate::cached_agent_state(&s))
+            .and_then(|js| serde_json::from_str::<Value>(&js).ok())
+            .and_then(|v| v["lastStatus"].as_str().map(str::to_string));
+        let is_starting = starting_set.contains(&row.dispatch_id);
+        if let Some(obj) = val.as_object_mut() {
+            if row.is_running {
+                let waiting = row.tile_id.as_deref().map(is_tile_waiting).unwrap_or(false);
+                obj.insert("waiting".into(), waiting.into());
+            }
+            obj.insert("live".into(), live.into());
+            obj.insert("starting".into(), is_starting.into());
+            if let Some(s) = agent_status {
+                obj.insert("agentStatus".into(), s.into());
+            }
+        }
+        val
+    }).collect();
+
+    if brief_mode {
+        let dispatches_brief: Vec<Value> = dispatches.iter().map(|d| {
+            serde_json::json!({
+                "id": d["id"],
+                "taskId": d["taskId"],
+                "attempt": d["attempt"],
+                "status": d["status"],
+                "live": d["live"],
+                "agentStatus": d.get("agentStatus"),
+                "starting": d["starting"],
+                "summary": d["summary"].as_str().and_then(|s| s.lines().next()).unwrap_or("")
+            })
+        }).collect();
+        let tasks_brief: Vec<Value> = tasks.iter().map(|t| {
+            serde_json::json!({
+                "id": t["id"],
+                "title": t["title"],
+                "status": t["status"],
+                "owner": t["owner"],
+                "attempts": t["attempts"],
+                "ready": t["ready"]
+            })
+        }).collect();
+        let gates_brief: Vec<Value> = gates.iter()
+            .filter(|g| g["resolution"].is_null())
+            .map(|g| serde_json::json!({"id": g["id"], "taskId": g["taskId"], "question": g["question"]}))
+            .collect();
+        return ok_resp(serde_json::json!({
+            "run": {"id": run_val["id"], "title": run_val["title"], "status": run_val["status"]},
+            "tasks": tasks_brief,
+            "dispatches": dispatches_brief,
+            "gates": gates_brief,
+        }));
+    }
+
+    let _ = dispatches.len();
     let mut resp = serde_json::json!({
-        "run": run,
+        "run": run_val,
         "tasks": tasks,
         "dispatches": dispatches,
         "gates": gates,
@@ -983,6 +1057,7 @@ async fn handle_send(body: &[u8]) -> String {
     let run_id_c = run_id.clone();
     let msg_type_c = msg_type.clone();
     let from_c = from.clone();
+    let files_modified_c = files_modified.clone();
 
     let result = commit(move |state| {
         let entry = state.runs.get(&run_id_c)
@@ -1003,7 +1078,7 @@ async fn handle_send(body: &[u8]) -> String {
         Ok(Cmd::Send {
             run_id: run_id_c, seq, from: from_c, to,
             msg_type: msg_type_c, task_id, dispatch_id, reply_to,
-            body: body_str, outcome, files_modified, summary, now,
+            body: body_str, outcome, files_modified: files_modified_c, summary, now,
         })
     }, run_id.clone()).await;
 
@@ -1019,9 +1094,96 @@ async fn handle_send(body: &[u8]) -> String {
             }
             ok_resp(serde_json::json!({}))
         }
-        CommitResult::Stale => err_resp("stale", "report from a superseded dispatch"),
+        CommitResult::Stale => {
+            if msg_type == "worker_done" {
+                if let Some(did) = dispatch_id_for_hook {
+                    let run_id_lr = run_id.clone();
+                    let outcome_lr = v["outcome"].as_str().unwrap_or("").to_string();
+                    let summary_lr = v["summary"].as_str().unwrap_or("").to_string();
+                    let files_lr = files_modified.clone();
+                    tokio::spawn(async move {
+                        let now_lr = unix_ms();
+                        let body_lr = serde_json::json!({
+                            "dispatchId": did,
+                            "outcome": outcome_lr,
+                            "summary": summary_lr,
+                            "filesModified": files_lr,
+                            "reason": "superseded"
+                        }).to_string();
+                        let run_id_lr2 = run_id_lr.clone();
+                        let did2 = did.clone();
+                        commit(move |g| {
+                            let entry = g.runs.get(&run_id_lr2)
+                                .ok_or_else(|| "not_found:run not found".to_string())?;
+                            let seq = entry.next_msg_seq();
+                            Ok(Cmd::Send {
+                                run_id: run_id_lr2,
+                                seq,
+                                from: "brain".into(),
+                                to: vec!["coordinator".into()],
+                                msg_type: "late_report".into(),
+                                task_id: None,
+                                dispatch_id: Some(did2),
+                                reply_to: None,
+                                body: Some(body_lr),
+                                outcome: None,
+                                files_modified: vec![],
+                                summary: None,
+                                now: now_lr,
+                            })
+                        }, run_id_lr).await;
+                    });
+                }
+                return err_resp("stale", "this dispatch was superseded by a newer attempt; report not applied, the coordinator was told");
+            }
+            err_resp("stale", "report from a superseded dispatch")
+        }
         CommitResult::Err(e) => err_from_str(&e),
     }
+}
+
+async fn handle_dispatch_adopt(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    let dispatch_id = v["dispatchId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() || dispatch_id.is_empty() {
+        return err_resp("bad_request", "runId and dispatchId required");
+    }
+
+    let (task_id, accepts) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = match guard.runs.get(&run_id) {
+            Some(e) => e,
+            None => return err_resp("not_found", "run not found"),
+        };
+        let d = match entry.dispatches.get(&dispatch_id) {
+            Some(d) => d,
+            None => return err_resp("not_found", "dispatch not found"),
+        };
+        (d.task_id.clone(), d.accepts_reports())
+    };
+
+    if !accepts {
+        return err_resp("conflict", "dispatch does not accept reports");
+    }
+
+    let summary = match v["summary"].as_str() {
+        Some(s) => format!("adopted by coordinator: {s}"),
+        None => "adopted by coordinator".to_string(),
+    };
+
+    let adopt_body = serde_json::json!({
+        "runId": run_id,
+        "type": "worker_done",
+        "from": dispatch_id,
+        "to": ["coordinator"],
+        "outcome": "succeeded",
+        "summary": summary,
+        "taskId": task_id,
+        "dispatchId": dispatch_id,
+        "filesModified": [],
+    });
+    handle_send(adopt_body.to_string().as_bytes()).await
 }
 
 // Runs before worker_done is recorded, so a coordinator that integrates or cleans as soon as it
@@ -1031,7 +1193,7 @@ async fn commit_worker_leftovers(run_id: &str, dispatch_id: &str) {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         guard.runs.get(run_id).and_then(|entry| {
             let d = entry.dispatches.get(dispatch_id)?;
-            if d.status != DispatchStatus::Running {
+            if !d.accepts_reports() {
                 return None;
             }
             let title = entry.tasks.get(&d.task_id).map(|t| t.title.clone()).unwrap_or_default();
@@ -1297,8 +1459,11 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
     }, run_id).await;
 }
 
+const SESSION_GRACE_SECS: u64 = 60;
+
 pub(crate) struct TickFacts {
     pub is_session_live: bool,
+    pub ever_live: bool,
     pub consecutive_shell_ticks: u8,
     pub screen_quiet_secs: u64,
     pub agent_status: Option<String>,
@@ -1330,7 +1495,8 @@ impl Finding {
 pub(crate) fn assess(facts: &TickFacts, sent: &std::collections::HashSet<String>) -> Vec<Finding> {
     let mut result = Vec::new();
     if !facts.is_session_live {
-        if !sent.contains("session_gone") {
+        let in_grace = !facts.ever_live && facts.running_secs < SESSION_GRACE_SECS;
+        if !in_grace && !sent.contains("session_gone") {
             result.push(Finding::SessionGone);
         }
         return result;
@@ -1355,6 +1521,7 @@ pub(crate) fn assess(facts: &TickFacts, sent: &std::collections::HashSet<String>
 
 struct DispatchWatch {
     consecutive_shell_ticks: u8,
+    ever_live: bool,
     last_screen: String,
     screen_last_changed_secs: u64,
     sent: std::collections::HashSet<String>,
@@ -1377,6 +1544,7 @@ async fn supervision_loop() {
 async fn supervision_tick() {
     let now_secs = unix_ms() / 1000;
 
+    let starting_set = starting().lock().unwrap_or_else(|e| e.into_inner()).clone();
     let running_dispatches: Vec<(String, String, String, u64, Limits)> = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         guard.runs.values()
@@ -1384,7 +1552,7 @@ async fn supervision_tick() {
             .flat_map(|e| {
                 let limits = e.run.limits.clone();
                 e.dispatches.values()
-                    .filter(|d| d.status == DispatchStatus::Running)
+                    .filter(|d| d.status == DispatchStatus::Running && !starting_set.contains(&d.id))
                     .filter_map(|d| d.tile_id.clone().map(|tid| (
                         e.run.id.clone(),
                         d.id.clone(),
@@ -1408,14 +1576,18 @@ async fn supervision_tick() {
 
         let is_waiting = agent_status.as_deref() == Some("waiting");
 
-        let (consecutive_shell_ticks, screen_quiet_secs, screen_text) = {
+        let (consecutive_shell_ticks, ever_live, screen_quiet_secs, screen_text) = {
             let mut watch = supervision_watch().lock().unwrap_or_else(|e| e.into_inner());
             let entry = watch.entry(dispatch_id.clone()).or_insert_with(|| DispatchWatch {
                 consecutive_shell_ticks: 0,
+                ever_live: false,
                 last_screen: String::new(),
                 screen_last_changed_secs: now_secs,
                 sent: std::collections::HashSet::new(),
             });
+            if is_session_live {
+                entry.ever_live = true;
+            }
             let screen = worker::capture_worker_screen(&tile_id, 40);
             if screen != entry.last_screen {
                 entry.last_screen = screen.clone();
@@ -1437,7 +1609,7 @@ async fn supervision_tick() {
                     entry.consecutive_shell_ticks = 0;
                 }
             }
-            (entry.consecutive_shell_ticks, quiet, screen)
+            (entry.consecutive_shell_ticks, entry.ever_live, quiet, screen)
         };
 
         let running_secs = now_secs.saturating_sub(started_secs);
@@ -1449,6 +1621,7 @@ async fn supervision_tick() {
 
         let facts = TickFacts {
             is_session_live,
+            ever_live,
             consecutive_shell_ticks,
             screen_quiet_secs,
             agent_status: agent_status.clone(),
@@ -1470,12 +1643,16 @@ async fn supervision_tick() {
 
             match finding {
                 Finding::SessionGone | Finding::AgentExited => {
-                    let summary = if finding == Finding::AgentExited {
+                    let (summary, msg_body) = if finding == Finding::AgentExited {
                         let tail = screen_text.lines().rev().take(10).collect::<Vec<_>>()
                             .into_iter().rev().collect::<Vec<_>>().join("\n");
-                        format!("agent exited\n{tail}")
+                        let s = format!("agent exited\n{tail}");
+                        let b = serde_json::json!({"reason":"agent_exited","detail":"agent exited","tail":tail}).to_string();
+                        (s, b)
                     } else {
-                        "worker session ended".to_string()
+                        let s = "worker session ended".to_string();
+                        let b = serde_json::json!({"reason":"session_gone","detail":"worker session ended"}).to_string();
+                        (s, b)
                     };
                     let now = unix_ms();
                     let run_id_c = run_id.clone();
@@ -1512,7 +1689,7 @@ async fn supervision_tick() {
                             task_id: Some(task_id),
                             dispatch_id: Some(dispatch_id_c),
                             reply_to: None,
-                            body: Some(summary),
+                            body: Some(msg_body),
                             outcome: None,
                             files_modified: vec![],
                             summary: None,
@@ -1904,6 +2081,15 @@ async fn handle_report(body: &[u8]) -> String {
     ok_resp(report)
 }
 
+async fn undo_integration_merge(int_path: String) {
+    let result = tokio::task::spawn_blocking(move || git::reset_hard(&int_path, "ORIG_HEAD")).await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("[orch] integrate: undo merge failed: {e}"),
+        Err(e) => eprintln!("[orch] integrate: undo merge panicked: {e}"),
+    }
+}
+
 async fn handle_integrate(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
@@ -1911,25 +2097,58 @@ async fn handle_integrate(body: &[u8]) -> String {
     if run_id.is_empty() || task_id.is_empty() {
         return err_resp("bad_request", "runId and taskId required");
     }
+    let explicit_dispatch_id = v["dispatchId"].as_str().map(str::to_string);
 
-    let (repo, branch, base_sha) = {
+    let (repo, branch, dispatch_id_chosen, base_sha, task_status) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
             None => return err_resp("not_found", "run not found"),
         };
-        if !entry.tasks.contains_key(&task_id) {
-            return err_resp("not_found", "task not found");
-        }
-        let latest_dispatch = entry.dispatches.values()
-            .filter(|d| d.task_id == task_id)
-            .max_by_key(|d| d.attempt);
-        let branch = match latest_dispatch.and_then(|d| d.branch.clone()) {
-            Some(b) => b,
-            None => return err_resp("conflict", "no worktree branch for task"),
+        let task = match entry.tasks.get(&task_id) {
+            Some(t) => t,
+            None => return err_resp("not_found", "task not found"),
         };
-        (entry.run.repo.clone(), branch, entry.run.base_sha.clone())
+        let dispatch = if let Some(ref did) = explicit_dispatch_id {
+            let d = match entry.dispatches.get(did.as_str()) {
+                Some(d) => d,
+                None => return err_resp("not_found", "dispatch not found"),
+            };
+            if d.task_id != task_id {
+                return err_resp("not_found", "dispatch not found for this task");
+            }
+            if d.branch.is_none() {
+                return err_resp("conflict", "dispatch has no branch");
+            }
+            d
+        } else {
+            let candidates: Vec<&Dispatch> = entry.dispatches.values()
+                .filter(|d| d.task_id == task_id
+                    && d.status == DispatchStatus::Reported
+                    && d.outcome.as_deref() == Some("succeeded")
+                    && d.branch.is_some())
+                .collect();
+            if candidates.is_empty() {
+                return err_resp("conflict", "no reported dispatch with a branch; pass dispatchId explicitly");
+            }
+            if !task.verify.is_empty() {
+                candidates.iter()
+                    .filter(|d| !d.verifications.is_empty()
+                        && d.verifications.iter().all(|vr| !vr.timed_out && vr.exit_code == Some(0)))
+                    .max_by_key(|d| d.attempt)
+                    .copied()
+                    .or_else(|| candidates.iter().max_by_key(|d| d.attempt).copied())
+                    .unwrap()
+            } else {
+                candidates.iter().max_by_key(|d| d.attempt).copied().unwrap()
+            }
+        };
+        (entry.run.repo.clone(), dispatch.branch.clone().unwrap(), dispatch.id.clone(), entry.run.base_sha.clone(), task.status.clone())
     };
+
+    if task_status != TaskStatus::Completed {
+        return err_resp("conflict", "task must be completed to integrate");
+    }
 
     let int_path = git::integration_worktree_path(&repo, &run_id);
     let int_branch = git::integration_branch(&run_id);
@@ -1961,6 +2180,7 @@ async fn handle_integrate(body: &[u8]) -> String {
         Ok(git::MergeOutcome::Success(sha)) => {
             let run_id_c = run_id.clone();
             let task_id_c = task_id.clone();
+            let dispatch_id_c = dispatch_id_chosen.clone();
             let now = unix_ms();
             let seq = {
                 let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1970,6 +2190,7 @@ async fn handle_integrate(body: &[u8]) -> String {
                 Ok(Cmd::TaskIntegrate {
                     run_id: run_id_c,
                     task_id: task_id_c,
+                    dispatch_id: dispatch_id_c,
                     integrated_sha: sha.clone(),
                     msg_seq: seq,
                     now,
@@ -1977,8 +2198,14 @@ async fn handle_integrate(body: &[u8]) -> String {
             }, run_id.clone()).await;
             match result {
                 CommitResult::Ok(_) => ok_resp(serde_json::json!({"integrated": true})),
-                CommitResult::Stale => err_resp("stale", "integrate stale"),
-                CommitResult::Err(e) => err_from_str(&e),
+                CommitResult::Stale => {
+                    undo_integration_merge(int_path.clone()).await;
+                    err_resp("stale", "integrate stale")
+                }
+                CommitResult::Err(e) => {
+                    undo_integration_merge(int_path.clone()).await;
+                    err_from_str(&e)
+                }
             }
         }
         Ok(git::MergeOutcome::Conflict(files)) => {
@@ -2271,6 +2498,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
         (p, m)
     };
     let worktree_mode = v["worktree"].as_str().unwrap_or("auto").to_string();
+    let stop_live = v["stopLive"].as_bool().unwrap_or(false);
 
     let Some(base) = crate::panorama_dir() else {
         return err_resp("io", "no panorama dir");
@@ -2282,11 +2510,51 @@ async fn handle_worker_start(body: &[u8]) -> String {
     };
     let profile = profile.clone();
 
+    let live_dispatch_ids: Vec<(String, String)> = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = match guard.runs.get(&run_id) {
+            Some(e) => e,
+            None => return err_resp("not_found", "run not found"),
+        };
+        entry.dispatches.values()
+            .filter(|d| d.task_id == task_id && d.accepts_reports())
+            .filter_map(|d| {
+                let tile = d.tile_id.as_ref()?;
+                if crate::lookup_live(tile).is_some() {
+                    Some((d.id.clone(), tile.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    if !live_dispatch_ids.is_empty() {
+        if !stop_live {
+            let first_id = &live_dispatch_ids[0].0;
+            return err_resp("live_attempt", &format!("attempt {first_id} is still running"));
+        }
+        for (did, tile) in &live_dispatch_ids {
+            let run_id_s = run_id.clone();
+            let did_s = did.clone();
+            let tile_s = tile.clone();
+            stop_running_dispatch(run_id_s, did_s, tile_s).await.ok();
+        }
+    }
+
+    let (owner_for_dispatch, task_attempts) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let attempts = guard.runs.get(&run_id)
+            .and_then(|e| e.tasks.get(&task_id))
+            .map(|t| t.attempts)
+            .unwrap_or(0);
+        let owner = if by == "user" && attempts == 0 { Some("user".to_string()) } else { None };
+        (owner, attempts)
+    };
+
     let tile_id = crate::ui::new_tile_id();
     let cli_path = crate::panorama_cli_path();
     let now = unix_ms();
-
-    let owner_for_dispatch = if by == "user" { Some("user".to_string()) } else { None };
 
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
@@ -2332,14 +2600,25 @@ async fn handle_worker_start(body: &[u8]) -> String {
             guard.runs.get(&run_id).is_some_and(|e| e.run.coordinator_tile.is_some())
         };
         if has_coordinator {
-            let body_str = format!("user started {task_id} manually with {profile_id}; it is owned by the user, do not dispatch it");
+            let attempt_num = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                guard.runs.get(&run_id)
+                    .and_then(|e| e.dispatches.get(&dispatch_id))
+                    .map(|d| d.attempt)
+                    .unwrap_or(task_attempts + 1)
+            };
+            let body_str = if attempt_num <= 1 {
+                format!("user started {task_id} manually with {profile_id}; it is owned by the user, do not dispatch it")
+            } else {
+                format!("user restarted {task_id} manually with {profile_id} (attempt {attempt_num}); it is still yours to manage")
+            };
             if let Err(e) = notify_coordinator_from_user(&run_id, &task_id, body_str).await {
                 eprintln!("[orch] worker-start {run_id}/{task_id}: coordinator not notified: {e}");
             }
         }
     }
 
-    let (task_clone, dispatch_clone, deps_results, base_cwd, run_base_sha, run_setup, task_has_deps) = {
+    let (task_clone, dispatch_clone, deps_results, base_cwd, run_base_sha, run_setup, task_has_deps, repo, run_title) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -2360,59 +2639,204 @@ async fn handle_worker_start(body: &[u8]) -> String {
         let cwd = v["cwd"].as_str().map(str::to_string)
             .unwrap_or_else(|| entry.run.repo.clone());
         let has_deps = !task.deps.is_empty();
-        (task, dispatch, deps_results, cwd, entry.run.base_sha.clone(), entry.run.setup.clone(), has_deps)
+        let title = entry.run.title.clone();
+        (task, dispatch, deps_results, cwd, entry.run.base_sha.clone(), entry.run.setup.clone(), has_deps, entry.run.repo.clone(), title)
     };
+
+    starting().lock().unwrap_or_else(|e| e.into_inner()).insert(dispatch_id.clone());
+
+    let sd_input = StartDispatchInput {
+        run_id: run_id.clone(),
+        task_id: task_id.clone(),
+        dispatch_id: dispatch_id.clone(),
+        tile_id: tile_id.clone(),
+        profile,
+        model,
+        base,
+        cli_path,
+        worktree_mode,
+        base_cwd,
+        run_base_sha,
+        run_setup,
+        task_has_deps,
+        repo,
+        run_title,
+        task_clone,
+        dispatch_clone,
+        deps_results,
+    };
+    tokio::spawn(async move {
+        start_dispatch(sd_input).await;
+    });
+
+    let dispatch_json = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id)
+            .and_then(|e| e.dispatches.get(&dispatch_id))
+            .and_then(|d| serde_json::to_value(d).ok())
+            .unwrap_or(serde_json::json!({"id": dispatch_id}))
+    };
+    ok_resp(serde_json::json!({"dispatch": dispatch_json, "starting": true}))
+}
+
+struct StartDispatchInput {
+    run_id: String,
+    task_id: String,
+    dispatch_id: String,
+    tile_id: String,
+    profile: crate::orch::profiles::Profile,
+    model: Option<String>,
+    base: std::path::PathBuf,
+    cli_path: String,
+    worktree_mode: String,
+    base_cwd: String,
+    run_base_sha: Option<String>,
+    run_setup: Option<String>,
+    task_has_deps: bool,
+    repo: String,
+    run_title: String,
+    task_clone: Task,
+    dispatch_clone: Dispatch,
+    deps_results: Vec<(String, Option<String>)>,
+}
+
+struct FailDispatchInput {
+    run_id: String,
+    task_id: String,
+    dispatch_id: String,
+    summary: String,
+    msg_type: String,
+    body: String,
+}
+
+async fn fail_dispatch_and_message_coordinator(input: FailDispatchInput) {
+    let FailDispatchInput { run_id, task_id, dispatch_id, summary, msg_type, body } = input;
+    let now = unix_ms();
+    let run_id2 = run_id.clone();
+    let dispatch_id2 = dispatch_id.clone();
+    let summary2 = summary.clone();
+    commit(move |_| {
+        Ok(Cmd::DispatchUpdate {
+            run_id: run_id2, dispatch_id: dispatch_id2,
+            status: DispatchStatus::Failed,
+            summary: Some(summary2),
+            now,
+        })
+    }, run_id.clone()).await;
+
+    let seq = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(1)
+    };
+    let run_id3 = run_id.clone();
+    let dispatch_id3 = dispatch_id.clone();
+    let task_id3 = task_id.clone();
+    let now2 = unix_ms();
+    commit(move |g| {
+        let entry = g.runs.get(&run_id3)
+            .ok_or_else(|| "not_found:run not found".to_string())?;
+        let task_id_resolved = entry.dispatches.get(&dispatch_id3)
+            .map(|d| d.task_id.clone())
+            .unwrap_or(task_id3);
+        let seq2 = entry.next_msg_seq().max(seq);
+        Ok(Cmd::Send {
+            run_id: run_id3,
+            seq: seq2,
+            from: "brain".into(),
+            to: vec!["coordinator".into()],
+            msg_type,
+            task_id: Some(task_id_resolved),
+            dispatch_id: Some(dispatch_id3),
+            reply_to: None,
+            body: Some(body),
+            outcome: None,
+            files_modified: vec![],
+            summary: None,
+            now: now2,
+        })
+    }, run_id).await;
+}
+
+async fn start_dispatch(input: StartDispatchInput) {
+    let StartDispatchInput {
+        run_id, task_id, dispatch_id, tile_id, profile, model, base, cli_path,
+        worktree_mode, base_cwd, run_base_sha, run_setup, task_has_deps, repo,
+        run_title, task_clone, dispatch_clone, deps_results,
+    } = input;
+
+    let remove_starting = || {
+        starting().lock().unwrap_or_else(|e| e.into_inner()).remove(&dispatch_id);
+    };
+
+    macro_rules! bail_fail {
+        ($summary:expr, $msg_type:expr, $body:expr) => {{
+            fail_dispatch_and_message_coordinator(FailDispatchInput {
+                run_id: run_id.clone(),
+                task_id: task_id.clone(),
+                dispatch_id: dispatch_id.clone(),
+                summary: $summary,
+                msg_type: $msg_type,
+                body: $body,
+            }).await;
+            remove_starting();
+            return;
+        }};
+    }
+
+    let is_running = || {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id)
+            .and_then(|e| e.dispatches.get(&dispatch_id))
+            .map(|d| d.status == DispatchStatus::Running)
+            .unwrap_or(false)
+    };
+
+    if !is_running() {
+        remove_starting();
+        return;
+    }
 
     let use_worktree = worktree_mode != "none" && run_base_sha.is_some();
     let cwd = if use_worktree {
-        let repo = {
-            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-            guard.runs.get(&run_id).map(|e| e.run.repo.clone()).unwrap_or_default()
-        };
-
         let base_sha_val = run_base_sha.clone().unwrap_or_default();
         let int_branch = git::integration_branch(&run_id);
-        let repo_c2 = repo.clone();
+        let repo_c = repo.clone();
         let int_br_c = int_branch.clone();
         let base_for_wt = tokio::task::spawn_blocking(move || {
             if task_has_deps {
-                git::rev_parse(&repo_c2, &int_br_c).unwrap_or(base_sha_val)
+                git::rev_parse(&repo_c, &int_br_c).unwrap_or(base_sha_val)
             } else {
                 base_sha_val
             }
         }).await.unwrap_or_else(|_| run_base_sha.clone().unwrap_or_default());
 
+        if !is_running() { remove_starting(); return; }
+
         let wt_path = git::worktree_path(&repo, &run_id, &task_id, dispatch_clone.attempt);
         let wt_branch = git::worktree_branch(&run_id, &task_id, dispatch_clone.attempt);
 
-        let repo_c3 = repo.clone();
+        let repo_c2 = repo.clone();
         let wt_path_c = wt_path.clone();
         let wt_branch_c = wt_branch.clone();
-        let base_c = base_for_wt.clone();
         let wt_result = tokio::task::spawn_blocking(move || {
-            git::worktree_add(&repo_c3, &wt_path_c, &wt_branch_c, &base_c)
+            git::worktree_add(&repo_c2, &wt_path_c, &wt_branch_c, &base_for_wt)
         }).await;
 
         match wt_result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                let run_id2 = run_id.clone();
-                let dispatch_id2 = dispatch_id.clone();
-                let now2 = unix_ms();
-                let e2 = e.clone();
-                commit(move |_| {
-                    Ok(Cmd::DispatchUpdate {
-                        run_id: run_id2, dispatch_id: dispatch_id2,
-                        status: DispatchStatus::Failed,
-                        summary: Some(format!("worktree create failed: {e2}")),
-                        now: now2,
-                    })
-                }, run_id.clone()).await;
-                return err_resp("conflict", &format!("worktree create failed: {e}"));
+                bail_fail!(
+                    format!("worktree create failed: {e}"),
+                    "worker_failed".into(),
+                    serde_json::json!({"reason":"worktree_failed","detail":e}).to_string()
+                );
             }
             Err(e) => {
-                eprintln!("[orch] spawn_blocking panic in worktree_add: {e}");
-                return err_resp("io", "worktree create: spawn failed");
+                bail_fail!(
+                    "worktree create: spawn failed".into(),
+                    "worker_failed".into(),
+                    serde_json::json!({"reason":"worktree_failed","detail":format!("spawn panic: {e}")}).to_string()
+                );
             }
         }
 
@@ -2431,11 +2855,12 @@ async fn handle_worker_start(body: &[u8]) -> String {
             })
         }, run_id.clone()).await;
 
-        if let Some(ref setup_cmd) = run_setup {
+        if let Some(setup_cmd) = run_setup {
+            if !is_running() { remove_starting(); return; }
             use crate::orch::exec::{RunToExitInput, run_to_exit};
             let setup_input = RunToExitInput {
                 cwd: wt_path.clone(),
-                cmd: setup_cmd.clone(),
+                cmd: setup_cmd,
                 timeout: std::time::Duration::from_secs(600),
                 dispatch_id: dispatch_id.clone(),
                 purpose: "setup".into(),
@@ -2443,40 +2868,26 @@ async fn handle_worker_start(body: &[u8]) -> String {
             match run_to_exit(setup_input).await {
                 Ok(outcome) if !outcome.timed_out && outcome.exit_code == Some(0) => {}
                 Ok(outcome) => {
-                    let tail = outcome.tail.join("\n");
-                    let summary = if outcome.timed_out {
-                        format!("setup timed out\n{tail}")
+                    let tail_lines: Vec<&str> = outcome.tail.iter()
+                        .rev().take(40).rev().map(|s| s.as_str()).collect();
+                    let tail_str = tail_lines.join("\n");
+                    let detail = if outcome.timed_out {
+                        "setup timed out".to_string()
                     } else {
-                        format!("setup exited {:?}\n{tail}", outcome.exit_code)
+                        format!("setup exited {:?}", outcome.exit_code)
                     };
-                    let run_id2 = run_id.clone();
-                    let dispatch_id2 = dispatch_id.clone();
-                    let now2 = unix_ms();
-                    let summary2 = summary.clone();
-                    commit(move |_| {
-                        Ok(Cmd::DispatchUpdate {
-                            run_id: run_id2, dispatch_id: dispatch_id2,
-                            status: DispatchStatus::Failed,
-                            summary: Some(summary2),
-                            now: now2,
-                        })
-                    }, run_id.clone()).await;
-                    return err_resp("conflict", &format!("setup failed: {summary}"));
+                    bail_fail!(
+                        format!("{detail}\n{tail_str}"),
+                        "setup_failed".into(),
+                        serde_json::json!({"reason":"setup_failed","detail":detail,"tail":tail_str}).to_string()
+                    );
                 }
                 Err(e) => {
-                    let run_id2 = run_id.clone();
-                    let dispatch_id2 = dispatch_id.clone();
-                    let now2 = unix_ms();
-                    let e2 = e.clone();
-                    commit(move |_| {
-                        Ok(Cmd::DispatchUpdate {
-                            run_id: run_id2, dispatch_id: dispatch_id2,
-                            status: DispatchStatus::Failed,
-                            summary: Some(format!("setup start failed: {e2}")),
-                            now: now2,
-                        })
-                    }, run_id.clone()).await;
-                    return err_resp("io", &format!("setup start failed: {e}"));
+                    bail_fail!(
+                        format!("setup start failed: {e}"),
+                        "setup_failed".into(),
+                        serde_json::json!({"reason":"setup_failed","detail":e}).to_string()
+                    );
                 }
             }
         }
@@ -2485,6 +2896,8 @@ async fn handle_worker_start(body: &[u8]) -> String {
     } else {
         base_cwd
     };
+
+    if !is_running() { remove_starting(); return; }
 
     let dispatch_for_brief = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2506,20 +2919,24 @@ async fn handle_worker_start(body: &[u8]) -> String {
     }) {
         Ok(p) => p,
         Err(e) => {
-            let run_id2 = run_id.clone();
-            let dispatch_id2 = dispatch_id.clone();
-            let now2 = unix_ms();
-            let e2 = e.clone();
-            commit(move |_| {
-                Ok(Cmd::DispatchUpdate {
-                    run_id: run_id2, dispatch_id: dispatch_id2,
-                    status: DispatchStatus::Failed,
-                    summary: Some(format!("brief write failed: {e2}")),
-                    now: now2,
-                })
-            }, run_id.clone()).await;
-            return err_resp("io", &format!("brief write failed: {e}"));
+            bail_fail!(
+                format!("brief write failed: {e}"),
+                "worker_failed".into(),
+                serde_json::json!({"reason":"brief_failed","detail":e}).to_string()
+            );
         }
+    };
+
+    let settings_path = if profile.exe == "claude" {
+        match crate::orch::worker::write_worker_settings(&brief_path, &task_clone.verify) {
+            Ok(p) => Some(p.to_string_lossy().into_owned()),
+            Err(e) => {
+                eprintln!("[orch] {dispatch_id}: worker permission settings skipped: {e}");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     let extra_env: Vec<(String, String)> = {
@@ -2529,49 +2946,26 @@ async fn handle_worker_start(body: &[u8]) -> String {
         env
     };
 
-    let run_title = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(&run_id).map(|e| e.run.title.clone()).unwrap_or_default()
-    };
-    let tile_id2 = tile_id.clone();
-    let profile2 = profile.clone();
-    let model2 = model.clone();
-    let run_id2 = run_id.clone();
-    let dispatch_id2 = dispatch_id.clone();
-    let cwd2 = cwd.clone();
+    if !is_running() { remove_starting(); return; }
 
-    tokio::spawn(async move {
-        let launch = WorkerLaunch {
-            tile_id: &tile_id2,
-            cwd: &cwd2,
-            group: Some(TileGroup { id: &run_id2, title: &run_title }),
-            profile: &profile2,
-            model: model2.as_deref(),
-            extra_env,
-            brief_path: &brief_path,
-        };
-        if let Err(e) = spawn_worker(launch).await {
-            let now3 = unix_ms();
-            let run_id_arg = run_id2.clone();
-            commit(move |_| {
-                Ok(Cmd::DispatchUpdate {
-                    run_id: run_id2.clone(), dispatch_id: dispatch_id2.clone(),
-                    status: DispatchStatus::Failed,
-                    summary: Some(format!("spawn failed: {e}")),
-                    now: now3,
-                })
-            }, run_id_arg).await;
-        }
-    });
-
-    let dispatch_json = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(&run_id)
-            .and_then(|e| e.dispatches.get(&dispatch_id))
-            .and_then(|d| serde_json::to_value(d).ok())
-            .unwrap_or(serde_json::json!({"id": dispatch_id}))
+    let launch = WorkerLaunch {
+        tile_id: &tile_id,
+        cwd: &cwd,
+        group: Some(TileGroup { id: &run_id, title: &run_title }),
+        profile: &profile,
+        model: model.as_deref(),
+        extra_env,
+        brief_path: &brief_path,
+        settings_path,
     };
-    ok_resp(serde_json::json!({"dispatch": dispatch_json}))
+    if let Err(e) = spawn_worker(launch).await {
+        bail_fail!(
+            format!("spawn failed: {e}"),
+            "worker_failed".into(),
+            serde_json::json!({"reason":"spawn_failed","detail":e}).to_string()
+        );
+    }
+    remove_starting();
 }
 
 fn handle_worker_show(body: &[u8]) -> String {
@@ -2685,17 +3079,38 @@ async fn handle_worker_stop(body: &[u8]) -> String {
     if run_id.is_empty() || dispatch_id.is_empty() {
         return err_resp("bad_request", "runId and dispatchId required");
     }
-    let tile_id = {
+    let (tile_id, can_commit_stopped, has_live_tile) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(&run_id)
-            .and_then(|e| e.dispatches.get(&dispatch_id))
-            .and_then(|d| d.tile_id.clone())
-            .unwrap_or_default()
+        let d = guard.runs.get(&run_id).and_then(|e| e.dispatches.get(&dispatch_id));
+        let tile = d.and_then(|d| d.tile_id.clone()).unwrap_or_default();
+        let live = !tile.is_empty() && crate::lookup_live(&tile).is_some();
+        let stoppable = d.map(|d| matches!(d.status, DispatchStatus::Running | DispatchStatus::Reported)).unwrap_or(false);
+        (tile, stoppable, live)
     };
-    match stop_running_dispatch(run_id, dispatch_id, tile_id).await {
-        Ok(()) => ok_resp(serde_json::json!({})),
-        Err(e) => err_from_str(&e),
+    if !can_commit_stopped && !has_live_tile {
+        return err_resp("conflict", "dispatch is not running and has no live tile");
     }
+    if can_commit_stopped {
+        let now = unix_ms();
+        let run_id2 = run_id.clone();
+        let dispatch_id2 = dispatch_id.clone();
+        let result = commit(move |_| {
+            Ok(Cmd::DispatchUpdate {
+                run_id: run_id2, dispatch_id: dispatch_id2,
+                status: DispatchStatus::Stopped,
+                summary: None, now,
+            })
+        }, run_id.clone()).await;
+        if let CommitResult::Err(e) = result {
+            return err_from_str(&e);
+        }
+    }
+    if !tile_id.is_empty() {
+        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
+            crate::kill_session(&s);
+        }
+    }
+    ok_resp(serde_json::json!({}))
 }
 
 async fn handle_task_cancel(body: &[u8]) -> String {
@@ -3328,6 +3743,7 @@ mod tests {
     fn base_facts() -> TickFacts {
         TickFacts {
             is_session_live: true,
+            ever_live: true,
             consecutive_shell_ticks: 0,
             screen_quiet_secs: 0,
             agent_status: Some("busy".to_string()),
@@ -3613,6 +4029,35 @@ mod tests {
         assert!(!findings.contains(&Finding::Quiet));
     }
 
+    #[test]
+    fn assess_grace_suppresses_session_gone_when_never_live_and_young() {
+        let mut facts = base_facts();
+        facts.is_session_live = false;
+        facts.ever_live = false;
+        facts.running_secs = 30;
+        let findings = assess(&facts, &no_sent());
+        assert!(findings.is_empty(), "must be suppressed during grace: {findings:?}");
+    }
+
+    #[test]
+    fn assess_session_gone_fires_when_ever_live_regardless_of_age() {
+        let mut facts = base_facts();
+        facts.is_session_live = false;
+        facts.ever_live = true;
+        facts.running_secs = 10;
+        let findings = assess(&facts, &no_sent());
+        assert!(findings.contains(&Finding::SessionGone), "must fire when ever_live");
+    }
+
+    #[test]
+    fn assess_session_gone_fires_when_old_even_if_never_live() {
+        let mut facts = base_facts();
+        facts.is_session_live = false;
+        facts.ever_live = false;
+        facts.running_secs = SESSION_GRACE_SECS + 1;
+        let findings = assess(&facts, &no_sent());
+        assert!(findings.contains(&Finding::SessionGone), "must fire after grace expires");
+    }
 
     #[test]
     fn build_report_totals_exact_vs_unknown_cost() {
@@ -4016,7 +4461,7 @@ mod tests {
             limits: Limits::default(), created_at: 0, updated_at: 0,
         };
         let mut entry = RunEntry::new(run);
-        let mut t1 = Task {
+        let t1 = Task {
             id: "t1".into(), title: "t1".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: None, escalation: vec![], verify: vec![],
             role: Some(Role::Explore), review: false, owner: None,

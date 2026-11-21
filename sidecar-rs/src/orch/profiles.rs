@@ -176,13 +176,29 @@ pub fn resolve_env(env: &HashMap<String, String>, base: Option<&Path>) -> Vec<(S
         .collect()
 }
 
+const CLAUDE_MODEL_ALIASES: &[(&str, &str)] = &[
+    ("opus", "claude-opus-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
+];
+
 pub fn build_command_line(profile: &Profile, model: Option<&str>) -> Vec<String> {
+    let resolved_model = model.map(|m| {
+        if profile.exe == "claude" && !profile.provider {
+            CLAUDE_MODEL_ALIASES.iter()
+                .find(|(alias, _)| *alias == m)
+                .map(|(_, full)| *full)
+                .unwrap_or(m)
+        } else {
+            m
+        }
+    });
     let mut tokens: Vec<String> = Vec::new();
     tokens.push(profile.exe.clone());
     for arg in &profile.args {
         tokens.push(arg.clone());
     }
-    if let (Some(flag), Some(model_val)) = (&profile.model_flag, model) {
+    if let (Some(flag), Some(model_val)) = (&profile.model_flag, resolved_model) {
         tokens.push(flag.clone());
         tokens.push(model_val.to_string());
     }
@@ -334,10 +350,10 @@ mod tests {
     #[test]
     fn command_line_with_model() {
         let p = cli_profile("claude", &["--permission-mode", "acceptEdits"], "--model");
-        let tokens = build_command_line(&p, Some("claude-haiku-4-5"));
+        let tokens = build_command_line(&p, Some("claude-haiku-5-5"));
         let cmd = tokens_to_command(&tokens);
         assert!(cmd.contains("--model"));
-        assert!(cmd.contains("claude-haiku-4-5"));
+        assert!(cmd.contains("claude-haiku-5-5"));
     }
 
     #[test]
@@ -345,5 +361,51 @@ mod tests {
         let tokens = vec!["exe".to_string(), "value with spaces".to_string()];
         let cmd = tokens_to_command(&tokens);
         assert_eq!(cmd, "exe \"value with spaces\"");
+    }
+
+    #[test]
+    fn model_alias_resolved_for_claude_non_provider() {
+        let p = cli_profile("claude", &[], "--model");
+        let tokens = build_command_line(&p, Some("sonnet"));
+        assert!(tokens.contains(&"claude-sonnet-5-5".to_string()), "sonnet alias must resolve");
+        assert!(!tokens.contains(&"sonnet".to_string()), "bare alias must not appear");
+    }
+
+    #[test]
+    fn model_alias_resolved_for_opus_and_haiku() {
+        let p = cli_profile("claude", &[], "--model");
+        let opus = build_command_line(&p, Some("opus"));
+        assert!(opus.contains(&"claude-opus-5-5".to_string()));
+        let haiku = build_command_line(&p, Some("haiku"));
+        assert!(haiku.contains(&"claude-haiku-5-5".to_string()));
+    }
+
+    #[test]
+    fn model_alias_not_resolved_for_provider_profile() {
+        let provider = crate::orch::settings::OrchProvider {
+            id: "myprovider".into(),
+            preset: "deepseek".into(),
+            label: "My Provider".into(),
+            base_url: "https://example.com".into(),
+            main_model: "fast-model".into(),
+            fast_model: "fast-model".into(),
+        };
+        let p = super::provider_to_profile(&provider);
+        let tokens = build_command_line(&p, Some("sonnet"));
+        assert!(tokens.contains(&"sonnet".to_string()), "provider profile must not map alias");
+    }
+
+    #[test]
+    fn model_alias_not_resolved_for_non_claude_exe() {
+        let p = cli_profile("codex", &["--full-auto"], "-m");
+        let tokens = build_command_line(&p, Some("haiku"));
+        assert!(tokens.contains(&"haiku".to_string()), "non-claude exe must not map alias");
+    }
+
+    #[test]
+    fn model_alias_passthrough_for_full_id() {
+        let p = cli_profile("claude", &[], "--model");
+        let tokens = build_command_line(&p, Some("claude-sonnet-5-5"));
+        assert!(tokens.contains(&"claude-sonnet-5-5".to_string()), "full id must pass through unchanged");
     }
 }

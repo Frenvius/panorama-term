@@ -202,6 +202,46 @@
 }
 
 
+.failureReason {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.infoMsg {
+  color: #e07a30;
+  font-size: 11px;
+}
+
+.startingChip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.retryConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.retryMsg {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.retryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 @keyframes pulse {
   0% {
     box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);

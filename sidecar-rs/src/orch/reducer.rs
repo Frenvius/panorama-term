@@ -240,6 +240,7 @@ pub enum Cmd {
     TaskIntegrate {
         run_id: String,
         task_id: String,
+        dispatch_id: String,
         integrated_sha: String,
         msg_seq: u32,
         now: u64,
@@ -516,8 +517,22 @@ impl State {
                                 "outcome must be succeeded or failed".into()
                             ));
                         }
+                        if dispatch.status == DispatchStatus::Failed {
+                            let task_failed = entry.tasks.get(dispatch.task_id.as_str())
+                                .map(|t| t.status == TaskStatus::Failed)
+                                .unwrap_or(false);
+                            if !task_failed {
+                                return ApplyResult::Stale("send".into(), serde_json::json!({
+                                    "runId": run_id, "seq": seq, "from": from, "to": to,
+                                    "type": msg_type, "taskId": task_id, "dispatchId": dispatch_id,
+                                    "replyTo": reply_to, "body": body, "outcome": outcome,
+                                    "filesModified": files_modified, "summary": summary,
+                                    "now": now, "stale": true
+                                }));
+                            }
+                        }
                     }
-                    if dispatch.status != DispatchStatus::Running {
+                    if !dispatch.accepts_reports() {
                         return ApplyResult::Stale("send".into(), serde_json::json!({
                             "runId": run_id, "seq": seq, "from": from, "to": to,
                             "type": msg_type, "taskId": task_id, "dispatchId": dispatch_id,
@@ -634,7 +649,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskIntegrate { run_id, task_id, integrated_sha, msg_seq, now } => {
+            Cmd::TaskIntegrate { run_id, task_id, dispatch_id, integrated_sha, msg_seq, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -646,14 +661,15 @@ impl State {
                         "task must be completed to integrate".into()
                     ));
                 }
-                let latest = entry.latest_dispatch_for_task(task_id);
-                if latest.and_then(|d| d.branch.as_ref()).is_none() {
-                    return ApplyResult::Err(OrchError::BadRequest(
-                        "latest dispatch has no branch".into()
-                    ));
+                let dispatch = entry.dispatches.get(dispatch_id.as_str());
+                if dispatch.map(|d| d.task_id != *task_id).unwrap_or(true) {
+                    return ApplyResult::Err(OrchError::NotFound("dispatch not found for this task".into()));
+                }
+                if dispatch.and_then(|d| d.branch.as_ref()).is_none() {
+                    return ApplyResult::Err(OrchError::BadRequest("dispatch has no branch".into()));
                 }
                 ApplyResult::Ok("task-integrate".into(), serde_json::json!({
-                    "runId": run_id, "taskId": task_id,
+                    "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
                     "integratedSha": integrated_sha, "msgSeq": msg_seq, "now": now
                 }))
             }
@@ -1169,13 +1185,14 @@ impl State {
             task.updated_at = now;
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
+        let dispatch_id = opt_str(data, "dispatchId");
         let msg = Message {
             seq: msg_seq,
             from: "brain".to_string(),
             to: "coordinator".to_string(),
             msg_type: "task_integrated".to_string(),
             task_id: Some(task_id),
-            dispatch_id: None,
+            dispatch_id,
             reply_to: None,
             body: opt_str(data, "integratedSha"),
             at: now,
@@ -1779,6 +1796,135 @@ mod tests {
         assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Dispatched);
     }
 
+    fn set_dispatch_failed_no_outcome(s: &mut State, run_id: &str, dispatch_id: &str) {
+        let d = s.runs.get_mut(run_id).unwrap().dispatches.get_mut(dispatch_id).unwrap();
+        d.status = DispatchStatus::Failed;
+        d.ended_at = Some(ts());
+        if let Some(task) = s.runs.get_mut(run_id).unwrap().tasks.get_mut("t1") {
+            task.status = TaskStatus::Failed;
+        }
+    }
+
+    #[test]
+    fn accepts_reports_running_dispatch() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        let d = &s.runs["r1"].dispatches["r1.t1.1"];
+        assert!(d.accepts_reports());
+    }
+
+    #[test]
+    fn accepts_reports_failed_dispatch_no_outcome() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        set_dispatch_failed_no_outcome(&mut s, "r1", "r1.t1.1");
+        let d = &s.runs["r1"].dispatches["r1.t1.1"];
+        assert!(d.accepts_reports(), "Failed+no outcome must accept reports");
+    }
+
+    #[test]
+    fn accepts_reports_false_for_reported_dispatch() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        worker_done(&mut s, "r1", "r1.t1.1", "succeeded", 1);
+        let d = &s.runs["r1"].dispatches["r1.t1.1"];
+        assert!(!d.accepts_reports(), "Reported dispatch must not accept reports");
+    }
+
+    #[test]
+    fn worker_done_revives_failed_dispatch_no_verify() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        set_dispatch_failed_no_outcome(&mut s, "r1", "r1.t1.1");
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 2, from: "r1.t1.1".into(),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: None,
+            outcome: Some("succeeded".into()), files_modified: vec![], summary: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            ApplyResult::Stale(_, _) => panic!("must not be stale for Failed+no-outcome"),
+            ApplyResult::Err(e) => panic!("unexpected err: {}", e.message()),
+        }
+        assert_eq!(s.runs["r1"].dispatches["r1.t1.1"].status, DispatchStatus::Reported);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn worker_done_revives_failed_dispatch_with_verify() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: None, escalation: vec![],
+            verify: vec!["bun test".into()], role: None, review: false, owner: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!(),
+        }
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        set_dispatch_failed_no_outcome(&mut s, "r1", "r1.t1.1");
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 2, from: "r1.t1.1".into(),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: None,
+            outcome: Some("succeeded".into()), files_modified: vec![], summary: None, now: ts(),
+        };
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            ApplyResult::Stale(_, _) => panic!("must not be stale"),
+            ApplyResult::Err(e) => panic!("unexpected err: {}", e.message()),
+        }
+        assert_eq!(s.runs["r1"].dispatches["r1.t1.1"].status, DispatchStatus::Reported);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Verifying);
+    }
+
+    #[test]
+    fn worker_done_failed_dispatch_with_outcome_already_set_rejected() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        worker_done(&mut s, "r1", "r1.t1.1", "failed", 1);
+        let d = s.runs.get_mut("r1").unwrap().dispatches.get_mut("r1.t1.1").unwrap();
+        assert!(d.outcome.is_some(), "outcome must be set");
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 2, from: "r1.t1.1".into(),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: None,
+            outcome: Some("succeeded".into()), files_modified: vec![], summary: None, now: ts(),
+        };
+        assert!(!matches!(s.apply(&cmd), ApplyResult::Ok(_, _)), "must be rejected when outcome already set");
+    }
+
+    #[test]
+    fn worker_done_failed_dispatch_stale_when_task_not_failed() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        let d = s.runs.get_mut("r1").unwrap().dispatches.get_mut("r1.t1.1").unwrap();
+        d.status = DispatchStatus::Failed;
+        d.ended_at = Some(ts());
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 2, from: "r1.t1.1".into(),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: None,
+            outcome: Some("succeeded".into()), files_modified: vec![], summary: None, now: ts(),
+        };
+        assert!(matches!(s.apply(&cmd), ApplyResult::Stale(_, _)), "must be stale when task not failed");
+    }
+
     #[test]
     fn task_update_valid_transitions_accepted() {
         let pairs: &[(&str, TaskStatus, TaskStatus)] = &[
@@ -2235,7 +2381,7 @@ mod tests {
         mk_dispatch(&mut s, "r1", "t1", 1);
 
         let cmd = Cmd::TaskIntegrate {
-            run_id: "r1".into(), task_id: "t1".into(),
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: "r1.t1.1".into(),
             integrated_sha: "sha1".into(), msg_seq: 1, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))), "dispatched task should not integrate");
@@ -2257,7 +2403,7 @@ mod tests {
         assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Completed);
 
         let cmd = Cmd::TaskIntegrate {
-            run_id: "r1".into(), task_id: "t1".into(),
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: did.clone(),
             integrated_sha: "sha1".into(), msg_seq: 2, now: ts(),
         };
         match s.apply(&cmd) {

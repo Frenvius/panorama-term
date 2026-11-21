@@ -97,7 +97,13 @@ The brain:
 3. answers its startup dialogs,
 4. pastes the brief.
 
-The dispatch id is `<run>.<task>.<attempt>`.
+The dispatch id is `<run>.<task>.<attempt>`. `worker-start` returns as soon as the attempt is
+recorded; worktree, `--setup` and agent launch run in the background (`starting: true` in
+`run-show`). A setup failure arrives later as a `setup_failed` message.
+
+If an earlier attempt of the task still has a live, unreported agent, `worker-start` and `retry`
+fail with `live_attempt`. Check it with `worker-read`. Add `--stop-live` to stop it and start the
+new attempt.
 
 Start every task whose dependencies are completed and integrated, up to `maxWorkers`. Then wait.
 
@@ -124,7 +130,9 @@ arrives. Run `check` then.
 | `status` "waiting for permission" | The worker is blocked on an approval prompt | `worker-read`, then answer with `worker-send` |
 | `question` | The worker asks something | Reply with `send --type answer --to <dispatchId> --body "..."` |
 | `worker_stalled` | No screen change for `stallQuietMin`, or past the timeout. The body has the screen tail | `worker-read`. Unstick it with `worker-send`, or `worker-stop` then `retry` |
-| `worker_failed` | The agent process exited, or its terminal is gone | `retry` |
+| `worker_failed` | JSON body with `reason`: `session_gone`, `agent_exited` (with screen `tail`), `worktree_failed`, `brief_failed`, `spawn_failed` | `retry`. If the agent turns out to still be working, its `worker_done` is still accepted |
+| `setup_failed` | The run's `--setup` command failed. JSON body with `detail` and output `tail` | Fix the setup or the repo, then `retry` |
+| `late_report` | A `worker_done` arrived from an attempt already superseded by a newer one. Not applied | Compare with the newer attempt. Integrate the old one with `integrate --dispatch-id` if it is the better result |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
 | `integration_conflict` | The merge conflicted and was aborted. The task is `blocked` | Lists the files. Re-scope the task against the new base and retry, or ask the user |
 | `note` from `user` with a task id | The user cancelled that task from the run board. The task is now `cancelled` | Do not retry it unless the user explicitly asks |
@@ -144,7 +152,11 @@ Inspecting and steering a worker:
 - `worker-read` shows the screen tail.
 - `worker-send --text` types a line and presses Enter.
 - `worker-send --keys` sends raw keys with no Enter. Use it to pick option 1 of a prompt.
-- `worker-stop` stops a worker and marks the attempt stopped.
+- `worker-stop` stops a worker and marks the attempt stopped. It also closes the live terminal of
+  an attempt that is already failed.
+- `dispatch-adopt --run-id <run> --dispatch-id <id> [--summary "..."]` treats an attempt as if its
+  worker reported success: commits the worktree, then the normal verify path. Use it when a worker
+  finished the work but never sent `worker_done`.
 - `worker-release` closes the terminal of a finished worker.
 
 Read the screen before answering a prompt. Approve what the task needs. Refuse anything outside the
@@ -170,10 +182,12 @@ When `maxAttempts` is reached, stop retrying. Tell the user what failed and why.
 
 ```
 {cli} orch integrate --run-id <run> --task-id t1
+{cli} orch integrate --run-id <run> --task-id t1 --dispatch-id <id>
 ```
 
-This merges the task branch into `orch/<run>/integration` with `--no-ff`. Integrate in dependency
-order. Never merge into the user's branch, and never push, unless the user asks.
+This merges the task branch into `orch/<run>/integration` with `--no-ff`. Without `--dispatch-id`
+it takes the newest attempt that reported success and passed verification, not simply the newest
+attempt. Integrate in dependency order. Never merge into the user's branch, and never push, unless the user asks.
 
 ## 6. Finish
 
@@ -198,7 +212,8 @@ attempt is still running, when it has uncommitted changes (often a dead attempt 
 replaced), or when its branch is unmerged. Do not force-remove what it keeps. List each kept path
 and its reason for the user to decide.
 
-Other commands: `run-list`, `run-show --run-id <run>`, `task-list --run-id <run>`,
+Other commands: `run-list`, `run-show --run-id <run>` (add `--brief` for ids, states, owner,
+attempt, live tile and agent status only), `task-list --run-id <run>`,
 `gate-create --run-id <run> --task-id <t> --question "..." --option a --option b`,
 `gate-resolve --run-id <run> --gate-id <g> --resolution a`, and
 `run-set-status --status paused|active|cancelled`.

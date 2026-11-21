@@ -127,6 +127,7 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "verify" => &["runId", "taskId"],
         "retry" => &["runId", "taskId"],
         "report" => &["runId"],
+        "dispatch-adopt" => &["runId", "dispatchId"],
         _ => return Err(format!("unknown command: {command}")),
     };
     for field in required {
@@ -270,7 +271,7 @@ fn kebab_to_camel(s: &str) -> String {
 }
 
 fn is_bool_flag(flag: &str) -> bool {
-    matches!(flag, "review" | "peek" | "wait" | "pretty" | "keys")
+    matches!(flag, "review" | "peek" | "wait" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
 }
 
 fn is_array_field(field: &str, command: &str) -> bool {

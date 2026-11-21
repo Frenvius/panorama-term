@@ -7,7 +7,7 @@ import styles from './styles.module.scss';
 import ReopenForm from './ReopenForm';
 import EditForm from './EditForm';
 import { latestDispatch } from '../columns';
-import { cancelTask, updateTask, startWorker } from '~/adapter/orch/orch.client';
+import { cancelTask, updateTask, startWorker, workerStop, OrchError } from '~/adapter/orch/orch.client';
 import { totalCost, formatDuration } from '~/usecase/util/orch';
 import { requestOrchDiff, requestShowWorker } from '~/usecase/util/orchBoardRequest';
 
@@ -21,7 +21,7 @@ export interface TaskCardProps {
   runBaseSha?: string;
 }
 
-type InlineView = 'reopen' | 'edit' | null;
+type InlineView = 'reopen' | 'edit' | 'confirm-retry' | null;
 
 const FLAGGED_STATUS: Partial<Record<Task['status'], string>> = {
   failed: 'failed',
@@ -40,9 +40,11 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
   const fileCount = dispatch?.filesModified.length ?? 0;
   const taskCost = totalCost(dispatches.filter((d) => d.taskId === task.id));
   const runPaused = runStatus === 'paused';
-  const waiting = task.status === 'dispatched' && dispatch?.waiting === true;
-  const live = task.status === 'dispatched';
+  const live = dispatch?.live ?? false;
+  const starting = dispatch?.starting ?? false;
+  const waiting = dispatch?.agentStatus === 'waiting' || (task.status === 'dispatched' && dispatch?.waiting === true);
   const flag = FLAGGED_STATUS[task.status];
+  const failureReason = dispatch?.summary ? dispatch.summary.split('\n')[0] : null;
 
   const handleShowWorker = () => {
     if (!dispatch?.tileId) return;
@@ -65,7 +67,7 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
   };
 
   const handleCardClick = () => {
-    if (dispatch?.tileId && task.status === 'dispatched') handleShowWorker();
+    if (isClickable) handleShowWorker();
   };
 
   const handleShowBtnClick = (e: React.MouseEvent) => {
@@ -99,8 +101,44 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
     setActionError(null);
     setActing(true);
     startWorker({ runId, taskId: task.id, by: 'user', retryOf: dispatch?.id })
+      .catch((err) => {
+        if (err instanceof OrchError && err.code === 'live_attempt') {
+          setInlineView('confirm-retry');
+        } else {
+          setActionError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => setActing(false));
+  };
+
+  const handleStopAndRetry = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActionError(null);
+    setActing(true);
+    startWorker({ runId, taskId: task.id, by: 'user', retryOf: dispatch?.id, stopLive: true })
+      .then(() => setInlineView(null))
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setActing(false));
+  };
+
+  const handleShowLiveAttempt = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const liveAttempt = dispatches.find((d) => d.taskId === task.id && d.live);
+    if (!liveAttempt?.tileId) return;
+    requestShowWorker({
+      tileId: liveAttempt.tileId,
+      cwd: liveAttempt.worktree ?? '',
+      group: { id: runId, title: runTitle }
+    });
+    setInlineView(null);
+  };
+
+  const handleStopWorker = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!dispatch?.id) return;
+    setActionError(null);
+    workerStop({ runId, dispatchId: dispatch.id })
+      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)));
   };
 
   const handleEditClick = (e: React.MouseEvent) => {
@@ -143,7 +181,14 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
 
   const handleInlineCancel = () => setInlineView(null);
 
-  const isClickable = dispatch?.tileId && task.status === 'dispatched';
+  const isClickable = live && !!dispatch?.tileId;
+
+  const showBtn = isClickable && (
+    <button type="button" className={styles.cardBtn} onClick={handleShowBtnClick}>
+      <ExternalLink size={11} strokeWidth={1.75} />
+      Show
+    </button>
+  );
 
   return (
     <div className={styles.card} data-clickable={isClickable ? '' : undefined} onClick={handleCardClick}>
@@ -159,11 +204,19 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
           {task.role && <span className={styles.roleChip}>{task.role}</span>}
           {profile && <span className={styles.metaChip}>{profile}</span>}
           {task.attempts > 1 && <span className={styles.metaChip}>attempt {task.attempts}</span>}
-          {live && <span className={styles.liveDot} />}
+          {starting ? (
+            <span className={styles.startingChip}>starting</span>
+          ) : (
+            live && <span className={styles.liveDot} />
+          )}
           {elapsed && <span className={styles.metaDim}>{elapsed}</span>}
           {fileCount > 0 && <span className={styles.metaDim}>{fileCount} {fileCount === 1 ? 'file' : 'files'}</span>}
           {taskCost != null && <span className={styles.metaDim}>${taskCost.toFixed(4)}</span>}
         </div>
+      )}
+
+      {(task.status === 'failed' || task.status === 'blocked') && failureReason && (
+        <div className={styles.failureReason} title={dispatch?.summary}>{failureReason}</div>
       )}
 
       {inlineView === 'reopen' && (
@@ -174,118 +227,147 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
         <EditForm task={task} onSubmit={handleEditSubmit} onCancel={handleInlineCancel} submitting={acting} />
       )}
 
-      {inlineView === null && (
-        <div className={styles.cardActions}>
-          {task.status === 'pending' && (
-            <>
-              <button
-                type="button"
-                className={`${styles.cardBtn} ${styles.playBtn}`}
-                disabled={acting || runPaused || !task.ready}
-                title={runPaused ? 'Run is paused' : !task.ready ? 'Dependencies not done' : 'Start this task'}
-                onClick={handlePlayClick}
-              >
-                <Play size={11} strokeWidth={2} />
-                Play
-              </button>
-              <button type="button" className={styles.cardBtn} onClick={handleEditClick}>
-                <Pencil size={11} strokeWidth={1.75} />
-                Edit
-              </button>
-              <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                <Square size={11} strokeWidth={1.75} />
-                Cancel
-              </button>
-            </>
-          )}
-
-          {task.status === 'dispatched' && (
-            <>
-              {dispatch?.tileId && (
-                <button type="button" className={styles.cardBtn} onClick={handleShowBtnClick}>
-                  <ExternalLink size={11} strokeWidth={1.75} />
-                  Show
-                </button>
-              )}
-              <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                <Square size={11} strokeWidth={1.75} />
-                Stop
-              </button>
-            </>
-          )}
-
-          {task.status === 'verifying' && (
-            <>
-              {dispatch?.tileId && (
-                <button type="button" className={styles.cardBtn} onClick={handleShowBtnClick}>
-                  <ExternalLink size={11} strokeWidth={1.75} />
-                  Show
-                </button>
-              )}
-              {fileCount > 0 && (
-                <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-                  <GitCompare size={11} strokeWidth={1.75} />
-                  Diff
-                </button>
-              )}
-            </>
-          )}
-
-          {task.status === 'review' && (
-            <>
-              <button
-                type="button"
-                className={`${styles.cardBtn} ${styles.acceptBtn}`}
-                disabled={acting}
-                onClick={handleAcceptClick}
-              >
-                Accept
-              </button>
-              <button type="button" className={styles.cardBtn} onClick={handleReopenClick}>
-                Reopen
-              </button>
-              {fileCount > 0 && (
-                <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-                  <GitCompare size={11} strokeWidth={1.75} />
-                  Diff
-                </button>
-              )}
-            </>
-          )}
-
-          {task.status === 'failed' && (
-            <>
-              <button
-                type="button"
-                className={`${styles.cardBtn} ${styles.playBtn}`}
-                disabled={acting || runPaused}
-                title={runPaused ? 'Run is paused' : 'Retry this task'}
-                onClick={handlePlayAgainClick}
-              >
-                <Play size={11} strokeWidth={2} />
-                Play again
-              </button>
-              <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-                <Square size={11} strokeWidth={1.75} />
-                Cancel
-              </button>
-            </>
-          )}
-
-          {task.status === 'blocked' && (
-            <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
-              <Square size={11} strokeWidth={1.75} />
+      {inlineView === 'confirm-retry' && (
+        <div className={styles.retryConfirm}>
+          <span className={styles.retryMsg}>An attempt is still running.</span>
+          <div className={styles.retryActions}>
+            <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} disabled={acting} onClick={handleStopAndRetry}>
+              Stop it and start new
+            </button>
+            <button type="button" className={styles.cardBtn} onClick={handleShowLiveAttempt}>
+              Show it
+            </button>
+            <button type="button" className={styles.cardBtn} onClick={handleInlineCancel}>
               Cancel
             </button>
-          )}
-
-          {task.status === 'completed' && fileCount > 0 && (
-            <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
-              <GitCompare size={11} strokeWidth={1.75} />
-              Diff
-            </button>
-          )}
+          </div>
         </div>
+      )}
+
+      {inlineView === null && (
+        <>
+          {task.status === 'failed' && live && (
+            <div className={styles.infoMsg}>failed, but the agent is still running</div>
+          )}
+          <div className={styles.cardActions}>
+            {task.status === 'pending' && (
+              <>
+                <button
+                  type="button"
+                  className={`${styles.cardBtn} ${styles.playBtn}`}
+                  disabled={acting || runPaused || !task.ready}
+                  title={runPaused ? 'Run is paused' : !task.ready ? 'Dependencies not done' : 'Start this task'}
+                  onClick={handlePlayClick}
+                >
+                  <Play size={11} strokeWidth={2} />
+                  Play
+                </button>
+                {showBtn}
+                <button type="button" className={styles.cardBtn} onClick={handleEditClick}>
+                  <Pencil size={11} strokeWidth={1.75} />
+                  Edit
+                </button>
+                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
+                  <Square size={11} strokeWidth={1.75} />
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {task.status === 'dispatched' && (
+              <>
+                {showBtn}
+                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
+                  <Square size={11} strokeWidth={1.75} />
+                  Stop
+                </button>
+              </>
+            )}
+
+            {task.status === 'verifying' && (
+              <>
+                {showBtn}
+                {fileCount > 0 && (
+                  <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
+                    <GitCompare size={11} strokeWidth={1.75} />
+                    Diff
+                  </button>
+                )}
+              </>
+            )}
+
+            {task.status === 'review' && (
+              <>
+                <button
+                  type="button"
+                  className={`${styles.cardBtn} ${styles.acceptBtn}`}
+                  disabled={acting}
+                  onClick={handleAcceptClick}
+                >
+                  Accept
+                </button>
+                <button type="button" className={styles.cardBtn} onClick={handleReopenClick}>
+                  Reopen
+                </button>
+                {showBtn}
+                {fileCount > 0 && (
+                  <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
+                    <GitCompare size={11} strokeWidth={1.75} />
+                    Diff
+                  </button>
+                )}
+              </>
+            )}
+
+            {task.status === 'failed' && (
+              <>
+                {isClickable ? (
+                  <>
+                    {showBtn}
+                    <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleStopWorker}>
+                      <Square size={11} strokeWidth={1.75} />
+                      Stop
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className={`${styles.cardBtn} ${styles.playBtn}`}
+                      disabled={acting || runPaused}
+                      title={runPaused ? 'Run is paused' : 'Retry this task'}
+                      onClick={handlePlayAgainClick}
+                    >
+                      <Play size={11} strokeWidth={2} />
+                      Play again
+                    </button>
+                    <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
+                      <Square size={11} strokeWidth={1.75} />
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+
+            {task.status === 'blocked' && (
+              <>
+                {showBtn}
+                <button type="button" className={`${styles.cardBtn} ${styles.stopBtn}`} onClick={handleCancelBtnClick}>
+                  <Square size={11} strokeWidth={1.75} />
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {task.status === 'completed' && fileCount > 0 && (
+              <button type="button" className={styles.cardBtn} onClick={handleDiffBtnClick}>
+                <GitCompare size={11} strokeWidth={1.75} />
+                Diff
+              </button>
+            )}
+          </div>
+        </>
       )}
 
       {actionError && <div className={styles.stopError}>{actionError}</div>}
