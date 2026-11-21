@@ -64,8 +64,8 @@ const Select = ({ options, value, onChange, placeholder, disabled }: SelectProps
     const handleOutside = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closePopover();
     };
-    document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
+    document.addEventListener('mousedown', handleOutside, true);
+    return () => document.removeEventListener('mousedown', handleOutside, true);
   }, [open]);
 
   React.useEffect(() => {
