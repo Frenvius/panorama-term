@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.6]
+
+### Added
+- Antigravity CLI (`agy`) support: live status and notifications in its tiles, conversation history with resume, orchestration workers and AI actions (commit message, tidy).
+- Antigravity usage in the status bar, showing the tightest 5-hour and weekly quota.
+- Settings > Agents lets you pick which providers show usage in the status bar.
+- Tidy groups projects by context, can lock the order of frames and packs tiles without gaps.
+
+### Changed
+- The agent prompt bar keeps its status chips at the bottom, and the model and effort controls stay on the first line while you type.
+
+### Fixed
+- The model dropdown in Settings closes when you click outside it.
+- Reordering no longer leaves holes from locked frames or uneven frame grids.
+- Notes stay in their frame's project across tidy and project mode.
+
 ## [0.4.5]
 
 ### Added
