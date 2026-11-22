@@ -45,6 +45,8 @@ import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import { getBinding, isCapturing, formatCombo, matchCommand } from '~/usecase/util/keybindings';
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isDirty, requestFind, requestSave, dispatchSave, requestPreview } from '~/usecase/util/dirtyFiles';
+import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
+import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
@@ -124,8 +126,12 @@ const ProjectView = () => {
     const unsubWorker = onShowWorkerRequest((req) => handleShowWorkerRef.current(req));
     const unsubDiff = onOrchDiffRequest(({ root, file }) => openDiff(root, file));
     const unsubNewBoard = onNewBoardRequest(({ repo, tileId }) => setNewBoard({ repo: projectRootPath(repo), tileId }));
-    return () => { unsubBoard(); unsubWorker(); unsubDiff(); unsubNewBoard(); };
-  }, [addOrchBoard, openDiff]);
+    const unsubOpenTerm = onOpenTerminalRequest(({ tileId, cwd, command }) => {
+      requestTileRestartOnMount(tileId, command);
+      addTerminal(cwd || undefined, undefined, undefined, tileId);
+    });
+    return () => { unsubBoard(); unsubWorker(); unsubDiff(); unsubNewBoard(); unsubOpenTerm(); };
+  }, [addOrchBoard, openDiff, addTerminal]);
 
   const [hasDocker, setHasDocker] = React.useState(false);
   const [draggingTab, setDraggingTab] = React.useState<DraggingTabState | null>(null);

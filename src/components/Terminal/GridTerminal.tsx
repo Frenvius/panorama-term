@@ -554,8 +554,8 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
     if (lastRestartRef.current === restart.key) return;
     lastRestartRef.current = restart.key;
     const ws = wsRef.current;
-    if (!ws) return;
     queuedCommandRef.current = restart.command ?? null;
+    if (!ws) return;
     armedCommandRef.current = null;
     setResume(null);
     forgetFrame(sessionKey);

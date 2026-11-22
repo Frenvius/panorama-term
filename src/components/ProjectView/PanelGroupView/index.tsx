@@ -38,6 +38,7 @@ import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { parseFrontField } from '~/usecase/util/noteMeta';
 import { reportAgent } from '~/usecase/util/tileActivity';
+import { registerTileRestart } from '~/usecase/util/tileRestart';
 import ContextMenu from '~/components/commons/ContextMenu';
 import CrashNotice from '~/components/commons/CrashNotice';
 import GridTerminal from '~/components/Terminal/GridTerminal';
@@ -404,6 +405,17 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
       [id]: { key: (prev[id]?.key ?? 0) + 1, command }
     }));
   };
+
+  const termIdsKey = termTiles.map((t) => t.id).join(',');
+
+  React.useEffect(() => {
+    const unsubs = termTiles.map((t) =>
+      registerTileRestart(t.id, (command) =>
+        setRestarts((prev) => ({ ...prev, [t.id]: { key: (prev[t.id]?.key ?? 0) + 1, command } }))
+      )
+    );
+    return () => unsubs.forEach((off) => off());
+  }, [termIdsKey]);
 
   const toggleActiveNoteRaw = () => {
     if (!activeTile) return;

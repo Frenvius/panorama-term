@@ -11,6 +11,7 @@ export interface TileActivity {
   at?: number;
   agent?: string;
   busySince?: number;
+  sessionId?: string;
   snippet?: TileSnippet;
 }
 
@@ -52,9 +53,11 @@ const eventSnippet = (evt: AgentEvent): TileSnippet | null => {
 };
 
 export const reportAgentEvent = (id: string, evt: AgentEvent): void => {
+  const prev = activity.get(id);
+  const sessionId = evt.sessionId ?? prev?.sessionId;
   const snippet = eventSnippet(evt);
-  if (!snippet) return;
-  commit(id, { ...activity.get(id), snippet, at: Date.now() });
+  if (!snippet && sessionId === prev?.sessionId) return;
+  commit(id, { ...prev, sessionId, ...(snippet ? { snippet, at: Date.now() } : {}) });
 };
 
 export const reportShellLines = (id: string, lines: string[]): void => {
