@@ -1187,12 +1187,16 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
     // while the terminal rows (TERM_ROW_PX) are counted in unscaled pixels.
     const measure = () => {
       const style = getComputedStyle(bar);
-      const natural = content.offsetHeight + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+      const parts = Array.from(content.children) as HTMLElement[];
+      const gaps = Math.max(0, parts.length - 1) * parseFloat(getComputedStyle(content).rowGap || '0');
+      const stacked = parts.reduce((sum, part) => sum + part.offsetHeight, gaps);
+      const natural = stacked + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
       const height = tile.offsetHeight;
       setCoverSize((prev) => prev.tile === height && prev.natural === natural ? prev : { tile: height, natural });
     };
     const observer = new ResizeObserver(measure);
     observer.observe(content);
+    Array.from(content.children).forEach((part) => observer.observe(part));
     observer.observe(tile);
     measure();
     return () => observer.disconnect();
@@ -1297,81 +1301,83 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
               </div>
             )}
           </div>
-          <div className={styles.hints}>
-            {pending > 0
-              ? pending > 1
-                ? `Sending prompt... ${pending - 1} queued`
-                : 'Sending prompt...'
-              : suggest
-                ? 'Enter select & send - Tab complete - Esc close'
-                : ghost
-                  ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
-                  : 'Enter send - Shift+Enter newline - Tab terminal'}
-          </div>
-          {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
-          {shells.length > 0 && <Shells open={shellsOpen} shells={shells} />}
-          {hasStatus && (
-            <div className={styles.footer}>
-              {parsed.mode && (
-                <span className={`${styles.chip} ${styles.chipMode} ${MODE_CLASS[modeKey(parsed.mode)]}`}>
-                  <Sparkles size={10} />
-                  <span className={styles.chipLabel}>{parsed.mode}</span>
-                </span>
-              )}
-              {parsed.model && (
-                <span className={styles.chip}>
-                  <span className={styles.chipLabel}>{parsed.model}</span>
-                  {parsed.contextInfo && <span className={styles.chipSub}>{parsed.contextInfo}</span>}
-                </span>
-              )}
-              {effort && (
-                <span className={styles.chip} style={effortColor ? { color: effortColor } : undefined}>
-                  <Brain size={9} />
-                  <span className={styles.chipLabel}>{effort}</span>
-                </span>
-              )}
-              {parsed.focused && (
-                <span className={`${styles.chip} ${styles.chipFocus}`}>
-                  <span className={styles.dot} />
-                  <span className={styles.chipLabel}>focus</span>
-                </span>
-              )}
-              {shells.length > 0 && (
-                <button
-                  type="button"
-                  data-shells
-                  aria-pressed={shellsOpen}
-                  className={`${styles.chip} ${styles.chipShells}`}
-                  title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
-                  onClick={toggleShells}
-                >
-                  <span className={styles.shellDot} />
-                  <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
-                </button>
-              )}
-              {agentType === 'claude' && <OrchChip tileId={tileId} />}
-              {(parsed.progress != null || structured?.costUsd != null) && (
-                <span className={styles.meter}>
-                  {structured?.costUsd != null && (
-                    <span className={`${styles.chip} ${styles.cost}`}>
-                      <span className={styles.chipLabel}>{formatCost(structured.costUsd)}</span>
-                    </span>
-                  )}
-                  {parsed.progress != null && (
-                    <>
-                      <span className={styles.track}>
-                        <span
-                          className={styles.fill}
-                          style={{ width: `${Math.min(100, Math.max(0, parsed.progress))}%`, background: progressColor(parsed.progress) }}
-                        />
-                      </span>
-                      <span className={styles.progressLabel}>{parsed.progress}%</span>
-                    </>
-                  )}
-                </span>
-              )}
+          <div className={styles.bottom}>
+            <div className={styles.hints}>
+              {pending > 0
+                ? pending > 1
+                  ? `Sending prompt... ${pending - 1} queued`
+                  : 'Sending prompt...'
+                : suggest
+                  ? 'Enter select & send - Tab complete - Esc close'
+                  : ghost
+                    ? 'Tab accept suggestion - Enter send - Shift+Enter newline'
+                    : 'Enter send - Shift+Enter newline - Tab terminal'}
             </div>
-          )}
+            {(subagents.length > 0 || viewing) && <Subagents agents={subagents} viewing={viewing} onView={viewSubagent} />}
+            {shells.length > 0 && <Shells open={shellsOpen} shells={shells} />}
+            {hasStatus && (
+              <div className={styles.footer}>
+                {parsed.mode && (
+                  <span className={`${styles.chip} ${styles.chipMode} ${MODE_CLASS[modeKey(parsed.mode)]}`}>
+                    <Sparkles size={10} />
+                    <span className={styles.chipLabel}>{parsed.mode}</span>
+                  </span>
+                )}
+                {parsed.model && (
+                  <span className={styles.chip}>
+                    <span className={styles.chipLabel}>{parsed.model}</span>
+                    {parsed.contextInfo && <span className={styles.chipSub}>{parsed.contextInfo}</span>}
+                  </span>
+                )}
+                {effort && (
+                  <span className={styles.chip} style={effortColor ? { color: effortColor } : undefined}>
+                    <Brain size={9} />
+                    <span className={styles.chipLabel}>{effort}</span>
+                  </span>
+                )}
+                {parsed.focused && (
+                  <span className={`${styles.chip} ${styles.chipFocus}`}>
+                    <span className={styles.dot} />
+                    <span className={styles.chipLabel}>focus</span>
+                  </span>
+                )}
+                {shells.length > 0 && (
+                  <button
+                    type="button"
+                    data-shells
+                    aria-pressed={shellsOpen}
+                    className={`${styles.chip} ${styles.chipShells}`}
+                    title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
+                    onClick={toggleShells}
+                  >
+                    <span className={styles.shellDot} />
+                    <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
+                  </button>
+                )}
+                {agentType === 'claude' && <OrchChip tileId={tileId} />}
+                {(parsed.progress != null || structured?.costUsd != null) && (
+                  <span className={styles.meter}>
+                    {structured?.costUsd != null && (
+                      <span className={`${styles.chip} ${styles.cost}`}>
+                        <span className={styles.chipLabel}>{formatCost(structured.costUsd)}</span>
+                      </span>
+                    )}
+                    {parsed.progress != null && (
+                      <>
+                        <span className={styles.track}>
+                          <span
+                            className={styles.fill}
+                            style={{ width: `${Math.min(100, Math.max(0, parsed.progress))}%`, background: progressColor(parsed.progress) }}
+                          />
+                        </span>
+                        <span className={styles.progressLabel}>{parsed.progress}%</span>
+                      </>
+                    )}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         {suggest && (
           <Suggest

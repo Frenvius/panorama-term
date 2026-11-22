@@ -56,6 +56,14 @@ $accent: #d97757;
 
 .content {
   display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+.bottom {
+  display: flex;
   flex-direction: column;
   gap: 2px;
 }
@@ -63,7 +71,7 @@ $accent: #d97757;
 .row {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -71,6 +79,7 @@ $accent: #d97757;
   display: flex;
   flex-shrink: 0;
   align-items: center;
+  margin-top: 1px;
 
   svg {
     width: 16px;
@@ -116,6 +125,7 @@ $accent: #d97757;
   flex-shrink: 0;
   align-items: center;
   gap: 4px;
+  margin-top: -2px;
 }
 
 .action {
