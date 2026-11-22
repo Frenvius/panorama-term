@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::Value;
 use crate::orch::model::*;
 use crate::orch::reducer::{ApplyResult, Cmd, State};
-use crate::orch::store::{EventRecord, append_event, ensure_run_dir, load_into, run_events_path};
+use crate::orch::store::{EventRecord, append_event, ensure_run_dir, load_into, remove_run_dir, run_events_path};
 use crate::orch::profiles::{load_profiles, find_profile, resolve_env};
 use crate::orch::worker::{BriefInput, WorkerLaunch, write_brief, spawn_worker, capture_worker_screen, maybe_nudge_tile, maybe_nudge_worker, is_tile_waiting};
 use crate::ui::TileGroup;
@@ -300,6 +300,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "run-list" => handle_run_list(),
         "run-show" => handle_run_show(body),
         "run-set-status" => handle_run_set_status(body).await,
+        "run-delete" => handle_run_delete(body).await,
         "run-set-coordinator" => handle_run_set_coordinator(body).await,
         "task-create" => handle_task_create(body).await,
         "task-update" => handle_task_update(body).await,
@@ -744,6 +745,55 @@ async fn handle_run_set_status(body: &[u8]) -> String {
         CommitResult::Stale => err_resp("stale", "run set-status stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
+}
+
+async fn handle_run_delete(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+    let Some(base) = crate::panorama_dir() else { return err_resp("io", "no panorama dir"); };
+
+    let (live, worker_tiles) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = guard.runs.get(&run_id) else { return err_resp("not_found", "run not found"); };
+        let live = matches!(entry.run.status, RunStatus::Active | RunStatus::Paused);
+        let tiles: Vec<String> = entry.dispatches.values().filter_map(|d| d.tile_id.clone()).collect();
+        (live, tiles)
+    };
+
+    if live {
+        let run_id_c = run_id.clone();
+        let now = unix_ms();
+        let result = commit(move |_| {
+            Ok(Cmd::RunSetStatus { run_id: run_id_c, status: RunStatus::Cancelled, now })
+        }, run_id.clone()).await;
+        if let CommitResult::Err(e) = result { return err_from_str(&e); }
+    }
+
+    let mut released = false;
+    for tile in &worker_tiles {
+        if let Some(session) = crate::lookup_live(tile) {
+            crate::kill_session(&session);
+            released = true;
+        }
+    }
+    if released {
+        tokio::time::sleep(Duration::from_millis(SESSION_RELEASE_SETTLE_MS)).await;
+    }
+
+    let clean: Value = serde_json::from_str(&handle_worktree_clean(body).await).unwrap_or_default();
+    let kept = clean.get("kept").cloned().unwrap_or_else(|| serde_json::json!([]));
+
+    {
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = remove_run_dir(&base, &run_id) {
+            return err_resp("io", &e);
+        }
+        guard.runs.remove(&run_id);
+    }
+    notifies().lock().unwrap_or_else(|e| e.into_inner()).remove(&run_id);
+    crate::ui::broadcast_orch_changed(&run_id);
+    ok_resp(serde_json::json!({ "kept": kept }))
 }
 
 async fn handle_run_update(body: &[u8]) -> String {

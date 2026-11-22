@@ -20,6 +20,15 @@ pub fn ensure_run_dir(base: &Path, run_id: &str) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create run dir: {e}"))
 }
 
+pub fn remove_run_dir(base: &Path, run_id: &str) -> Result<(), String> {
+    let dir = base.join("orch").join("runs").join(run_id);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove run dir: {e}")),
+    }
+}
+
 pub fn append_event(path: &Path, record: &EventRecord) -> Result<(), String> {
     let line = serde_json::to_string(record).map_err(|e| format!("serialize: {e}"))?;
     let mut file = std::fs::OpenOptions::new()
@@ -103,6 +112,20 @@ mod tests {
                 "now": 1000000
             }),
         }
+    }
+
+    #[test]
+    fn removed_run_does_not_reload() {
+        let dir = tmp_dir("remove");
+        ensure_run_dir(&dir, "r1").unwrap();
+        let path = run_events_path(&dir, "r1");
+        append_event(&path, &run_create_record(1)).unwrap();
+        remove_run_dir(&dir, "r1").unwrap();
+        remove_run_dir(&dir, "r1").unwrap();
+        let mut state = State::default();
+        load_into(&mut state, &path, "r1");
+        assert!(!state.runs.contains_key("r1"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

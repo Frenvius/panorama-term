@@ -14,6 +14,12 @@ export const setProjectLastBoard = (cwd: string, runId: string): void => {
 
 export const getProjectLastBoard = (cwd: string): string | undefined => projectLastBoard.get(normalizeRepo(cwd));
 
+export const forgetProjectBoard = (runId: string): void => {
+  for (const [key, id] of projectLastBoard) {
+    if (id === runId) projectLastBoard.delete(key);
+  }
+};
+
 export interface ShowWorkerRequest {
   tileId: string;
   cwd: string;

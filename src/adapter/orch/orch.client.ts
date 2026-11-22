@@ -111,6 +111,9 @@ export const updateRun = (runId: string, title: string): Promise<void> =>
 export const setRunStatus = (runId: string, status: string): Promise<void> =>
   post('run-set-status', { runId, status }).then(() => undefined);
 
+export const deleteRun = (runId: string): Promise<{ kept: { path: string; reason: string }[] }> =>
+  post('run-delete', { runId });
+
 export const setRunCoordinator = (runId: string, tileId: string | null): Promise<void> =>
   post('run-set-coordinator', { runId, tileId }).then(() => undefined);
 

@@ -1,12 +1,12 @@
 import type { Dispatch, Run, RunSummary, CostEntry } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { ChevronDown, Pause, Play, Plus, X } from 'lucide-react';
+import { X, Play, Plus, Pause, Trash2, ChevronDown } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { formatDuration, totalCost } from '~/usecase/util/orch';
-import { setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
-import { setRunCoordinator, setRunStatus, updateRun } from '~/adapter/orch/orch.client';
+import { forgetProjectBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { deleteRun, setRunCoordinator, setRunStatus, updateRun } from '~/adapter/orch/orch.client';
 
 interface BoardHeaderProps {
   run: Run;
@@ -25,7 +25,7 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
   const [renaming, setRenaming] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState('');
-  const [confirmClose, setConfirmClose] = React.useState(false);
+  const [confirming, setConfirming] = React.useState<'close' | 'delete' | null>(null);
   const [headerError, setHeaderError] = React.useState<string | null>(null);
   const [breakdownOpen, setBreakdownOpen] = React.useState(false);
 
@@ -116,14 +116,32 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
       .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
   };
 
-  const handleCloseClick = () => setConfirmClose(true);
-  const handleCloseCancel = () => setConfirmClose(false);
+  const handleCloseClick = () => {
+    if (canPauseResume) {
+      setConfirming('close');
+      return;
+    }
+    onPatchOrchTile({ runId: '' });
+  };
 
-  const handleCloseConfirm = () => {
+  const handleDeleteClick = () => setConfirming('delete');
+  const handleConfirmCancel = () => setConfirming(null);
+
+  const closeRun = () =>
+    setRunStatus(run.id, 'cancelled').then(() => onPatchOrchTile({ runId: '' }));
+
+  const removeRun = () =>
+    deleteRun(run.id).then(() => {
+      forgetProjectBoard(run.id);
+      onPatchOrchTile({ runId: '' });
+    });
+
+  const handleConfirm = () => {
     setHeaderError(null);
-    setRunStatus(run.id, 'cancelled')
-      .then(() => onPatchOrchTile({ runId: '' }))
-      .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
+    const action = confirming === 'delete' ? removeRun : closeRun;
+    action()
+      .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setConfirming(null));
   };
 
   const handleDetachCoordinator = () => {
@@ -244,7 +262,7 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
           )}
         </div>
 
-        {!confirmClose && (
+        {!confirming && (
           <div className={styles.headerActions}>
             {!renaming && (
               <button type="button" className={styles.headerBtn} title="Rename" onClick={handleRenameStart}>
@@ -260,25 +278,34 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
                 )}
               </button>
             )}
-            {canPauseResume && (
-              <button
-                type="button"
-                title="Close board (cancels queued and running tasks)"
-                className={`${styles.headerBtn} ${styles.headerBtnDanger}`}
-                onClick={handleCloseClick}
-              >
-                <X size={11} strokeWidth={2} />
-                Close
-              </button>
-            )}
+            <button
+              type="button"
+              title={canPauseResume ? 'Close board (cancels queued and running tasks)' : 'Close board'}
+              className={`${styles.headerBtn} ${styles.headerBtnDanger}`}
+              onClick={handleCloseClick}
+            >
+              <X size={11} strokeWidth={2} />
+              Close
+            </button>
+            <button
+              type="button"
+              title="Delete board and its history"
+              className={`${styles.headerBtn} ${styles.headerBtnDanger}`}
+              onClick={handleDeleteClick}
+            >
+              <Trash2 size={11} strokeWidth={2} />
+              Delete
+            </button>
           </div>
         )}
 
-        {confirmClose && (
+        {confirming && (
           <div className={styles.confirmClose}>
-            <span className={styles.confirmMsg}>Close board?</span>
-            <button type="button" className={`${styles.headerBtn} ${styles.headerBtnDanger}`} onClick={handleCloseConfirm}>Yes</button>
-            <button type="button" className={styles.headerBtn} onClick={handleCloseCancel}>No</button>
+            <span className={styles.confirmMsg}>
+              {confirming === 'delete' ? 'Delete board? This cannot be undone.' : 'Close board?'}
+            </span>
+            <button type="button" className={`${styles.headerBtn} ${styles.headerBtnDanger}`} onClick={handleConfirm}>Yes</button>
+            <button type="button" className={styles.headerBtn} onClick={handleConfirmCancel}>No</button>
           </div>
         )}
       </div>
