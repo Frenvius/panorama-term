@@ -5,6 +5,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::jwt;
+use super::cli_login::CliLogin;
 use super::{ApiError, Account, AccountRec, Service};
 
 const B64_PREFIX: &str = "go-keyring-base64:";
@@ -24,6 +25,7 @@ pub enum PendingState {
 pub struct Pending {
     pub previous: Option<Vec<u8>>,
     pub state: PendingState,
+    pub login: Option<CliLogin>,
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
@@ -149,7 +151,7 @@ impl Service {
     pub fn agy_add_start(&self) -> Result<(String, &'static str), ApiError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.retain(|_, p| matches!(p.state, PendingState::Waiting));
-        if !pending.is_empty() {
+        if pending.values().any(|p| p.login.is_none()) {
             return Err(err("busy", "another login is already in progress"));
         }
         let live = self.io.live_get().map_err(io_err)?;
@@ -158,7 +160,7 @@ impl Service {
         }
         self.io.live_delete().map_err(io_err)?;
         let id = super::new_id();
-        pending.insert(id.clone(), Pending { previous: live, state: PendingState::Waiting });
+        pending.insert(id.clone(), Pending { previous: live, state: PendingState::Waiting, login: None });
         Ok((id, "agy"))
     }
 
@@ -182,6 +184,9 @@ impl Service {
         };
         if !matches!(p.state, PendingState::Waiting) {
             return false;
+        }
+        if let Some(login) = p.login.clone() {
+            return self.cli_poll(p, &login, timed_out);
         }
         let live = self.io.live_get().ok().flatten();
         let ident = live.as_deref().and_then(identity);
@@ -219,7 +224,9 @@ impl Service {
     pub fn agy_add_cancel(&self, pending_id: &str) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = pending.remove(pending_id) {
-            if matches!(p.state, PendingState::Waiting) {
+            if let Some(login) = &p.login {
+                self.cli_cancel(&p, login);
+            } else if matches!(p.state, PendingState::Waiting) {
                 self.restore_previous(&p.previous);
             }
         }

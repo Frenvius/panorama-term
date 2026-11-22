@@ -1665,7 +1665,7 @@ fn status_from_session_json(raw: &str, agent_id: &str) -> Option<String> {
     v.get("status").and_then(|s| s.as_str()).map(|s| s.to_string())
 }
 
-fn read_session_status(agent_id: &str, cached: &mut Option<PathBuf>) -> Option<String> {
+fn read_session_status(agent_id: &str, claude_dir: Option<PathBuf>, cached: &mut Option<PathBuf>) -> Option<String> {
     let matches = |path: &Path| -> Option<String> {
         let raw = std::fs::read_to_string(path).ok()?;
         status_from_session_json(&raw, agent_id)
@@ -1676,7 +1676,7 @@ fn read_session_status(agent_id: &str, cached: &mut Option<PathBuf>) -> Option<S
         }
         *cached = None;
     }
-    let dir = claude_home()?.join("sessions");
+    let dir = claude_dir.or_else(claude_home)?.join("sessions");
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -1871,7 +1871,7 @@ impl ClaudeTracker {
         }
         self.tail();
         if let Some(id) = self.agent_id.clone() {
-            if let Some(status) = read_session_status(&id, &mut self.status_path) {
+            if let Some(status) = read_session_status(&id, accounts::claude_dir_for_tile(tile_id), &mut self.status_path) {
                 self.status = Some(status);
             }
         }
@@ -3785,6 +3785,7 @@ fn spawn_session(
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
     env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
     env.push(("PANORAMA_CLI".into(), panorama_cli_path()));
+    env.extend(accounts::tile_env(&p.tile_id));
     for (k, v) in &p.extra_env {
         env.push((k.clone(), v.clone()));
     }
