@@ -6,6 +6,7 @@ import OrchChip from './OrchChip';
 import Suggest from './Suggest';
 import Subagents from './Subagents';
 import ModelMenu from './ModelMenu';
+import AccountMenu from './AccountMenu';
 import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import OrchToggle from './OrchToggle';
@@ -1355,6 +1356,9 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
                   </button>
                 )}
                 {agentType === 'claude' && <OrchChip tileId={tileId} />}
+                {(agentType === 'claude' || agentType === 'codex' || agentType === 'antigravity') && (
+                  <AccountMenu tileId={tileId} agent={agentType} />
+                )}
                 {(parsed.progress != null || structured?.costUsd != null) && (
                   <span className={styles.meter}>
                     {structured?.costUsd != null && (

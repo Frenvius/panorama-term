@@ -16,10 +16,21 @@ fn read_json(path: PathBuf) -> Result<Value, String> {
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
 
-fn claude_request() -> Result<Vec<(&'static str, String)>, String> {
-    let dir = std::env::var("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .ok()
+fn account_dir(provider: &str, account_id: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(id) = account_id.filter(|id| *id != "system") else {
+        return Ok(None);
+    };
+    let valid = (1..=32).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    if !valid {
+        return Err("invalid account id".into());
+    }
+    let base = crate::panorama_base_dir().ok_or("signed-out")?;
+    Ok(Some(base.join("accounts").join(provider).join(id)))
+}
+
+fn claude_request(dir: Option<PathBuf>) -> Result<Vec<(&'static str, String)>, String> {
+    let dir = dir
+        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").map(PathBuf::from).ok())
         .or_else(|| home().map(|h| h.join(".claude")))
         .ok_or("signed-out")?;
     let creds = read_json(dir.join(".credentials.json"))?;
@@ -31,10 +42,9 @@ fn claude_request() -> Result<Vec<(&'static str, String)>, String> {
     ])
 }
 
-fn codex_request() -> Result<Vec<(&'static str, String)>, String> {
-    let dir = std::env::var("CODEX_HOME")
-        .map(PathBuf::from)
-        .ok()
+fn codex_request(dir: Option<PathBuf>) -> Result<Vec<(&'static str, String)>, String> {
+    let dir = dir
+        .or_else(|| std::env::var("CODEX_HOME").map(PathBuf::from).ok())
         .or_else(|| home().map(|h| h.join(".codex")))
         .ok_or("signed-out")?;
     let auth = read_json(dir.join("auth.json"))?;
@@ -119,15 +129,21 @@ fn extra_ca_certs() -> Vec<reqwest::Certificate> {
 }
 
 #[tauri::command]
-pub async fn agent_usage(provider: String) -> Result<Value, String> {
+pub async fn agent_usage(provider: String, account_id: Option<String>) -> Result<Value, String> {
     if provider == "antigravity" {
         return tauri::async_runtime::spawn_blocking(antigravity_usage)
             .await
             .map_err(|e| e.to_string())?;
     }
     let (url, headers) = match provider.as_str() {
-        "claude" => ("https://api.anthropic.com/api/oauth/usage", claude_request()?),
-        "codex" => ("https://chatgpt.com/backend-api/wham/usage", codex_request()?),
+        "claude" => (
+            "https://api.anthropic.com/api/oauth/usage",
+            claude_request(account_dir("claude", account_id.as_deref())?)?,
+        ),
+        "codex" => (
+            "https://chatgpt.com/backend-api/wham/usage",
+            codex_request(account_dir("codex", account_id.as_deref())?)?,
+        ),
         _ => return Err(format!("unknown provider {provider}")),
     };
     if rustls::crypto::CryptoProvider::get_default().is_none() {

@@ -6,6 +6,7 @@ export type SettingsSection =
   | 'terminal'
   | 'notifications'
   | 'agents'
+  | 'accounts'
   | 'orchestration'
   | 'aiActions'
   | 'devices'
@@ -21,6 +22,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; group: Set
   { id: 'terminal', label: 'Terminal', group: 'WORKSPACE' },
   { id: 'notifications', label: 'Notifications', group: 'WORKSPACE' },
   { id: 'agents', label: 'Agents', group: 'AGENTS' },
+  { id: 'accounts', label: 'Accounts', group: 'AGENTS' },
   { id: 'orchestration', label: 'Orchestration', group: 'AGENTS' },
   { id: 'aiActions', label: 'AI actions', group: 'AGENTS' },
   { id: 'devices', label: 'Devices', group: 'CONNECTIONS' },
@@ -56,6 +58,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { id: 'agents.modelPicker', section: 'agents', label: 'Model providers', keywords: ['provider', 'model'] },
   { id: 'agents.usage', section: 'agents', label: 'Status bar usage', keywords: ['usage', 'limit', 'quota', 'status bar'] },
   { id: 'agents.idleCompaction', section: 'agents', label: 'Idle compaction', keywords: ['compact', 'idle', 'claude'] },
+  { id: 'accounts.list', section: 'accounts', label: 'Agent accounts', keywords: ['account', 'login', 'claude', 'codex', 'antigravity', 'switch'] },
   { id: 'orchestration.workerTiles', section: 'orchestration', label: 'Open worker tiles automatically', keywords: ['worker', 'tiles'] },
   { id: 'orchestration.hint', section: 'orchestration', label: 'Orchestrate hint', keywords: ['hint', 'orchestration', 'auto', 'suggest'] },
   { id: 'orchestration.roles', section: 'orchestration', label: 'Role chains', keywords: ['role', 'chain', 'model'] },

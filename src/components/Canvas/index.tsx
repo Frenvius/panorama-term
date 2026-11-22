@@ -44,6 +44,8 @@ import { getAlerts, setAlert, clearAlert, subscribeAlerts } from '~/usecase/util
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isCapturing, getBinding, formatCombo, matchCommand, type CommandId } from '~/usecase/util/keybindings';
 import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, requestPreview } from '~/usecase/util/dirtyFiles';
+import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
+import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { tileBoardProject, projectBoards } from '~/usecase/util/boardProject';
@@ -187,8 +189,12 @@ const Canvas = () => {
       }
       setNewBoard({ repo: projectRootPath(repo), nearTileId: tileId });
     });
-    return () => { unsubBoard(); unsubWorker(); unsubNewBoard(); };
-  }, [addOrchBoard]);
+    const unsubOpenTerm = onOpenTerminalRequest(({ tileId, cwd, command }) => {
+      requestTileRestartOnMount(tileId, command);
+      openRemoteTile(tileId, cwd ?? '');
+    });
+    return () => { unsubBoard(); unsubWorker(); unsubNewBoard(); unsubOpenTerm(); };
+  }, [addOrchBoard, openRemoteTile]);
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);

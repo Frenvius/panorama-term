@@ -33,6 +33,7 @@ mod scroll_store;
 mod search;
 mod run_commands;
 mod orch;
+mod accounts;
 
 enum ConsumerMsg {
     Data(u64, Vec<u8>),
@@ -496,6 +497,7 @@ pub async fn brain_main() {
     install_pi_extension();
     install_kimi_statusline();
     install_agy_hooks();
+    install_codex_shims();
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
@@ -1663,7 +1665,7 @@ fn status_from_session_json(raw: &str, agent_id: &str) -> Option<String> {
     v.get("status").and_then(|s| s.as_str()).map(|s| s.to_string())
 }
 
-fn read_session_status(agent_id: &str, cached: &mut Option<PathBuf>) -> Option<String> {
+fn read_session_status(agent_id: &str, claude_dir: Option<PathBuf>, cached: &mut Option<PathBuf>) -> Option<String> {
     let matches = |path: &Path| -> Option<String> {
         let raw = std::fs::read_to_string(path).ok()?;
         status_from_session_json(&raw, agent_id)
@@ -1674,7 +1676,7 @@ fn read_session_status(agent_id: &str, cached: &mut Option<PathBuf>) -> Option<S
         }
         *cached = None;
     }
-    let dir = claude_home()?.join("sessions");
+    let dir = claude_dir.or_else(claude_home)?.join("sessions");
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -1869,7 +1871,7 @@ impl ClaudeTracker {
         }
         self.tail();
         if let Some(id) = self.agent_id.clone() {
-            if let Some(status) = read_session_status(&id, &mut self.status_path) {
+            if let Some(status) = read_session_status(&id, accounts::claude_dir_for_tile(tile_id), &mut self.status_path) {
                 self.status = Some(status);
             }
         }
@@ -2473,36 +2475,49 @@ fn original_codex(wrapper_dir: &Path) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn codex_wrapper() -> Option<(PathBuf, String)> {
-    let wrapper = panorama_dir()?.join("bin").join("codex.cmd");
-    let original = original_codex(wrapper.parent()?)?;
-    let exe = hook_exe()?;
-    let body = format!("@echo off\r\n\"{}\" codex-launch %*\r\nexit /b %ERRORLEVEL%\r\n", exe.display());
-    let ps_wrapper = wrapper.with_extension("ps1");
-    let ps_body = format!("& '{}' codex-launch @args\r\n", exe.display().to_string().replace('\'', "''"));
-    std::fs::create_dir_all(wrapper.parent()?).ok()?;
-    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
-        std::fs::write(&wrapper, body).ok()?;
-    }
-    if std::fs::read_to_string(&ps_wrapper).ok().as_deref() != Some(ps_body.as_str()) {
-        std::fs::write(&ps_wrapper, ps_body).ok()?;
-    }
-    Some((wrapper.parent()?.to_path_buf(), original))
+fn codex_shim_files() -> [(&'static str, &'static str); 2] {
+    [
+        ("codex.cmd", "@echo off
+\"%PANORAMA_CLI%\" codex-launch %*
+exit /b %ERRORLEVEL%
+"),
+        ("codex.ps1", "& $env:PANORAMA_CLI codex-launch @args
+exit $LASTEXITCODE
+"),
+    ]
 }
 
 #[cfg(not(windows))]
-fn codex_wrapper() -> Option<(PathBuf, String)> {
-    use std::os::unix::fs::PermissionsExt;
-    let wrapper = panorama_dir()?.join("bin").join("codex");
-    let original = original_codex(wrapper.parent()?)?;
-    let exe = hook_exe()?;
-    let body = format!("#!/bin/sh\nexec \"{}\" codex-launch \"$@\"\n", exe.display());
-    std::fs::create_dir_all(wrapper.parent()?).ok()?;
-    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(body.as_str()) {
-        std::fs::write(&wrapper, body).ok()?;
+fn codex_shim_files() -> [(&'static str, &'static str); 1] {
+    [("codex", "#!/bin/sh
+exec \"$PANORAMA_CLI\" codex-launch \"$@\"
+")]
+}
+
+fn install_codex_shims() {
+    let Some(dir) = panorama_dir().map(|d| d.join("bin")) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
     }
-    let _ = std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755));
-    Some((wrapper.parent()?.to_path_buf(), original))
+    for (name, body) in codex_shim_files() {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
+            let _ = std::fs::write(&path, body);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+fn codex_wrapper() -> Option<(PathBuf, String)> {
+    let dir = panorama_dir()?.join("bin");
+    let original = original_codex(&dir)?;
+    Some((dir, original))
 }
 
 fn codex_launch_args(args: &[String], hook_exe: &Path) -> Vec<String> {
@@ -3770,6 +3785,7 @@ fn spawn_session(
     env.push(("PANORAMA_TILE_ID".into(), p.tile_id.clone()));
     env.push(("PANORAMA_SIDECAR_PORT".into(), port().to_string()));
     env.push(("PANORAMA_CLI".into(), panorama_cli_path()));
+    env.extend(accounts::tile_env(&p.tile_id));
     for (k, v) in &p.extra_env {
         env.push((k.clone(), v.clone()));
     }
@@ -5635,6 +5651,31 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
+    if let Some(cmd) = path_only.strip_prefix("/accounts/") {
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if len > 1024 * 1024 {
+            let r = "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(r.as_bytes()).await;
+            return;
+        }
+        let mut req_body = vec![0u8; len];
+        if len > 0 {
+            let _ = stream.read_exact(&mut req_body).await;
+        }
+        let resp_body = accounts::handle(cmd, &req_body).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            mobile::cors_origin(origin),
+            resp_body.len(),
+            resp_body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
     if let Some(cmd) = path_only.strip_prefix("/orch/") {
         let len = headers
             .get("content-length")
@@ -5701,12 +5742,22 @@ fn restore_ctrl_c() {
 #[cfg(test)]
 mod tests {
     use super::{
+        codex_shim_files,
         dim, resize_parser, view_shift, AtomicUsize,
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
         codex_hook_state, codex_launch_args, history, is_launchable, original_codex, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
         strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
         SCROLLBACK_LINES, render_disk_row, DEFAULT_FG,
     };
+
+    #[test]
+    fn codex_shims_use_cli_env() {
+        for (_, body) in codex_shim_files() {
+            assert!(body.contains("PANORAMA_CLI"));
+            assert!(body.contains("codex-launch"));
+            assert!(!body.contains("runtime"));
+        }
+    }
 
     #[test]
     fn query_size_uses_valid_values_and_defaults() {
