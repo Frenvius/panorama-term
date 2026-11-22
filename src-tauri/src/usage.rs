@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -50,8 +51,66 @@ fn codex_request() -> Result<Vec<(&'static str, String)>, String> {
     Ok(headers)
 }
 
+const AGY_MIN_VERSION: [u32; 3] = [1, 1, 11];
+
+static AGY_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+
+fn agy_command() -> std::process::Command {
+    let mut cmd = crate::hidden_command("agy");
+    cmd.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    if let Some(h) = home() {
+        cmd.current_dir(h);
+    }
+    cmd
+}
+
+fn parse_version(raw: &str) -> Option<[u32; 3]> {
+    let token = raw.split_whitespace().find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    let mut parts = token.split('.').map(|p| p.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok());
+    Some([parts.next()??, parts.next().flatten().unwrap_or(0), parts.next().flatten().unwrap_or(0)])
+}
+
+fn agy_usage_result(stdout: &str) -> Result<Value, String> {
+    let line = stdout.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("no usage output")?;
+    let json: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    if json["status"] != "SUCCESS" {
+        return Err(json["error"].as_str().unwrap_or("usage failed").to_string());
+    }
+    if json["command"]["name"] != "usage" || !json["command"]["data"]["groups"].is_array() {
+        AGY_UNSUPPORTED.store(true, Ordering::Relaxed);
+        return Err("unsupported".into());
+    }
+    Ok(json["command"]["data"].clone())
+}
+
+fn antigravity_usage() -> Result<Value, String> {
+    if AGY_UNSUPPORTED.load(Ordering::Relaxed) {
+        return Err("unsupported".into());
+    }
+    let version = agy_command().arg("--version").output().map_err(|_| "not-installed".to_string())?;
+    let version = parse_version(&String::from_utf8_lossy(&version.stdout)).ok_or("not-installed")?;
+    if version < AGY_MIN_VERSION {
+        return Err("unsupported".into());
+    }
+    let out = agy_command()
+        .args(["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    if stderr.contains("sign in") || stderr.contains("login") || stderr.contains("not authenticated") {
+        return Err("signed-out".into());
+    }
+    agy_usage_result(&stdout)
+}
+
 #[tauri::command]
 pub async fn agent_usage(provider: String) -> Result<Value, String> {
+    if provider == "antigravity" {
+        return tauri::async_runtime::spawn_blocking(antigravity_usage)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let (url, headers) = match provider.as_str() {
         "claude" => ("https://api.anthropic.com/api/oauth/usage", claude_request()?),
         "codex" => ("https://chatgpt.com/backend-api/wham/usage", codex_request()?),
@@ -78,4 +137,25 @@ pub async fn agent_usage(provider: String) -> Result<Value, String> {
     }
     let body = res.text().await.map_err(|e| e.to_string())?;
     serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_agy_version() {
+        assert_eq!(parse_version("1.5.14
+"), Some([1, 5, 14]));
+        assert_eq!(parse_version("agy 1.1"), Some([1, 1, 0]));
+        assert!(parse_version("").is_none());
+    }
+
+    #[test]
+    fn reads_usage_command_data() {
+        let ok = r#"{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[]}}}"#;
+        assert_eq!(agy_usage_result(ok).unwrap()["groups"], serde_json::json!([]));
+        let failed = r#"{"status":"ERROR","error":"boom"}"#;
+        assert_eq!(agy_usage_result(failed).unwrap_err(), "boom");
+    }
 }

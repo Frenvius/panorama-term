@@ -38,7 +38,7 @@ export const FRAME_BAR_SPACE = 28;
 export const REORDER_MODE_KEY = 'reorderMode';
 export const STATUS_BAR_USAGE_KEY = 'statusBarUsage';
 export const IDLE_COMPACTION_KEY = 'claudeIdleCompaction';
-export const USAGE_PROVIDERS: UsageProvider[] = ['claude', 'codex'];
+export const USAGE_PROVIDERS: UsageProvider[] = ['claude', 'codex', 'antigravity'];
 
 export const CULL_MARGIN = 400;
 export const MIN_LIVE_WIDTH = 260;

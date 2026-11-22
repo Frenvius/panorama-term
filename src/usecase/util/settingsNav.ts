@@ -54,6 +54,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { id: 'notifications.corner', section: 'notifications', label: 'Toast position', keywords: ['notification', 'toast', 'corner'] },
   { id: 'notifications.display', section: 'notifications', label: 'Toast display', keywords: ['notification', 'monitor', 'display'] },
   { id: 'agents.modelPicker', section: 'agents', label: 'Model providers', keywords: ['provider', 'model'] },
+  { id: 'agents.usage', section: 'agents', label: 'Status bar usage', keywords: ['usage', 'limit', 'quota', 'status bar'] },
   { id: 'agents.idleCompaction', section: 'agents', label: 'Idle compaction', keywords: ['compact', 'idle', 'claude'] },
   { id: 'orchestration.workerTiles', section: 'orchestration', label: 'Open worker tiles automatically', keywords: ['worker', 'tiles'] },
   { id: 'orchestration.hint', section: 'orchestration', label: 'Orchestrate hint', keywords: ['hint', 'orchestration', 'auto', 'suggest'] },

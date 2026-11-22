@@ -9,7 +9,8 @@ import { HEADER_PARTS_KEY, HEADER_PARTS_EVENT } from '~/usecase/util/headerParts
 import { AGENT_PROVIDERS_KEY, getSeenProviders } from '~/usecase/util/agentProviders';
 import { BUILTIN_THEME, setThemeChoice, setThemePref } from '~/usecase/util/theme';
 import { orchSettingsActions } from '~/usecase/hooks/useOrchSettings';
-import { MAX_ZOOM_KEY, FRAME_PAD_KEY, FRAME_PAD_DEFAULT, REORDER_MODE_KEY, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import { setUsageProviders } from '~/usecase/hooks/useUsageProviders';
+import { MAX_ZOOM_KEY, FRAME_PAD_KEY, FRAME_PAD_DEFAULT, REORDER_MODE_KEY, USAGE_PROVIDERS, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 
 export const resetCanvas = (): void => {
   void setSetting(MAX_ZOOM_KEY, 1);
@@ -42,6 +43,7 @@ export const resetNotifications = (): void => {
 export const resetAgents = (): void => {
   void setSetting(AGENT_PROVIDERS_KEY, { seen: getSeenProviders(), hidden: [] });
   void setSetting(IDLE_COMPACTION_KEY, true);
+  setUsageProviders(USAGE_PROVIDERS);
 };
 
 export const resetOrchestration = (): void => {

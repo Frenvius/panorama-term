@@ -1,17 +1,23 @@
-import type { ProviderUsage, UsageProvider } from '~/domain/interfaces/usage.interface';
+import type { UsageWindow, ProviderUsage, UsageProvider } from '~/domain/interfaces/usage.interface';
 
 import React from 'react';
 
 import { USAGE_PROVIDERS } from '~/usecase/util/constants';
 import { fetchAgentUsage } from '~/adapter/usage/usage.client';
-import { codexUsageConverter, claudeUsageConverter } from '~/usecase/converter/usage.converter';
+import { codexUsageConverter, claudeUsageConverter, antigravityUsageConverter } from '~/usecase/converter/usage.converter';
 
 const POLL_MS = 300000;
+
+const CONVERTERS: Record<UsageProvider, (data: any) => UsageWindow[]> = {
+  claude: claudeUsageConverter,
+  codex: codexUsageConverter,
+  antigravity: antigravityUsageConverter
+};
 
 const load = async (provider: UsageProvider): Promise<ProviderUsage> => {
   try {
     const data = await fetchAgentUsage(provider);
-    const windows = provider === 'claude' ? claudeUsageConverter(data) : codexUsageConverter(data);
+    const windows = CONVERTERS[provider](data);
     return { windows, provider, error: null };
   } catch (e) {
     return { provider, windows: [], error: String(e) };

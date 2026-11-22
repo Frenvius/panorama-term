@@ -1,9 +1,8 @@
 import type { ProviderUsage } from '~/domain/interfaces/usage.interface';
 
-import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { CodexLogo } from '~/components/commons/AgentIcons';
 import UsageBar from '~/components/commons/StatusBar/UsageBar';
-import { formatReset, WINDOW_TITLES, PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
+import UsageLogo from '~/components/commons/StatusBar/UsageLogo';
+import { ERROR_TEXT, formatReset, WINDOW_TITLES, PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
 
 import styles from './styles.module.scss';
 
@@ -14,14 +13,14 @@ interface UsageDetailsProps {
 const UsageDetails = ({ usage }: UsageDetailsProps) => (
   <div className={styles.panel}>
     <div className={styles.heading}>
-      {usage.provider === 'claude' ? <ClaudeLogo size={14} /> : <CodexLogo size={14} />}
+      <UsageLogo provider={usage.provider} size={14} />
       {PROVIDER_NAMES[usage.provider]}
     </div>
-    {usage.error && <div className={styles.error}>{usage.error === 'signed-out' ? 'Sign in to see usage' : usage.error}</div>}
+    {usage.error && <div className={styles.error}>{ERROR_TEXT[usage.error] ?? usage.error}</div>}
     {usage.windows.map((w) => (
       <div key={w.key} className={styles.row}>
         <div className={styles.rowHead}>
-          <span>{WINDOW_TITLES[w.key] ?? w.label}</span>
+          <span>{w.title ?? WINDOW_TITLES[w.key] ?? w.label}</span>
           <span className={styles.value}>{Math.round(w.used)}% used</span>
         </div>
         <UsageBar wide used={w.used} />

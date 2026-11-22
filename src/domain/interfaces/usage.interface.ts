@@ -1,9 +1,10 @@
-export type UsageProvider = 'codex' | 'claude';
+export type UsageProvider = 'codex' | 'claude' | 'antigravity';
 
 export interface UsageWindow {
   key: string;
   used: number;
   label: string;
+  title?: string;
   resetsAt: number | null;
 }
 

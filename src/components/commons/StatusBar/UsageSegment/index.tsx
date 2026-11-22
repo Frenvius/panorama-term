@@ -2,9 +2,8 @@ import type { UsageWindow, ProviderUsage } from '~/domain/interfaces/usage.inter
 
 import React from 'react';
 
-import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { CodexLogo } from '~/components/commons/AgentIcons';
 import UsageBar from '~/components/commons/StatusBar/UsageBar';
+import UsageLogo from '~/components/commons/StatusBar/UsageLogo';
 import UsageDetails from '~/components/commons/StatusBar/UsageDetails';
 import { formatLeft, CLOSE_DELAY } from '~/components/commons/StatusBar/constants';
 
@@ -35,7 +34,7 @@ const UsageSegment = ({ usage }: UsageSegmentProps) => {
   return (
     <span className={styles.segment} onPointerEnter={openDetails} onPointerLeave={closeDetails}>
       {open && <UsageDetails usage={usage} />}
-      {usage.provider === 'claude' ? <ClaudeLogo size={12} /> : <CodexLogo size={12} />}
+      <UsageLogo provider={usage.provider} size={12} />
       {tightest && <UsageBar used={tightest.used} />}
       {usage.windows.map((w, i) => (
         <React.Fragment key={w.key}>

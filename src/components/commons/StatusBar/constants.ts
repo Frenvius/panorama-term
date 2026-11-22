@@ -1,6 +1,11 @@
 export const CLOSE_DELAY = 120;
 
-export const PROVIDER_NAMES = { codex: 'Codex', claude: 'Claude' };
+export const PROVIDER_NAMES = { codex: 'Codex', claude: 'Claude', antigravity: 'Antigravity' };
+
+export const ERROR_TEXT: Record<string, string> = {
+  'signed-out': 'Sign in to see usage',
+  unsupported: 'Update the CLI to see usage'
+};
 
 export const WINDOW_TITLES: Record<string, string> = { weekly: 'Weekly', session: 'Session', fable: 'Fable weekly' };
 

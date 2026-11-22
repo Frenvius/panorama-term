@@ -40,3 +40,32 @@ export const codexUsageConverter = (data: Json): UsageWindow[] =>
       };
     })
     .sort((a, b) => (a.key === 'session' ? -1 : b.key === 'session' ? 1 : 0));
+
+const AGY_WINDOWS: Record<string, { key: string; label: string; title: string }> = {
+  '5h': { key: 'session', label: '5h', title: 'Session' },
+  weekly: { key: 'weekly', label: 'wk', title: 'Weekly' }
+};
+
+const poolName = (group: string) => group.replace(/\s+models$/i, '');
+
+export const antigravityUsageConverter = (data: Json): UsageWindow[] => {
+  const tightest = new Map<string, UsageWindow>();
+  for (const group of (data.groups as Json[] | undefined) ?? []) {
+    for (const bucket of (group?.buckets as Json[] | undefined) ?? []) {
+      const win = AGY_WINDOWS[bucket?.window];
+      if (!win || bucket.disabled || typeof bucket.remaining_fraction !== 'number') continue;
+      const used = clamp(Math.round((1 - bucket.remaining_fraction) * 100));
+      const prev = tightest.get(win.key);
+      if (prev && prev.used >= used) continue;
+      const resetsAt = toMs(bucket.reset_time);
+      tightest.set(win.key, {
+        used,
+        key: win.key,
+        label: win.label,
+        resetsAt: resetsAt && resetsAt > 0 ? resetsAt : null,
+        title: `${win.title} · ${poolName(String(group.name ?? ''))}`
+      });
+    }
+  }
+  return ['session', 'weekly'].map((k) => tightest.get(k)).filter((w): w is UsageWindow => w !== undefined);
+};

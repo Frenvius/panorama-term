@@ -1,7 +1,9 @@
 import React from 'react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
-import { IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import { USAGE_PROVIDERS, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
+import { PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
+import { useUsageProviders, toggleUsageProvider } from '~/usecase/hooks/useUsageProviders';
 import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/usecase/util/agentProviders';
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
@@ -11,6 +13,7 @@ const AgentsSection = () => {
   const [idleCompact, setIdleCompact] = React.useState(() => getSetting(IDLE_COMPACTION_KEY, true));
   const [providers] = React.useState(getSeenProviders);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
+  const usageProviders = useUsageProviders();
 
   const toggleIdleCompact = () => {
     const next = !idleCompact;
@@ -43,6 +46,21 @@ const AgentsSection = () => {
             );
           })
         )}
+      </Group>
+      <Group label="Status bar usage">
+        {USAGE_PROVIDERS.map((provider, i) => {
+          const handleToggle = () => toggleUsageProvider(provider);
+          return (
+            <Row
+              key={provider}
+              settingId={i === 0 ? 'agents.usage' : undefined}
+              label={PROVIDER_NAMES[provider]}
+              description="Show this provider's usage limits in the status bar."
+            >
+              <Switch checked={usageProviders.includes(provider)} onChange={handleToggle} label={PROVIDER_NAMES[provider]} />
+            </Row>
+          );
+        })}
       </Group>
       <Group label="Claude Code">
         <Row
