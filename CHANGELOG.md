@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.7]
+
+### Fixed
+- Claude usage in the status bar works when HTTPS traffic goes through a local proxy with its own CA (`NODE_EXTRA_CA_CERTS`).
+
 ## [0.4.6]
 
 ### Added
