@@ -495,6 +495,7 @@ pub async fn brain_main() {
     install_claude_mod();
     install_pi_extension();
     install_kimi_statusline();
+    install_agy_hooks();
     let listener = TcpListener::bind(("127.0.0.1", port()))
         .await
         .expect("bind sidecar port");
@@ -536,6 +537,10 @@ pub fn cli_main() {
     }
     if std::env::args().nth(1).as_deref() == Some("codex-hook") {
         codex_hook_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("agy-hook") {
+        agy_hook_cmd();
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("codex-launch") {
@@ -2142,13 +2147,14 @@ fn handle_agent_status(body: &[u8]) {
     };
     let from_mod = v.get("source").and_then(|s| s.as_str()) == Some("mod");
     let from_codex = v.get("source").and_then(|s| s.as_str()) == Some("codex-hook");
+    let from_agy = v.get("source").and_then(|s| s.as_str()) == Some("agy-hook");
     if from_codex && v["status"] == "waiting" {
         v.as_object_mut().map(|obj| obj.remove("status"));
     }
-    if from_mod || from_codex {
+    if from_mod || from_codex || from_agy {
         mobile::record_status(&tile_id, &v["status"]);
     }
-    let msg = if from_mod || from_codex {
+    let msg = if from_mod || from_codex || from_agy {
         agent_state_ws_msg(&v.to_string())
     } else if kimi {
         kimi_status_ws_msg(&v)
@@ -2164,9 +2170,10 @@ fn handle_agent_status(body: &[u8]) {
         if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()).filter(|_| from_mod) {
             *s.mod_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
         }
-        if from_codex {
+        if from_codex || from_agy {
+            let agent = if from_codex { "codex" } else { "antigravity" };
             if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()) {
-                bind_agent_session(&tile_id, &serde_json::json!({"agent":"codex","sessionId":id,"cwd":v.get("cwd")}).to_string());
+                bind_agent_session(&tile_id, &serde_json::json!({"agent":agent,"sessionId":id,"cwd":v.get("cwd")}).to_string());
             }
         }
         let prev_status = s.agent_state.lock().unwrap_or_else(|e| e.into_inner())
@@ -2226,6 +2233,17 @@ fn codex_hook_state(input: &serde_json::Value, tile_id: &str) -> Option<serde_js
     Some(state)
 }
 
+fn post_agent_hook(tile_id: &str, event: &str, body: &str) -> Option<std::net::TcpStream> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port()).parse().ok()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let path = format!("/agent-hook?tileId={tile_id}&event={event}");
+    let request = format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    stream.write_all(request.as_bytes()).ok()?;
+    Some(stream)
+}
+
 fn codex_hook_cmd() {
     let Some(tile_id) = std::env::var("PANORAMA_TILE_ID").ok().filter(|s| !s.is_empty()) else { return };
     let mut raw = String::new();
@@ -2242,14 +2260,7 @@ fn codex_hook_cmd() {
     };
     let mut event_input = input;
     event_input["agent"] = "codex".into();
-    let addr: std::net::SocketAddr = match format!("127.0.0.1:{}", port()).parse() { Ok(a) => a, Err(_) => return };
-    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) else { return };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let body = event_input.to_string();
-    let path = format!("/agent-hook?tileId={tile_id}&event={event}");
-    let request = format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-    if stream.write_all(request.as_bytes()).is_err() { return; }
+    let Some(mut stream) = post_agent_hook(&tile_id, event, &event_input.to_string()) else { return };
     if event == "prompt-submit" {
         let mut response = String::new();
         if stream.read_to_string(&mut response).is_ok() {
@@ -2264,6 +2275,166 @@ fn codex_hook_cmd() {
                 }
             }
         }
+    }
+}
+
+// agy may keep the hook's stdin open after writing the payload, so EOF never arrives.
+fn read_stdin_json_timeout(timeout: Duration) -> Option<serde_json::Value> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdin.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + timeout;
+    let mut raw = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok(chunk) => raw.extend_from_slice(&chunk),
+            Err(_) => return serde_json::from_slice(&raw).ok(),
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) {
+            return Some(v);
+        }
+    }
+}
+
+fn agy_hook_state(payload: &serde_json::Value, tile_id: &str) -> Option<serde_json::Value> {
+    let event = payload.get("hookEventName")?.as_str()?;
+    let status = match event {
+        "PreToolUse" => {
+            let tool_name = payload.get("toolCall").and_then(|t| t.get("name")).and_then(|n| n.as_str()).unwrap_or("");
+            if matches!(tool_name, "ask_question" | "ask_permission") { "waiting" } else { "busy" }
+        }
+        "PreInvocation" | "PostToolUse" | "PostInvocation" => "busy",
+        "Stop" if agy_fully_idle(payload) => "idle",
+        "Stop" => "busy",
+        _ => return None,
+    };
+    let mut state = serde_json::json!({
+        "source": "agy-hook",
+        "agent": "antigravity",
+        "tileId": tile_id,
+        "status": status,
+    });
+    if let Some(v) = payload.get("conversationId") { state["sessionId"] = v.clone(); }
+    if let Some(cwd) = agy_cwd(payload) { state["cwd"] = cwd.into(); }
+    if let Some(v) = payload.get("modelName") { state["model"] = v.clone(); }
+    Some(state)
+}
+
+// The interactive TUI can send an empty cwd; the first workspace path is the launch folder.
+fn agy_cwd(payload: &serde_json::Value) -> Option<String> {
+    payload.get("cwd").and_then(|v| v.as_str()).filter(|c| !c.is_empty())
+        .or_else(|| payload.get("workspacePaths").and_then(|w| w.get(0)).and_then(|v| v.as_str()))
+        .map(str::to_string)
+}
+
+// Stop with fullyIdle=false ends a step while helpers still run; it is not the end of the turn.
+fn agy_fully_idle(payload: &serde_json::Value) -> bool {
+    payload.get("fullyIdle").and_then(|v| v.as_bool()).unwrap_or(true)
+}
+
+fn agy_last_response(transcript_path: &str) -> String {
+    let Ok(raw) = std::fs::read_to_string(transcript_path) else { return String::new() };
+    raw.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|v| v["type"] == "PLANNER_RESPONSE" && v["content"].as_str().is_some_and(|c| !c.trim().is_empty()))
+        .and_then(|v| v["content"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn agy_event_body(payload: &serde_json::Value, event: &str) -> serde_json::Value {
+    let field = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut body = serde_json::json!({
+        "agent": "antigravity",
+        "session_id": field("conversationId"),
+        "cwd": agy_cwd(payload).unwrap_or_default(),
+        "prompt": field("lastUserInput"),
+    });
+    if event == "stop" {
+        body["last_assistant_message"] = agy_last_response(&field("transcriptPath")).into();
+    }
+    body
+}
+
+fn agy_hook_cmd() {
+    let Some(tile_id) = std::env::var("PANORAMA_TILE_ID").ok().filter(|s| !s.is_empty()) else { return };
+    let Some(payload) = read_stdin_json_timeout(Duration::from_secs(2)) else { return };
+    if let Some(state) = agy_hook_state(&payload, &tile_id) {
+        post_agent_status(&state.to_string());
+    }
+    let first_invocation = payload.get("invocationNum").and_then(|v| v.as_i64()) == Some(0);
+    let event = match payload.get("hookEventName").and_then(|v| v.as_str()) {
+        Some("PreInvocation") if first_invocation => "prompt-submit",
+        Some("Stop") if agy_fully_idle(&payload) => "stop",
+        _ => return,
+    };
+    post_agent_hook(&tile_id, event, &agy_event_body(&payload, event).to_string());
+}
+
+#[cfg(test)]
+mod agy_hook_tests {
+    use super::*;
+
+    fn mk(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        for (k, v) in pairs { m.insert(k.to_string(), v.clone()); }
+        serde_json::Value::Object(m)
+    }
+
+    fn status(payload: &serde_json::Value) -> Option<String> {
+        agy_hook_state(payload, "t1").and_then(|s| s.get("status").and_then(|v| v.as_str()).map(str::to_string))
+    }
+
+    #[test]
+    fn pre_invocation_is_busy() {
+        let p = mk(&[("hookEventName", "PreInvocation".into()), ("invocationNum", 0i64.into())]);
+        assert_eq!(status(&p).as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn pre_tool_use_ask_question_is_waiting() {
+        let tool = serde_json::json!({"name":"ask_question","id":"x","args":{}});
+        let p = mk(&[("hookEventName", "PreToolUse".into()), ("toolCall", tool)]);
+        assert_eq!(status(&p).as_deref(), Some("waiting"));
+    }
+
+    #[test]
+    fn pre_tool_use_other_is_busy() {
+        let tool = serde_json::json!({"name":"bash","id":"x","args":{}});
+        let p = mk(&[("hookEventName", "PreToolUse".into()), ("toolCall", tool)]);
+        assert_eq!(status(&p).as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn stop_fully_idle_is_idle() {
+        let p = mk(&[("hookEventName", "Stop".into()), ("fullyIdle", true.into())]);
+        assert_eq!(status(&p).as_deref(), Some("idle"));
+    }
+
+    #[test]
+    fn stop_not_fully_idle_is_busy() {
+        let p = mk(&[("hookEventName", "Stop".into()), ("fullyIdle", false.into())]);
+        assert_eq!(status(&p).as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn post_invocation_is_busy() {
+        let p = mk(&[("hookEventName", "PostInvocation".into())]);
+        assert_eq!(status(&p).as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn post_tool_use_is_busy() {
+        let p = mk(&[("hookEventName", "PostToolUse".into())]);
+        assert_eq!(status(&p).as_deref(), Some("busy"));
     }
 }
 
@@ -2541,7 +2712,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
 
     let mut payload = serde_json::json!({
         "v": 1,
-        "agent": if evt["agent"] == "codex" { "codex" } else { "claude" },
+        "agent": match evt["agent"].as_str() { Some("codex") => "codex", Some("antigravity") => "antigravity", _ => "claude" },
         "event": event,
         "session_id": field("session_id"),
         "cwd": cwd,
@@ -2555,6 +2726,7 @@ fn agent_event_body(event: &str, evt: &serde_json::Value) -> Option<serde_json::
                 std::thread::sleep(Duration::from_millis(300));
             }
             let (query, response) = transcript_last_texts(&field("transcript_path"));
+            let query = if query.is_empty() { sanitize_event_text(&field("prompt")) } else { query };
             let response = if last.trim().is_empty() { response } else { sanitize_event_text(&last) };
             obj.insert("query".into(), query.into());
             obj.insert("response".into(), response.into());
@@ -2646,7 +2818,7 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
         return restore_prompt(tile_id, &field("text"));
     }
     let event = if event == "session-start" {
-        let binding = serde_json::json!({ "agent": if evt["agent"] == "codex" { "codex" } else { "claude" }, "sessionId": field("session_id"), "cwd": evt.get("cwd") });
+        let binding = serde_json::json!({ "agent": match evt["agent"].as_str() { Some("codex") => "codex", Some("antigravity") => "antigravity", _ => "claude" }, "sessionId": field("session_id"), "cwd": evt.get("cwd") });
         bind_agent_session(tile_id, &binding.to_string());
         "compact"
     } else {
@@ -2961,6 +3133,103 @@ fn install_kimi_statusline() {
     let existing = std::fs::read_to_string(&file).unwrap_or_default();
     if let Some(next) = kimi_statusline_toml(&existing, &entry) {
         let _ = write_atomic(&file, next.as_bytes());
+    }
+}
+
+fn install_agy_hooks() {
+    let Some(home) = std::env::var("USERPROFILE").ok().or_else(|| std::env::var("HOME").ok()) else {
+        return;
+    };
+    let gemini_dir = Path::new(&home).join(".gemini");
+    if !gemini_dir.exists() {
+        return;
+    }
+    let Some(bin_dir) = panorama_dir().map(|d| d.join("bin")) else {
+        return;
+    };
+    if std::fs::create_dir_all(&bin_dir).is_err() {
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        let hook = bin_dir.join("agy-hook.cmd");
+        let hook_tool = bin_dir.join("agy-hook-tool.cmd");
+        let body = "@echo off\r\nif defined PANORAMA_CLI \"%PANORAMA_CLI%\" agy-hook\r\n";
+        let tool_body = "@echo off\r\nif defined PANORAMA_CLI \"%PANORAMA_CLI%\" agy-hook\r\necho {\"decision\":\"ask\"}\r\n";
+        if std::fs::read_to_string(&hook).ok().as_deref() != Some(body) {
+            let _ = write_atomic(&hook, body.as_bytes());
+        }
+        if std::fs::read_to_string(&hook_tool).ok().as_deref() != Some(tool_body) {
+            let _ = write_atomic(&hook_tool, tool_body.as_bytes());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = bin_dir.join("agy-hook");
+        let hook_tool = bin_dir.join("agy-hook-tool");
+        let body = "#!/bin/sh\n[ -n \"$PANORAMA_CLI\" ] && \"$PANORAMA_CLI\" agy-hook\n";
+        let tool_body = "#!/bin/sh\n[ -n \"$PANORAMA_CLI\" ] && \"$PANORAMA_CLI\" agy-hook\nprintf '{\"decision\":\"ask\"}'\n";
+        if std::fs::read_to_string(&hook).ok().as_deref() != Some(body) {
+            let _ = write_atomic(&hook, body.as_bytes());
+        }
+        if std::fs::read_to_string(&hook_tool).ok().as_deref() != Some(tool_body) {
+            let _ = write_atomic(&hook_tool, tool_body.as_bytes());
+        }
+        for p in [&hook, &hook_tool] {
+            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    #[cfg(windows)]
+    let (hook_cmd, hook_tool_cmd) = {
+        let fwd = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        (fwd(&bin_dir.join("agy-hook.cmd")), fwd(&bin_dir.join("agy-hook-tool.cmd")))
+    };
+    #[cfg(not(windows))]
+    let (hook_cmd, hook_tool_cmd) = {
+        let fwd = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        (fwd(&bin_dir.join("agy-hook")), fwd(&bin_dir.join("agy-hook-tool")))
+    };
+
+    let config_dir = gemini_dir.join("config");
+    if std::fs::create_dir_all(&config_dir).is_err() {
+        return;
+    }
+    let hooks_path = config_dir.join("hooks.json");
+    let existing_raw = std::fs::read_to_string(&hooks_path).unwrap_or_else(|_| "{}".into());
+    let mut hooks_json: serde_json::Value = match serde_json::from_str(&existing_raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[agy-hooks] hooks.json parse error, leaving untouched: {e}");
+            return;
+        }
+    };
+    let obj = match hooks_json.as_object_mut() {
+        Some(o) => o,
+        None => {
+            eprintln!("[agy-hooks] hooks.json is not an object, leaving untouched");
+            return;
+        }
+    };
+    let direct = |cmd: &str| serde_json::json!({ "type": "command", "command": cmd, "timeout": 10 });
+    let tool = |cmd: &str| serde_json::json!({ "matcher": "*", "hooks": [{ "type": "command", "command": cmd, "timeout": 10 }] });
+    let panorama_bundle = serde_json::json!({
+        "PreInvocation":  [direct(&hook_cmd)],
+        "PostInvocation": [direct(&hook_cmd)],
+        "Stop":           [direct(&hook_cmd)],
+        "PostToolUse":    [tool(&hook_cmd)],
+        "PreToolUse":     [tool(&hook_tool_cmd)],
+    });
+    let desired = panorama_bundle.to_string();
+    let current = obj.get("panorama").map(|v| v.to_string()).unwrap_or_default();
+    if current == desired {
+        return;
+    }
+    obj.insert("panorama".into(), panorama_bundle);
+    if let Ok(json) = serde_json::to_string_pretty(&hooks_json) {
+        let _ = write_atomic(&hooks_path, json.as_bytes());
     }
 }
 
@@ -4411,6 +4680,8 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
         || cmd.starts_with("claude ")
         || cmd == "codex"
         || cmd.starts_with("codex ")
+        || cmd == "agy"
+        || cmd.starts_with("agy ")
     {
         None
     } else {

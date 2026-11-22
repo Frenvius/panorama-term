@@ -5,7 +5,7 @@ import { hasHistory, resumeCommand } from '~/usecase/util/agentHistory';
 test('resume command per agent', () => {
   expect(resumeCommand('claude', 'abc')).toBe('claude --resume abc');
   expect(resumeCommand('codex', 'abc')).toBe('codex resume abc');
-  expect(resumeCommand('antigravity', 'abc')).toBeNull();
+  expect(resumeCommand('antigravity', 'abc')).toBe('agy --conversation abc');
 });
 
 test('history only for agents with a resume command', () => {

@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Coordinate a multi-agent run in Panorama - split work into tasks, start CLI agent workers (claude, codex, opencode, kimi, pi) in their own git worktrees, react to their reports, verify, retry, integrate, and report. Use when the user asks to orchestrate, delegate, fan out, or parallelize work across worker agents, or to run tasks overnight with cheaper models.
+description: Coordinate a multi-agent run in Panorama - split work into tasks, start CLI agent workers (claude, codex, opencode, kimi, pi, antigravity) in their own git worktrees, react to their reports, verify, retry, integrate, and report. Use when the user asks to orchestrate, delegate, fan out, or parallelize work across worker agents, or to run tasks overnight with cheaper models.
 allowed-tools: Bash({cli} orch:*), PowerShell({cli} orch:*)
 ---
 
@@ -40,7 +40,7 @@ Agree on these before creating anything:
   - `mechanical` - renames, formatting, boilerplate, moves.
 - **Workers**. The brain picks the agent from the role chain in Settings > Orchestration. Pass
   `--escalation`/`--profile` only to override when the user names a specific agent.
-  Built-in profiles: `claude` (models `haiku`, `sonnet`, `opus`), `codex`, `opencode` (model is `provider/model`), `kimi`, `pi`.
+  Built-in profiles: `claude` (models `haiku`, `sonnet`, `opus`), `codex`, `opencode` (model is `provider/model`), `kimi`, `pi`, `antigravity` (exe `agy`).
 - **Verification**. Commands that exit 0 when a task is done, such as tests, a typecheck or a build.
 
 Good tasks:

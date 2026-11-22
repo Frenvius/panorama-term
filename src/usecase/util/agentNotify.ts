@@ -38,7 +38,7 @@ export const createAgentNotifier = ({ suppressed, notify, clear, focused }: Noti
     if (suppressed()) return;
     if (evt.event === 'stop') {
       lastNotify = Date.now();
-      const agent = evt.agent === 'pi' ? 'Pi' : evt.agent === 'codex' ? 'Codex' : 'Claude';
+      const agent = evt.agent === 'pi' ? 'Pi' : evt.agent === 'codex' ? 'Codex' : evt.agent === 'antigravity' ? 'Antigravity' : 'Claude';
       notify('finished', evt.response || `${agent} finished`);
       return;
     }

@@ -17,6 +17,7 @@ const DEFAULT_AI_ACTIONS = {
 const buildProviderOptions = (providers: OrchProvider[]) => [
   { value: 'claude', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' },
+  { value: 'antigravity', label: 'Antigravity' },
   ...providers.map((p) => ({ value: p.id, label: p.label }))
 ];
 

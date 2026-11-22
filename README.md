@@ -64,8 +64,9 @@ Early stage, moving fast.
 Panorama is built around **Claude Code** first, and that is where the integration goes deepest:
 live model, effort, context and cost state, the model picker, notifications and linked context all
 come from a Panorama mod that runs inside Claude Code. Other agents work too, with less depth: **pi** and
-**Kimi Code** get the prompt bar and live status, **Codex**, **OpenCode** and **Antigravity** are
-recognized in their tiles, and any other CLI agent runs fine as a plain terminal.
+**Kimi Code** get the prompt bar and live status, **Codex** and **Antigravity** (`agy`) get live
+status and notifications through hooks, **OpenCode** is recognized in its tiles, and any other CLI
+agent runs fine as a plain terminal.
 
 ![Diff viewer](screenshot-diff.png)
 

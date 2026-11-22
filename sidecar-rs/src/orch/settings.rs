@@ -235,7 +235,7 @@ pub fn save(base: &Path, settings: &OrchSettings) -> Result<(), String> {
 }
 
 pub fn built_in_ids() -> &'static [&'static str] {
-    &["claude", "codex", "opencode", "kimi", "pi"]
+    &["claude", "codex", "opencode", "kimi", "pi", "antigravity"]
 }
 
 pub fn provider_id_for_label(label: &str, existing_ids: &[String]) -> String {

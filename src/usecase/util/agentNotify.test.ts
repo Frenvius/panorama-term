@@ -48,6 +48,12 @@ test('codex stop identifies Codex in the notification', () => {
   expect(sent).toEqual(['finished:Codex finished']);
 });
 
+test('antigravity stop identifies Antigravity in the notification', () => {
+  const { sent, notifier } = setup();
+  notifier.onAgentEvent({ agent: 'antigravity', event: 'stop' });
+  expect(sent).toEqual(['finished:Antigravity finished']);
+});
+
 test('Codex permission hooks do not alert before an actual approval prompt is known', () => {
   const { sent, notifier } = setup();
   notifier.onStatus('busy', 'waiting', 'codex');

@@ -120,6 +120,13 @@ pub fn parse_opencode_models(output: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn parse_agy_models(output: &str) -> Vec<String> {
+    output.lines()
+        .filter(|l| l.contains('\t'))
+        .filter_map(|l| l.split('\t').next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+        .collect()
+}
+
 pub fn parse_kimi_config(toml: &str) -> Vec<String> {
     let mut result = Vec::new();
     for line in toml.lines() {
@@ -177,6 +184,14 @@ fn discover(profile_id: &str) -> Result<Vec<String>, String> {
             let models = parse_kimi_config(&content);
             if models.is_empty() {
                 return Err("no [models.\"...\"] sections in kimi config".into());
+            }
+            Ok(models)
+        }
+        "antigravity" => {
+            let output = run_cmd(cli_command("agy", &["models"]))?;
+            let models = parse_agy_models(&output);
+            if models.is_empty() {
+                return Err("empty output from agy models".into());
             }
             Ok(models)
         }
@@ -341,6 +356,26 @@ price = 0.001
     fn kimi_config_no_sections_gives_empty() {
         assert!(parse_kimi_config("[settings]\nfoo = bar\n").is_empty());
         assert!(parse_kimi_config("").is_empty());
+    }
+
+    #[test]
+    fn agy_tab_parse() {
+        let output = "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-2.5-pro\tGemini 2.5 Pro\n";
+        let models = parse_agy_models(output);
+        assert_eq!(models, vec!["gemini-3.8-flash-high", "gemini-2.5-pro"]);
+    }
+
+    #[test]
+    fn agy_skips_lines_without_tab() {
+        let output = "no-tab-line\nslug\tlabel\n";
+        let models = parse_agy_models(output);
+        assert_eq!(models, vec!["slug"]);
+    }
+
+    #[test]
+    fn agy_empty_output_gives_empty() {
+        assert!(parse_agy_models("").is_empty());
+        assert!(parse_agy_models("Fetching available models...\n").is_empty());
     }
 
     #[test]

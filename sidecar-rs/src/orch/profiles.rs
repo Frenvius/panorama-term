@@ -89,6 +89,22 @@ fn built_ins() -> Vec<Profile> {
             ..cli_profile("kimi", &["-y"], "-m")
         },
         cli_profile("pi", &[], "--model"),
+        {
+            let mut env = std::collections::HashMap::new();
+            env.insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "literal:true".into());
+            Profile {
+                id: "antigravity".into(),
+                exe: "agy".into(),
+                args: vec!["--dangerously-skip-permissions".into()],
+                model_flag: Some("--model".into()),
+                env,
+                notes: None,
+                ready_signal: ReadySignal::Quiet,
+                startup_answers: Vec::new(),
+                ready_text: None,
+                provider: false,
+            }
+        },
     ]
 }
 
@@ -250,6 +266,12 @@ mod tests {
 
         let pi = profiles.iter().find(|p| p.id == "pi").unwrap();
         assert_eq!(pi.model_flag.as_deref(), Some("--model"));
+
+        let agy = profiles.iter().find(|p| p.id == "antigravity").unwrap();
+        assert_eq!(agy.exe, "agy");
+        assert!(agy.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert_eq!(agy.model_flag.as_deref(), Some("--model"));
+        assert_eq!(agy.env.get("AGY_CLI_DISABLE_AUTO_UPDATE").map(|s| s.as_str()), Some("literal:true"));
     }
 
     #[test]

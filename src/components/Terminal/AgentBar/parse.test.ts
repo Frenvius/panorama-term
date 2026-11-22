@@ -209,6 +209,7 @@ describe('declaredAgent', () => {
   it('trusts the agent the sidecar reports', () => {
     expect(declaredAgent({ agent: 'pi', model: 'gpt-5.6-sol' })).toBe('pi');
     expect(declaredAgent({ agent: 'codex', model: 'gpt-5.6-sol' })).toBe('codex');
+    expect(declaredAgent({ agent: 'antigravity', model: 'gemini-3.8-flash-high' })).toBe('antigravity');
   });
 
   it('falls back to claude for the statusline, and to nothing without state', () => {

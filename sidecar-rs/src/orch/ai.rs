@@ -177,6 +177,7 @@ pub fn run_oneshot(opts: OneShotOpts) -> Result<String, String> {
     let result = match opts.provider.as_str() {
         "claude" => run_oneshot_claude(action, &opts.model, &opts.prompt),
         "codex" => run_oneshot_codex(action, &opts.model, &opts.prompt),
+        "antigravity" => run_oneshot_antigravity(action, &opts.model, &opts.prompt),
         id => run_oneshot_custom(action, id, &opts.model, &opts.prompt, &base),
     };
     clear_progress(action);
@@ -251,7 +252,46 @@ fn run_oneshot_codex(action: &'static str, model: &str, prompt: &str) -> Result<
     Ok(content)
 }
 
+// agy has no stdin prompt in text mode; stream-json input avoids the Windows command-line length limit.
+fn run_oneshot_antigravity(action: &'static str, model: &str, prompt: &str) -> Result<String, String> {
+    let mut cmd = cli_command("agy");
+    cmd.args(["--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands"]);
+    if !model.is_empty() {
+        cmd.args(["--model", model]);
+    }
+    cmd.args(["-p", ""]);
+    cmd.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    let input = format!("{}\n", serde_json::json!({ "event": "user", "message": { "content": prompt } }));
+    let hook: LineHook = Box::new(move |line| {
+        if line.contains("\"text_delta\"") {
+            set_step(action, "Writing the answer");
+        }
+    });
+    set_step(action, "Waiting for the model");
+    let out = run_proc(cmd, &input, Some(hook))?;
+    if out.timed_out {
+        return Err("timeout:agy oneshot timed out after 120s".to_string());
+    }
+    agy_result(&out.stdout).ok_or_else(|| format!("nonzero_exit:{}", failure_tail(&out)))?
+}
+
+fn agy_result(stdout: &str) -> Option<Result<String, String>> {
+    let result = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["event"] == "result")?;
+    let r = &result["result"];
+    if r["status"] == "SUCCESS" {
+        return Some(Ok(r["response"].as_str().unwrap_or("").to_string()));
+    }
+    Some(Err(format!("nonzero_exit:{}", r["error"].as_str().unwrap_or("agy failed"))))
+}
+
 fn run_oneshot_custom(action: &'static str, provider_id: &str, model: &str, prompt: &str, base: &Path) -> Result<String, String> {
+    const NON_CLAUDE_BUILT_INS: &[&str] = &["codex", "pi", "kimi", "opencode"];
+    if NON_CLAUDE_BUILT_INS.contains(&provider_id) {
+        return Err(format!("not_supported:oneshot is not supported for built-in CLI agent {provider_id}"));
+    }
     let profiles = crate::orch::profiles::load_profiles(base);
     let profile = crate::orch::profiles::find_profile(&profiles, provider_id)
         .ok_or_else(|| format!("not_found:provider not found: {provider_id}"))?;
@@ -481,6 +521,20 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn ai_oneshot_real_antigravity() {
+        let out = run_oneshot(OneShotOpts {
+            action: "test",
+            provider: "antigravity".into(),
+            model: "gemini-3.8-flash-low".into(),
+            prompt: "Reply with exactly the words: hello world".into(),
+        })
+        .expect("oneshot should succeed");
+        eprintln!("real agy output:\n{out}");
+        assert!(out.to_lowercase().contains("hello"));
+    }
+
+    #[test]
+    #[ignore]
     fn ai_oneshot_real_codex() {
         let out = run_oneshot(OneShotOpts {
             action: "test",
@@ -491,5 +545,14 @@ mod tests {
         .expect("oneshot should succeed");
         eprintln!("real codex output:\n{out}");
         assert!(out.to_lowercase().contains("hello"));
+    }
+
+    #[test]
+    fn agy_result_reads_success_and_error() {
+        let ok = "{\"event\":\"init\"}\n{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"feat: x\\n\"}}\n";
+        assert_eq!(agy_result(ok), Some(Ok("feat: x\n".to_string())));
+        let err = "{\"event\":\"result\",\"result\":{\"status\":\"ERROR\",\"error\":\"boom\"}}";
+        assert_eq!(agy_result(err), Some(Err("nonzero_exit:boom".to_string())));
+        assert_eq!(agy_result("garbage"), None);
     }
 }

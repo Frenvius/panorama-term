@@ -173,6 +173,10 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(SHELL_SETTLE_MS)).await;
 
+    if profile.exe == "agy" {
+        crate::orch::agy::ensure_trusted_workspace(cwd);
+    }
+
     let cli = crate::panorama_cli_path();
     let mut tokens: Vec<String> = build_command_line(profile, model)
         .into_iter()

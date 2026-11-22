@@ -268,6 +268,29 @@ fn kimi_history(cwd: &str) -> Vec<HistoryEntry> {
     entries
 }
 
+fn antigravity_history(cwd: &str) -> Vec<HistoryEntry> {
+    let Some(home) = home() else { return Vec::new() };
+    let path = home.join(".gemini").join("antigravity-cli").join("history.jsonl");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let mut by_conv: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+    for row in json_rows(&raw) {
+        let Some(workspace) = str_field(&row, "workspace") else { continue };
+        if !same_dir(&workspace, cwd) { continue }
+        let Some(id) = str_field(&row, "conversationId") else { continue };
+        let Some(display) = str_field(&row, "display") else { continue };
+        let ts = row.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+        let entry = by_conv.entry(id).or_insert_with(|| (display.clone(), ts));
+        if ts > entry.1 { entry.1 = ts; }
+    }
+    let mut entries: Vec<HistoryEntry> = by_conv
+        .into_iter()
+        .map(|(id, (title, updated_at))| HistoryEntry { id, title: one_line(&title), updated_at })
+        .collect();
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    entries.truncate(MAX_ENTRIES);
+    entries
+}
+
 #[tauri::command]
 pub async fn agent_history(agent: String, cwd: String, tile_id: Option<String>) -> Result<Vec<HistoryEntry>, String> {
     crate::blocking(move || {
@@ -278,6 +301,7 @@ pub async fn agent_history(agent: String, cwd: String, tile_id: Option<String>) 
             "codex" => codex_history(&cwd)?,
             "opencode" => opencode_history(&cwd)?,
             "kimi" => kimi_history(&cwd),
+            "antigravity" => antigravity_history(&cwd),
             other => return Err(format!("no history source for {other}")),
         };
         entries.retain(|e| Some(&e.id) != current.as_ref());

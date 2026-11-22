@@ -3,7 +3,8 @@ const RESUME: Record<string, (id: string) => string> = {
   kimi: (id) => `kimi --session ${id}`,
   codex: (id) => `codex resume ${id}`,
   claude: (id) => `claude --resume ${id}`,
-  opencode: (id) => `opencode --session ${id}`
+  opencode: (id) => `opencode --session ${id}`,
+  antigravity: (id) => `agy --conversation ${id}`
 };
 
 export const hasHistory = (agent: string | null): agent is string => agent !== null && agent in RESUME;
