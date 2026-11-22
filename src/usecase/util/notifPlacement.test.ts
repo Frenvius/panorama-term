@@ -7,7 +7,7 @@ mock.module('~/adapter/settings/settings.client', () => ({
   setSetting: async (key: string, value: unknown) => void settings.set(key, value)
 }));
 
-const { getNotifToasts, setNotifToasts } = await import('~/usecase/util/notifPlacement');
+const { getNotifToasts, setNotifToasts, getNotifHideOverFullscreen } = await import('~/usecase/util/notifPlacement');
 
 test('notification toasts are on by default', () => {
   settings.clear();
@@ -19,4 +19,9 @@ test('turning toasts off is saved and read back', () => {
   setNotifToasts(false);
   expect(settings.get('notifToasts')).toBe(false);
   expect(getNotifToasts()).toBe(false);
+});
+
+test('toasts hide over fullscreen apps by default', () => {
+  settings.clear();
+  expect(getNotifHideOverFullscreen()).toBe(true);
 });

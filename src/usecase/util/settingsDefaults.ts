@@ -1,7 +1,7 @@
 import { setSetting } from '~/adapter/settings/settings.client';
 import { KEYBINDINGS, resetBinding } from '~/usecase/util/keybindings';
 import { DEFAULT_FONT, setFontChoice } from '~/usecase/util/fonts';
-import { setNotifToasts, setNotifPlacement } from '~/usecase/util/notifPlacement';
+import { setNotifToasts, setNotifPlacement, setNotifHideOverFullscreen } from '~/usecase/util/notifPlacement';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setMinimapCorner, setMinimapPinned } from '~/usecase/util/minimap';
 import { setCanvasSidebarMode } from '~/usecase/util/canvasSidebars';
@@ -38,6 +38,7 @@ export const resetTerminal = (): void => {
 
 export const resetNotifications = (): void => {
   setNotifToasts(true);
+  setNotifHideOverFullscreen(true);
   setNotifPlacement({ corner: 'bottom-right', monitor: null });
 };
 
@@ -63,7 +64,7 @@ export const RESET_DESCRIPTIONS: Partial<Record<string, string>> = {
   canvas: 'Maximum zoom, layout mode, gap, minimap visibility and corner, sidebar placement.',
   appearance: 'Theme mode, dark and light theme, interface and code fonts, tile header parts.',
   terminal: 'Default shell and terminal font.',
-  notifications: 'Toasts on, toast corner and display monitor.',
+  notifications: 'Toasts on, hidden over fullscreen apps, toast corner and display monitor.',
   agents: 'Model provider visibility list and idle compaction setting.',
   orchestration: 'Worker tile visibility and orchestrate hint. Role chains and providers are not changed.',
   aiActions: 'Default provider and model, and all action overrides.',

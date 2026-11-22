@@ -2,7 +2,17 @@ import type { MonitorInfo } from '~/usecase/util/notifPlacement';
 
 import React from 'react';
 
-import { listMonitors, monitorLabel, getNotifToasts, setNotifToasts, getNotifPlacement, setNotifPlacement, type NotifCorner } from '~/usecase/util/notifPlacement';
+import {
+  listMonitors,
+  monitorLabel,
+  getNotifToasts,
+  setNotifToasts,
+  getNotifPlacement,
+  setNotifPlacement,
+  getNotifHideOverFullscreen,
+  setNotifHideOverFullscreen,
+  type NotifCorner
+} from '~/usecase/util/notifPlacement';
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
 import Select from '~/components/commons/Settings/Select';
@@ -13,6 +23,7 @@ const NotificationsSection = () => {
   const [placement, setPlacement] = React.useState(getNotifPlacement);
   const [monitors, setMonitors] = React.useState<MonitorInfo[]>([]);
   const [toasts, setToasts] = React.useState(getNotifToasts);
+  const [hideOverFullscreen, setHideOverFullscreen] = React.useState(getNotifHideOverFullscreen);
 
   React.useEffect(() => {
     void listMonitors()
@@ -23,6 +34,11 @@ const NotificationsSection = () => {
   const toggleToasts = () => {
     setToasts(!toasts);
     setNotifToasts(!toasts);
+  };
+
+  const toggleHideOverFullscreen = () => {
+    setHideOverFullscreen(!hideOverFullscreen);
+    setNotifHideOverFullscreen(!hideOverFullscreen);
   };
 
   const selectCorner = (corner: NotifCorner) => {
@@ -60,6 +76,13 @@ const NotificationsSection = () => {
           description="Pop up a toast when an agent finishes or needs your attention. Tile badges stay either way."
         >
           <Switch checked={toasts} onChange={toggleToasts} label="Show toasts" />
+        </Row>
+        <Row
+          settingId="notifications.fullscreen"
+          label="Hide over fullscreen apps"
+          description="Skip toasts while another app, like a game or video, fills the toast display. Panorama in fullscreen still shows them."
+        >
+          <Switch checked={hideOverFullscreen} onChange={toggleHideOverFullscreen} label="Hide over fullscreen apps" />
         </Row>
         <Row settingId="notifications.corner" label="Position">
           <CornerPicker value={placement.corner} onChange={selectCorner} label="Toast position" />

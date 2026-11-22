@@ -13,6 +13,7 @@ mod git;
 pub mod store;
 mod docker;
 mod notes;
+mod fullscreen;
 mod plugins;
 mod claude;
 mod pi;
@@ -480,6 +481,32 @@ fn list_monitors(app: tauri::AppHandle) -> Result<Vec<MonitorInfo>, String> {
         .collect())
 }
 
+fn notif_monitor(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+    monitor: Option<String>,
+) -> Option<tauri::Monitor> {
+    monitor
+        .and_then(|name| {
+            win.available_monitors()
+                .ok()?
+                .into_iter()
+                .find(|m| m.name().map(|n| n.as_str()) == Some(name.as_str()))
+        })
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|main| main.current_monitor().ok().flatten())
+        })
+        .or_else(|| win.primary_monitor().ok().flatten())
+}
+
+#[tauri::command]
+fn notif_fullscreen(app: tauri::AppHandle, monitor: Option<String>) -> Result<bool, String> {
+    let win = app.get_webview_window("notif").ok_or("no overlay window")?;
+    let monitor = notif_monitor(&app, &win, monitor).ok_or("no monitor")?;
+    Ok(fullscreen::other_app_fullscreen_on(&monitor))
+}
+
 #[tauri::command]
 fn notif_layout(
     app: tauri::AppHandle,
@@ -493,19 +520,7 @@ fn notif_layout(
         return Ok(());
     }
     let corner = corner.unwrap_or_else(|| "bottom-right".into());
-    let monitor = monitor
-        .and_then(|name| {
-            win.available_monitors()
-                .ok()?
-                .into_iter()
-                .find(|m| m.name().map(|n| n.as_str()) == Some(name.as_str()))
-        })
-        .or_else(|| {
-            app.get_webview_window("main")
-                .and_then(|main| main.current_monitor().ok().flatten())
-        })
-        .or_else(|| win.primary_monitor().ok().flatten())
-        .ok_or("no monitor")?;
+    let monitor = notif_monitor(&app, &win, monitor).ok_or("no monitor")?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let size = area.size.to_logical::<f64>(scale);
@@ -995,6 +1010,7 @@ pub fn run() {
             read_temp_image,
             has_clipboard_image,
             notif_layout,
+            notif_fullscreen,
             list_monitors,
             focus_main,
             set_pending_count,

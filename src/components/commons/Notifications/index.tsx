@@ -4,7 +4,13 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { X, Bell } from 'lucide-react';
 
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { getNotifPlacement, NOTIF_PLACEMENT_EVENT } from '~/usecase/util/notifPlacement';
+import {
+  getNotifPlacement,
+  isOtherAppFullscreen,
+  NOTIF_PLACEMENT_EVENT,
+  NOTIF_FULLSCREEN_EVENT,
+  getNotifHideOverFullscreen
+} from '~/usecase/util/notifPlacement';
 
 import type { NotifPlacement } from '~/usecase/util/notifPlacement';
 import type { NotifyKind, NotifyPayload } from '~/domain/interfaces/notify.interface';
@@ -20,6 +26,7 @@ const MAX_TOASTS = 6;
 const PAD_BOTTOM = 8;
 const PEEK_SCALE = 0.05;
 const PEEK_OFFSET = 12;
+const FULLSCREEN_POLL_MS = 1000;
 
 const SOFT_KINDS: NotifyKind[] = ['finished', 'idle', 'generic'];
 
@@ -48,6 +55,11 @@ const NotificationOverlay = () => {
   const [expanded, setExpanded] = React.useState(false);
   const [heights, setHeights] = React.useState<Record<number, number>>({});
   const [placement, setPlacement] = React.useState<NotifPlacement>(getNotifPlacement);
+  const [hideOverFullscreen, setHideOverFullscreen] = React.useState(getNotifHideOverFullscreen);
+  const placementRef = React.useRef(placement);
+  placementRef.current = placement;
+  const hideOverFullscreenRef = React.useRef(hideOverFullscreen);
+  hideOverFullscreenRef.current = hideOverFullscreen;
   const nodes = React.useRef(new Map<number, HTMLDivElement>());
   const observer = React.useRef<ResizeObserver | null>(null);
   const hoverTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -70,7 +82,12 @@ const NotificationOverlay = () => {
   React.useEffect(() => () => observer.current?.disconnect(), []);
 
   React.useEffect(() => {
-    const shown = listen<NotifyPayload>('notif:show', (e) => {
+    const coveredByFullscreen = async (): Promise<boolean> => {
+      if (!hideOverFullscreenRef.current) return false;
+      return isOtherAppFullscreen(placementRef.current.monitor).catch(() => false);
+    };
+    const shown = listen<NotifyPayload>('notif:show', async (e) => {
+      if (await coveredByFullscreen()) return;
       setToasts((prev) => {
         const kept = prev.filter((t) => t.tileId !== e.payload.tileId);
         return [...kept, e.payload].slice(-MAX_TOASTS);
@@ -88,10 +105,23 @@ const NotificationOverlay = () => {
 
   React.useEffect(() => {
     const moved = listen<NotifPlacement>(NOTIF_PLACEMENT_EVENT, (e) => setPlacement(e.payload));
+    const guarded = listen<boolean>(NOTIF_FULLSCREEN_EVENT, (e) => setHideOverFullscreen(e.payload));
     return () => {
       void moved.then((off) => off());
+      void guarded.then((off) => off());
     };
   }, []);
+
+  const hasToasts = toasts.length > 0;
+  React.useEffect(() => {
+    if (!hideOverFullscreen || !hasToasts) return;
+    const check = () =>
+      void isOtherAppFullscreen(placement.monitor)
+        .then((covered) => covered && setToasts([]))
+        .catch(() => {});
+    const timer = setInterval(check, FULLSCREEN_POLL_MS);
+    return () => clearInterval(timer);
+  }, [hideOverFullscreen, hasToasts, placement.monitor]);
 
   const bottoms = React.useMemo(() => {
     const out: number[] = [];

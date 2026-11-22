@@ -17,6 +17,11 @@ path = "src/main.rs"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+core-foundation = "0.10"
+core-graphics = "0.25"
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11 = { version = "2.21", features = ["xlib"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -45,7 +50,7 @@ reqwest = { version = "0.13", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.dev.package.base64]
 opt-level = 3

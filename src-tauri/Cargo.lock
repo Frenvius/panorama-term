@@ -2670,6 +2670,8 @@ name = "panorama"
 version = "0.4.7"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation 0.10.1",
+ "core-graphics",
  "crypto_secretbox",
  "dirs 6.0.0",
  "futures-util",
@@ -2693,6 +2695,7 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "windows-sys 0.59.0",
+ "x11",
  "x25519-dalek",
 ]
 
