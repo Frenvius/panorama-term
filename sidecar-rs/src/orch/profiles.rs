@@ -25,6 +25,18 @@ pub struct Profile {
     pub ready_text: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub provider: bool,
+    #[serde(default)]
+    pub brief_delivery: BriefDelivery,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub probe_permissions: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BriefDelivery {
+    #[default]
+    Paste,
+    ArgvPointer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +66,37 @@ fn cli_profile(id: &str, args: &[&str], model_flag: &str) -> Profile {
         startup_answers: Vec::new(),
         ready_text: None,
         provider: false,
+        brief_delivery: BriefDelivery::Paste,
+        probe_permissions: false,
+    }
+}
+
+fn codex_profile() -> Profile {
+    Profile {
+        brief_delivery: BriefDelivery::ArgvPointer,
+        probe_permissions: true,
+        ..cli_profile("codex", &["-c", "check_for_update_on_startup=false"], "-m")
+    }
+}
+
+pub fn codex_permission_args(help: &str) -> Vec<String> {
+    let args: &[&str] = if help.contains("--approve-for-me") {
+        &["--approve-for-me"]
+    } else {
+        &["-s", "workspace-write", "-a", "on-request"]
+    };
+    args.iter().map(|a| a.to_string()).collect()
+}
+
+pub fn brief_pointer_prompt(brief_path: &Path) -> String {
+    format!("Read the file {} and follow it exactly.", brief_path.display())
+}
+
+pub fn quote_arg(arg: &str, powershell: bool) -> String {
+    if powershell {
+        format!("'{}'", arg.replace('\'', "''"))
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
     }
 }
 
@@ -81,7 +124,7 @@ fn built_ins() -> Vec<Profile> {
     };
     vec![
         claude,
-        cli_profile("codex", &["--full-auto"], "-m"),
+        codex_profile(),
         opencode,
         Profile {
             ready_text: Some("context:".into()),
@@ -103,6 +146,8 @@ fn built_ins() -> Vec<Profile> {
                 startup_answers: Vec::new(),
                 ready_text: None,
                 provider: false,
+                brief_delivery: BriefDelivery::Paste,
+                probe_permissions: false,
             }
         },
     ]
@@ -170,6 +215,8 @@ fn provider_to_profile(provider: &crate::orch::settings::OrchProvider) -> Profil
         startup_answers: claude_base.startup_answers.clone(),
         ready_text: None,
         provider: true,
+        brief_delivery: BriefDelivery::Paste,
+        probe_permissions: false,
     }
 }
 
@@ -255,7 +302,9 @@ mod tests {
         assert_eq!(claude.model_flag.as_deref(), Some("--model"));
 
         let codex = profiles.iter().find(|p| p.id == "codex").unwrap();
-        assert!(codex.args.contains(&"--full-auto".to_string()));
+        assert!(!codex.args.contains(&"--full-auto".to_string()));
+        assert!(codex.args.contains(&"check_for_update_on_startup=false".to_string()));
+        assert!(codex.probe_permissions);
         assert_eq!(codex.model_flag.as_deref(), Some("-m"));
 
         let opencode = profiles.iter().find(|p| p.id == "opencode").unwrap();
@@ -419,9 +468,42 @@ mod tests {
 
     #[test]
     fn model_alias_not_resolved_for_non_claude_exe() {
-        let p = cli_profile("codex", &["--full-auto"], "-m");
+        let p = codex_profile();
         let tokens = build_command_line(&p, Some("haiku"));
         assert!(tokens.contains(&"haiku".to_string()), "non-claude exe must not map alias");
+    }
+
+    #[test]
+    fn codex_flags_follow_help_text() {
+        let new_help = "Options:\n  --approve-for-me  auto approve\n  -s, --sandbox <MODE>\n";
+        assert_eq!(codex_permission_args(new_help), vec!["--approve-for-me"]);
+        let old_help = "Options:\n  -s, --sandbox <MODE>\n  -a, --ask-for-approval <POLICY>\n";
+        let args = codex_permission_args(old_help);
+        assert_eq!(args, vec!["-s", "workspace-write", "-a", "on-request"]);
+        assert!(!args.contains(&"--full-auto".to_string()));
+    }
+
+    #[test]
+    fn brief_delivery_per_profile() {
+        let profiles = built_ins();
+        let codex = profiles.iter().find(|p| p.id == "codex").unwrap();
+        let claude = profiles.iter().find(|p| p.id == "claude").unwrap();
+        assert_eq!(codex.brief_delivery, BriefDelivery::ArgvPointer);
+        assert_eq!(claude.brief_delivery, BriefDelivery::Paste);
+    }
+
+    #[test]
+    fn argv_pointer_quoting() {
+        let prompt = brief_pointer_prompt(Path::new("C:/My Dir/it's/brief.md"));
+        assert_eq!(prompt, "Read the file C:/My Dir/it's/brief.md and follow it exactly.");
+        assert_eq!(
+            quote_arg(&prompt, true),
+            "'Read the file C:/My Dir/it''s/brief.md and follow it exactly.'"
+        );
+        assert_eq!(
+            quote_arg(&prompt, false),
+            "'Read the file C:/My Dir/it'\\''s/brief.md and follow it exactly.'"
+        );
     }
 
     #[test]
