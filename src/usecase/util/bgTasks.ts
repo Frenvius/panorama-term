@@ -36,7 +36,7 @@ export const mergeShells = (prev: BgTask[], shells: BackgroundShell[], now: numb
   const live = new Set(shells.map((s) => s.id));
   let changed = false;
   const kept = prev.map((t) => {
-    const status = ends[t.id];
+    const status = ends[t.id] ?? t.status;
     const running = live.has(t.id) && !status;
     if (running === !t.endedAt && status === t.status) return t;
     changed = true;
@@ -57,7 +57,7 @@ const subscribe = (l: () => void) => {
 
 const savedKey = (tileId: string) => `panorama:tasks:${tileId}`;
 
-// Finished tasks outlive a restart; running ones come back from the agent's next report.
+// Tasks outlive a restart; one that ended while the app was closed shows as finished on the next report.
 const tasksOf = (tileId: string): BgTask[] => {
   let list = tasks.get(tileId);
   if (!list) {
@@ -73,8 +73,8 @@ const tasksOf = (tileId: string): BgTask[] => {
 
 const save = (tileId: string, list: BgTask[]) => {
   tasks.set(tileId, list);
-  const finished = list.filter((t) => t.endedAt).slice(0, SAVED_MAX);
-  if (finished.length) setPref(savedKey(tileId), JSON.stringify(finished));
+  const kept = list.slice(0, SAVED_MAX);
+  if (kept.length) setPref(savedKey(tileId), JSON.stringify(kept));
   else removePref(savedKey(tileId));
   notify();
 };

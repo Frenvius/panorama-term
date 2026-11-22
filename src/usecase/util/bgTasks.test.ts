@@ -49,6 +49,11 @@ test('a status arriving after the task already ended keeps its end time', () => 
   expect(mergeShells(ended, [], 30, { a: 'completed' })[0]).toMatchObject({ endedAt: 20, status: 'completed' });
 });
 
+test('a known status survives a report that no longer carries it', () => {
+  const ended = mergeShells(mergeShells([], [shell('a')], 10), [], 20, { a: 'failed' });
+  expect(mergeShells(ended, [], 30)).toBe(ended);
+});
+
 test('an unchanged report keeps the same list, so nothing re-renders', () => {
   const running = mergeShells([], [shell('a')], 10);
   expect(mergeShells(running, [shell('a')], 20)).toBe(running);
@@ -75,11 +80,14 @@ test('auto falls back to the right when every side is taken', () => {
   expect(placeTasksTile(src, wall, 'auto')).toMatchObject({ x: 640, y: 0 });
 });
 
-test('finished tasks are saved per terminal and cleared with the list', () => {
+test('tasks are saved per terminal; clearing drops only the finished ones', () => {
   reportShells('t1', [shell('a'), shell('b')]);
   reportShells('t1', [shell('b')], { a: 'completed' });
-  const saved = JSON.parse(prefs.get('panorama:tasks:t1') ?? '[]');
-  expect(saved.map((t: { id: string; status?: string }) => [t.id, t.status])).toEqual([['a', 'completed']]);
+  const saved = (): [string, string | undefined][] => JSON.parse(prefs.get('panorama:tasks:t1') ?? '[]').map((t: { id: string; status?: string }) => [t.id, t.status]);
+  expect(saved()).toEqual([['a', 'completed'], ['b', undefined]]);
+  clearFinished('t1');
+  expect(saved()).toEqual([['b', undefined]]);
+  reportShells('t1', []);
   clearFinished('t1');
   expect(prefs.has('panorama:tasks:t1')).toBe(false);
 });
