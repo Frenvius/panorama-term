@@ -33,6 +33,7 @@ mod scroll_store;
 mod search;
 mod run_commands;
 mod orch;
+mod accounts;
 
 enum ConsumerMsg {
     Data(u64, Vec<u8>),
@@ -5630,6 +5631,31 @@ async fn handle_conn(mut stream: TcpStream) {
             mobile::cors_origin(origin),
             body.len(),
             body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if let Some(cmd) = path_only.strip_prefix("/accounts/") {
+        let len = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if len > 1024 * 1024 {
+            let r = "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(r.as_bytes()).await;
+            return;
+        }
+        let mut req_body = vec![0u8; len];
+        if len > 0 {
+            let _ = stream.read_exact(&mut req_body).await;
+        }
+        let resp_body = accounts::handle(cmd, &req_body).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            mobile::cors_origin(origin),
+            resp_body.len(),
+            resp_body
         );
         let _ = stream.write_all(resp.as_bytes()).await;
         return;

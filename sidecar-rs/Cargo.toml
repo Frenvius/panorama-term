@@ -45,6 +45,9 @@ libc = "0.2"
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }
+
 [profile.dev.package.vt100]
 overflow-checks = false
 
