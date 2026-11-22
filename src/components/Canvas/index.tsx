@@ -860,6 +860,7 @@ const Canvas = () => {
       focusTile(tileId, true);
       return;
     }
+    pendingFocusTileId = tileId;
     openRemoteTile(tileId, cwd, group);
   };
   handleShowWorkerRef.current = handleShowWorker;
