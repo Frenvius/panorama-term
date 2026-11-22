@@ -1,5 +1,7 @@
 mod agy;
+mod cli_login;
 mod jwt;
+mod links;
 mod keyring_raw;
 
 use std::collections::{BTreeMap, HashMap};
@@ -12,6 +14,7 @@ use serde_json::{json, Value};
 
 use agy::Pending;
 use keyring_raw::{OsSecrets, SecretIo};
+use links::Sources;
 
 const AGENTS: &[&str] = &["antigravity", "claude", "codex"];
 const SYSTEM: &str = "system";
@@ -140,6 +143,7 @@ pub struct Service {
     pub(super) store: Mutex<Store>,
     pub(super) pending: Mutex<HashMap<String, Pending>>,
     pub(super) settings_path: Option<PathBuf>,
+    pub(super) sources: Sources,
     pub(super) poll_every: Duration,
     pub(super) poll_timeout: Duration,
 }
@@ -153,6 +157,7 @@ impl Service {
             store: Mutex::new(store),
             pending: Mutex::new(HashMap::new()),
             settings_path,
+            sources: Sources::from_env(),
             poll_every: Duration::from_secs(2),
             poll_timeout: Duration::from_secs(600),
         }
@@ -221,7 +226,7 @@ impl Service {
         match agent {
             "antigravity" => self.io.snapshot_delete(id),
             _ => {
-                let _ = std::fs::remove_dir_all(self.root.join(agent).join(id));
+                links::remove_account_dir(&self.account_dir(agent, id));
             }
         }
         Ok(())
@@ -254,18 +259,8 @@ impl Service {
     }
 
     pub fn tile_get(&self, tile_id: &str) -> Value {
-        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let sel = store.tiles.get(tile_id);
-        let pick = |agent: &str, chosen: Option<&String>, default: &String| {
-            chosen
-                .filter(|id| Self::selectable(&store, agent, id))
-                .unwrap_or(default)
-                .clone()
-        };
-        json!({
-            "claude": pick("claude", sel.and_then(|s| s.claude.as_ref()), &store.defaults.claude),
-            "codex": pick("codex", sel.and_then(|s| s.codex.as_ref()), &store.defaults.codex),
-        })
+        let (claude, codex) = self.effective_ids(tile_id);
+        json!({ "claude": claude, "codex": codex })
     }
 
     pub fn tile_set(&self, tile_id: &str, agent: &str, id: &str) -> Result<(), ApiError> {
@@ -311,7 +306,11 @@ impl Service {
                         self.spawn_poll(pending_id.clone());
                         Ok(json!({ "pendingId": pending_id, "command": command }))
                     }
-                    _ => Err(fail("unsupported", "login for this agent is not supported yet")),
+                    cli => {
+                        let (pending_id, command) = self.cli_add_start(cli, s("tileId")?)?;
+                        self.spawn_poll(pending_id.clone());
+                        Ok(json!({ "pendingId": pending_id, "command": command }))
+                    }
                 }
             }
             "add-status" => Ok(self.agy_add_status(s("pendingId")?)),
@@ -358,6 +357,14 @@ fn system_email(agent: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+pub fn tile_env(tile_id: &str) -> Vec<(String, String)> {
+    service().map(|s| s.tile_env(tile_id)).unwrap_or_default()
+}
+
+pub fn claude_dir_for_tile(tile_id: &str) -> Option<PathBuf> {
+    service().ok()?.claude_dir_for_tile(tile_id)
 }
 
 fn service() -> Result<&'static Arc<Service>, ApiError> {
@@ -613,6 +620,145 @@ mod tests {
         assert_eq!(crate::orch::agy::strip_model_provider(&path), Ok(true));
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v, json!({"a": 1}));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn shared_fixture(dir: &Path) -> Sources {
+        let claude = dir.join("src-claude");
+        std::fs::create_dir_all(claude.join("skills")).unwrap();
+        std::fs::write(claude.join("skills").join("a.md"), "skill").unwrap();
+        std::fs::write(claude.join("settings.json"), "{}").unwrap();
+        std::fs::write(claude.join(".credentials.json"), "secret").unwrap();
+        std::fs::write(
+            dir.join("src.claude.json"),
+            json!({"oauthAccount": {"emailAddress": "a@x.com"}, "userID": "u", "primaryApiKey": "k",
+                   "customApiKeyResponses": {}, "theme": "dark"})
+            .to_string(),
+        )
+        .unwrap();
+        Sources { claude_dir: claude, claude_json: dir.join("src.claude.json"), codex_dir: dir.join("src-codex") }
+    }
+
+    #[test]
+    fn ensure_links_is_idempotent_and_never_clobbers() {
+        let dir = tmp_dir("links");
+        let src = shared_fixture(&dir).claude_dir;
+        let dest = dir.join("acc");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("settings.json"), "mine").unwrap();
+        links::ensure_links(&src, &dest, links::CLAUDE_SHARED);
+        links::ensure_links(&src, &dest, links::CLAUDE_SHARED);
+        assert_eq!(std::fs::read_to_string(dest.join("settings.json")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(dest.join("skills").join("a.md")).unwrap(), "skill");
+        assert!(links::is_link(&dest.join("skills")));
+        assert!(!dest.join(".credentials.json").exists());
+        assert!(!dest.join("agents").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn seed_strips_identity_keys_once() {
+        let dir = tmp_dir("seed");
+        let srcs = shared_fixture(&dir);
+        let dest = dir.join("acc");
+        std::fs::create_dir_all(&dest).unwrap();
+        links::seed_claude_json(&srcs.claude_json, &dest);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(dest.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(v, json!({"theme": "dark"}));
+        std::fs::write(dest.join(".claude.json"), "{\"kept\":1}").unwrap();
+        links::seed_claude_json(&srcs.claude_json, &dest);
+        assert_eq!(std::fs::read_to_string(dest.join(".claude.json")).unwrap(), "{\"kept\":1}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn removing_account_keeps_shared_source() {
+        let (mut svc, _io, dir) = setup("rmlinks");
+        svc.sources = shared_fixture(&dir);
+        add_rec(&svc, "claude", "acc00001");
+        svc.ensure_account_dir("claude", "acc00001");
+        let acc = svc.account_dir("claude", "acc00001");
+        assert!(links::is_link(&acc.join("skills")));
+        svc.remove("claude", "acc00001").unwrap();
+        assert!(!acc.exists());
+        assert_eq!(std::fs::read_to_string(dir.join("src-claude").join("skills").join("a.md")).unwrap(), "skill");
+        assert!(dir.join("src-claude").join("settings.json").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tile_env_resolution() {
+        let (mut svc, _io, dir) = setup("env");
+        svc.sources = shared_fixture(&dir);
+        assert!(svc.tile_env("t1").is_empty());
+        add_rec(&svc, "claude", "acc00001");
+        add_rec(&svc, "codex", "cod00001");
+        svc.set_default("claude", "acc00001").unwrap();
+        let env = svc.tile_env("t1");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
+        assert!(env[0].1.ends_with("acc00001"));
+        svc.tile_set("t1", "claude", "system").unwrap();
+        svc.tile_set("t1", "codex", "cod00001").unwrap();
+        let env = svc.tile_env("t1");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "CODEX_HOME");
+        assert!(svc.account_dir("codex", "cod00001").is_dir());
+        assert_eq!(svc.claude_dir_for_tile("t1"), None);
+        assert_eq!(svc.claude_dir_for_tile("other"), Some(svc.account_dir("claude", "acc00001")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claude_login_flow_and_duplicate() {
+        let (mut svc, _io, dir) = setup("clogin");
+        svc.sources = shared_fixture(&dir);
+        let svc = Arc::new(svc);
+        let (pid, command) = svc.cli_add_start("claude", "tile-a").unwrap();
+        assert_eq!(command, "claude");
+        assert_eq!(svc.tile_get("tile-a")["claude"], pid.as_str());
+        assert_eq!(svc.tile_env("tile-a")[0].0, "CLAUDE_CONFIG_DIR");
+        assert!(svc.poll_step(&pid, false));
+        assert_eq!(svc.agy_add_status(&pid)["state"], "waiting");
+
+        let cfg = svc.account_dir("claude", &pid).join(".claude.json");
+        std::fs::write(&cfg, json!({"oauthAccount": {"emailAddress": "Me@x.com"}}).to_string()).unwrap();
+        assert!(!svc.poll_step(&pid, false));
+        let status = svc.agy_add_status(&pid);
+        assert_eq!(status["state"], "done");
+        assert_eq!(status["account"]["email"], "me@x.com");
+        assert_eq!(svc.tile_get("tile-a")["claude"], pid.as_str());
+
+        let (pid2, _) = svc.cli_add_start("claude", "tile-b").unwrap();
+        let dir2 = svc.account_dir("claude", &pid2);
+        std::fs::write(dir2.join(".claude.json"), json!({"oauthAccount": {"emailAddress": "me@x.com"}}).to_string()).unwrap();
+        svc.poll_step(&pid2, false);
+        let status = svc.agy_add_status(&pid2);
+        assert_eq!(status["state"], "failed");
+        assert_eq!(status["error"], "duplicate");
+        assert!(!dir2.exists());
+        assert_eq!(svc.tile_get("tile-b")["claude"], "system");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn codex_login_flow_and_cancel() {
+        let (mut svc, _io, dir) = setup("xlogin");
+        svc.sources = shared_fixture(&dir);
+        let (pid, command) = svc.cli_add_start("codex", "tile-a").unwrap();
+        assert_eq!(command, "codex login");
+        let payload = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, json!({"email": "c@x.com"}).to_string());
+        let token = format!("aaa.{payload}.ccc");
+        let auth = svc.account_dir("codex", &pid).join("auth.json");
+        std::fs::write(&auth, json!({"tokens": {"id_token": token}}).to_string()).unwrap();
+        assert!(!svc.poll_step(&pid, false));
+        assert_eq!(svc.agy_add_status(&pid)["account"]["email"], "c@x.com");
+
+        let (pid2, _) = svc.cli_add_start("codex", "tile-b").unwrap();
+        let dir2 = svc.account_dir("codex", &pid2);
+        svc.agy_add_cancel(&pid2);
+        assert!(!dir2.exists());
+        assert_eq!(svc.tile_get("tile-b")["codex"], "system");
         std::fs::remove_dir_all(&dir).ok();
     }
 
