@@ -53,6 +53,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { id: 'appearance.tileHeader', section: 'appearance', label: 'Tile header parts', keywords: ['tile', 'header'] },
   { id: 'terminal.shell', section: 'terminal', label: 'Default shell', keywords: ['shell', 'bash', 'powershell'] },
   { id: 'terminal.font', section: 'terminal', label: 'Terminal font', keywords: ['font', 'terminal', 'hack'] },
+  { id: 'notifications.toasts', section: 'notifications', label: 'Show toasts', keywords: ['notification', 'toast', 'popup', 'disable', 'mute'] },
   { id: 'notifications.corner', section: 'notifications', label: 'Toast position', keywords: ['notification', 'toast', 'corner'] },
   { id: 'notifications.display', section: 'notifications', label: 'Toast display', keywords: ['notification', 'monitor', 'display'] },
   { id: 'agents.modelPicker', section: 'agents', label: 'Model providers', keywords: ['provider', 'model'] },
