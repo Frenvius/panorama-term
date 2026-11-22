@@ -326,9 +326,10 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
       if (!seenRef.current) return;
 
       setGridRows(lines.length);
-      setInputTop(inputTopRow(lines));
+      const isCodex = currentType === 'codex' || liveState?.agent === 'codex' || detectAgentIdentity(bufferText) === 'codex';
+      setInputTop(inputTopRow(getFrame(), isCodex ? 'codex' : currentType));
       const footer = readFooter(lines);
-      const nextStatus = currentType === 'codex' || liveState?.agent === 'codex' || detectAgentIdentity(bufferText) === 'codex'
+      const nextStatus = isCodex
         ? parseCodexFooter(lines)
         : parseStatusLines(footer.status);
       setStatus((prev) => (sameStatus(prev, nextStatus) ? prev : nextStatus));
@@ -348,7 +349,7 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
       clearInterval(id);
       if (qTimer) clearTimeout(qTimer);
     };
-  }, [getLines, getStructured]);
+  }, [getLines, getFrame, getStructured]);
 
   const catalog = structured?.models;
   const commandArgs = agentType === 'claude' ? structured?.commandArgs : undefined;

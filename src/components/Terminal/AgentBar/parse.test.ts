@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { NO_MATCH, trackMode, slashScore, aliasLabel, prettyModel,detectSuggestTrigger, readFooter, parseStatusLines, parseCodexFooter, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
+import { NO_MATCH, trackMode, slashScore, aliasLabel, prettyModel,detectSuggestTrigger, readFooter, parseStatusLines, parseCodexFooter, countFrameInputChars, countInputChars, countInputImages, hasAgentUi, inputTopRow, isAgentBusy, declaredAgent, detectAgentIdentity } from '~/components/Terminal/AgentBar/parse';
 
 it('names Claude model ids by family and version', () => {
   expect(prettyModel('claude-haiku-5-5')).toEqual({ model: 'Haiku 5.5' });
@@ -55,6 +55,53 @@ const inputFrame = (text: string, cursorCol: number, dim: boolean): GridFrame =>
     attrs
   };
 };
+
+const gridFrame = (rows: string[], bgRows: number[]): GridFrame => {
+  const cols = Math.max(...rows.map((line) => Array.from(line).length));
+  const lines = rows.map((line) => line.padEnd(cols));
+  const attrs = new Uint32Array(lines.length * cols * 2);
+  for (const row of bgRows) {
+    for (let col = 0; col < cols; col++) attrs[(row * cols + col) * 2 + 1] = 0x8000_0000 | 0x2a2d35;
+  }
+  return { rows: lines.length, cols, cursorRow: 0, cursorCol: 0, cursorHidden: false, mouseMode: 0, offset: 0, topLine: 0, alt: false, lines, attrs };
+};
+
+describe('inputTopRow', () => {
+  const codexScreen = [
+    '╭──────────────────────────────────╮',
+    '│ Update available! 0.169 -> 0.171 │',
+    '╰──────────────────────────────────╯',
+    '',
+    '>_ OpenAI Codex (v0.169.0)',
+    '',
+    '',
+    '› Ask Codex to do anything',
+    '',
+    '  GPT-6.1-Sol medium · Context 100% left · ~',
+    '  ← for agents · ? for shortcuts'
+  ];
+
+  it('anchors Codex to the composer band, not the update banner box', () => {
+    expect(inputTopRow(gridFrame(codexScreen, [6, 7, 8]), 'codex')).toBe(6);
+  });
+
+  it('stops the Codex band at a history row with text', () => {
+    const rows = [...codexScreen.slice(0, 5), '› earlier message', ...codexScreen.slice(6)];
+    expect(inputTopRow(gridFrame(rows, [5, 6, 7, 8]), 'codex')).toBe(6);
+  });
+
+  it('falls back to the prompt row without background colors', () => {
+    expect(inputTopRow(gridFrame(codexScreen, []), 'codex')).toBe(7);
+  });
+
+  it('returns null for Codex without a composer', () => {
+    expect(inputTopRow(gridFrame(codexScreen.slice(0, 5), []), 'codex')).toBeNull();
+  });
+
+  it('keeps the bordered input box for Claude', () => {
+    expect(inputTopRow(gridFrame(box('❯ hello'), []), 'claude')).toBe(1);
+  });
+});
 
 describe('readInputText', () => {
   it('returns 0 without an input box', () => {

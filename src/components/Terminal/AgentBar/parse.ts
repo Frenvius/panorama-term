@@ -227,7 +227,34 @@ const inputBounds = (rows: string[]): { top: number; bottom: number } | null => 
   return null;
 };
 
-export const inputTopRow = (rows: string[]): number | null => inputBounds(rows)?.top ?? null;
+const BG_SET = 0x8000_0000;
+const CODEX_PROMPT = /^\s*›/;
+
+const rowHasBg = (frame: GridFrame, row: number): boolean => {
+  for (let col = 0; col < frame.cols; col++) {
+    if (((frame.attrs[(row * frame.cols + col) * 2 + 1] ?? 0) & BG_SET) !== 0) return true;
+  }
+  return false;
+};
+
+const codexComposerTop = (frame: GridFrame): number | null => {
+  let top = -1;
+  for (let row = frame.lines.length - 1; row >= 0; row--) {
+    if (CODEX_PROMPT.test(frame.lines[row] ?? '')) {
+      top = row;
+      break;
+    }
+  }
+  if (top < 0) return null;
+  while (top > 0 && !frame.lines[top - 1]?.trim() && rowHasBg(frame, top - 1)) top--;
+  return top;
+};
+
+export const inputTopRow = (frame: GridFrame | null, agent: AgentType | null): number | null => {
+  if (!frame) return null;
+  if (agent === 'codex') return codexComposerTop(frame);
+  return inputBounds(frame.lines)?.top ?? null;
+};
 
 export const readInputText = (rows: string[]): string => {
   const bounds = inputBounds(rows);
