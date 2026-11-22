@@ -2059,6 +2059,7 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "sessionReset",
     "subagents",
     "shells",
+    "shellEnds",
     "viewing",
 ];
 
@@ -7030,6 +7031,14 @@ mod tests {
         assert_eq!(v["commands"][0]["name"], "/clear");
         assert_eq!(v["modelOptions"][0], "opus");
         assert!(v.get("source").is_none() && v.get("tileId").is_none());
+    }
+
+    #[test]
+    fn mod_state_carries_how_background_shells_ended() {
+        let body = r#"{"source":"mod","tileId":"t1","shells":[],"shellEnds":{"b1":"completed","b2":"failed"}}"#;
+        let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
+        assert_eq!(v["shellEnds"]["b1"], "completed");
+        assert_eq!(v["shellEnds"]["b2"], "failed");
     }
 
     #[test]

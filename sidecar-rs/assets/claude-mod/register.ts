@@ -33,6 +33,10 @@ let lastView: string | undefined
 type ShellRow = { id: string; command: string; description?: string; outputFile?: string; startedAt: number }
 const shells = new Map<string, ShellRow>()
 let lastShells = '[]'
+// How tracked shells ended (completed, failed, killed), newest last; the app shows it on finished tasks.
+const SHELL_ENDS_MAX = 50
+const shellIds = new Set<string>()
+const shellEnds = new Map<string, string>()
 
 const dialogOpen = () => toolDialog || commandDialog || elicitDialog
 
@@ -183,16 +187,26 @@ async function reportSubagents($: EngineInterface) {
 
 async function reportShells($: EngineInterface) {
   const rows = [...shells.values()]
-  const key = JSON.stringify(rows)
+  const ends = Object.fromEntries(shellEnds)
+  const key = JSON.stringify([rows, ends])
   if (key === lastShells) return
   lastShells = key
-  await post($, { shells: rows })
+  await post($, { shells: rows, shellEnds: ends })
+}
+
+function recordShellEnd(id: string, status: string) {
+  if (!shellIds.has(id) || shellEnds.get(id) === status) return false
+  shellEnds.delete(id)
+  shellEnds.set(id, status)
+  if (shellEnds.size > SHELL_ENDS_MAX) shellEnds.delete(shellEnds.keys().next().value!)
+  return true
 }
 
 function trackShell(e: { tool: unknown; command?: unknown; description?: unknown }, result: { result?: unknown; text?: string }) {
   if (e.tool !== 'Bash') return false
   const id = (result.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
   if (typeof id !== 'string' || shells.has(id)) return false
+  shellIds.add(id)
   shells.set(id, {
     id,
     command: String(e.command ?? ''),
@@ -316,6 +330,8 @@ export const register: Register = (on) => {
     lastSubagents = '[]'
     lastView = ''
     shells.clear()
+    shellIds.clear()
+    shellEnds.clear()
     lastShells = '[]'
     if (await $.env.get('PANORAMA_TILE_ID')) {
       await $.command.register({
@@ -353,8 +369,9 @@ export const register: Register = (on) => {
   })
 
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
-    const id = e.props.task?.id
-    if (id && shells.delete(id)) void reportShells($)
+    const { id, status } = e.props.task ?? {}
+    const ended = Boolean(id && status && recordShellEnd(id, status))
+    if (id && (shells.delete(id) || ended)) void reportShells($)
     return next(e)
   })
 

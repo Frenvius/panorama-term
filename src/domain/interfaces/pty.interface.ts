@@ -101,6 +101,8 @@ export interface ClaudeState {
   viewing?: string;
   subagents?: Subagent[];
   shells?: BackgroundShell[];
+  // How background shells ended, by id: completed, failed or killed.
+  shellEnds?: Record<string, string>;
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

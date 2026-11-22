@@ -9,6 +9,8 @@ import { useBgTasks, clearFinished } from '~/usecase/util/bgTasks';
 
 import styles from './styles.module.scss';
 
+const STATUS_LABEL: Record<string, string> = { completed: 'done', failed: 'failed', killed: 'stopped' };
+
 interface TaskItemProps {
   task: BgTask;
   now: number;
@@ -30,6 +32,11 @@ const TaskItem = ({ task, now, open, onToggle }: TaskItemProps) => {
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {!task.endedAt && <span className={styles.dot} />}
         <span className={styles.title}>{task.description || task.command}</span>
+        {task.status && (
+          <span className={styles.status} data-status={task.status}>
+            {STATUS_LABEL[task.status] ?? task.status}
+          </span>
+        )}
         <span className={styles.elapsed}>{formatElapsed((task.endedAt ?? now) - task.startedAt)}</span>
       </button>
       {open && (

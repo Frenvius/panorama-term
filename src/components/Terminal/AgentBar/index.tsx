@@ -1077,11 +1077,12 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
     if (!shells.length) setShellsOpen(false);
   }, [shells.length]);
 
-  // Keyed on the ids: the report object is rebuilt on every poll even when nothing changed.
-  const shellIds = shells.map((s) => s.id).join(' ');
+  // Keyed on ids and ends: the report object is rebuilt on every poll even when nothing changed.
+  const shellEnds = agentType === 'claude' ? structured?.shellEnds : undefined;
+  const shellsKey = shells.map((s) => s.id).join(' ') + JSON.stringify(shellEnds ?? {});
   React.useEffect(() => {
-    reportShells(tileId, shells);
-  }, [tileId, shellIds]);
+    reportShells(tileId, shells, shellEnds);
+  }, [tileId, shellsKey]);
 
   const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
   const suggestSelect = { arg: onArgSelect, slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };

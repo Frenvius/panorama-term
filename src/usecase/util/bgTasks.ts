@@ -3,9 +3,12 @@ import type { BackgroundShell } from '~/domain/interfaces/pty.interface';
 import React from 'react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 
 export interface BgTask extends BackgroundShell {
   endedAt?: number;
+  // completed, failed or killed, when the agent reported how it ended.
+  status?: string;
 }
 
 export type TasksOpen = 'inline' | 'auto' | 'right' | 'left' | 'above' | 'below';
@@ -22,19 +25,22 @@ export const TASKS_OPEN_KEY = 'tasksOpen';
 export const TASKS_LINK_KEY = 'tasksLink';
 export const TASKS_TILE = { width: 460, height: 360 };
 const GAP = 40;
+const SAVED_MAX = 30;
 const AUTO_ORDER: Side[] = ['right', 'below', 'left', 'above'];
 const EMPTY: BgTask[] = [];
 const REQUEST_EVENT = 'tasks:open';
 
-// Running shells come from the Claude mod; a shell missing from a later report has ended.
-// One that shows up again was only missing from a transient report, so it is running.
-export const mergeShells = (prev: BgTask[], shells: BackgroundShell[], now: number): BgTask[] => {
+// Running shells come from the Claude mod; a shell missing from a later report, or with a reported end, has ended.
+// One that shows up again without an end was only missing from a transient report, so it is running.
+export const mergeShells = (prev: BgTask[], shells: BackgroundShell[], now: number, ends: Record<string, string> = {}): BgTask[] => {
   const live = new Set(shells.map((s) => s.id));
   let changed = false;
   const kept = prev.map((t) => {
-    if (Boolean(t.endedAt) !== live.has(t.id)) return t;
+    const status = ends[t.id];
+    const running = live.has(t.id) && !status;
+    if (running === !t.endedAt && status === t.status) return t;
     changed = true;
-    return t.endedAt ? { ...t, endedAt: undefined } : { ...t, endedAt: now };
+    return running ? { ...t, endedAt: undefined } : { ...t, endedAt: t.endedAt ?? now, status };
   });
   const known = new Set(prev.map((t) => t.id));
   const added = shells.filter((s) => !known.has(s.id));
@@ -49,21 +55,39 @@ const subscribe = (l: () => void) => {
   return () => void listeners.delete(l);
 };
 
-export const reportShells = (tileId: string, shells: BackgroundShell[]): void => {
-  const prev = tasks.get(tileId) ?? EMPTY;
-  const next = mergeShells(prev, shells, Date.now());
-  if (next === prev) return;
-  tasks.set(tileId, next);
+const savedKey = (tileId: string) => `panorama:tasks:${tileId}`;
+
+// Finished tasks outlive a restart; running ones come back from the agent's next report.
+const tasksOf = (tileId: string): BgTask[] => {
+  let list = tasks.get(tileId);
+  if (!list) {
+    try {
+      list = JSON.parse(getPref(savedKey(tileId)) ?? '[]') as BgTask[];
+    } catch {
+      list = EMPTY;
+    }
+    tasks.set(tileId, list);
+  }
+  return list;
+};
+
+const save = (tileId: string, list: BgTask[]) => {
+  tasks.set(tileId, list);
+  const finished = list.filter((t) => t.endedAt).slice(0, SAVED_MAX);
+  if (finished.length) setPref(savedKey(tileId), JSON.stringify(finished));
+  else removePref(savedKey(tileId));
   notify();
 };
 
-export const clearFinished = (tileId: string): void => {
-  tasks.set(tileId, (tasks.get(tileId) ?? EMPTY).filter((t) => !t.endedAt));
-  notify();
+export const reportShells = (tileId: string, shells: BackgroundShell[], ends?: Record<string, string>): void => {
+  const prev = tasksOf(tileId);
+  const next = mergeShells(prev, shells, Date.now(), ends);
+  if (next !== prev) save(tileId, next);
 };
 
-export const useBgTasks = (tileId: string): BgTask[] =>
-  React.useSyncExternalStore(subscribe, () => tasks.get(tileId) ?? EMPTY);
+export const clearFinished = (tileId: string): void => save(tileId, tasksOf(tileId).filter((t) => !t.endedAt));
+
+export const useBgTasks = (tileId: string): BgTask[] => React.useSyncExternalStore(subscribe, () => tasksOf(tileId));
 
 export const getTasksOpen = (): TasksOpen => getSetting(TASKS_OPEN_KEY, 'inline');
 export const getTasksLink = (): TasksLink => getSetting(TASKS_LINK_KEY, 'dashed');

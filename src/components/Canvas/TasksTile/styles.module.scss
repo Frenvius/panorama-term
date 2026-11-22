@@ -67,6 +67,24 @@
   white-space: nowrap;
 }
 
+.status {
+  flex: none;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--text-dim);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+
+  &[data-status='completed'] {
+    color: #5fb872;
+  }
+
+  &[data-status='failed'] {
+    color: var(--danger, #e5484d);
+  }
+}
+
 .elapsed {
   flex: none;
   font-size: 11px;
