@@ -29,6 +29,7 @@ import {
   ClipboardCopy,
   SquareDashed,
   SquareKanban,
+  ListChecks,
   SquareTerminal,
   TriangleAlert
 } from 'lucide-react';
@@ -76,6 +77,7 @@ const renderTileIcon = (tile: Tile) => {
   if (tile.type === 'code') return <GitCompare size={13} strokeWidth={1.75} />;
   if (tile.type === 'editor') return <FileCode size={13} strokeWidth={1.75} />;
   if (tile.type === 'orch') return <SquareKanban size={13} strokeWidth={1.75} />;
+  if (tile.type === 'tasks') return <ListChecks size={13} strokeWidth={1.75} />;
   return <SquareTerminal size={13} strokeWidth={1.75} />;
 };
 

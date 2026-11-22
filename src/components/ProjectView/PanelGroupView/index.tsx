@@ -23,6 +23,7 @@ import {
   StickyNote,
   ClipboardCopy,
   SquareKanban,
+  ListChecks,
   SquareTerminal
 } from 'lucide-react';
 
@@ -30,6 +31,7 @@ import PanelToolbar from './PanelToolbar';
 import styles from './styles.module.scss';
 import FileEditor from '~/components/FileEditor';
 import OrchBoard from '~/components/Canvas/OrchBoard';
+import TasksTile from '~/components/Canvas/TasksTile';
 import DiffViewer from '~/components/DiffViewer';
 import { tileLabel } from '~/usecase/util/title';
 import { noteTabs } from '~/usecase/util/noteTabs';
@@ -77,6 +79,7 @@ const renderTileTypeIcon = (tile: Tile, agentType: AgentType | null) => {
   if (tile.type === 'code') return <GitCompare size={13} strokeWidth={1.75} />;
   if (tile.type === 'note') return <StickyNote size={13} strokeWidth={1.75} />;
   if (tile.type === 'orch') return <SquareKanban size={13} strokeWidth={1.75} />;
+  if (tile.type === 'tasks') return <ListChecks size={13} strokeWidth={1.75} />;
   return <SquareTerminal size={13} strokeWidth={1.75} />;
 };
 
@@ -584,6 +587,12 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
                 cwd={activeTile.cwd ?? ''}
                 onPatchOrchTile={(patch) => handlers.onPatchTile(activeTile.id, patch)}
               />
+            </div>
+          )}
+
+          {activeTile?.type === 'tasks' && (
+            <div className={styles.contentSlot}>
+              <TasksTile sourceId={activeTile.taskSource ?? ''} />
             </div>
           )}
 

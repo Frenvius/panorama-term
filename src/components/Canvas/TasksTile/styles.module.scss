@@ -1,0 +1,146 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--text-1);
+  background: var(--surface-2);
+  scrollbar-width: thin;
+}
+
+.empty {
+  margin: auto;
+  max-width: 280px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.task {
+  flex: none;
+  overflow: hidden;
+  background: var(--surface-1);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+}
+
+.taskHead,
+.groupToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.taskHead {
+  width: 100%;
+  padding: 6px 8px;
+
+  &:hover {
+    background: var(--hover-1);
+  }
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: #e0844a;
+  border-radius: 50%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.elapsed {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.taskBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.command,
+.output {
+  margin: 0;
+  font-family: 'Hack', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.command {
+  max-height: 72px;
+  overflow-y: auto;
+  color: var(--text-dim);
+}
+
+.output {
+  max-height: 200px;
+  padding: 6px 8px;
+  overflow-y: auto;
+  background: var(--hover-1);
+  border-radius: 4px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.groupToggle {
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.clear {
+  display: flex;
+  padding: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+
+  &:hover {
+    color: var(--text-1);
+    background: var(--hover-1);
+  }
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

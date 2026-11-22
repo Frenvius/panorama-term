@@ -8,12 +8,42 @@ import { setProviderHidden, getSeenProviders, getHiddenProviders } from '~/useca
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
 import Switch from '~/components/commons/Settings/Switch';
+import Select from '~/components/commons/Settings/Select';
+import { type TasksOpen, type TasksLink, getTasksOpen, getTasksLink, setTasksOpen, setTasksLink } from '~/usecase/util/bgTasks';
+
+const TASKS_OPEN_OPTIONS: { value: TasksOpen; label: string }[] = [
+  { value: 'inline', label: 'In the agent bar' },
+  { value: 'auto', label: 'Tile, first free side' },
+  { value: 'right', label: 'Tile on the right' },
+  { value: 'left', label: 'Tile on the left' },
+  { value: 'above', label: 'Tile above' },
+  { value: 'below', label: 'Tile below' }
+];
+
+const TASKS_LINK_OPTIONS: { value: TasksLink; label: string }[] = [
+  { value: 'dashed', label: 'Dashed' },
+  { value: 'solid', label: 'Solid' },
+  { value: 'highlight', label: 'Highlighted' },
+  { value: 'none', label: 'None' }
+];
 
 const AgentsSection = () => {
   const [idleCompact, setIdleCompact] = React.useState(() => getSetting(IDLE_COMPACTION_KEY, true));
   const [providers] = React.useState(getSeenProviders);
   const [hiddenProviders, setHiddenProviders] = React.useState(getHiddenProviders);
   const usageProviders = useUsageProviders();
+  const [tasksOpen, setOpen] = React.useState(getTasksOpen);
+  const [tasksLink, setLink] = React.useState(getTasksLink);
+
+  const pickTasksOpen = (value: string) => {
+    setOpen(value as TasksOpen);
+    setTasksOpen(value as TasksOpen);
+  };
+
+  const pickTasksLink = (value: string) => {
+    setLink(value as TasksLink);
+    setTasksLink(value as TasksLink);
+  };
 
   const toggleIdleCompact = () => {
     const next = !idleCompact;
@@ -69,6 +99,14 @@ const AgentsSection = () => {
           description="Compact conversations over 200K tokens after about an hour idle, before the prompt cache expires."
         >
           <Switch checked={idleCompact} onChange={toggleIdleCompact} label="Idle compaction" />
+        </Row>
+      </Group>
+      <Group label="Background tasks">
+        <Row settingId="agents.tasksOpen" label="Open" description="Where the shells chip shows the agent's background tasks. A tile can be moved, resized and closed.">
+          <Select options={TASKS_OPEN_OPTIONS} value={tasksOpen} onChange={pickTasksOpen} />
+        </Row>
+        <Row settingId="agents.tasksLink" label="Link" description="Line between the terminal and its tasks tile." disabled={tasksOpen === 'inline'}>
+          <Select options={TASKS_LINK_OPTIONS} value={tasksLink} onChange={pickTasksLink} disabled={tasksOpen === 'inline'} />
         </Row>
       </Group>
     </>

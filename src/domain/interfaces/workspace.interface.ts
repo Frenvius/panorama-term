@@ -2,7 +2,7 @@ import type { TabMode, ProjectViewState } from '~/domain/interfaces/projectView.
 
 export type { TabMode, ProjectViewState };
 
-export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser' | 'orch';
+export type TileType = 'term' | 'note' | 'code' | 'editor' | 'image' | 'graph' | 'browser' | 'orch' | 'tasks';
 
 export interface Tile {
   id: string;
@@ -34,6 +34,8 @@ export interface Tile {
   renderOnly?: boolean;
   tabClosed?: boolean;
   linkedTo?: string[];
+  // 'tasks' tiles: the terminal whose background tasks they show.
+  taskSource?: string;
 }
 
 export interface Frame {

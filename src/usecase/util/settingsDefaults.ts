@@ -2,6 +2,7 @@ import { setSetting } from '~/adapter/settings/settings.client';
 import { setTabScope } from '~/usecase/util/tabScope';
 import { KEYBINDINGS, resetBinding } from '~/usecase/util/keybindings';
 import { DEFAULT_FONT, setFontChoice } from '~/usecase/util/fonts';
+import { setTasksOpen, setTasksLink } from '~/usecase/util/bgTasks';
 import { setNotifToasts, setNotifPlacement, setNotifHideOverFullscreen } from '~/usecase/util/notifPlacement';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setMinimapCorner, setMinimapPinned } from '~/usecase/util/minimap';
@@ -47,6 +48,8 @@ export const resetNotifications = (): void => {
 export const resetAgents = (): void => {
   void setSetting(AGENT_PROVIDERS_KEY, { seen: getSeenProviders(), hidden: [] });
   void setSetting(IDLE_COMPACTION_KEY, true);
+  setTasksOpen('inline');
+  setTasksLink('dashed');
   setUsageProviders(USAGE_PROVIDERS);
 };
 
@@ -67,7 +70,7 @@ export const RESET_DESCRIPTIONS: Partial<Record<string, string>> = {
   appearance: 'Theme mode, dark and light theme, interface and code fonts, tile header parts.',
   terminal: 'Default shell and terminal font.',
   notifications: 'Toasts on, hidden over fullscreen apps, toast corner and display monitor.',
-  agents: 'Model provider visibility list and idle compaction setting.',
+  agents: 'Model provider visibility list, idle compaction and background tasks.',
   orchestration: 'Worker tile visibility and orchestrate hint. Role chains and providers are not changed.',
   aiActions: 'Default provider and model, and all action overrides.',
   shortcuts: 'All keyboard shortcuts back to their defaults.'

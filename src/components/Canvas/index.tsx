@@ -29,6 +29,7 @@ import { writeNote } from '~/adapter/notes/notes.client';
 import { fileKey, splitKey } from '~/usecase/util/fileTree';
 import { applyFrontTitle } from '~/usecase/util/noteMeta';
 import { adjacentTerm, termName, flowPath } from '~/usecase/util/noteLink';
+import { type TasksLink, useTasksLink, onTasksTileRequest } from '~/usecase/util/bgTasks';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { TileHostProvider } from '~/usecase/context/TileHostContext';
 import { workspaceService } from '~/usecase/service/workspace.service';
@@ -84,6 +85,8 @@ const savedSplit = (): number => {
 };
 
 const DBLCLICK_MS = 400;
+
+const TASKS_LINK_CLASS: Record<TasksLink, string> = { dashed: '', solid: styles.linkSolid, highlight: styles.linkHighlight, none: '' };
 
 let pendingFocusTileId: string | null = null;
 
@@ -181,7 +184,8 @@ const Canvas = () => {
     indicatorRef,
     onBgPointerMove,
     onBgPointerDown,
-    addOrchBoard
+    addOrchBoard,
+    addTasksTile
   } = useCanvas({ seed: activeState, wsId: activeId, tabId: activeTabId, onPersist: saveActiveState });
 
   const handleShowWorkerRef = React.useRef<(req: ShowWorkerRequest) => void>(() => {});
@@ -217,6 +221,13 @@ const Canvas = () => {
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
+  const tasksLink = useTasksLink();
+  const screenRect = (r: { x: number; y: number; width: number; height: number }) => ({
+    x: r.x * view.k + view.x,
+    y: r.y * view.k + view.y,
+    width: r.width * view.k,
+    height: r.height * view.k
+  });
   const agents = React.useSyncExternalStore(subscribeAgentStatuses, getAgentStatuses);
   const [noteEditors, setNoteEditors] = React.useState<Record<string, EditorView>>({});
   const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
@@ -380,6 +391,15 @@ const Canvas = () => {
   );
 
   React.useEffect(() => () => clearTimeout(fsTimer.current), []);
+
+  React.useEffect(
+    () =>
+      onTasksTileRequest((sourceId) => {
+        if (fsIdRef.current) exitFs();
+        addTasksTile(sourceId);
+      }),
+    [addTasksTile, exitFs]
+  );
 
   const tidyTriggerRef = React.useRef<() => void>(() => {});
 
@@ -1302,6 +1322,11 @@ const Canvas = () => {
         {!fsId && (
           <svg className={styles.links} width={size.w} height={size.h}>
             {tiles.map((t) => {
+              if (t.type === 'tasks') {
+                const source = tiles.find((x) => x.id === t.taskSource);
+                if (!source || tasksLink === 'none') return null;
+                return <path key={t.id} d={flowPath(screenRect(source), screenRect(t))} className={`${styles.linkLine} ${TASKS_LINK_CLASS[tasksLink]}`} />;
+              }
               if ((t.type !== 'note' && t.type !== 'term') || !t.linkedTo?.length) return null;
               const srcRect = {
                 x: t.x * view.k + view.x,

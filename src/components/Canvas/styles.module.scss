@@ -110,6 +110,18 @@
   pointer-events: none;
 }
 
+// Background tasks link styles (Settings > Agents).
+.linkSolid {
+  stroke-dasharray: none;
+}
+
+.linkHighlight {
+  stroke-width: 2;
+  stroke-dasharray: none;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 3px var(--accent, #6b8afd));
+}
+
 .linkHover {
   fill: none;
   stroke: var(--accent, #6b8afd);

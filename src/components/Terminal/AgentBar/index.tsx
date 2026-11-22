@@ -11,6 +11,7 @@ import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import OrchToggle from './OrchToggle';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
+import { getTasksOpen, reportShells, requestTasksTile } from '~/usecase/util/bgTasks';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 import { subscribePromptRestore } from '~/usecase/util/promptRestore';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
@@ -1076,12 +1077,20 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
     if (!shells.length) setShellsOpen(false);
   }, [shells.length]);
 
+  // Keyed on the ids: the report object is rebuilt on every poll even when nothing changed.
+  const shellIds = shells.map((s) => s.id).join(' ');
+  React.useEffect(() => {
+    reportShells(tileId, shells);
+  }, [tileId, shellIds]);
+
   const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
   const suggestSelect = { arg: onArgSelect, slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };
 
   const toggleModelMenu = () => setModelMenu((o) => !o);
   const toggleEffortMenu = () => setEffortMenu((o) => !o);
-  const toggleShells = () => setShellsOpen((o) => !o);
+  const toggleShells = () => {
+    if (getTasksOpen() === 'inline' || !requestTasksTile(tileId)) setShellsOpen((o) => !o);
+  };
   const restore = () => setManualHide(false);
 
   const focusEditor = (e: React.MouseEvent<HTMLDivElement>) => {

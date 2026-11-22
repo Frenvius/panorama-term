@@ -52,7 +52,7 @@ const SECTION_META: Record<SettingsSection, SectionMeta> = {
   appearance: { title: 'Appearance', subtitle: 'Theme applies across the whole app.', hasReset: true },
   terminal: { title: 'Terminal', subtitle: 'Changes apply to new terminals.', hasReset: true },
   notifications: { title: 'Notifications', subtitle: 'Toasts, their position and monitor.', hasReset: true },
-  agents: { title: 'Agents', subtitle: 'Model picker and Claude Code settings.', hasReset: true },
+  agents: { title: 'Agents', subtitle: 'Model picker, Claude Code and background tasks.', hasReset: true },
   accounts: { title: 'Accounts', subtitle: 'Log in to several accounts and pick one per terminal.' },
   orchestration: { title: 'Orchestration', subtitle: 'Agents and models used for multi-agent runs.', hasReset: true },
   aiActions: { title: 'AI actions', subtitle: 'Provider and model for AI-powered actions.', hasReset: true },

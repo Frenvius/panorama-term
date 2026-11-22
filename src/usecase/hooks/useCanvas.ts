@@ -34,6 +34,7 @@ import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { syncProjectViewWithTiles } from '~/usecase/util/projectLayout';
 import { projectsInUse } from '~/usecase/util/projectGroups';
+import { getTasksOpen, placeTasksTile } from '~/usecase/util/bgTasks';
 import {
   CELL,
   SNAP_PX,
@@ -573,6 +574,24 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       return next;
     });
     return id;
+  }, []);
+
+  const addTasksTile = React.useCallback((sourceId: string) => {
+    const existing = tilesRef.current.find((t) => t.type === 'tasks' && t.taskSource === sourceId);
+    if (existing) {
+      setActiveTile(existing.id);
+      return;
+    }
+    const source = tilesRef.current.find((t) => t.id === sourceId);
+    const open = getTasksOpen();
+    if (!source || open === 'inline') return;
+    const id = createId();
+    const { x, y, width, height } = placeTasksTile(source, tilesRef.current.filter((t) => t.id !== sourceId), open);
+    setTiles((prev) => [
+      ...prev,
+      { id, type: 'tasks' as const, taskSource: sourceId, cwd: source.cwd, x, y, width, height, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
+    ]);
+    setActiveTile(id);
   }, []);
 
   const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {
@@ -1245,6 +1264,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     clearSelection,
     addNote,
     addOrchBoard,
+    addTasksTile,
     noteRenderDefault,
     focusTile,
     centerTile,
