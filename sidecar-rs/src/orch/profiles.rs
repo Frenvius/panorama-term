@@ -29,6 +29,8 @@ pub struct Profile {
     pub brief_delivery: BriefDelivery,
     #[serde(default, skip_serializing_if = "is_false")]
     pub probe_permissions: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pin_env_via_config: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,7 @@ fn cli_profile(id: &str, args: &[&str], model_flag: &str) -> Profile {
         provider: false,
         brief_delivery: BriefDelivery::Paste,
         probe_permissions: false,
+        pin_env_via_config: false,
     }
 }
 
@@ -75,6 +78,8 @@ fn codex_profile() -> Profile {
     Profile {
         brief_delivery: BriefDelivery::ArgvPointer,
         probe_permissions: true,
+        pin_env_via_config: true,
+        startup_answers: vec![StartupAnswer { contains: "Hooks need review".into(), send: "2\r".into() }],
         ..cli_profile("codex", &["-c", "check_for_update_on_startup=false"], "-m")
     }
 }
@@ -98,6 +103,22 @@ pub fn quote_arg(arg: &str, powershell: bool) -> String {
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
     }
+}
+
+fn toml_basic_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+const PINNED_ENV_PREFIX: &str = "PANORAMA_";
+
+pub fn pinned_env_args(env: &[(String, String)], powershell: bool) -> Vec<String> {
+    env.iter()
+        .filter(|(k, _)| k.starts_with(PINNED_ENV_PREFIX))
+        .flat_map(|(k, v)| {
+            let override_arg = format!("shell_environment_policy.set.{k}={}", toml_basic_string(v));
+            ["-c".to_string(), quote_arg(&override_arg, powershell)]
+        })
+        .collect()
 }
 
 fn built_ins() -> Vec<Profile> {
@@ -148,6 +169,7 @@ fn built_ins() -> Vec<Profile> {
                 provider: false,
                 brief_delivery: BriefDelivery::Paste,
                 probe_permissions: false,
+                pin_env_via_config: false,
             }
         },
     ]
@@ -217,6 +239,7 @@ fn provider_to_profile(provider: &crate::orch::settings::OrchProvider) -> Profil
         provider: true,
         brief_delivery: BriefDelivery::Paste,
         probe_permissions: false,
+        pin_env_via_config: false,
     }
 }
 
@@ -504,6 +527,33 @@ mod tests {
             quote_arg(&prompt, false),
             "'Read the file C:/My Dir/it'\\''s/brief.md and follow it exactly.'"
         );
+    }
+
+    #[test]
+    fn pinned_env_args_quote_for_both_shells() {
+        let env = vec![
+            ("PANORAMA_CLI".to_string(), r"C:\Users\me\cli.exe".to_string()),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), "secret".to_string()),
+            ("PANORAMA_NOTE".to_string(), r#"a"b"#.to_string()),
+        ];
+        let ps = pinned_env_args(&env, true);
+        assert_eq!(ps, vec![
+            "-c".to_string(),
+            r#"'shell_environment_policy.set.PANORAMA_CLI="C:\\Users\\me\\cli.exe"'"#.to_string(),
+            "-c".to_string(),
+            r#"'shell_environment_policy.set.PANORAMA_NOTE="a\"b"'"#.to_string(),
+        ]);
+        let sh = pinned_env_args(&env[..1], false);
+        assert_eq!(sh[1], r#"'shell_environment_policy.set.PANORAMA_CLI="C:\\Users\\me\\cli.exe"'"#);
+        assert!(!ps.iter().any(|a| a.contains("ANTHROPIC")));
+    }
+
+    #[test]
+    fn codex_pins_env_and_answers_hooks_dialog() {
+        let codex = built_ins().into_iter().find(|p| p.id == "codex").unwrap();
+        assert!(codex.pin_env_via_config);
+        let answer = codex.startup_answers.iter().find(|a| a.contains == "Hooks need review").unwrap();
+        assert_eq!(answer.send, "2\r");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::orch::model::{Task, Dispatch};
 use crate::orch::profiles::{
-    BriefDelivery, Profile, ReadySignal, brief_pointer_prompt, build_command_line, codex_permission_args, quote_arg,
+    BriefDelivery, Profile, ReadySignal, brief_pointer_prompt, build_command_line, codex_permission_args, pinned_env_args, quote_arg,
     tokens_to_command,
 };
 use crate::{Params, get_or_create, send_to_tile, host_handle, sessions, lookup_live, cached_agent_state};
@@ -151,6 +151,11 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
 pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
     let WorkerLaunch { tile_id, cwd, group, profile, model, extra_env, brief_path, settings_path } = launch;
+    let cli = crate::panorama_cli_path();
+    let mut pinned_env = extra_env.clone();
+    pinned_env.push(("PANORAMA_CLI".into(), cli.clone()));
+    pinned_env.push(("PANORAMA_SIDECAR_PORT".into(), crate::port().to_string()));
+    pinned_env.push(("PANORAMA_TILE_ID".into(), tile_id.to_string()));
     let params = Params {
         tile_id: tile_id.to_string(),
         cols: WORKER_COLS,
@@ -183,7 +188,6 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
         crate::orch::agy::ensure_trusted_workspace(cwd);
     }
 
-    let cli = crate::panorama_cli_path();
     let mut tokens: Vec<String> = build_command_line(profile, model)
         .into_iter()
         .map(|t| t.replace(CLI_PLACEHOLDER, &cli))
@@ -197,6 +201,12 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
         tokens.push(sp);
     }
     let mut command = tokens_to_command(&tokens);
+    if profile.pin_env_via_config {
+        for arg in pinned_env_args(&pinned_env, cfg!(windows)) {
+            command.push(' ');
+            command.push_str(&arg);
+        }
+    }
     if profile.brief_delivery == BriefDelivery::ArgvPointer {
         command.push(' ');
         command.push_str(&quote_arg(&brief_pointer_prompt(brief_path), cfg!(windows)));
