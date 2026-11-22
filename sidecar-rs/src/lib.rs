@@ -2520,13 +2520,13 @@ fn codex_wrapper() -> Option<(PathBuf, String)> {
     Some((dir, original))
 }
 
-fn codex_launch_args(args: &[String], hook_exe: &Path) -> Vec<String> {
+fn codex_launch_args(args: &[String]) -> Vec<String> {
     const PASSTHROUGH: &[&str] = &["agents", "exec", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "queue", "archive", "delete", "migrate-rollouts", "migrate-nfs-db", "unarchive", "cloud", "exec-server", "features", "help"];
     if args.first().is_some_and(|a| PASSTHROUGH.contains(&a.as_str()) || a == "--help" || a == "-h" || a == "--version" || a == "-V") {
         return args.to_vec();
     }
-    let command = if cfg!(windows) { format!("& \"{}\" codex-hook", hook_exe.display()) } else { format!("\"{}\" codex-hook", hook_exe.display()) };
-    let handler = format!("[{{hooks=[{{type='command',command={}}}]}}]", serde_json::to_string(&command).unwrap());
+    let command = if cfg!(windows) { "& $env:PANORAMA_CLI codex-hook" } else { "\"$PANORAMA_CLI\" codex-hook" };
+    let handler = format!("[{{hooks=[{{type='command',command={}}}]}}]", serde_json::to_string(command).unwrap());
     let mut out = vec!["--no-daemon".to_string(), "-c".into(), "tui.status_line=['model-with-reasoning','context-remaining','current-dir']".into()];
     for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Interrupt", "SessionEnd"] {
         out.push("-c".into());
@@ -2538,9 +2538,8 @@ fn codex_launch_args(args: &[String], hook_exe: &Path) -> Vec<String> {
 
 fn codex_launch_cmd() {
     let Some(original) = std::env::var_os("PANORAMA_CODEX_ORIGINAL") else { std::process::exit(1) };
-    let Ok(exe) = std::env::current_exe() else { std::process::exit(1) };
     let args: Vec<String> = std::env::args().skip(2).collect();
-    let status = std::process::Command::new(original).args(codex_launch_args(&args, &exe)).status();
+    let status = std::process::Command::new(original).args(codex_launch_args(&args)).status();
     std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
 }
 
@@ -5806,13 +5805,14 @@ mod tests {
 
     #[test]
     fn codex_launch_is_scoped_to_interactive_sessions() {
-        let exe = Path::new(r"C:\Panorama\sidecar.exe");
-        let resume = codex_launch_args(&["resume".into(), "session-1".into()], exe);
+        let resume = codex_launch_args(&["resume".into(), "session-1".into()]);
         assert_eq!(resume[0], "--no-daemon");
         assert!(resume.iter().any(|arg| arg.starts_with("hooks.SessionStart=")));
         assert!(resume.iter().any(|arg| arg.starts_with("hooks.UserPromptSubmit=")));
         assert_eq!(&resume[resume.len() - 2..], &["resume", "session-1"]);
-        assert_eq!(codex_launch_args(&["exec".into(), "hello".into()], exe), ["exec", "hello"]);
+        let hook = resume.iter().find(|arg| arg.starts_with("hooks.SessionStart=")).unwrap();
+        assert!(hook.contains("PANORAMA_CLI") && !hook.contains("runtime"));
+        assert_eq!(codex_launch_args(&["exec".into(), "hello".into()]), ["exec", "hello"]);
     }
 
     #[test]
