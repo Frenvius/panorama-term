@@ -9,7 +9,7 @@ export interface CardButtonProps {
   icon: LucideIcon;
   hint?: string;
   disabled?: boolean;
-  tone?: 'play' | 'stop' | 'accept';
+  tone?: 'play' | 'stop' | 'accept' | 'cancel';
   onClick: (e: React.MouseEvent) => void;
 }
 

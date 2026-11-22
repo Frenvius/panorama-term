@@ -189,7 +189,7 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
 
   const showBtn = isClickable && <CardButton label="Show worker" icon={ExternalLink} onClick={handleShowBtnClick} />;
   const diffBtn = hasDiff && <CardButton label="Diff" icon={GitCompare} onClick={handleDiffBtnClick} />;
-  const cancelBtn = <CardButton label="Cancel task" icon={X} tone="stop" onClick={handleCancelBtnClick} />;
+  const cancelBtn = <CardButton label="Cancel task" icon={X} tone="cancel" onClick={handleCancelBtnClick} />;
 
   const actions = (
     <>

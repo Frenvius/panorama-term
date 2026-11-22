@@ -45,15 +45,26 @@
     color: #6fb14e;
   }
 
-  &[data-tone='play'],
-  &[data-tone='accept'],
   &[data-tone='stop'] {
-    &:hover {
-      background: color-mix(in srgb, var(--tone) 14%, transparent);
+    --tone: var(--danger);
+
+    color: var(--danger);
+
+    svg {
+      fill: currentColor;
     }
   }
 
-  &[data-tone='stop'] {
+  &[data-tone='cancel'] {
     --tone: var(--danger);
+  }
+
+  &[data-tone='play'],
+  &[data-tone='accept'],
+  &[data-tone='stop'],
+  &[data-tone='cancel'] {
+    &:hover {
+      background: color-mix(in srgb, var(--tone) 14%, transparent);
+    }
   }
 }
