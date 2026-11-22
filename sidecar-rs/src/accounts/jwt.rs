@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use serde_json::Value;
 
-const EMAIL_KEYS: &[&str] = &["email", "email_address", "emailAddress", "mail"];
+const EMAIL_KEYS: &[&str] = &["email", "email_address", "emailAddress", "mail", "id_token_email"];
 
 #[derive(Default)]
 struct Found {
@@ -91,6 +91,12 @@ mod tests {
         let v = json!({"token": {"id_token": make_jwt(&json!({"email":"a@b.co","sub":"123"}))}});
         assert_eq!(identity_of(&v).as_deref(), Some("a@b.co"));
         assert_eq!(email_of(&v).as_deref(), Some("a@b.co"));
+    }
+
+    #[test]
+    fn identity_from_agy_blob() {
+        let v = json!({"token": {"access_token": "ya29.x"}, "auth_method": "oauth", "id_token_email": "A@b.co"});
+        assert_eq!(identity_of(&v).as_deref(), Some("a@b.co"));
     }
 
     #[test]
