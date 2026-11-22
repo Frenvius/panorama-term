@@ -141,8 +141,8 @@ const ModelCombobox = ({ agents, value, exclude, placeholder, onPick }: ModelCom
     const handleOutside = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closePopover();
     };
-    document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
+    document.addEventListener('mousedown', handleOutside, true);
+    return () => document.removeEventListener('mousedown', handleOutside, true);
   }, [open]);
 
   React.useEffect(() => {
@@ -178,6 +178,8 @@ const ModelCombobox = ({ agents, value, exclude, placeholder, onPick }: ModelCom
     item?.scrollIntoView({ block: 'nearest' });
   }, [cursor, open]);
 
+  const togglePopover = () => (open ? closePopover() : openPopover());
+
   const handleQueryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setQuery(e.target.value);
     setCursor(0);
@@ -194,7 +196,7 @@ const ModelCombobox = ({ agents, value, exclude, placeholder, onPick }: ModelCom
     <div ref={rootRef} className={styles.wrapper}>
       <button
         type="button"
-        onClick={openPopover}
+        onClick={togglePopover}
         onKeyDown={handleTriggerKey}
         aria-haspopup="listbox"
         aria-expanded={open}
