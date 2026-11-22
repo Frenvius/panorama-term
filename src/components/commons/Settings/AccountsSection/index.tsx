@@ -24,6 +24,11 @@ const AccountsSection = () => {
 
   return (
     <>
+      {error && (
+        <Group label="Accounts">
+          <Row label="Last action failed" description={error} />
+        </Group>
+      )}
       {AGENTS.map(({ agent, label }) => (
         <AccountGroup key={agent} agent={agent} label={label} />
       ))}

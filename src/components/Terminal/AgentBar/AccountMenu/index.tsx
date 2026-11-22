@@ -1,9 +1,9 @@
 import React from 'react';
 import { Check, ChevronDown, User } from 'lucide-react';
 
+import { isTileBusy } from '~/usecase/util/accountSwitch';
 import { errorText, showToast } from '~/usecase/util/toasts';
 import { requestSettings } from '~/usecase/util/settingsNav';
-import { isTileBusy } from '~/usecase/util/accountSwitch';
 import { accountName } from '~/usecase/hooks/useAgentAccounts';
 import { useAccountMenu } from '~/usecase/hooks/useAccountMenu';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';

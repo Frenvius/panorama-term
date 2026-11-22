@@ -1,4 +1,4 @@
-import type { AgentAccount, AgentAccountKind, PerTileAccountKind } from '~/domain/interfaces/account.interface';
+import type { AgentAccount, AgentAccountKind } from '~/domain/interfaces/account.interface';
 
 import React from 'react';
 
@@ -42,13 +42,14 @@ export const useAccountMenu = (tileId: string, agent: string | null): AccountMen
 
   const select = async (id: string): Promise<void> => {
     const target = list.find((a) => a.id === id);
-    if (!kind || !target) return;
+    if (!target) return;
     if (kind === 'antigravity') {
       await switchAgyAccount(id, accountName(target));
       await agentAccountsActions.refresh();
       return;
     }
-    await switchTileAccount({ id, tileId, agent: kind as PerTileAccountKind });
+    if (!perTile) return;
+    await switchTileAccount({ id, tileId, agent: perTile });
     setTileCurrent(id);
   };
 
