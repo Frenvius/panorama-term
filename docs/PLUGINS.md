@@ -89,7 +89,7 @@ off or removed, Panorama goes back to its own theme.
 Colors a theme can set: `surface-1..3`, `border-1..3`, `text-1`, `text-strong`,
 `text-muted`, `text-dim`, `accent`, `danger`, `run-glyph`, `run-fill`, `run-on-fill`,
 `stop-fill`, `stop-on-fill`, `fill-hover`, `fill-press`, `hover-1..3`, `hover-soft`,
-`pill-bg`, `minimap-bg`, `shadow-island`, `shadow-tile`, `shadow-pop`, `shadow-modal`,
+`pill-bg`, `minimap-bg`, `note-surface`, `note-ink`, `shadow-island`, `shadow-tile`, `shadow-pop`, `shadow-modal`,
 and the code colors `shiki-foreground`, `shiki-token-comment`, `shiki-token-punctuation`,
 `shiki-token-link`, `shiki-token-keyword`, `shiki-token-string`,
 `shiki-token-string-expression`, `shiki-token-constant`, `shiki-token-parameter`,

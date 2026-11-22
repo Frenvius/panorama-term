@@ -39,7 +39,7 @@ import ContextMenu from '~/components/commons/ContextMenu';
 import { isMarkdownFile } from '~/usecase/util/codeEditor';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { operationTag } from '~/usecase/util/repoOperation';
-import { noteTheme, NOTE_PALETTE } from '~/usecase/util/note';
+import { noteTheme, noteSwatch, NOTE_SWATCHES, NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import { withBody, setFrontField } from '~/usecase/util/noteMeta';
 import HistoryMenu from '~/components/Canvas/TileFrame/HistoryMenu';
@@ -69,7 +69,6 @@ export interface PanelToolbarProps {
 }
 
 const RUN_ICON = 13;
-const NOTE_COLORS = NOTE_PALETTE;
 const PHASE_LABEL: Record<RunPhase, string> = {
   starting: 'Starting',
   restarting: 'Restarting',
@@ -722,16 +721,16 @@ const PanelToolbar = (props: PanelToolbarProps) => {
           />
 
           <div className={styles.colorSwatches}>
-            {NOTE_COLORS.map((c) => {
-              const activeColor = (tile.color || NOTE_COLORS[0].body).toLowerCase() === c.body.toLowerCase();
+            {NOTE_SWATCHES.map((c) => {
+              const activeColor = (tile.color || NOTE_DEFAULT_COLOR).toLowerCase() === c.toLowerCase();
               return (
                 <button
-                  key={c.body}
+                  key={c}
                   type="button"
                   className={activeColor ? `${styles.colorDot} ${styles.colorDotActive}` : styles.colorDot}
-                  style={{ background: c.body }}
-                  onClick={selectNoteColor(c.body)}
-                  aria-label={`Note color ${c.body}`}
+                  style={noteSwatch(c)}
+                  onClick={selectNoteColor(c)}
+                  aria-label={`Note color ${c}`}
                 />
               );
             })}

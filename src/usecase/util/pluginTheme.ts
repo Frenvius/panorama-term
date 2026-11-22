@@ -28,6 +28,8 @@ export const THEME_COLORS = [
   'hover-soft',
   'pill-bg',
   'minimap-bg',
+  'note-surface',
+  'note-ink',
   'shadow-island',
   'shadow-tile',
   'shadow-pop',

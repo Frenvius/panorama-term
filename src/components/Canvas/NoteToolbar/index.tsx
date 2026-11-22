@@ -2,7 +2,7 @@ import React from 'react';
 import type { EditorView } from '@codemirror/view';
 import { Bold, Code, List, Italic, Heading1, ListChecks, ListOrdered, Strikethrough } from 'lucide-react';
 
-import { NOTE_PALETTE, noteTheme } from '~/usecase/util/note';
+import { noteSwatch, NOTE_SWATCHES } from '~/usecase/util/note';
 
 import styles from './styles.module.scss';
 
@@ -70,14 +70,14 @@ const NoteToolbar = ({ editor, color, onColor }: NoteToolbarProps) => {
   return (
     <div className={styles.bar} onPointerDown={(e) => e.stopPropagation()}>
       <div className={styles.swatches}>
-        {NOTE_PALETTE.map((c) => (
+        {NOTE_SWATCHES.map((c) => (
           <button
-            key={c.body}
-            className={color.toLowerCase() === c.body.toLowerCase() ? `${styles.swatch} ${styles.active}` : styles.swatch}
-            style={{ background: noteTheme(c.body).body }}
+            key={c}
+            className={color.toLowerCase() === c.toLowerCase() ? `${styles.swatch} ${styles.active}` : styles.swatch}
+            style={noteSwatch(c)}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onColor(c.body)}
-            aria-label={`Color ${c.body}`}
+            onClick={() => onColor(c)}
+            aria-label={`Color ${c}`}
           />
         ))}
       </div>

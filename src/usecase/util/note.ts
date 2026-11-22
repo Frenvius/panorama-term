@@ -18,7 +18,21 @@ export const NOTE_PALETTE: NoteColor[] = [
 
 export const NOTE_DEFAULT_COLOR = NOTE_PALETTE[0].body;
 
-export const noteTextColor = (hex: string): string => {
+export const NOTE_THEME_COLOR = 'theme';
+
+export const NOTE_SWATCHES: string[] = [...NOTE_PALETTE.map((p) => p.body), NOTE_THEME_COLOR];
+
+const THEME_TINT = { body: 'var(--note-surface, var(--surface-3))', text: 'var(--note-ink, var(--text-strong))' };
+
+export const noteSwatch = (color: string): { background: string; borderColor?: string } => {
+  if (color !== NOTE_THEME_COLOR) return { background: noteTheme(color).body };
+  return {
+    background: `radial-gradient(circle, ${THEME_TINT.text} 0 2px, ${THEME_TINT.body} 2.5px)`,
+    borderColor: 'var(--border-3)'
+  };
+};
+
+export const noteTextColor =(hex: string): string => {
   const found = NOTE_PALETTE.find((p) => p.body.toLowerCase() === hex.toLowerCase());
   if (found) return found.text;
   const c = hex.replace('#', '');
@@ -32,6 +46,7 @@ export const noteTextColor = (hex: string): string => {
 
 export const noteTheme = (hex?: string): { body: string; text: string } => {
   const raw = hex || NOTE_DEFAULT_COLOR;
+  if (raw === NOTE_THEME_COLOR) return THEME_TINT;
   const found = NOTE_PALETTE.find((p) => p.body.toLowerCase() === raw.toLowerCase());
   if (!found) return { body: raw, text: noteTextColor(raw) };
   return {

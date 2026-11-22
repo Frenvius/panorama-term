@@ -31,8 +31,8 @@
   cursor: pointer;
   user-select: none;
   pointer-events: auto;
-  background: color-mix(in srgb, var(--note-body) 78%, #000);
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: color-mix(in srgb, var(--note-body) 93%, var(--note-text));
+  border: 1px solid color-mix(in srgb, var(--note-text) 15%, transparent);
   border-bottom: none;
   border-radius: 6px 6px 0 0;
   opacity: 0.85;
@@ -98,7 +98,6 @@
   justify-content: center;
   min-width: 24px;
   padding: 0 4px 4px;
-  opacity: 0.6;
 }
 
 .raised .row {
