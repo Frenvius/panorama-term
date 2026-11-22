@@ -79,9 +79,11 @@ const AccountRow = ({ account, live, onRemove }: AccountRowProps) => {
           Activate
         </Button>
       )}
-      <button type="button" className={styles.iconBtn} aria-label="Rename account" onClick={startRename}>
-        <Pencil size={13} strokeWidth={1.75} />
-      </button>
+      {!account.system && (
+        <button type="button" className={styles.iconBtn} aria-label="Rename account" onClick={startRename}>
+          <Pencil size={13} strokeWidth={1.75} />
+        </button>
+      )}
       {!account.system && (
         <button type="button" className={`${styles.iconBtn} ${styles.danger}`} aria-label="Remove account" onClick={requestRemove}>
           <Trash2 size={13} strokeWidth={1.75} />

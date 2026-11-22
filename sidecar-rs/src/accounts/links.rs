@@ -183,6 +183,10 @@ fn remove_link(path: &Path) {
 }
 
 pub fn remove_account_dir(dir: &Path) {
+    if is_link(dir) {
+        remove_link(dir);
+        return;
+    }
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();

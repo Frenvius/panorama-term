@@ -5,12 +5,12 @@ import { Plus } from 'lucide-react';
 
 import { useAccountLogin, accountLoginActions } from '~/usecase/hooks/useAccountLogin';
 import { accountsOf, accountName, useAgentAccounts, agentAccountsActions } from '~/usecase/hooks/useAgentAccounts';
-import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
+import Group from '~/components/commons/Settings/Group';
 import Select from '~/components/commons/Settings/Select';
 import Button from '~/components/commons/Settings/Button';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
-import AccountRow from '../AccountRow';
+import AccountRow from '~/components/commons/Settings/AccountsSection/AccountRow';
 import styles from './styles.module.scss';
 
 interface AccountGroupProps {

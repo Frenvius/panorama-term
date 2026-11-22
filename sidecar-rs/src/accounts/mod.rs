@@ -134,7 +134,7 @@ fn valid_agent(agent: &str) -> bool {
 }
 
 fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    (1..=32).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 pub struct Service {
@@ -296,10 +296,14 @@ impl Service {
             let a = s("agent")?;
             if valid_agent(a) { Ok(a) } else { Err(fail("invalid", "unknown agent")) }
         };
+        let id = || -> Result<&str, ApiError> {
+            let id = s("id")?;
+            if id == SYSTEM || valid_id(id) { Ok(id) } else { Err(fail("invalid", "invalid account id")) }
+        };
         match cmd {
             "list" => Ok(self.list()),
             "add-start" => {
-                s("tileId")?;
+                let tile_id = s("tileId")?;
                 match agent()? {
                     "antigravity" => {
                         let (pending_id, command) = self.agy_add_start()?;
@@ -307,7 +311,7 @@ impl Service {
                         Ok(json!({ "pendingId": pending_id, "command": command }))
                     }
                     cli => {
-                        let (pending_id, command) = self.cli_add_start(cli, s("tileId")?)?;
+                        let (pending_id, command) = self.cli_add_start(cli, tile_id)?;
                         self.spawn_poll(pending_id.clone());
                         Ok(json!({ "pendingId": pending_id, "command": command }))
                     }
@@ -318,15 +322,15 @@ impl Service {
                 self.agy_add_cancel(s("pendingId")?);
                 Ok(json!({}))
             }
-            "remove" => self.remove(agent()?, s("id")?).map(|_| json!({})),
-            "rename" => self.rename(agent()?, s("id")?, s("label")?).map(|_| json!({})),
-            "set-default" => self.set_default(agent()?, s("id")?).map(|_| json!({})),
+            "remove" => self.remove(agent()?, id()?).map(|_| json!({})),
+            "rename" => self.rename(agent()?, id()?, s("label")?).map(|_| json!({})),
+            "set-default" => self.set_default(agent()?, id()?).map(|_| json!({})),
             "activate" => match agent()? {
-                "antigravity" => self.agy_activate(s("id")?),
+                "antigravity" => self.agy_activate(id()?),
                 _ => Err(fail("unsupported", "only antigravity supports activate")),
             },
             "tile-get" => Ok(self.tile_get(s("tileId")?)),
-            "tile-set" => self.tile_set(s("tileId")?, agent()?, s("id")?).map(|_| json!({})),
+            "tile-set" => self.tile_set(s("tileId")?, agent()?, id()?).map(|_| json!({})),
             _ => Err(fail("unknown_command", format!("unknown accounts command: {cmd}"))),
         }
     }
@@ -768,5 +772,33 @@ mod tests {
         assert_eq!(ok, json!({"ok": true, "x": 1}));
         let bad: Value = serde_json::from_str(&reply(Err(fail("c", "m")))).unwrap();
         assert_eq!(bad, json!({"ok": false, "error": {"code": "c", "message": "m"}}));
+    }
+
+    #[test]
+    fn dispatch_rejects_path_like_ids() {
+        let (svc, _io, dir) = setup("ids");
+        let svc = Arc::new(svc);
+        for id in ["../x", "..\\x", "a/b", "ABC", ""] {
+            let body = json!({ "agent": "claude", "id": id }).to_string();
+            assert_eq!(svc.dispatch("remove", body.as_bytes()).unwrap_err().code, "invalid");
+        }
+        let body = json!({ "agent": "claude", "id": "system", "tileId": "t1" }).to_string();
+        assert!(svc.dispatch("tile-set", body.as_bytes()).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_linked_account_dir_keeps_target() {
+        let dir = tmp_dir("rmjunction");
+        let real = dir.join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::fs::write(real.join("sub").join("f"), "keep").unwrap();
+        let acc = dir.join("acc");
+        std::os::unix::fs::symlink(&real, &acc).unwrap();
+        links::remove_account_dir(&acc);
+        assert!(!acc.exists());
+        assert_eq!(std::fs::read_to_string(real.join("sub").join("f")).unwrap(), "keep");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

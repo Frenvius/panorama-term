@@ -82,4 +82,4 @@ export const useAgentAccounts = (): AgentAccountsState => React.useSyncExternalS
 export const accountsOf = (accounts: AgentAccount[], agent: AgentAccountKind): AgentAccount[] =>
   accounts.filter((a) => a.agent === agent);
 
-export const accountName = (account: AgentAccount): string => account.email ?? account.label;
+export const accountName = (account: AgentAccount): string => (account.system ? (account.email ?? account.label) : account.label);

@@ -6,18 +6,18 @@ import { agentAccountsActions } from '~/usecase/hooks/useAgentAccounts';
 import { createTileId, requestOpenTerminal } from '~/usecase/util/openTerminalRequest';
 import { cancelAccountLogin, getAccountLoginStatus, startAccountLogin } from '~/adapter/accounts/accounts.client';
 
-export interface AccountLoginState {
+export interface AccountLoginProgress {
   busy: boolean;
   pendingId: string | null;
   error: string | null;
 }
 
 const POLL_MS = 2000;
-const IDLE: AccountLoginState = { busy: false, pendingId: null, error: null };
+const IDLE: AccountLoginProgress = { busy: false, pendingId: null, error: null };
 
 const FAILURE_TEXT: Record<string, string> = { duplicate: 'This account is already added' };
 
-let states: Partial<Record<AgentAccountKind, AccountLoginState>> = {};
+let states: Partial<Record<AgentAccountKind, AccountLoginProgress>> = {};
 
 const timers = new Map<AgentAccountKind, number>();
 const listeners = new Set<() => void>();
@@ -26,7 +26,7 @@ const notify = (): void => {
   for (const fn of listeners) fn();
 };
 
-const setState = (agent: AgentAccountKind, next: AccountLoginState): void => {
+const setState = (agent: AgentAccountKind, next: AccountLoginProgress): void => {
   states = { ...states, [agent]: next };
   notify();
 };
@@ -93,7 +93,7 @@ const subscribe = (fn: () => void): (() => void) => {
   return () => listeners.delete(fn);
 };
 
-export const useAccountLogin = (agent: AgentAccountKind): AccountLoginState => {
+export const useAccountLogin = (agent: AgentAccountKind): AccountLoginProgress => {
   const snapshot = React.useSyncExternalStore(subscribe, () => states[agent] ?? IDLE);
   return snapshot;
 };

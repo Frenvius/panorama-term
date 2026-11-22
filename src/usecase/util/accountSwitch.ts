@@ -28,19 +28,37 @@ export const switchTileAccount = async ({ id, tileId, agent }: SwitchTileOpts): 
 
 const agyCommand = (tile: AgyTile): string => restartCommand('antigravity', tile.conversationId, 'agy');
 
+const deferredRestarts = new Map<string, () => void>();
+
+const cancelDeferredRestart = (tileId: string): void => deferredRestarts.get(tileId)?.();
+
+const restartNow = (tile: AgyTile): void => {
+  cancelDeferredRestart(tile.tileId);
+  requestTileRestart(tile.tileId, agyCommand(tile));
+};
+
 const restartWhenIdle = (tile: AgyTile): void => {
-  const command = agyCommand(tile);
-  const off = subscribeTileActivity(() => {
-    if (isTileBusy(tile.tileId)) return;
+  cancelDeferredRestart(tile.tileId);
+  let sawBusy = tile.status === 'busy';
+  const check = (): void => {
+    if (isTileBusy(tile.tileId)) {
+      sawBusy = true;
+      return;
+    }
+    if (sawBusy) restartNow(tile);
+  };
+  const off = subscribeTileActivity(check);
+  deferredRestarts.set(tile.tileId, () => {
     off();
-    requestTileRestart(tile.tileId, command);
+    deferredRestarts.delete(tile.tileId);
   });
+  check();
 };
 
 export const switchAgyAccount = async (id: string, name: string): Promise<void> => {
   const { tiles } = await activateAgyAccount(id);
   for (const tile of tiles) {
-    if (tile.status === null || tile.status === 'idle') requestTileRestart(tile.tileId, agyCommand(tile));
+    if (tile.status === null || tile.status === 'idle') restartNow(tile);
     else restartWhenIdle(tile);
   }
   const count = tiles.length;
