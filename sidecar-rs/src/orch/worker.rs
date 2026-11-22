@@ -21,6 +21,7 @@ const STARTUP_ANSWER_MAX_SENDS: u8 = 3;
 const NUDGE_COOLDOWN_S: u64 = 30;
 const EXITED_SHELL_POLLS: u8 = 6;
 const EXITED_MIN_WAIT_S: u64 = 2;
+const ARGV_EARLY_EXIT_WATCH_S: u64 = 15;
 const WORKER_COLS: u16 = 120;
 const WORKER_ROWS: u16 = 30;
 
@@ -202,11 +203,10 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
     }
     send_to_tile(tile_id, &command)?;
 
-    wait_for_agent_ready(tile_id, profile).await?;
-
     if profile.brief_delivery == BriefDelivery::ArgvPointer {
-        return Ok(());
+        return watch_argv_startup(tile_id, profile).await;
     }
+    wait_for_agent_ready(tile_id, profile).await?;
     let brief = std::fs::read_to_string(brief_path).map_err(|e| format!("read brief: {e}"))?;
     send_to_tile(tile_id, &brief)
 }
@@ -265,6 +265,57 @@ async fn send_keys(session: &std::sync::Arc<crate::Session>, keys: &str) {
     }
 }
 
+fn exited_during_startup(shell_polls: u8, since_launch: Duration) -> bool {
+    shell_polls >= EXITED_SHELL_POLLS && since_launch >= Duration::from_secs(EXITED_MIN_WAIT_S)
+}
+
+fn exited_error(tile_id: &str) -> String {
+    let tail = capture_worker_screen(tile_id, 10);
+    format!("agent exited during startup; screen: {}", tail.trim())
+}
+
+async fn answer_startup_prompt(tile_id: &str, profile: &Profile, answer_sends: &mut [u8]) -> bool {
+    let screen = capture_worker_screen(tile_id, 40);
+    let pending = profile.startup_answers.iter().zip(answer_sends.iter_mut())
+        .find(|(answer, sends)| **sends < STARTUP_ANSWER_MAX_SENDS && screen.contains(&answer.contains));
+    let Some((answer, sends)) = pending else { return false };
+    *sends += 1;
+    if let Some(s) = lookup_live(tile_id) {
+        send_keys(&s, &answer.send).await;
+    }
+    true
+}
+
+async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(ARGV_EARLY_EXIT_WATCH_S);
+    let launch_time = Instant::now();
+    let mut last_activity = Instant::now();
+    let mut last_snapshot_len = 0usize;
+    let mut answer_sends = vec![0u8; profile.startup_answers.len()];
+    let mut shell_polls = 0u8;
+
+    while Instant::now() < deadline {
+        let snapshot_len = host_handle().snapshot(tile_id).len();
+        if snapshot_len != last_snapshot_len {
+            last_snapshot_len = snapshot_len;
+            last_activity = Instant::now();
+        }
+        let quiet_duration = Instant::now().duration_since(last_activity);
+        if quiet_duration >= Duration::from_millis(STARTUP_ANSWER_QUIET_MS)
+            && answer_startup_prompt(tile_id, profile, &mut answer_sends).await
+        {
+            last_activity = Instant::now();
+        }
+
+        shell_polls = if agent_back_at_shell(tile_id) { shell_polls.saturating_add(1) } else { 0 };
+        if exited_during_startup(shell_polls, Instant::now().duration_since(launch_time)) {
+            return Err(exited_error(tile_id));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    Ok(())
+}
+
 async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(AGENT_READY_IDLE_TIMEOUT_S);
     let launch_time = Instant::now();
@@ -286,19 +337,12 @@ async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), St
         }
         let quiet_duration = Instant::now().duration_since(last_activity);
 
-        if quiet_duration >= Duration::from_millis(STARTUP_ANSWER_QUIET_MS) {
-            let screen = capture_worker_screen(tile_id, 40);
-            let pending = profile.startup_answers.iter().zip(answer_sends.iter_mut())
-                .find(|(answer, sends)| **sends < STARTUP_ANSWER_MAX_SENDS && screen.contains(&answer.contains));
-            if let Some((answer, sends)) = pending {
-                *sends += 1;
-                if let Some(s) = lookup_live(tile_id) {
-                    send_keys(&s, &answer.send).await;
-                }
-                last_activity = Instant::now();
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                continue;
-            }
+        if quiet_duration >= Duration::from_millis(STARTUP_ANSWER_QUIET_MS)
+            && answer_startup_prompt(tile_id, profile, &mut answer_sends).await
+        {
+            last_activity = Instant::now();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
         }
 
         if let Some(s) = lookup_live(tile_id) {
@@ -313,9 +357,8 @@ async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), St
 
         let since_launch = Instant::now().duration_since(launch_time);
         shell_polls = if agent_back_at_shell(tile_id) { shell_polls.saturating_add(1) } else { 0 };
-        if shell_polls >= EXITED_SHELL_POLLS && since_launch >= Duration::from_secs(EXITED_MIN_WAIT_S) {
-            let tail = capture_worker_screen(tile_id, 10);
-            return Err(format!("agent exited during startup; screen: {}", tail.trim()));
+        if exited_during_startup(shell_polls, since_launch) {
+            return Err(exited_error(tile_id));
         }
         if profile.ready_signal == ReadySignal::Quiet
             && since_launch >= Duration::from_secs(AGENT_QUIET_WAIT_S)
@@ -398,6 +441,15 @@ mod tests {
     use super::*;
     use crate::orch::model::{Task, TaskStatus, Dispatch, DispatchStatus};
     use std::path::PathBuf;
+
+    #[test]
+    fn early_exit_needs_polls_and_min_wait() {
+        let late = Duration::from_secs(EXITED_MIN_WAIT_S);
+        assert!(exited_during_startup(EXITED_SHELL_POLLS, late));
+        assert!(!exited_during_startup(EXITED_SHELL_POLLS - 1, late));
+        assert!(!exited_during_startup(EXITED_SHELL_POLLS, Duration::from_secs(EXITED_MIN_WAIT_S - 1)));
+        assert!(!exited_during_startup(0, Duration::from_secs(60)));
+    }
 
     #[test]
     fn worker_settings_allow_rules() {
