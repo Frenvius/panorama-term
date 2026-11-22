@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.8]
+
+### Added
+- Multi-account hot swap for Antigravity, Claude and Codex, with an account switcher in the usage popover.
+- Orchestration boards can be deleted, and finished boards can be closed.
+- A setting to turn off notification toasts. Toasts also stay hidden while another app is fullscreen.
+- A note color that follows the light or dark theme.
+
+### Changed
+- Stop buttons on board task cards are red.
+
+### Fixed
+- Opening a worker from a board card brings its terminal to the front instead of behind other tiles.
+- Codex workers launch reliably with the right environment and hooks.
+- The status bar stays above a fullscreen tile.
+- The agent prompt bar anchors correctly over the Codex composer.
+- Antigravity login identity is detected correctly.
+- Orchestration run total cost shows two decimals.
+
 ## [0.4.7]
 
 ### Fixed
