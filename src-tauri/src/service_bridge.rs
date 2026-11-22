@@ -236,7 +236,7 @@ pub async fn dispatch(command: &str, args: &Value) -> Result<Value, String> {
         "docker_action" => {
             value(crate::docker::docker_action(arg(args, "id")?, arg(args, "action")?).await?)
         }
-        "agent_usage" => value(crate::usage::agent_usage(arg(args, "provider")?).await?),
+        "agent_usage" => value(crate::usage::agent_usage(arg(args, "provider")?, arg(args, "accountId")?).await?),
         "agent_history" => value(
             crate::history::agent_history(
                 arg(args, "agent")?,
