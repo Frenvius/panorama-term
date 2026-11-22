@@ -104,6 +104,20 @@ fn antigravity_usage() -> Result<Value, String> {
     agy_usage_result(&stdout)
 }
 
+fn extra_ca_certs() -> Vec<reqwest::Certificate> {
+    let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS") else {
+        return Vec::new();
+    };
+    let Ok(pem) = std::fs::read(&path) else {
+        eprintln!("[usage] cannot read NODE_EXTRA_CA_CERTS {}", PathBuf::from(path).display());
+        return Vec::new();
+    };
+    reqwest::Certificate::from_pem_bundle(&pem).unwrap_or_else(|e| {
+        eprintln!("[usage] invalid NODE_EXTRA_CA_CERTS: {e}");
+        Vec::new()
+    })
+}
+
 #[tauri::command]
 pub async fn agent_usage(provider: String) -> Result<Value, String> {
     if provider == "antigravity" {
@@ -121,6 +135,7 @@ pub async fn agent_usage(provider: String) -> Result<Value, String> {
     }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
+        .tls_certs_merge(extra_ca_certs())
         .build()
         .map_err(|e| e.to_string())?;
     let mut req = client.get(url);
