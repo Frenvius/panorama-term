@@ -1,0 +1,11 @@
+.section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.title {
+  font-size: 11px;
+  color: var(--text-muted);
+}

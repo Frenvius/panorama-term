@@ -2,15 +2,17 @@ import type { ProviderUsage } from '~/domain/interfaces/usage.interface';
 
 import UsageBar from '~/components/commons/StatusBar/UsageBar';
 import UsageLogo from '~/components/commons/StatusBar/UsageLogo';
+import AccountSwitch from '~/components/commons/StatusBar/UsageDetails/AccountSwitch';
 import { ERROR_TEXT, formatReset, WINDOW_TITLES, PROVIDER_NAMES } from '~/components/commons/StatusBar/constants';
 
 import styles from './styles.module.scss';
 
 interface UsageDetailsProps {
   usage: ProviderUsage;
+  onAccountSwitched?: () => void;
 }
 
-const UsageDetails = ({ usage }: UsageDetailsProps) => (
+const UsageDetails = ({ usage, onAccountSwitched }: UsageDetailsProps) => (
   <div className={styles.panel}>
     <div className={styles.heading}>
       <UsageLogo provider={usage.provider} size={14} />
@@ -27,6 +29,7 @@ const UsageDetails = ({ usage }: UsageDetailsProps) => (
         {w.resetsAt && <div className={styles.reset}>{formatReset(w.resetsAt)}</div>}
       </div>
     ))}
+    {usage.provider === 'antigravity' && <AccountSwitch onSwitched={onAccountSwitched} />}
   </div>
 );
 

@@ -60,7 +60,7 @@ const StatusBar = () => {
         </button>
       )}
       {shown.map((u) => (
-        <UsageSegment usage={u} key={u.provider} />
+        <UsageSegment usage={u} key={u.provider} onAccountSwitched={refresh} />
       ))}
       {enabled.length > 0 ? (
         <button onClick={refresh} className={styles.icon} data-tooltip-place="top" data-tooltip="Refresh usage">

@@ -15,9 +15,10 @@ interface SelectProps {
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  size?: 'md' | 'sm';
 }
 
-const Select = ({ options, value, onChange, placeholder, disabled }: SelectProps) => {
+const Select = ({ options, value, onChange, placeholder, disabled, size = 'md' }: SelectProps) => {
   const [open, setOpen] = React.useState(false);
   const [cursor, setCursor] = React.useState(0);
   const rootRef = React.useRef<HTMLDivElement>(null);
@@ -105,12 +106,12 @@ const Select = ({ options, value, onChange, placeholder, disabled }: SelectProps
         onKeyDown={handleTriggerKey}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`${styles.trigger} ${open ? styles.open : ''}`}
+        className={`${styles.trigger} ${open ? styles.open : ''} ${size === 'sm' ? styles.small : ''}`}
       >
         <span className={selectedOpt ? '' : styles.placeholder}>
           {selectedOpt ? selectedOpt.label : (placeholder ?? 'Select...')}
         </span>
-        <ChevronDown size={14} strokeWidth={1.75} className={styles.chevron} />
+        <ChevronDown size={size === 'sm' ? 12 : 14} strokeWidth={1.75} className={styles.chevron} />
       </button>
       {open && (
         <div

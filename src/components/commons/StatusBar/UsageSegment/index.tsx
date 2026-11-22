@@ -11,11 +11,12 @@ import styles from './styles.module.scss';
 
 interface UsageSegmentProps {
   usage: ProviderUsage;
+  onAccountSwitched?: () => void;
 }
 
 const windowLabel = (w: UsageWindow) => (w.key === 'session' && w.resetsAt ? formatLeft(w.resetsAt - Date.now()) : w.label);
 
-const UsageSegment = ({ usage }: UsageSegmentProps) => {
+const UsageSegment = ({ usage, onAccountSwitched }: UsageSegmentProps) => {
   const [open, setOpen] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const tightest = usage.windows.reduce<UsageWindow | null>((max, w) => (!max || w.used > max.used ? w : max), null);
@@ -33,7 +34,7 @@ const UsageSegment = ({ usage }: UsageSegmentProps) => {
 
   return (
     <span className={styles.segment} onPointerEnter={openDetails} onPointerLeave={closeDetails}>
-      {open && <UsageDetails usage={usage} />}
+      {open && <UsageDetails usage={usage} onAccountSwitched={onAccountSwitched} />}
       <UsageLogo provider={usage.provider} size={12} />
       {tightest && <UsageBar used={tightest.used} />}
       {usage.windows.map((w, i) => (
