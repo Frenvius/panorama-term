@@ -1,23 +1,23 @@
 {
-  "version": "0.4.5",
-  "notes": "### Added\n- Tidy with AI shows live progress below the projects header: the current step and elapsed seconds, so a long run no longer looks stuck.\n- New canvas reorder that clusters tiles around the center.\n- The run board uses four columns with compact task cards.\n\n### Fixed\n- AI actions and orchestration workers no longer fail with \"not recognized\" when the merged PATH grew past the Windows command line limit.\n- AI action errors now show the CLI's real message instead of an empty one.\n\n### Performance\n- Tidy with Codex skips project docs, shell commands and web search, so it answers faster and no longer explores folders.",
-  "pub_date": "2026-11-21T16:18:05Z",
+  "version": "0.4.6",
+  "notes": "### Added\n- Antigravity CLI (`agy`) support: live status and notifications in its tiles, conversation history with resume, orchestration workers and AI actions (commit message, tidy).\n- Antigravity usage in the status bar, showing the tightest 5-hour and weekly quota.\n- Settings > Agents lets you pick which providers show usage in the status bar.\n- Tidy groups projects by context, can lock the order of frames and packs tiles without gaps.\n\n### Changed\n- The agent prompt bar keeps its status chips at the bottom, and the model and effort controls stay on the first line while you type.\n\n### Fixed\n- The model dropdown in Settings closes when you click outside it.\n- Reordering no longer leaves holes from locked frames or uneven frame grids.\n- Notes stay in their frame's project across tidy and project mode.",
+  "pub_date": "2026-11-22T17:47:01Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGl2NEJtMTMvMG94eGZMRmlRcHp3Qld5UDYxdkZnTmtVTzBaQURFeG1mMnIrQ0VxeUtObmQyTzdRZ0NjZFdqRlpRTzcxVExBWmFPNENkbkVhVlZMSXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3NDI5CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC41CjZpd0lyNitmYlhjSWw2aVZDMUZuc21RYlNBN1B4dzhqNDliRUZIVGZ0V0Z6S2kzWStaS0NPTVRiVDU1REFVOFVMNm84UWhGTUNjUy93R1hIbU15RUFBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.6/Panorama_0.4.6_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHR2OHRzSjFhRWUwS1NxUkVidFhMbWwyZmJiTFE2MUcwbDlsQmR6QWl4bGZTMkFXaGs0dXBQYWZ3SjNYd2wvQXl1TlVnblpUYjYrSldseHI2bHFqd3c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzY5MTYyCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC42CnAvM2xBK09tOUlRMlNlWE90SzVKcndUTE1JQzBaV0kyY1FoWnVQZzRZN1Z0L1pjRXFGb081TTZ5MjVyS1daQUVZemUzRUVubENWamEzLzUxV1l6Y0JRPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHMrc2VxWUxaTDJzOWFJWXZKazErbmFKSi9HMHo2TG03ZnpRZG44SWdDU0dzQnlQcDVWMHpPdTl2L1RNekdVN0JPd0U2NUhjTnNaU3RSZjJ2VkZxcndzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3NTA3CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC41CjlmYzFjbXluLytUVTFNVHU5emM2djhYUytjQ1o3YTRlRTd6WTNFWjJKUFZmQ0RzZUZXamZKR1Jmc3FObm95aUxFOWNOOG5oNnZXVWJpWmQyRE1kTkJBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.6/Panorama_0.4.6_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHJtcWZqYmVaNXpydy9hd3UzQTZIaHNmNi9aYWZ4U1hPSTl5OFNSdFA1emJucWZ4RTJlNTRZZ1J2Ri9NZTBIUGc0K0ZnblQ0K1pkVUhvM0poN3lwcmdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzY5MjQyCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC42CmlWZmo2ZmFFK1VEV1NRNTd2aTZ6V1M5aDB2Mlp0QmJvdzhIK3FIMDlBRkNOT3dLc0VkODEzdy9yNHNZQVhsLzlZcnZHS251eURHZVFSL3owdnBUa0NRPT0K"
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGt1TXArTC9aRWJRckhrTmpQUjNIRWJtWXJQZnQ5amZjUEE4Q0o5RkZSNnlvS25TbDB1U0Vvc0VsQWNvR1ZrSUhvQW1wbHpWbzEyQXlmeE83RGVMUVEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3Njk4CWZpbGU6UGFub3JhbWFfMC40LjVfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjQuNQpvN3lqOFR0MmQ1dWorTEJrSHliMDVwZFppRHJlWmlvcVRGMDJ1RW1DaVpOaDFwWHcreWJUT09zNE9Ub1RsNkRZS3lKZzNmeWQ0Rzd3QjB0QVhkdEpDUT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.6/Panorama_0.4.6_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHVIaEZkVHU4cXNPTFVIbndINm0ybnhxc2lHRTlIUkszYXdxaGp6bW5jUkNUUTUrRzlORzFmWFBudWl5cERDekY2Zm1VVVE0RG1lL09POVVYQWgrekFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzY5MzE0CWZpbGU6UGFub3JhbWFfMC40LjZfYW1kNjQuQXBwSW1hZ2UJdmVyc2lvbjowLjQuNgp5bWFTR3AwaFI2VWtKcUpCZlRCcnZESElXM3pkZklFamI5QUIyMVBrL2J3dUcyWkxDK01qemVneXg3Q2lKSWs2ZU9QWWpoS0F1dGdFTlRkdHJJWUJBZz09Cg=="
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.5/Panorama_0.4.5_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFWaWZZa1ZlU1BZWHZjZnhLOXBTTDM3SVVrRjFoY0lCbVJmeXY5dXd0WXlnOWd6NGtWUkxUejZUKzdBZEkray91dVNxV0VuNGhJaW9vOG12K2ZWYkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mjc3ODE3CWZpbGU6UGFub3JhbWFfMC40LjVfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC41CjhLNm80My9YakUxK2hHdCtpY2kxeG5pNElVekpsbmMxeVR0ZThhSFE0eGw3Tzg0bGVIRzJsZnNhQTRmSHdadkxiQk5zRXhTc3B3dWtZcW4rZFRDN0NRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.6/Panorama_0.4.6_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHFTZ2w0ZTVCdlhEbTNsYXNURXpkbmc3OCsrcFA1dUpHUE0reDJqY0lEalo1MU5NaTd4YWw5UktIR0xWM0tKU1lmejVEOWFnNWhxb3l2UVdTK2dzS1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzY5NTU4CWZpbGU6UGFub3JhbWFfMC40LjZfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC42ClgwcGt6eWFyT1A1aEVpSDRvN044TzFLWUk3REZPbDdHVW93cHYvMmdLWndwYmJWT2xkZFR1NVQyZFhJcjQ1QXBaYy9qRmdiMFNPSEhKbW16MXRNSkRnPT0K"
     }
   }
 }
