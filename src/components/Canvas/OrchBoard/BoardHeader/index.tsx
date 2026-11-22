@@ -196,8 +196,8 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
         <div className={styles.runMeta} ref={metaRef}>
           {cost != null && (
             hasBreakdown
-              ? <button type="button" className={styles.costBtn} onClick={handleCostClick}>${cost.toFixed(4)}</button>
-              : <span>${cost.toFixed(4)}</span>
+              ? <button type="button" className={styles.costBtn} onClick={handleCostClick}>${cost.toFixed(2)}</button>
+              : <span>${cost.toFixed(2)}</span>
           )}
           <span>{elapsed}</span>
           {breakdownOpen && (
