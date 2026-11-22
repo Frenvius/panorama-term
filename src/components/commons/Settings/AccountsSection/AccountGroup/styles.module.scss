@@ -1,0 +1,34 @@
+.waiting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-1);
+  background: var(--hover-soft);
+}
+
+.waitingText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.waitingTitle {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.waitingHint {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.error {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--danger);
+  font-size: 12px;
+  border-top: 1px solid var(--border-1);
+}

@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 
 import React from 'react';
-import { X, Bot, Bell, Search, Puzzle, Palette, Workflow, Keyboard, Monitor, Sparkles, Smartphone, LayoutGrid, SquareTerminal } from 'lucide-react';
+import { X, Bot, Bell, Users, Search, Puzzle, Palette, Workflow, Keyboard, Monitor, Sparkles, Smartphone, LayoutGrid, SquareTerminal } from 'lucide-react';
 
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from '~/usecase/util/settingsNav';
 import { resetCanvas, resetAppearance, resetTerminal, resetNotifications, resetAgents, resetOrchestration, resetAiActions, resetShortcuts, RESET_DESCRIPTIONS } from '~/usecase/util/settingsDefaults';
@@ -16,6 +16,7 @@ import TerminalSection from './TerminalSection';
 import ShortcutsSection from './ShortcutsSection';
 import AppearanceSection from './AppearanceSection';
 import AiActionsSection from './AiActionsSection';
+import AccountsSection from './AccountsSection';
 import OrchestrationSection from './OrchestrationSection';
 import NotificationsSection from './NotificationsSection';
 import styles from './styles.module.scss';
@@ -31,6 +32,7 @@ const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
   terminal: SquareTerminal,
   notifications: Bell,
   agents: Bot,
+  accounts: Users,
   orchestration: Workflow,
   aiActions: Sparkles,
   devices: Smartphone,
@@ -51,6 +53,7 @@ const SECTION_META: Record<SettingsSection, SectionMeta> = {
   terminal: { title: 'Terminal', subtitle: 'Changes apply to new terminals.', hasReset: true },
   notifications: { title: 'Notifications', subtitle: 'Toast display position and monitor.', hasReset: true },
   agents: { title: 'Agents', subtitle: 'Model picker and Claude Code settings.', hasReset: true },
+  accounts: { title: 'Accounts', subtitle: 'Log in to several accounts and pick one per terminal.' },
   orchestration: { title: 'Orchestration', subtitle: 'Agents and models used for multi-agent runs.', hasReset: true },
   aiActions: { title: 'AI actions', subtitle: 'Provider and model for AI-powered actions.', hasReset: true },
   devices: { title: 'Devices', subtitle: 'Manage phone and desktop connections.' },
@@ -246,6 +249,7 @@ const Settings = ({ initialSection = 'canvas', onClose }: SettingsProps) => {
             {section === 'terminal' && <TerminalSection key={resetKey} />}
             {section === 'notifications' && <NotificationsSection key={resetKey} />}
             {section === 'agents' && <AgentsSection key={resetKey} />}
+            {section === 'accounts' && <AccountsSection />}
             {section === 'orchestration' && <OrchestrationSection key={resetKey} />}
             {section === 'aiActions' && <AiActionsSection key={resetKey} />}
             {section === 'devices' && <DevicesSection />}

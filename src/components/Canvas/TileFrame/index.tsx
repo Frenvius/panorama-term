@@ -29,6 +29,7 @@ import BranchMenu from '~/components/Canvas/TileFrame/BranchMenu';
 import HistoryMenu from '~/components/Canvas/TileFrame/HistoryMenu';
 import { hasHistory, resumeCommand } from '~/usecase/util/agentHistory';
 import { reportAgent } from '~/usecase/util/tileActivity';
+import { useTileRestart } from '~/usecase/util/tileRestart';
 import type { TerminalRestart } from '~/domain/interfaces/pty.interface';
 import GridTerminal from '~/components/Terminal/GridTerminal';
 import { useRun } from '~/usecase/hooks/useRun';
@@ -158,6 +159,7 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
     setRestarting(true);
   };
   const restartTile = () => restartWith();
+  useTileRestart(tile.id, restartWith);
 
   React.useEffect(() => {
     if (!restarting) return;
