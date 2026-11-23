@@ -156,11 +156,14 @@ async fn apply(mut body: Value, run_id: String) -> Result<String, String> {
     }
     let run = created_run(&run_id).await;
     let mut started = Vec::new();
+    let mut failed_to_start = Vec::new();
+    let mut deferred = Vec::new();
     if start {
         let max_workers = run["limits"]["maxWorkers"].as_u64().unwrap_or_default() as usize;
         for i in roots {
             if started.len() >= max_workers {
-                break;
+                deferred.push(summaries[i]["id"].clone());
+                continue;
             }
             let task_id = &summaries[i]["id"];
             let response =
@@ -169,15 +172,12 @@ async fn apply(mut body: Value, run_id: String) -> Result<String, String> {
             if let Some(id) = response["dispatch"]["id"].as_str() {
                 started.push(id.to_owned());
             } else if response["ok"] != true {
-                eprintln!(
-                    "[orch] plan-apply {run_id}/{task_id}: {}",
-                    response["error"]
-                );
+                failed_to_start.push(json!({"taskId": task_id, "error": response["error"]}));
             }
         }
     }
     Ok(ok_resp(
-        json!({"run": run, "tasks": summaries, "started": started}),
+        json!({"run": run, "tasks": summaries, "started": started, "failedToStart": failed_to_start, "deferred": deferred}),
     ))
 }
 
@@ -304,9 +304,23 @@ mod tests {
         let response: Value = serde_json::from_str(&response).unwrap();
         let dispatch_id = format!("{run_id}.t2.1");
         assert_eq!(response["started"], json!([dispatch_id]));
+        assert_eq!(response["deferred"], json!(["t3"]));
+        assert_eq!(response["failedToStart"], json!([]));
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = &guard.runs[&run_id];
         assert_eq!(entry.dispatches.len(), 1);
         assert_eq!(entry.dispatches[&dispatch_id].task_id, "t2");
     }
+    #[tokio::test]
+    async fn plan_apply_reports_start_failures() {
+        let mut request = plan(json!([{ "title":"root", "spec":"do it", "profile":"missing-profile" }]));
+        request["start"] = json!(true);
+        let response: Value = serde_json::from_str(&apply(request, gen_run_id()).await.unwrap()).unwrap();
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["started"], json!([]));
+        assert_eq!(response["deferred"], json!([]));
+        assert_eq!(response["failedToStart"][0]["taskId"], "t1");
+        assert_eq!(response["failedToStart"][0]["error"]["code"], "bad_request");
+    }
+
 }

@@ -59,7 +59,7 @@ pub struct WorkerLaunch<'a> {
 
 const DENIED_WORKER_COMMANDS: &[&str] = &[
     "git push", "git reset --hard", "git rebase", "git branch -D", "git branch -d",
-    "git branch --delete", "git checkout main", "git checkout master", "git switch",
+    "git branch --delete", "git branch -f", "git branch --force", "git checkout main", "git checkout master", "git switch",
     "git worktree", "git clean", "git remote", "git config", "gh", "npm publish",
     "cargo publish", "bun publish",
 ];
@@ -684,7 +684,7 @@ mod tests {
             assert!(allow.contains(&tool), "{tool}");
         }
         let deny = json["permissions"]["deny"].as_array().unwrap();
-        for cmd in ["git push", "git reset --hard", "git rebase", "git branch -D", "git branch -d", "git branch --delete", "git checkout main", "git checkout master", "git switch", "git worktree", "git clean", "git remote", "git config", "gh", "npm publish", "cargo publish", "bun publish"] {
+        for cmd in ["git push", "git reset --hard", "git rebase", "git branch -D", "git branch -d", "git branch --delete", "git branch -f", "git branch --force", "git checkout main", "git checkout master", "git switch", "git worktree", "git clean", "git remote", "git config", "gh", "npm publish", "cargo publish", "bun publish"] {
             for tool in ["Bash", "PowerShell"] {
                 assert!(deny.contains(&serde_json::json!(format!("{tool}({cmd}:*)"))), "{tool} {cmd}");
             }
