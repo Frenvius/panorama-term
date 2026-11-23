@@ -3,6 +3,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 
 import { stripSpinner } from '~/usecase/util/title';
 import { getNotifToasts } from '~/usecase/util/notifPlacement';
+import { muteWorkerNotifications } from '~/usecase/util/agentNotify';
 
 import type { Tile } from '~/domain/interfaces/canvas.interface';
 import type { NotifyKind, NotifyPayload, NotifyTarget } from '~/domain/interfaces/notify.interface';
@@ -72,18 +73,22 @@ export const useNotifyBridge = ({ tiles, wsId, tabId, activeTile, onOpen, onAler
     const onNotify = (e: Event) => {
       const detail = (e as CustomEvent<NotifyDetail>).detail;
       const tile = tilesRef.current.find((t) => t.id === detail.tileId);
+      if (muteWorkerNotifications(tile)) return;
       const target = detail.target ?? { ...scopeRef.current, tileId: detail.tileId };
       const payload: NotifyPayload = {
         id: ++seq,
         tileId: detail.tileId,
         wsId: target.wsId,
         tabId: target.tabId,
+        runId: target.runId,
         kind: detail.kind,
         title: detail.title || tileTitle(tile),
         text: detail.text
       };
       if (getNotifToasts()) void emit('notif:show', payload);
-      onAlertRef.current(detail.tileId, detail.kind, target.tabId);
+      if (!target.runId || detail.tileId !== `orch:${target.runId}`) {
+        onAlertRef.current(detail.tileId, detail.kind, target.tabId);
+      }
     };
     const onNotifyClear = (e: Event) => {
       const { tileId } = (e as CustomEvent<{ tileId: string }>).detail;
@@ -97,6 +102,10 @@ export const useNotifyBridge = ({ tiles, wsId, tabId, activeTile, onOpen, onAler
       window.removeEventListener(NOTIFY_CLEAR_EVENT, onNotifyClear);
     };
   }, []);
+
+  React.useEffect(() => {
+    for (const tile of tiles) if (muteWorkerNotifications(tile)) onClearRef.current(tile.id);
+  }, [tiles]);
 
   React.useEffect(() => {
     const unlisten = listen<NotifyTarget>('notif:open', (e) => onOpenRef.current(e.payload));

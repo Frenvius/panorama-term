@@ -74,3 +74,13 @@ test('idle event is muted inside the grace window of a previous notification', (
   notifier.onAgentEvent({ event: 'notification', message: 'waiting' });
   expect(sent).toEqual(['permission:Bash: ls']);
 });
+
+test('overlapping terminal connections notify once', () => {
+  const sent: string[] = [];
+  const args = { tileId: 'overlap', focused: () => false, suppressed: () => false, notify: (kind: string) => sent.push(kind), clear: () => {} };
+  const mounted = createAgentNotifier(args);
+  const watcher = createAgentNotifier(args);
+  mounted.onAgentEvent({ event: 'stop' });
+  watcher.onAgentEvent({ event: 'stop' });
+  expect(sent).toEqual(['finished']);
+});

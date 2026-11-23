@@ -13,6 +13,15 @@ import { storeList, storeRead, storeWrite, storeDelete, storeWriteMany } from '~
 const INDEX_FILE = 'workspaces.json';
 const WS_DIR = 'workspaces';
 
+const listeners = new Set<() => void>();
+let version = 0;
+const changed = (): void => { version += 1; listeners.forEach((fn) => fn()); };
+export const getWorkspaceVersion = (): number => version;
+export const subscribeWorkspaces = (fn: () => void): (() => void) => {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+};
+
 const COLORS = ['#6ea8fe', '#75d0a0', '#e6a957', '#d98abf', '#7fd1d6', '#d97c7c', '#b39ddb', '#c0c97f'];
 
 const uuid = (): string => crypto.randomUUID();
@@ -90,6 +99,7 @@ class Service {
   private async writeWorkspace(file: WorkspaceFile): Promise<void> {
     await storeWrite(wsFile(file.meta.id), file);
     this.cachedFiles.set(file.meta.id, structuredClone(file));
+    changed();
   }
 
   private async writeWorkspaceAndIndex(file: WorkspaceFile, idx: WorkspaceIndex): Promise<void> {
@@ -99,6 +109,7 @@ class Service {
       { name: INDEX_FILE, value: idx }
     ]);
     this.cachedFiles.set(file.meta.id, structuredClone(file));
+    changed();
   }
 
   private async readWorkspace(id: string): Promise<WorkspaceFile | null> {
@@ -160,6 +171,7 @@ class Service {
         const match = /^workspaces\/([^/]+)\.json$/.exec(name);
         if (match) this.cachedFiles.delete(match[1]!);
       }
+      changed();
     });
   }
 
@@ -233,6 +245,7 @@ class Service {
     await this.saveIndex(idx);
     this.cachedFiles.delete(id);
     await storeDelete(wsFile(id));
+    changed();
     return { activeId: idx.activeId, deleted: true };
   }
 

@@ -27,6 +27,7 @@ export interface Tile {
   content?: string;
   pinned?: boolean;
   runId?: string;
+  orchWorker?: boolean;
   renderOnly?: boolean;
   linkedTo?: string[];
   runCwd?: string;

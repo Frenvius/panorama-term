@@ -1,4 +1,5 @@
 import type { TileOpenRequest } from '~/domain/interfaces/mobile.interface';
+import type { OrchNotification } from '~/usecase/util/orchNotify';
 
 import { SIDECAR_WS } from '~/adapter/pty/sidecar.client';
 
@@ -15,11 +16,12 @@ interface OrchSub {
 
 const tileOpenSubs = new Set<TileOpenHandler>();
 const orchSubs = new Set<OrchSub>();
+const orchNotifySubs = new Set<(event: OrchNotification) => void>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-const totalSubs = (): number => tileOpenSubs.size + orchSubs.size;
+const totalSubs = (): number => tileOpenSubs.size + orchSubs.size + orchNotifySubs.size;
 
 const dispatch = (data: string): void => {
   let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string };
@@ -32,7 +34,18 @@ const dispatch = (data: string): void => {
     for (const fn of tileOpenSubs) fn(msg as TileOpenRequest);
   } else if (msg.t === 'orch.changed') {
     for (const sub of orchSubs) sub.onChanged(msg.runId ?? '');
+  } else if (msg.t === 'orch.notify') {
+    for (const fn of orchNotifySubs) fn(msg as unknown as OrchNotification);
   }
+};
+
+export const watchOrchNotifications = (onNotify: (event: OrchNotification) => void): (() => void) => {
+  orchNotifySubs.add(onNotify);
+  ensureConnected();
+  return () => {
+    orchNotifySubs.delete(onNotify);
+    maybeClose();
+  };
 };
 
 const connect = (): void => {

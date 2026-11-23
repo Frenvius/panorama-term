@@ -162,7 +162,7 @@ const NotificationOverlay = () => {
   }, [toasts, expanded, heights, bottoms, placement]);
 
   const open = (toast: NotifyPayload) => {
-    void emit('notif:open', { tileId: toast.tileId, wsId: toast.wsId, tabId: toast.tabId });
+    void emit('notif:open', { tileId: toast.tileId, wsId: toast.wsId, tabId: toast.tabId, runId: toast.runId });
     void invoke('focus_main');
     setToasts((prev) => prev.filter((t) => t.id !== toast.id));
   };

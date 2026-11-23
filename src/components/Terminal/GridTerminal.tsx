@@ -299,17 +299,13 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
   const notifier = React.useMemo(
     () =>
       createAgentNotifier({
+        tileId,
         suppressed: isWatching,
         notify: (kind, text, title) => notifyClaude(tileId, kind, text, title),
         clear: () => clearNotify(tileId)
       }),
     [tileId, isWatching]
   );
-
-  React.useEffect(() => {
-    markTerminalLive(tileId, true);
-    return () => markTerminalLive(tileId, false);
-  }, [tileId]);
 
   const draw = React.useCallback(() => {
     const rowsEl = rowsRefEl.current;
@@ -498,6 +494,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           },
           onPromptRestore: (text) => emitPromptRestore(tileId, text),
           onReady: (info) => {
+            markTerminalLive(tileId, true);
             const w = wsRef.current;
             if (w) {
               sendPtyResize(w, colsRef.current, rowsRef.current);
@@ -515,6 +512,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       );
       wsRef.current = ws;
       ws.onclose = () => {
+        if (wsRef.current === ws) markTerminalLive(tileId, false);
         if (disposed || (readOnly && exited)) return;
         const wanted = restartingRef.current;
         restartingRef.current = false;
@@ -525,6 +523,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
 
     return () => {
       disposed = true;
+      markTerminalLive(tileId, false);
       clearInterval(paint);
       clearTimeout(retry);
       clearTimeout(summary);

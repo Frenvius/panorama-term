@@ -21,13 +21,18 @@ fn channel() -> &'static broadcast::Sender<String> {
     UI.get_or_init(|| broadcast::channel(16).0)
 }
 
+#[cfg(test)]
+pub(crate) fn subscribe_events() -> broadcast::Receiver<String> {
+    channel().subscribe()
+}
+
 pub(crate) struct TileGroup<'a> {
     pub id: &'a str,
     pub title: &'a str,
 }
 
 pub(crate) fn broadcast_grouped_tile_open(tile_id: &str, cwd: &str, group: Option<TileGroup>) {
-    let mut event = json!({ "t": "tile.open", "tileId": tile_id, "cwd": cwd });
+    let mut event = json!({ "t": "tile.open", "tileId": tile_id, "cwd": cwd, "orchWorker": true });
     if let Some(g) = group {
         if let Some(obj) = event.as_object_mut() {
             obj.insert("group".into(), json!({ "id": g.id, "title": g.title }));
@@ -38,6 +43,10 @@ pub(crate) fn broadcast_grouped_tile_open(tile_id: &str, cwd: &str, group: Optio
 
 pub(crate) fn broadcast_orch_changed(run_id: &str) {
     send_event(json!({ "t": "orch.changed", "runId": run_id }));
+}
+
+pub(crate) fn broadcast_orch_notify(event: Value) {
+    send_event(event);
 }
 
 fn send_event(event: serde_json::Value) {

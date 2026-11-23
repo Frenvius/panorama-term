@@ -23,6 +23,7 @@ export interface TileOpenRequest {
   cwd: string;
   tileId: string;
   group?: { id: string; title: string };
+  orchWorker?: boolean;
 }
 
 export interface MobilePairing {

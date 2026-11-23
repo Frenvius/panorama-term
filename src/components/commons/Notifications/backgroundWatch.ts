@@ -2,48 +2,33 @@ import React from 'react';
 
 import { openPtyConnection } from '~/adapter/pty/pty.client';
 import { setAgentStatus, toAgentStatus } from '~/usecase/util/agentStatus';
-import { createAgentNotifier } from '~/usecase/util/agentNotify';
+import { createAgentNotifier, muteWorkerNotifications } from '~/usecase/util/agentNotify';
+import { clearAlert } from '~/usecase/util/alerts';
 import { workspaceService } from '~/usecase/service/workspace.service';
+import { backgroundTargets } from '~/usecase/util/backgroundTargets';
+import { getWorkspaceVersion, subscribeWorkspaces } from '~/usecase/service/workspace.service';
 import { clearNotify, notifyBackground } from '~/components/commons/Notifications/bridge';
 import { isTerminalLive, getLiveVersion, subscribeLiveTerminals } from '~/usecase/util/liveTerminals';
 
-import type { Tile } from '~/domain/interfaces/workspace.interface';
+import type { WatchTarget } from '~/usecase/util/backgroundTargets';
 
 const SETTLE_MS = 1000;
 
-interface WatchTarget {
-  tileId: string;
-  tabId: string;
-  title: string;
-  sessionKey: string;
-}
-
-const tileLabel = (tile: Tile, tabName: string): string =>
-  tile.userTitle || tile.cwd?.split(/[\\/]/).filter(Boolean).pop() || tabName;
-
-const collectTargets = async (wsId: string): Promise<WatchTarget[]> => {
-  const { tabs } = await workspaceService.getTabs(wsId);
-  const out: WatchTarget[] = [];
-  for (const tab of tabs) {
-    const state = await workspaceService.loadTabState(wsId, tab.id);
-    for (const tile of state?.tiles ?? []) {
-      if (tile.type !== 'term' || tile.runCwd) continue;
-      out.push({
-        tileId: tile.id,
-        tabId: tab.id,
-        title: tileLabel(tile, tab.name),
-        sessionKey: tile.ptySessionId ?? tile.id
-      });
-    }
+const collectTargets = async (): Promise<WatchTarget[]> => {
+  const { workspaces } = await workspaceService.list();
+  const all = await Promise.all(workspaces.map(async ({ id }) => ({ id, tabs: await workspaceService.peekTabs(id) })));
+  for (const { tabs } of all) for (const tab of tabs) for (const tile of tab.state.tiles) {
+    if (muteWorkerNotifications(tile)) clearAlert(tile.id);
   }
-  return out;
+  return backgroundTargets(all, () => false);
 };
 
-const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
-  const { tileId, tabId, title } = target;
+const openWatch = (target: WatchTarget): WebSocket => {
+  const { tileId } = target;
   const notifier = createAgentNotifier({
+    tileId,
     suppressed: () => false,
-    notify: (kind, text, label) => notifyBackground({ tileId, wsId, tabId }, kind, text, label || title),
+    notify: (kind, text, label) => notifyBackground({ tileId, wsId: target.wsId, tabId: target.tabId }, kind, text, label || target.title),
     clear: () => clearNotify(tileId)
   });
 
@@ -69,10 +54,10 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
         const next = state.status;
         const known = next ?? state.lastStatus;
         if (known) setAgentStatus(tileId, toAgentStatus(known));
-        if (!ready || !next || next === status) return;
+        if (!next || next === status) return;
         const prev = status;
         status = next;
-        notifier.onStatus(prev, next, state.agent);
+        if (ready) notifier.onStatus(prev, next, state.agent);
       },
       onNotify: (label, body) => {
         if (ready) notifier.onNotify(label, body);
@@ -84,46 +69,46 @@ const openWatch = (target: WatchTarget, wsId: string): WebSocket => {
   );
 };
 
-export const useBackgroundNotify = (wsId: string | null, tabKey: string): void => {
+export const useBackgroundNotify = (): void => {
   const [targets, setTargets] = React.useState<WatchTarget[]>([]);
-  const watchers = React.useRef(new Map<string, WebSocket>());
+  const watchers = React.useRef(new Map<string, { ws: WebSocket; target: WatchTarget }>());
   const liveVersion = React.useSyncExternalStore(subscribeLiveTerminals, getLiveVersion);
+  const workspaceVersion = React.useSyncExternalStore(subscribeWorkspaces, getWorkspaceVersion);
 
   React.useEffect(() => {
-    if (!wsId) {
-      setTargets([]);
-      return;
-    }
     let stale = false;
-    void collectTargets(wsId).then((next) => {
+    void collectTargets().then((next) => {
       if (!stale) setTargets(next);
     });
     return () => {
       stale = true;
     };
-  }, [wsId, tabKey]);
+  }, [workspaceVersion]);
 
   React.useEffect(() => {
-    if (!wsId) return;
+    const wanted = new Map(targets.filter((t) => !isTerminalLive(t.tileId)).map((t) => [t.tileId, t]));
+    for (const [tileId, target] of wanted) {
+      const existing = watchers.current.get(tileId);
+      if (existing && existing.target.sessionKey !== target.sessionKey) {
+        existing.ws.close();
+        watchers.current.delete(tileId);
+      } else if (existing) Object.assign(existing.target, target);
+      if (!watchers.current.has(tileId)) watchers.current.set(tileId, { target, ws: openWatch(target) });
+    }
     const timer = setTimeout(() => {
-      const wanted = new Map(targets.filter((t) => !isTerminalLive(t.tileId)).map((t) => [t.tileId, t]));
-      for (const [tileId, ws] of watchers.current) {
+      for (const [tileId, { ws }] of watchers.current) {
         if (wanted.has(tileId)) continue;
         watchers.current.delete(tileId);
         ws.close();
       }
-      for (const [tileId, target] of wanted) {
-        if (watchers.current.has(tileId)) continue;
-        watchers.current.set(tileId, openWatch(target, wsId));
-      }
     }, SETTLE_MS);
     return () => clearTimeout(timer);
-  }, [wsId, targets, liveVersion]);
+  }, [targets, liveVersion]);
 
   React.useEffect(() => {
     const open = watchers.current;
     return () => {
-      open.forEach((ws) => ws.close());
+      open.forEach(({ ws }) => ws.close());
       open.clear();
     };
   }, []);

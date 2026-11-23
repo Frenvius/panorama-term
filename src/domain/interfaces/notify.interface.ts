@@ -8,10 +8,12 @@ export interface NotifyPayload {
   kind: NotifyKind;
   title: string;
   text?: string;
+  runId?: string;
 }
 
 export interface NotifyTarget {
   tileId: string;
   wsId: string | null;
   tabId: string | null;
+  runId?: string;
 }
