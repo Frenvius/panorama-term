@@ -87,20 +87,21 @@ pub(crate) fn status_porcelain(path: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&raw).to_string())
 }
 
-pub(crate) fn commit_leftovers(path: &str, message: &str) -> Result<(), String> {
+fn git_committing(path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let has_identity = git(path, &["config", "user.name"])
         .map(|r| !String::from_utf8_lossy(&r).trim().is_empty())
         .unwrap_or(false);
-    git(path, &["add", "-A"])?;
     if has_identity {
-        git(path, &["commit", "-m", message]).map(|_| ())
-    } else {
-        git(path, &[
-            "-c", "user.name=Panorama",
-            "-c", "user.email=orch@panorama.local",
-            "commit", "-m", message,
-        ]).map(|_| ())
+        return git(path, args);
     }
+    let mut full = vec!["-c", "user.name=Panorama", "-c", "user.email=orch@panorama.local"];
+    full.extend_from_slice(args);
+    git(path, &full)
+}
+
+pub(crate) fn commit_leftovers(path: &str, message: &str) -> Result<(), String> {
+    git(path, &["add", "-A"])?;
+    git_committing(path, &["commit", "-m", message]).map(|_| ())
 }
 
 pub(crate) fn head_sha(path: &str) -> Result<String, String> {
@@ -129,7 +130,7 @@ pub(crate) enum MergeOutcome {
 }
 
 pub(crate) fn merge_no_ff(path: &str, branch: &str) -> Result<MergeOutcome, String> {
-    match git(path, &["merge", "--no-ff", "--no-edit", branch]) {
+    match git_committing(path, &["merge", "--no-ff", "--no-edit", branch]) {
         Ok(_) => {
             let sha = head_sha(path)?;
             Ok(MergeOutcome::Success(sha))
