@@ -22,9 +22,9 @@
   --col-color: var(--text-dim);
 
   display: flex;
-  flex: 1 0 320px;
+  flex: 1 1 0;
   flex-direction: column;
-  min-width: 320px;
+  min-width: 232px;
   border-radius: 8px;
   background: var(--surface-1);
 
@@ -117,6 +117,7 @@
   gap: 8px;
   min-height: 0;
   padding: 0 8px 8px;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
 }

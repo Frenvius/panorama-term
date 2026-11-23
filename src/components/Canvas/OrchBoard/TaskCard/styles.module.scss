@@ -3,7 +3,7 @@
   flex: none;
   flex-direction: column;
   gap: 8px;
-  min-width: min-content;
+  min-width: 0;
   padding: 8px;
   border: 1px solid var(--border-2);
   border-radius: 6px;
@@ -85,14 +85,15 @@
 
 .cardFoot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-height: 24px;
 }
 
 .cardMeta {
   display: flex;
-  flex: 1;
+  flex: 1 1 120px;
   align-items: center;
   gap: 4px;
   min-width: 0;
@@ -143,6 +144,7 @@
 .cardActions {
   display: flex;
   flex: none;
+  margin-left: auto;
   align-items: center;
   gap: 4px;
 
@@ -189,7 +191,6 @@
   font-size: 10.5px;
   background: transparent;
 }
-
 
 .roleChip {
   padding: 1px 6px;
@@ -277,5 +278,36 @@
 @media (prefers-reduced-motion: reduce) {
   .liveDot {
     animation: none !important;
+  }
+}
+
+.inlinePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  cursor: default;
+
+  > button {
+    align-self: flex-start;
+  }
+}
+
+.waitChip {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #f59e0b;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: rgba(245, 158, 11, 0.12);
+
+  &[data-kind='intervention'] {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
   }
 }

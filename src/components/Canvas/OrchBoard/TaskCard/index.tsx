@@ -1,7 +1,7 @@
 import type { Task, Limits, Dispatch, RunStatus } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, GitMerge, ExternalLink, FileText, ArrowLeftRight } from 'lucide-react';
+import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, GitMerge, ExternalLink, FileText, ArrowLeftRight, History } from 'lucide-react';
 
 import MarkdownView from '~/components/MarkdownView';
 import EditForm from './EditForm';
@@ -12,6 +12,7 @@ import RoutingInfo from './RoutingInfo';
 import { latestDispatch } from '../columns';
 import { cancelTask, updateTask, startWorker, workerStop, resolveConflict, OrchError } from '~/adapter/orch/orch.client';
 import { totalCost, formatDuration, conflictFiles } from '~/usecase/util/orch';
+import { waitLabel, decisionLine } from '~/usecase/util/orchRouting';
 import { requestOrchDiff, requestShowWorker } from '~/usecase/util/orchBoardRequest';
 
 export interface TaskCardProps {
@@ -25,7 +26,7 @@ export interface TaskCardProps {
   runBaseSha?: string;
 }
 
-type InlineView = 'reopen' | 'edit' | 'confirm-retry' | 'report' | null;
+type InlineView = 'reopen' | 'edit' | 'confirm-retry' | 'report' | 'routing' | null;
 
 const FLAGGED_STATUS: Partial<Record<Task['status'], string>> = {
   failed: 'failed',
@@ -53,6 +54,8 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
   const hasConflict = conflicted.length > 0;
   const flagLabel = hasConflict ? `Merge conflict: ${conflicted.length} ${conflicted.length === 1 ? 'file' : 'files'}` : flag;
   const failureReason = dispatch?.summary ? dispatch.summary.split('\n')[0] : null;
+  const decision = dispatch ? decisionLine(dispatch) : null;
+  const hasRouting = task.routing === 1 && dispatches.some((d) => d.taskId === task.id);
 
   const handleShowWorker = () => {
     if (!dispatch?.tileId) return;
@@ -205,6 +208,18 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
       .finally(() => setActing(false));
   };
 
+  const handleReportClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setInlineView('report');
+  };
+
+  const handleRoutingClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setInlineView('routing');
+  };
+
+  const stopPropagation = (e: React.MouseEvent) => e.stopPropagation();
+
   const handleInlineCancel = () => setInlineView(null);
 
   const isClickable = live && !!dispatch?.tileId;
@@ -218,7 +233,8 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
   const actions = (
     <>
       <CardButton label={task.owner === 'user' ? 'Hand to coordinator' : 'Take over'} icon={ArrowLeftRight} disabled={acting} onClick={handleOwnerClick} />
-      {dispatch?.report && <CardButton label="Report" icon={FileText} onClick={(e) => { e.stopPropagation(); setInlineView('report'); }} />}
+      {dispatch?.report && <CardButton label="Report" icon={FileText} onClick={handleReportClick} />}
+      {hasRouting && <CardButton label="Routing history" icon={History} onClick={handleRoutingClick} />}
       {task.status === 'pending' && (
         <>
           <CardButton
@@ -310,7 +326,7 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
   return (
     <div className={styles.card} title={task.ownerReason} data-clickable={isClickable ? '' : undefined} onClick={handleCardClick}>
       <div className={styles.cardHead}>
-        <span className={styles.cardId} onClick={(e) => e.stopPropagation()}>{task.id}</span>
+        <span className={styles.cardId} onClick={stopPropagation}>{task.id}</span>
         <span className={styles.cardTitle}>{task.title}</span>
         {waiting && <span className={styles.waitBadge}>needs approval</span>}
         {task.owner === 'user' && <span className={styles.ownerBadge}>you</span>}
@@ -320,14 +336,25 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
         <div className={styles.failureReason} title={dispatch?.summary}>{failureReason}</div>
       )}
 
-      <RoutingInfo task={task} limits={limits} dispatches={dispatches} latest={dispatch} />
+      {task.status === 'waiting' && task.wait && (
+        <span className={styles.waitChip} data-kind={task.wait.kind} title={task.wait.reason}>
+          {waitLabel(task.wait, Date.now())}
+        </span>
+      )}
+
+      {inlineView === 'routing' && (
+        <div className={styles.inlinePanel} onClick={stopPropagation}>
+          <RoutingInfo task={task} limits={limits} dispatches={dispatches} latest={dispatch} />
+          <button type="button" className={styles.cardBtn} onClick={handleInlineCancel}>Close</button>
+        </div>
+      )}
 
       {task.status === 'failed' && live && inlineView === null && (
         <div className={styles.infoMsg}>failed, but the agent is still running</div>
       )}
 
       {inlineView === 'report' && dispatch?.report && (
-        <div onClick={(e) => e.stopPropagation()}>
+        <div className={styles.inlinePanel} onClick={stopPropagation}>
           <button type="button" className={styles.cardBtn} onClick={handleInlineCancel}>Close report</button>
           <MarkdownView path={runRepo} source={dispatch.report} />
         </div>
@@ -367,7 +394,7 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
               </span>
             )}
             {task.role && <span className={styles.roleChip}>{task.role}</span>}
-            {profile && <span className={styles.modelChip} title={profile}>{profile}</span>}
+            {profile && <span className={styles.modelChip} title={decision ?? profile}>{profile}</span>}
             {task.attempts > 1 && <span className={styles.metaChip}>#{task.attempts}</span>}
             {starting ? (
               <span className={styles.startingChip}>starting</span>
