@@ -3064,6 +3064,7 @@ fn install_claude_mod() {
         ("hooks/hooks.json", include_str!("../assets/claude-mod/hooks.json")),
         ("hooks/register.ts", include_str!("../assets/claude-mod/register.ts")),
         ("skills/orchestrate/SKILL.md", include_str!("../assets/claude-mod/skills/orchestrate/SKILL.md")),
+        ("skills/orchestrate/reference.md", include_str!("../assets/claude-mod/skills/orchestrate/reference.md")),
     ];
     let Some(dir) = claude_mod_dir() else {
         return;
