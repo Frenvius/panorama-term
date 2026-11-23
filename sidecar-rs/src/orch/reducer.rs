@@ -87,6 +87,7 @@ pub struct RunEntry {
     pub(crate) idle_state: IdleState,
     pub(crate) idle_fingerprint: Option<String>,
     pub(crate) auto_action_failures: HashMap<String, AutoActionFailure>,
+    pub(super) integration_conflicts: std::collections::HashSet<String>,
     pub gate_count: u32,
     pub msg_seq: u32,
     pub event_seq: u32,
@@ -109,6 +110,7 @@ impl RunEntry {
             idle_state: IdleState::Active,
             idle_fingerprint: None,
             auto_action_failures: HashMap::new(),
+            integration_conflicts: std::collections::HashSet::new(),
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
@@ -887,7 +889,7 @@ impl State {
                     if task.operational_attempts >= entry.run.limits.max_operational_attempts {
                         return ApplyResult::Err(OrchError::Limit("max operational attempts reached".into()));
                     }
-                } else if task.attempts >= entry.run.limits.max_attempts {
+                } else if task.attempts.saturating_sub(task.operational_attempts) >= entry.run.limits.max_attempts {
                     return ApplyResult::Err(OrchError::Limit("max attempts reached".into()));
                 }
                 if entry.running_dispatch_count() >= entry.run.limits.max_workers as usize {
@@ -1298,6 +1300,9 @@ impl State {
         if let Some(entry) = self.runs.get_mut(data["runId"].as_str().unwrap_or_default()) {
             entry.auto_action_failures.retain(|id, failure| {
                 entry.tasks.get(id).is_some_and(|task| task.status == failure.status)
+            });
+            entry.integration_conflicts.retain(|id| {
+                entry.tasks.get(id).is_some_and(|task| task.status == TaskStatus::Blocked)
             });
             if let Some(class) = parse_opt(data, "routedFailureClass") {
                 let dispatch_id = str_field(data, if kind == "send" { "from" } else { "dispatchId" });
@@ -1808,6 +1813,7 @@ impl State {
             task.updated_at = now;
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
+        entry.integration_conflicts.insert(task_id.clone());
         let msg = Message {
             seq: msg_seq,
             from: "brain".to_string(),
