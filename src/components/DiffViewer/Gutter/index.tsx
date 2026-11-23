@@ -2,7 +2,7 @@ import type { PaneApi, DiffSide, ChunkKind, DiffChunk } from '~/domain/interface
 
 import React from 'react';
 
-import { lineKinds, LINE_HEIGHT, SKIP_HEIGHT } from '~/usecase/util/diff';
+import { lineKinds, firstAfter, LINE_HEIGHT, SKIP_HEIGHT } from '~/usecase/util/diff';
 
 import styles from './styles.module.scss';
 
@@ -37,7 +37,9 @@ const Gutter = ({ api, side, chunks }: GutterProps) => {
       const bottom = scrollTop + height + LINE_HEIGHT * 2;
       const out: GutterRow[] = [];
 
-      for (let i = 0; i < visual.length; i++) {
+      const start = firstAfter(api.getRowTop, visual.length + 1, top);
+
+      for (let i = start; i < visual.length; i++) {
         const row = visual[i];
         const y = api.getRowTop(i);
         const h = row.kind === 'skip' ? SKIP_HEIGHT : LINE_HEIGHT;

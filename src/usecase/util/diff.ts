@@ -512,7 +512,20 @@ export const buildAnchors = (chunks: DiffChunk[], from: PaneApi, to: PaneApi, si
   return out;
 };
 
-export const lineKinds = (chunks: DiffChunk[], side: DiffSide): Map<number, ChunkKind> => {
+export const firstAfter = (topAt: (index: number) => number, count: number, y: number): number => {
+  let lo = 0;
+  let hi = count - 1;
+
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (topAt(mid) < y) lo = mid + 1;
+    else hi = mid;
+  }
+
+  return Math.max(0, lo - 1);
+};
+
+export const lineKinds =(chunks: DiffChunk[], side: DiffSide): Map<number, ChunkKind> => {
   const map = new Map<number, ChunkKind>();
 
   for (const c of chunks) {

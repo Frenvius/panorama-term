@@ -3,6 +3,7 @@ import { Play, Power, Square, RotateCw, RefreshCw, LoaderCircle } from 'lucide-r
 
 import type { DockerAction, DockerContainer } from '~/domain/interfaces/docker.interface';
 import { dockerPs, dockerAction, dockerEngine } from '~/adapter/docker/docker.client';
+import { useWindowedList } from '~/usecase/hooks/useWindowedList';
 
 import styles from './styles.module.scss';
 
@@ -11,6 +12,7 @@ interface DockerTabProps {
 }
 
 const POLL_MS = 3000;
+const ROW_HEIGHT = 56;
 
 const message = (err: unknown): string => (typeof err === 'string' ? err : String(err));
 
@@ -21,14 +23,25 @@ const DockerTab = ({ query }: DockerTabProps) => {
   const [loading, setLoading] = React.useState(true);
   const [starting, setStarting] = React.useState(false);
 
+  const inFlight = React.useRef(false);
+  const lastKey = React.useRef('');
+
   const refresh = React.useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
-      setContainers(await dockerPs());
+      const next = await dockerPs();
+      const key = JSON.stringify(next);
+      if (key !== lastKey.current) {
+        lastKey.current = key;
+        setContainers(next);
+      }
       setError(null);
       setStarting(false);
     } catch (err) {
       setError(message(err));
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -77,6 +90,8 @@ const DockerTab = ({ query }: DockerTabProps) => {
   const visible = containers.filter((c) => !query || c.name.toLowerCase().includes(query));
   const running = containers.filter((c) => c.state === 'running').length;
 
+  const { attach, start: first, end, before, after } = useWindowedList({ count: visible.length, rowHeight: ROW_HEIGHT });
+
   if (loading) return <div className={styles.notice}>Loading containers</div>;
 
   if (error) {
@@ -116,8 +131,9 @@ const DockerTab = ({ query }: DockerTabProps) => {
           <Power size={13} strokeWidth={1.75} />
         </button>
       </div>
-      <div className={styles.list}>
-        {visible.map((container) => {
+      <div ref={attach} className={styles.list}>
+        <div style={{ height: before }} />
+        {visible.slice(first, end).map((container) => {
           const up = container.state === 'running';
           const pending = busy.has(container.id);
           const start = () => void run(container.id, 'start');
@@ -153,6 +169,7 @@ const DockerTab = ({ query }: DockerTabProps) => {
             </div>
           );
         })}
+        <div style={{ height: after }} />
       </div>
     </div>
   );

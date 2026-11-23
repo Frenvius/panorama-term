@@ -314,7 +314,33 @@ fn save_temp_image(name: &str, bytes: &[u8]) -> Result<String, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        remove_stale_temp_images(dir, &path);
+    }
     Ok(path.to_string_lossy().into_owned())
+}
+
+fn remove_stale_temp_images(dir: &std::path::Path, keep: &std::path::Path) {
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(24 * 60 * 60))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_file() && meta.modified().is_ok_and(|m| m < cutoff) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 #[tauri::command]
