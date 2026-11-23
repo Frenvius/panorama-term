@@ -52,6 +52,7 @@ const kindIcon = (kind: NotifyKind): React.ReactNode => {
 
 const NotificationOverlay = () => {
   const [toasts, setToasts] = React.useState<NotifyPayload[]>([]);
+  const [covered, setCovered] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const [heights, setHeights] = React.useState<Record<number, number>>({});
   const [placement, setPlacement] = React.useState<NotifPlacement>(getNotifPlacement);
@@ -87,12 +88,13 @@ const NotificationOverlay = () => {
       return isOtherAppFullscreen(placementRef.current.monitor).catch(() => false);
     };
     const shown = listen<NotifyPayload>('notif:show', async (e) => {
-      if (await coveredByFullscreen()) return;
+      const isCovered = await coveredByFullscreen();
+      setCovered(isCovered);
       setToasts((prev) => {
         const kept = prev.filter((t) => t.tileId !== e.payload.tileId);
         return [...kept, e.payload].slice(-MAX_TOASTS);
       });
-      playSound(e.payload.kind);
+      if (!isCovered) playSound(e.payload.kind);
     });
     const dismissed = listen<{ tileId: string }>('notif:dismiss', (e) => {
       setToasts((prev) => prev.filter((t) => t.tileId !== e.payload.tileId));
@@ -113,11 +115,12 @@ const NotificationOverlay = () => {
   }, []);
 
   const hasToasts = toasts.length > 0;
+  const hidden = hideOverFullscreen && covered;
   React.useEffect(() => {
     if (!hideOverFullscreen || !hasToasts) return;
     const check = () =>
       void isOtherAppFullscreen(placement.monitor)
-        .then((covered) => covered && setToasts([]))
+        .then(setCovered)
         .catch(() => {});
     const timer = setInterval(check, FULLSCREEN_POLL_MS);
     return () => clearInterval(timer);
@@ -138,7 +141,7 @@ const NotificationOverlay = () => {
       void invoke('notif_layout', { height, corner: placement.corner, monitor: placement.monitor });
 
     const n = toasts.length;
-    if (n === 0) {
+    if (n === 0 || hidden) {
       layout(0);
       return;
     }
@@ -159,7 +162,7 @@ const NotificationOverlay = () => {
       });
     }
     layout(PAD_TOP + top);
-  }, [toasts, expanded, heights, bottoms, placement]);
+  }, [toasts, expanded, heights, bottoms, placement, hidden]);
 
   const open = (toast: NotifyPayload) => {
     void emit('notif:open', { tileId: toast.tileId, wsId: toast.wsId, tabId: toast.tabId, runId: toast.runId });
