@@ -37,11 +37,7 @@ pub(crate) fn hidden_command(program: &str) -> Command {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let ssh = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into()))
-            .join("System32")
-            .join("OpenSSH")
-            .join("ssh.exe");
-        if ssh.is_file() {
+        if let Some(ssh) = windows_ssh() {
             cmd.env_remove("SSH_AUTH_SOCK").env(
                 "GIT_SSH_COMMAND",
                 format!("'{}' -oBatchMode=yes -oConnectTimeout=10", ssh.display()),
@@ -49,6 +45,24 @@ pub(crate) fn hidden_command(program: &str) -> Command {
         }
     }
     cmd
+}
+
+#[cfg(target_os = "windows")]
+fn windows_ssh() -> Option<PathBuf> {
+    let env_dir = |key: &str, fallback: &str| PathBuf::from(std::env::var(key).unwrap_or_else(|_| fallback.into()));
+    [
+        env_dir("ProgramFiles", "C:\\Program Files").join("OpenSSH").join("ssh.exe"),
+        env_dir("WINDIR", "C:\\Windows").join("System32").join("OpenSSH").join("ssh.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+pub(crate) fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    let _ = hidden_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+    #[cfg(not(windows))]
+    let _ = hidden_command("kill").arg(pid.to_string()).status();
 }
 
 pub(crate) async fn blocking<F, T>(job: F) -> T
@@ -123,10 +137,7 @@ fn outdated_host_pid(bin: &Path) -> Option<u32> {
 }
 
 fn stop_host(pid: u32) {
-    #[cfg(windows)]
-    let _ = hidden_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
-    #[cfg(not(windows))]
-    let _ = hidden_command("kill").arg(pid.to_string()).status();
+    kill_process_tree(pid);
     for _ in 0..30 {
         if !host_alive() {
             return;

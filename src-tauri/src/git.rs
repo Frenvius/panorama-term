@@ -105,6 +105,53 @@ fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
     git_output(crate::hidden_command("git").arg("-C").arg(repo).args(args))
 }
 
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(90);
+
+fn drain_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+fn run_git_network(repo: &str, args: &[&str]) -> Result<String, String> {
+    let mut child = crate::hidden_command("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git: {}", e))?;
+    let stdout = drain_pipe(child.stdout.take());
+    let stderr = drain_pipe(child.stderr.take());
+    let deadline = Instant::now() + NETWORK_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("git: {}", e))? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            crate::kill_process_tree(child.id());
+            let _ = child.wait();
+            return Err(format!(
+                "git {} timed out after {}s. Check the remote and your SSH agent.",
+                args.first().copied().unwrap_or_default(),
+                NETWORK_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).trim().to_string();
+    if status.success() {
+        return Ok(stdout);
+    }
+    Err(if stderr.is_empty() { stdout.trim().to_string() } else { stderr })
+}
+
 fn run_git_without_editor(repo: &str, args: &[&str]) -> Result<String, String> {
     git_output(
         crate::hidden_command("git")
@@ -775,7 +822,7 @@ fn stash_checkout(repo: &str, target: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn git_fetch(path: String) -> Result<BranchSnapshot, String> {
     crate::blocking(move || {
-        run_git(&path, &["fetch", "--prune", "--all"])?;
+        run_git_network(&path, &["fetch", "--prune", "--all"])?;
         snapshot(&path)
     })
     .await
@@ -851,7 +898,7 @@ pub async fn git_delete_branch(
             let Some((remote, branch)) = full_name.split_once('/') else {
                 return Err(format!("Invalid remote branch: {}", full_name));
             };
-            run_git(&path, &["push", remote, "--delete", branch])?;
+            run_git_network(&path, &["push", remote, "--delete", branch])?;
         } else {
             run_git(&path, &["branch", "-D", full_name.trim()])?;
         }
@@ -898,9 +945,9 @@ pub async fn git_rebase_onto(path: String, branch: String) -> Result<BranchSnaps
 pub async fn git_update_branch(path: String, rebase: bool) -> Result<BranchSnapshot, String> {
     crate::blocking(move || {
         if rebase {
-            run_git(&path, &["pull", "--rebase"])?;
+            run_git_network(&path, &["pull", "--rebase"])?;
         } else {
-            run_git(&path, &["pull", "--ff"])?;
+            run_git_network(&path, &["pull", "--ff"])?;
         }
         snapshot(&path)
     })
@@ -910,7 +957,7 @@ pub async fn git_update_branch(path: String, rebase: bool) -> Result<BranchSnaps
 #[tauri::command]
 pub async fn git_push_current(path: String) -> Result<BranchSnapshot, String> {
     crate::blocking(move || {
-        if let Err(e) = run_git(&path, &["push"]) {
+        if let Err(e) = run_git_network(&path, &["push"]) {
             let needs_upstream = e.contains("no upstream") || e.contains("set-upstream");
             let Some(current) = head_name(&path).filter(|_| needs_upstream) else {
                 return Err(e);
@@ -918,7 +965,7 @@ pub async fn git_push_current(path: String) -> Result<BranchSnapshot, String> {
             let Some(remote) = push_remote(&path) else {
                 return Err(e);
             };
-            run_git(&path, &["push", "--set-upstream", &remote, &current])?;
+            run_git_network(&path, &["push", "--set-upstream", &remote, &current])?;
         }
         snapshot(&path)
     })
