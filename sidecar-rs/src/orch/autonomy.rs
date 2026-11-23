@@ -58,7 +58,9 @@ pub(super) fn plan(input: TickInput) -> Vec<Action> {
     tasks.sort_by_key(|t| (t.id.len(), t.id.clone()));
     let mut actions = Vec::new();
     for task in tasks {
-        if task.owner.as_deref() == Some("user") {
+        if task.owner.as_deref() == Some("user")
+            || (entry.run.detached && entry.auto_action_failures.contains_key(&task.id))
+        {
             continue;
         }
         let ctx = TaskCtx { entry, task, now, is_live };
@@ -192,7 +194,7 @@ fn plan_pending(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
 
 fn plan_integrate(ctx: &TaskCtx) -> Option<Action> {
     let (entry, task) = (ctx.entry, ctx.task);
-    if !entry.run.autonomy.integration || task.review || task.integrated_sha.is_some() {
+    if !entry.run.autonomy.integration || (task.review && !entry.run.detached) || task.integrated_sha.is_some() {
         return None;
     }
     let has_branch = entry.dispatches.values().any(|d| {
@@ -202,6 +204,181 @@ fn plan_integrate(ctx: &TaskCtx) -> Option<Action> {
             && d.branch.is_some()
     });
     has_branch.then(|| Action::Integrate { task_id: task.id.clone() })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct IdleTask {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct IdleGroups {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_intervention: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_gate: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_no_resume: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resume_due: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unintegrated: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_action_failed: Vec<IdleTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifying: Vec<IdleTask>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct IdleCounts {
+    pub completed: usize,
+    pub integrated: usize,
+    pub cancelled: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct IdleReport {
+    pub reason: String,
+    pub counts: IdleCounts,
+    pub tasks: IdleGroups,
+}
+
+fn idle_task(task: &Task, detail: Option<String>) -> IdleTask {
+    IdleTask { id: task.id.clone(), title: task.title.clone(), detail }
+}
+
+fn open_gate_detail(entry: &RunEntry, task: &Task) -> Option<String> {
+    let mut gates: Vec<&Gate> = entry.gates.values()
+        .filter(|g| g.task_id == task.id && g.resolution.is_none())
+        .collect();
+    if gates.is_empty() {
+        return None;
+    }
+    gates.sort_by_key(|g| (g.id.len(), g.id.clone()));
+    Some(gates.into_iter().map(|g| format!("{}: {}", g.id, g.question)).collect::<Vec<_>>().join("; "))
+}
+
+fn failed_detail(entry: &RunEntry, task: &Task) -> Option<String> {
+    if let Some(dispatch) = entry.latest_dispatch_for_task(&task.id) {
+        if let Some(v) = dispatch.verifications.last()
+            .filter(|v| dispatch.outcome.as_deref() == Some("succeeded") && (v.timed_out || v.exit_code != Some(0)))
+        {
+            return Some(if v.timed_out {
+                format!("Verification timed out: {}", v.command)
+            } else {
+                format!("Verification failed: {}", v.command)
+            });
+        }
+        if let Some(line) = dispatch.summary.as_deref()
+            .and_then(|s| s.lines().find(|line| !line.trim().is_empty()))
+        {
+            return Some(line.to_string());
+        }
+    }
+    task.last_failure.map(|class| format!("{class:?}"))
+}
+
+pub(super) fn idle_reason(entry: &RunEntry, now: i64) -> Option<IdleReport> {
+    if !entry.run.detached || entry.run.status != RunStatus::Active || entry.tasks.is_empty() {
+        return None;
+    }
+    if entry.running_dispatch_count() > 0
+        || entry.tasks.values().any(|t| t.status == TaskStatus::Dispatched
+            || (t.status == TaskStatus::Verifying && entry.latest_dispatch_for_task(&t.id)
+                .is_some_and(|d| super::VerificationFlight::contains(&d.id))))
+    {
+        return None;
+    }
+    let actions = plan(TickInput { entry, now, is_live: &|_| false });
+    if actions.iter().any(|a| !matches!(a, Action::ResumeReady { .. })) {
+        return None;
+    }
+    let mut tasks: Vec<&Task> = entry.tasks.values().collect();
+    tasks.sort_by_key(|t| (t.id.len(), t.id.clone()));
+    let mut counts = IdleCounts::default();
+    let mut groups = IdleGroups::default();
+    for task in tasks {
+        match task.status {
+            TaskStatus::Completed => {
+                counts.completed += 1;
+                if task.integrated_sha.is_some() {
+                    counts.integrated += 1;
+                } else if let Some(failure) = entry.auto_action_failures.get(&task.id) {
+                    groups.auto_action_failed.push(idle_task(task, Some(format!("{}: {}", failure.action, failure.error))));
+                } else {
+                    groups.unintegrated.push(idle_task(task, None));
+                }
+            }
+            TaskStatus::Cancelled => {
+                counts.cancelled += 1;
+            }
+            _ if entry.auto_action_failures.contains_key(&task.id) => {
+                let failure = &entry.auto_action_failures[&task.id];
+                groups.auto_action_failed.push(idle_task(task, Some(format!("{}: {}", failure.action, failure.error))));
+            }
+            _ if has_open_gate(entry, task) => {
+                groups.open_gate.push(idle_task(task, open_gate_detail(entry, task)));
+            }
+            TaskStatus::Failed => {
+                groups.failed.push(idle_task(task, failed_detail(entry, task)));
+            }
+            TaskStatus::Blocked => {
+                groups.blocked.push(idle_task(task, None));
+            }
+            TaskStatus::Review => {
+                groups.review.push(idle_task(task, None));
+            }
+            TaskStatus::Pending => {
+                let detail = (task.owner.as_deref() == Some("user")).then(|| "owner: user".into());
+                groups.pending.push(idle_task(task, detail));
+            }
+            TaskStatus::Waiting => match task.wait.as_ref() {
+                Some(wait) if entry.run.autonomy.operational
+                    && task.owner.as_deref() != Some("user")
+                    && matches!(wait.kind, WaitKind::Quota | WaitKind::Availability)
+                    && wait.resume_at.is_some_and(|at| at > now) => {}
+                Some(wait) if wait.kind == WaitKind::Intervention => {
+                    groups.waiting_intervention.push(idle_task(task, Some(wait.reason.clone())));
+                }
+                Some(wait) if matches!(wait.kind, WaitKind::Quota | WaitKind::Availability)
+                    && wait.resume_at.is_some_and(|at| at <= now) => {
+                    groups.resume_due.push(idle_task(task, Some(wait.reason.clone())));
+                }
+                wait => {
+                    groups.waiting_no_resume.push(idle_task(task, wait.map(|w| w.reason.clone())));
+                }
+            },
+            TaskStatus::Verifying => {
+                groups.verifying.push(idle_task(task, Some("verification is not running".into())));
+            }
+            TaskStatus::Dispatched => return None,
+        }
+    }
+    let finished = counts.completed == counts.integrated
+        && counts.completed + counts.cancelled == entry.tasks.len();
+    if !finished && groups == IdleGroups::default() {
+        return None;
+    }
+    Some(IdleReport {
+        reason: if finished { "finished" } else { "idle" }.into(),
+        counts,
+        tasks: groups,
+    })
 }
 
 pub(super) struct CoordinatorProbe {
@@ -325,6 +502,7 @@ pub(super) async fn tick_run(run_id: &str, now: i64) {
         execute(run_id, action).await;
     }
     coordinator_tick(run_id, now).await;
+    super::sync_idle(run_id).await;
 }
 
 fn request_body(run_id: &str, task_id: &str, extra: Value) -> Vec<u8> {
@@ -342,10 +520,42 @@ async fn announce(run_id: &str, task_id: &str, dispatch_id: Option<String>, what
     send_coordinator_notice(run_id.to_string(), task_id.to_string(), dispatch_id, "auto_action", body).await;
 }
 
-async fn finish_dispatching(run_id: &str, task_id: &str, what: (&str, &str), resp: &str) {
-    let Ok(v) = serde_json::from_str::<Value>(resp) else { return };
+fn action_target(run_id: &str, task_id: &str) -> Option<(TaskStatus, u64)> {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard.runs.get(run_id).filter(|entry| entry.run.detached)?;
+    let task = entry.tasks.get(task_id)?;
+    Some((task.status.clone(), task.updated_at))
+}
+
+pub(super) async fn clear_action_failure(run_id: &str, task_id: &str) {
+    let recorded = state().lock().unwrap_or_else(|e| e.into_inner()).runs.get(run_id)
+        .is_some_and(|entry| entry.auto_action_failures.contains_key(task_id));
+    if recorded {
+        let (run, task) = (run_id.to_string(), task_id.to_string());
+        super::commit_deferred_idle(move |_| Ok(Cmd::TaskAutoActionFailure {
+            run_id: run, task_id: task, failure: None, expected: None, now: unix_ms(),
+        }), run_id.to_string()).await;
+    }
+}
+
+async fn record_action_failure(run_id: &str, task_id: &str, action: (&'static str, String), target: Option<(TaskStatus, u64)>) {
+    skipped(run_id, task_id, action.0, &action.1);
+    let Some(target) = target else { return };
+    let (run, task) = (run_id.to_string(), task_id.to_string());
+    commit(move |_| Ok(Cmd::TaskAutoActionFailure {
+        run_id: run, task_id: task, failure: Some(action), expected: Some(target), now: unix_ms(),
+    }), run_id.to_string()).await;
+}
+
+fn response_error(response: &Value, raw: &str) -> String {
+    response["error"]["message"].as_str().unwrap_or(raw).to_string()
+}
+
+async fn finish_dispatching(run_id: &str, task_id: &str, what: (&'static str, &str), result: (&str, Option<(TaskStatus, u64)>)) {
+    let (resp, target) = result;
+    let v = serde_json::from_str::<Value>(resp).unwrap_or_default();
     if v["ok"].as_bool() != Some(true) {
-        skipped(run_id, task_id, what.0, v["error"]["code"].as_str().unwrap_or("error"));
+        record_action_failure(run_id, task_id, (what.0, response_error(&v, resp)), target).await;
         return;
     }
     if v.get("waiting").is_some() {
@@ -363,20 +573,23 @@ fn latest_dispatch_id(run_id: &str, task_id: &str) -> Option<String> {
 async fn execute(run_id: &str, action: Action) {
     match action {
         Action::Retry { task_id, stop_live, reason } => {
+            let target = action_target(run_id, &task_id);
             let resp = handle_retry(&request_body(run_id, &task_id, json!({"stopLive": stop_live}))).await;
-            finish_dispatching(run_id, &task_id, ("retry", reason), &resp).await;
+            finish_dispatching(run_id, &task_id, ("retry", reason), (&resp, target)).await;
         }
         Action::Start { task_id, retry_of, stop_live, reason } => {
+            let target = action_target(run_id, &task_id);
             let resp = handle_worker_start(&request_body(run_id, &task_id, json!({"stopLive": stop_live, "retryOf": retry_of}))).await;
-            finish_dispatching(run_id, &task_id, ("start", reason), &resp).await;
+            finish_dispatching(run_id, &task_id, ("start", reason), (&resp, target)).await;
         }
         Action::Integrate { task_id } => {
+            let target = action_target(run_id, &task_id);
             let resp = handle_integrate(&request_body(run_id, &task_id, json!({}))).await;
-            let integrated = serde_json::from_str::<Value>(&resp).is_ok_and(|v| v["integrated"].as_bool() == Some(true));
-            if integrated {
+            let response = serde_json::from_str::<Value>(&resp).unwrap_or_default();
+            if response["integrated"] == true {
                 announce(run_id, &task_id, None, ("integrate", "completed task merged into the integration branch")).await;
             } else {
-                skipped(run_id, &task_id, "integrate", "not integrated");
+                record_action_failure(run_id, &task_id, ("integrate", response_error(&response, &resp)), target).await;
             }
         }
         Action::Resume { task_id, resume_id, revive } => resume(run_id, &task_id, &resume_id, revive).await,
@@ -386,17 +599,28 @@ async fn execute(run_id: &str, action: Action) {
     }
 }
 
-async fn revive_dispatch(run_id: &str, revive: &Revive) -> bool {
+async fn revive_dispatch(run_id: &str, task_id: &str, continuation: (&Revive, &str), target: Option<(TaskStatus, u64)>) -> bool {
+    let (revive, reason) = continuation;
     let (run_c, dispatch_c) = (run_id.to_string(), revive.dispatch_id.clone());
     let now = unix_ms();
     let revived = commit(move |_| Ok(Cmd::DispatchRevive { run_id: run_c, dispatch_id: dispatch_c, now }), run_id.to_string()).await;
-    if !matches!(revived, CommitResult::Ok(_)) {
-        return false;
+    match revived {
+        CommitResult::Ok(_) => {}
+        CommitResult::Err(error) if target.is_some() => {
+            record_action_failure(run_id, task_id, ("continue", error), target).await;
+            return true;
+        }
+        _ => return false,
     }
     supervision_watch().lock().unwrap_or_else(|e| e.into_inner()).remove(&revive.dispatch_id);
-    if let Err(e) = type_into_tile(&revive.tile_id, CONTINUE_TEXT) {
-        skipped(run_id, &revive.dispatch_id, "continue", &e);
+    if let Err(error) = type_into_tile(&revive.tile_id, CONTINUE_TEXT) {
+        let revived_target = target.as_ref().map(|_| (TaskStatus::Dispatched, now));
+        record_action_failure(run_id, task_id, ("continue", error), revived_target).await;
+        if target.is_some() {
+            return true;
+        }
     }
+    announce(run_id, task_id, Some(revive.dispatch_id.clone()), ("continue", reason)).await;
     true
 }
 
@@ -409,15 +633,15 @@ async fn resume(run_id: &str, task_id: &str, resume_id: &str, revive: Option<Rev
         return;
     }
     let reason = format!("resume {resume_id}");
+    let target = action_target(run_id, task_id);
     if let Some(revive) = revive {
-        if revive_dispatch(run_id, &revive).await {
-            announce(run_id, task_id, Some(revive.dispatch_id), ("continue", &reason)).await;
+        if revive_dispatch(run_id, task_id, (&revive, &reason), target.clone()).await {
             return;
         }
     }
     let retry_of = latest_dispatch_id(run_id, task_id);
     let resp = handle_worker_start(&request_body(run_id, task_id, json!({"stopLive": true, "retryOf": retry_of, "resume": true}))).await;
-    finish_dispatching(run_id, task_id, ("start", &reason), &resp).await;
+    finish_dispatching(run_id, task_id, ("start", &reason), (&resp, target)).await;
 }
 
 fn probe_coordinator(tile_id: &str) -> CoordinatorProbe {
@@ -711,6 +935,10 @@ mod tests {
         disp.branch = Some("orch/r1/t1-1".into());
         assert!(matches!(plan_at(&s, "r1", NOW).as_slice(), [Action::Integrate { .. }]));
         s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().review = true;
+        assert!(plan_at(&s, "r1", NOW).is_empty());
+        s.runs.get_mut("r1").unwrap().run.detached = true;
+        assert!(matches!(plan_at(&s, "r1", NOW).as_slice(), [Action::Integrate { .. }]));
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Review;
         assert!(plan_at(&s, "r1", NOW).is_empty());
     }
 
@@ -1064,5 +1292,199 @@ mod tests {
         let integration = super::super::git::integration_worktree_path(repo.to_str().unwrap(), &run_id);
         assert!(std::path::Path::new(&integration).exists());
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    fn detached_state(auto: Autonomy) -> State {
+        let mut s = new_state("r1", auto);
+        s.runs.get_mut("r1").unwrap().run.detached = true;
+        s
+    }
+
+    #[test]
+    fn future_wait_does_not_hide_review_idle() {
+        let mut s = detached_state(autonomy(true, true, true));
+        add_task(&mut s, "r1", "t1", &["codex:f12c2"], &[]);
+        let now = unix_ms() as i64;
+        wait(&mut s, "r1", "t1", Some(now + 60_000), false);
+        let base = std::env::temp_dir().join(format!("panorama-idle-wait-{now}"));
+        std::fs::create_dir_all(&base).unwrap();
+        assert!(!super::super::sync_idle_locked(&mut s, "r1", &base));
+        add_task(&mut s, "r1", "t2", &["codex:f12c2"], &[]);
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t2").unwrap().status = TaskStatus::Review;
+        assert!(super::super::sync_idle_locked(&mut s, "r1", &base));
+        let messages = &s.runs["r1"].messages;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].msg_type, "run_idle");
+        let report: IdleReport = serde_json::from_str(messages[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(report.tasks.review.len(), 1);
+        assert_eq!(report.tasks.review[0].id, "t2");
+        assert!(report.tasks.waiting_no_resume.is_empty());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn due_wait_tick_emits_changed_idle_once() {
+        f12_test_home();
+        let run_id = unique("due-idle");
+        let now = unix_ms() as i64;
+        let mut s = failed_state(&run_id, autonomy(false, false, false), FailureClass::QuotaExhausted);
+        s.runs.get_mut(&run_id).unwrap().run.detached = true;
+        wait(&mut s, &run_id, "t1", Some(now + 60_000), false);
+        install(s);
+        tick_run(&run_id, now).await;
+        assert_eq!(messages_of(&run_id, "run_idle").len(), 1);
+        state().lock().unwrap_or_else(|e| e.into_inner()).runs.get_mut(&run_id).unwrap()
+            .tasks.get_mut("t1").unwrap().wait.as_mut().unwrap().resume_at = Some(now - 1);
+        tick_run(&run_id, now).await;
+        tick_run(&run_id, now).await;
+        let messages = messages_of(&run_id, "run_idle");
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1].body.as_deref().unwrap().contains("resumeDue"));
+    }
+
+    #[test]
+    fn idle_reason_table_covers_all_reasons() {
+        let attached = new_state("r1", autonomy(true, true, true));
+        assert!(idle_reason(&attached.runs["r1"], NOW).is_none());
+
+        let empty = detached_state(autonomy(true, true, true));
+        assert!(idle_reason(&empty.runs["r1"], NOW).is_none());
+
+        for status in [RunStatus::Paused, RunStatus::Completed] {
+            let mut s = detached_state(autonomy(true, true, true));
+            add_task(&mut s, "r1", "t1", &["codex:f12c2"], &[]);
+            s.runs.get_mut("r1").unwrap().run.status = status;
+            assert!(idle_reason(&s.runs["r1"], NOW).is_none());
+        }
+
+        let mut running = detached_state(autonomy(true, true, true));
+        add_task(&mut running, "r1", "t1", &["codex:f12c2"], &[]);
+        dispatch(&mut running, "r1", "t1", None);
+        assert!(idle_reason(&running.runs["r1"], NOW).is_none());
+
+        let mut verifying = detached_state(autonomy(true, true, true));
+        add_task(&mut verifying, "r1", "t1", &["codex:f12c2"], &[]);
+        verifying.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Verifying;
+        assert_eq!(idle_reason(&verifying.runs["r1"], NOW).unwrap().tasks.verifying[0].id, "t1");
+
+        let mut legacy_fail = detached_state(autonomy(false, true, false));
+        add_task(&mut legacy_fail, "r1", "t1", &["codex:f12c2"], &[]);
+        let d = dispatch(&mut legacy_fail, "r1", "t1", None);
+        f12_commit(&mut legacy_fail, Cmd::DispatchUpdate {
+            run_id: "r1".into(), dispatch_id: d, status: DispatchStatus::Failed,
+            summary: Some("first line\nsecond line".into()), now: 1_000_100,
+        });
+        legacy_fail.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().routing = 0;
+        let r = idle_reason(&legacy_fail.runs["r1"], NOW).expect("legacy failed idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.failed.len(), 1);
+        assert_eq!(r.tasks.failed[0].id, "t1");
+        assert_eq!(r.tasks.failed[0].detail.as_deref(), Some("first line"));
+
+        let mut op_off = detached_state(autonomy(false, true, true));
+        add_task(&mut op_off, "r1", "t1", &["codex:f12c2"], &[]);
+        let d = dispatch(&mut op_off, "r1", "t1", None);
+        fail(&mut op_off, "r1", &d, FailureClass::ExecutionFailed);
+        let r = idle_reason(&op_off.runs["r1"], NOW).expect("operational off idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.failed.len(), 1);
+        assert_eq!(r.tasks.failed[0].detail.as_deref(), Some("ExecutionFailed"));
+
+        let mut op_on = detached_state(autonomy(true, true, true));
+        add_task(&mut op_on, "r1", "t1", &["codex:f12c2"], &[]);
+        let d = dispatch(&mut op_on, "r1", "t1", None);
+        fail(&mut op_on, "r1", &d, FailureClass::ExecutionFailed);
+        assert!(idle_reason(&op_on.runs["r1"], NOW).is_none());
+
+        let mut exec_off = detached_state(autonomy(true, false, true));
+        add_task(&mut exec_off, "r1", "t1", &["codex:f12c2"], &[]);
+        let r = idle_reason(&exec_off.runs["r1"], NOW).expect("execution off idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.pending.len(), 1);
+        assert_eq!(r.tasks.pending[0].id, "t1");
+
+        let mut gated = detached_state(autonomy(true, true, true));
+        add_task(&mut gated, "r1", "t1", &["codex:f12c2"], &[]);
+        gated.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Blocked;
+        f12_commit(&mut gated, Cmd::GateCreate {
+            run_id: "r1".into(), id: "g1".into(), task_id: "t1".into(),
+            question: "Pick a path?".into(), options: vec![], msg_seq: 1, now: 1_000_200,
+        });
+        let r = idle_reason(&gated.runs["r1"], NOW).expect("open gate idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.open_gate.len(), 1);
+        assert_eq!(r.tasks.open_gate[0].detail.as_deref(), Some("g1: Pick a path?"));
+        assert!(r.tasks.blocked.is_empty());
+
+        let mut blocked = detached_state(autonomy(true, true, true));
+        add_task(&mut blocked, "r1", "t1", &["codex:f12c2"], &[]);
+        blocked.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Blocked;
+        let r = idle_reason(&blocked.runs["r1"], NOW).expect("blocked conflict idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.blocked.len(), 1);
+        assert_eq!(r.tasks.blocked[0].id, "t1");
+
+        let mut review = detached_state(autonomy(true, true, true));
+        add_task(&mut review, "r1", "t1", &["codex:f12c2"], &[]);
+        review.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Review;
+        let r = idle_reason(&review.runs["r1"], NOW).expect("review idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.review.len(), 1);
+        assert_eq!(r.tasks.review[0].id, "t1");
+
+        let mut intervention = detached_state(autonomy(true, true, true));
+        add_task(&mut intervention, "r1", "t1", &["codex:f12c2"], &[]);
+        f12_commit(&mut intervention, Cmd::TaskWait {
+            run_id: "r1".into(), task_id: "t1".into(),
+            wait: crate::orch::reducer::WaitRequest {
+                kind: WaitKind::Intervention, resume_at: None, reason: "needs auth".into(),
+                candidate: None, same_session: false,
+            },
+            now: 1_000_300,
+        });
+        let r = idle_reason(&intervention.runs["r1"], NOW).expect("intervention idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.tasks.waiting_intervention.len(), 1);
+        assert_eq!(r.tasks.waiting_intervention[0].detail.as_deref(), Some("needs auth"));
+
+        let mut quota_on = detached_state(autonomy(true, true, true));
+        add_task(&mut quota_on, "r1", "t1", &["codex:f12c2"], &[]);
+        wait(&mut quota_on, "r1", "t1", Some(NOW + 60_000), false);
+        assert!(idle_reason(&quota_on.runs["r1"], NOW).is_none());
+
+        for resume_at in [NOW + 60_000, NOW - 60_000] {
+            let mut quota_off = detached_state(autonomy(false, true, true));
+            add_task(&mut quota_off, "r1", "t1", &["codex:f12c2"], &[]);
+            wait(&mut quota_off, "r1", "t1", Some(resume_at), false);
+            let r = idle_reason(&quota_off.runs["r1"], NOW).expect("quota off idle");
+            assert_eq!(r.reason, "idle");
+            let group = if resume_at <= NOW { &r.tasks.resume_due } else { &r.tasks.waiting_no_resume };
+            assert_eq!(group.len(), 1);
+            assert_eq!(group[0].detail.as_deref(), Some("quota"));
+        }
+
+        let mut unintegrated = detached_state(autonomy(true, true, false));
+        add_task(&mut unintegrated, "r1", "t1", &["codex:f12c2"], &[]);
+        unintegrated.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Completed;
+        let r = idle_reason(&unintegrated.runs["r1"], NOW).expect("unintegrated idle");
+        assert_eq!(r.reason, "idle");
+        assert_eq!(r.counts, IdleCounts { completed: 1, integrated: 0, cancelled: 0 });
+        assert_eq!(r.tasks.unintegrated.len(), 1);
+        assert_eq!(r.tasks.unintegrated[0].id, "t1");
+
+        let mut finished = detached_state(autonomy(true, true, true));
+        add_task(&mut finished, "r1", "t1", &["codex:f12c2"], &[]);
+        add_task(&mut finished, "r1", "t2", &["codex:f12c2"], &[]);
+        {
+            let entry = finished.runs.get_mut("r1").unwrap();
+            let t1 = entry.tasks.get_mut("t1").unwrap();
+            t1.status = TaskStatus::Completed;
+            t1.integrated_sha = Some("deadbeef".into());
+            entry.tasks.get_mut("t2").unwrap().status = TaskStatus::Cancelled;
+        }
+        let r = idle_reason(&finished.runs["r1"], NOW).expect("finished report");
+        assert_eq!(r.reason, "finished");
+        assert_eq!(r.counts, IdleCounts { completed: 1, integrated: 1, cancelled: 1 });
+        assert_eq!(r.tasks, IdleGroups::default());
     }
 }

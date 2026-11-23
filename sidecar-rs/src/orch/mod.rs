@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use serde_json::Value;
 use crate::orch::model::*;
-use crate::orch::reducer::{ApplyResult, Cmd, State, WaitRequest};
+use crate::orch::reducer::{ApplyResult, Cmd, IdleState, RunEntry, State, WaitRequest};
 use crate::orch::store::{EventRecord, append_event, ensure_run_dir, load_into, remove_run_dir, run_events_path};
 use crate::orch::profiles::{load_profiles, find_profile, resolve_env};
 use crate::orch::worker::{BriefInput, WorkerLaunch, write_brief, spawn_worker, capture_worker_screen, maybe_nudge_tile, maybe_nudge_worker, is_tile_waiting};
@@ -198,30 +198,23 @@ fn transition_notifications(before: Option<&(RunStatus, HashMap<String, TaskStat
     events
 }
 
-fn commit_sync<F>(make_cmd: F, run_id: &str, base: &std::path::Path) -> CommitResult
-where
-    F: FnOnce(&State) -> Result<Cmd, String>,
-{
-    let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
-
-    let cmd = match make_cmd(&guard) {
-        Ok(c) => c,
-        Err(e) => return CommitResult::Err(e),
-    };
-
+fn append_and_replay(
+    guard: &mut State,
+    run_id: &str,
+    cmd: &Cmd,
+    base: &std::path::Path,
+) -> Result<(String, Value), CommitResult> {
     let event_seq = guard.runs.get(run_id).map(|e| e.event_seq + 1).unwrap_or(1);
     let now = unix_ms();
-    let previous_messages = guard.runs.get(run_id).map_or(0, |e| e.messages.len());
-
-    match guard.apply(&cmd) {
+    match guard.apply(cmd) {
         ApplyResult::Ok(kind, data) => {
             if let Err(e) = ensure_run_dir(base, run_id) {
-                return CommitResult::Err(format!("io:{e}"));
+                return Err(CommitResult::Err(format!("io:{e}")));
             }
             let path = run_events_path(base, run_id);
             let record = EventRecord { seq: event_seq, at: now, kind: kind.clone(), data: data.clone() };
             if let Err(e) = append_event(&path, &record) {
-                return CommitResult::Err(format!("io:{e}"));
+                return Err(CommitResult::Err(format!("io:{e}")));
             }
             let before = guard.runs.get(run_id).map(|entry| (
                 entry.run.status.clone(),
@@ -237,15 +230,7 @@ where
             if let Some(entry) = guard.runs.get_mut(run_id) {
                 entry.event_seq = event_seq;
             }
-            let wake = guard.runs.get(run_id).and_then(|entry| {
-                entry.messages.iter().skip(previous_messages)
-                    .any(|m| m.to == "coordinator").then(|| entry.run.coordinator_tile.clone()).flatten()
-            });
-            drop(guard);
-            if let Some(tile) = wake {
-                recheck_coordinator(run_id, &tile);
-            }
-            CommitResult::Ok(data)
+            Ok((kind, data))
         }
         ApplyResult::Stale(kind, data) => {
             let path = run_events_path(base, run_id);
@@ -255,10 +240,121 @@ where
             } else if let Some(entry) = guard.runs.get_mut(run_id) {
                 entry.event_seq = event_seq;
             }
-            CommitResult::Stale
+            Err(CommitResult::Stale)
         }
-        ApplyResult::Err(e) => CommitResult::Err(format!("{}:{}", e.code(), e.message())),
+        ApplyResult::Err(e) => Err(CommitResult::Err(format!("{}:{}", e.code(), e.message()))),
     }
+}
+
+fn finished_message_body(run_id: &str, report: &autonomy::IdleReport) -> String {
+    serde_json::json!({
+        "completed": report.counts.completed,
+        "integrated": report.counts.integrated,
+        "cancelled": report.counts.cancelled,
+        "integrationBranch": crate::orch::git::integration_branch(run_id),
+    }).to_string()
+}
+
+fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> bool {
+    let Some(entry) = guard.runs.get(run_id) else { return false };
+    let now = unix_ms();
+    let report = autonomy::idle_reason(entry, now as i64);
+    let desired = match &report {
+        None => IdleState::Active,
+        Some(r) if r.reason == "finished" => IdleState::Finished,
+        Some(_) => IdleState::Idle,
+    };
+    if desired == entry.idle_state {
+        let unchanged = report.as_ref().map(|r| {
+            let msg_type = if desired == IdleState::Finished { "run_finished" } else { "run_idle" };
+            let body = if desired == IdleState::Finished {
+                finished_message_body(run_id, r)
+            } else {
+                serde_json::to_string(r).unwrap_or_default()
+            };
+            entry.idle_fingerprint.as_deref() == Some(&reducer::idle_fingerprint(msg_type, &body))
+        }).unwrap_or(true);
+        if unchanged { return false; }
+    }
+    let cmd = match desired {
+        IdleState::Active => Cmd::RunActive { run_id: run_id.to_string(), now },
+        IdleState::Idle => Cmd::RunIdle {
+            run_id: run_id.to_string(),
+            msg_seq: entry.next_msg_seq(),
+            msg_type: "run_idle".into(),
+            body: serde_json::to_string(report.as_ref().unwrap()).unwrap_or_else(|_| "{}".into()),
+            now,
+        },
+        IdleState::Finished => Cmd::RunIdle {
+            run_id: run_id.to_string(),
+            msg_seq: entry.next_msg_seq(),
+            msg_type: "run_finished".into(),
+            body: finished_message_body(run_id, report.as_ref().unwrap()),
+            now,
+        },
+    };
+    append_and_replay(guard, run_id, &cmd, base).is_ok()
+}
+
+fn wake_tile_for_messages(entry: &RunEntry, previous_messages: usize, now: i64) -> Option<String> {
+    entry.messages.iter().skip(previous_messages)
+        .any(|m| m.to == "coordinator" && needs_decision(m, entry, now))
+        .then(|| entry.run.coordinator_tile.clone()).flatten()
+}
+
+fn commit_sync_raw<F>(make_cmd: F, run_id: &str, base: &std::path::Path) -> CommitResult
+where
+    F: FnOnce(&State) -> Result<Cmd, String>,
+{
+    let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let cmd = match make_cmd(&guard) {
+        Ok(c) => c,
+        Err(e) => return CommitResult::Err(e),
+    };
+    let previous_messages = guard.runs.get(run_id).map_or(0, |e| e.messages.len());
+    let (kind, data) = match append_and_replay(&mut guard, run_id, &cmd, base) {
+        Ok(pair) => pair,
+        Err(result) => return result,
+    };
+    let now = unix_ms() as i64;
+    let wake = guard.runs.get(run_id).and_then(|entry| {
+        wake_tile_for_messages(entry, previous_messages, now)
+            .or_else(|| (kind == "run-update" && data["detached"] == false)
+                .then(|| entry.run.coordinator_tile.clone()).flatten())
+    });
+    drop(guard);
+    if let Some(tile) = wake {
+        recheck_coordinator(run_id, &tile);
+    }
+    CommitResult::Ok(data)
+}
+
+fn commit_sync<F>(make_cmd: F, run_id: &str, base: &std::path::Path) -> CommitResult
+where
+    F: FnOnce(&State) -> Result<Cmd, String>,
+{
+    let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let cmd = match make_cmd(&guard) {
+        Ok(c) => c,
+        Err(e) => return CommitResult::Err(e),
+    };
+    let previous_messages = guard.runs.get(run_id).map_or(0, |e| e.messages.len());
+    let (kind, data) = match append_and_replay(&mut guard, run_id, &cmd, base) {
+        Ok(pair) => pair,
+        Err(result) => return result,
+    };
+    sync_idle_locked(&mut guard, run_id, base);
+    let now = unix_ms() as i64;
+    let wake = guard.runs.get(run_id).and_then(|entry| {
+        wake_tile_for_messages(entry, previous_messages, now)
+            .or_else(|| (kind == "run-update" && data["detached"] == false)
+                .then(|| entry.run.coordinator_tile.clone()).flatten())
+    });
+    drop(guard);
+    if let Some(tile) = wake {
+        recheck_coordinator(run_id, &tile);
+    }
+    CommitResult::Ok(data)
 }
 
 async fn commit<F>(make_cmd: F, run_id: String) -> CommitResult
@@ -279,31 +375,126 @@ where
     result
 }
 
+async fn commit_deferred_idle<F>(make_cmd: F, run_id: String) -> CommitResult
+where
+    F: FnOnce(&State) -> Result<Cmd, String> + Send + 'static,
+{
+    let Some(base) = crate::panorama_dir() else {
+        return CommitResult::Err("io:no panorama dir".into());
+    };
+    let notify_id = run_id.clone();
+    let result = tokio::task::spawn_blocking(move || commit_sync_raw(make_cmd, &run_id, &base))
+        .await
+        .unwrap_or_else(|_| CommitResult::Err("io:spawn failed".into()));
+    if !matches!(result, CommitResult::Err(_)) {
+        run_notify(&notify_id).notify_waiters();
+        crate::ui::broadcast_orch_changed(&notify_id);
+    }
+    result
+}
+
+async fn sync_idle(run_id: &str) {
+    let Some(base) = crate::panorama_dir() else { return };
+    let run_id_c = run_id.to_string();
+    let changed = tokio::task::spawn_blocking(move || {
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let previous_messages = guard.runs.get(&run_id_c).map_or(0, |e| e.messages.len());
+        let changed = sync_idle_locked(&mut guard, &run_id_c, &base);
+        let wake = changed.then(|| {
+            let now = unix_ms() as i64;
+            guard.runs.get(&run_id_c)
+                .and_then(|entry| wake_tile_for_messages(entry, previous_messages, now))
+        }).flatten();
+        drop(guard);
+        if let Some(tile) = wake {
+            recheck_coordinator(&run_id_c, &tile);
+        }
+        changed
+    }).await.unwrap_or(false);
+    if changed {
+        run_notify(run_id).notify_waiters();
+        crate::ui::broadcast_orch_changed(run_id);
+    }
+}
+
+struct CheckOptions {
+    recipient: String,
+    types: Option<Vec<String>>,
+    peek: bool,
+    decisions: bool,
+}
+
+#[derive(Default)]
+struct RoutineDigest {
+    count: usize,
+    by_type: std::collections::BTreeMap<String, usize>,
+    tasks: std::collections::BTreeMap<String, Value>,
+}
+
+impl RoutineDigest {
+    fn add(&mut self, msg: &Message, entry: &RunEntry) {
+        self.count += 1;
+        *self.by_type.entry(msg.msg_type.clone()).or_default() += 1;
+        let task = msg.task_id.as_ref().or_else(|| {
+            let dispatch = msg.dispatch_id.as_deref().unwrap_or(&msg.from);
+            entry.dispatches.get(dispatch).map(|d| &d.task_id)
+        }).and_then(|id| entry.tasks.get(id));
+        if let Some(task) = task {
+            self.tasks.insert(task.id.clone(), serde_json::json!({
+                "id": task.id, "title": task.title, "status": task.status,
+            }));
+        }
+    }
+
+    fn response(&self, messages: Vec<Value>, decisions: bool) -> String {
+        let mut result = serde_json::json!({"messages": messages});
+        if decisions {
+            result["routine"] = serde_json::json!({
+                "count": self.count,
+                "byType": self.by_type,
+                "tasks": self.tasks.values().collect::<Vec<_>>(),
+            });
+        }
+        ok_resp(result)
+    }
+}
+
 fn collect_ack_sync(
     run_id: &str,
-    recipient: &str,
-    types: &Option<Vec<String>>,
-    peek: bool,
+    options: &CheckOptions,
     base: &std::path::Path,
-) -> Result<Vec<Value>, String> {
+    waiting: bool,
+) -> Result<(Vec<Value>, RoutineDigest), String> {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     let Some(entry) = guard.runs.get(run_id) else {
         return Err("not_found:run not found".into());
     };
 
-    let matched_seqs: Vec<u32> = entry.messages.iter()
-        .filter(|m| !m.acked && m.to == recipient)
-        .filter(|m| types.as_ref().map(|ts| ts.contains(&m.msg_type)).unwrap_or(true))
-        .map(|m| m.seq)
-        .collect();
+    let now = unix_ms() as i64;
+    let mut matched_seqs = Vec::new();
+    let mut msgs = Vec::new();
+    let mut routine_msgs = Vec::new();
+    for msg in entry.messages.iter().filter(|m| !m.acked && m.to == options.recipient) {
+        if options.decisions && !needs_decision(msg, entry, now) {
+            if !options.peek {
+                matched_seqs.push(msg.seq);
+                routine_msgs.push(msg);
+            }
+        } else if options.types.as_ref().is_none_or(|types| types.contains(&msg.msg_type)) {
+            matched_seqs.push(msg.seq);
+            msgs.push(serde_json::to_value(msg).map_err(|e| format!("io:{e}"))?);
+        }
+    }
 
-    let msgs: Vec<Value> = entry.messages.iter()
-        .filter(|m| matched_seqs.contains(&m.seq))
-        .filter_map(|m| serde_json::to_value(m).ok())
-        .collect();
-
-    if peek || matched_seqs.is_empty() {
-        return Ok(msgs);
+    if waiting && msgs.is_empty() {
+        return Ok((msgs, RoutineDigest::default()));
+    }
+    let mut routine = RoutineDigest::default();
+    for msg in routine_msgs {
+        routine.add(msg, entry);
+    }
+    if options.peek || matched_seqs.is_empty() {
+        return Ok((msgs, routine));
     }
 
     let event_seq = entry.event_seq + 1;
@@ -311,7 +502,7 @@ fn collect_ack_sync(
 
     let (kind, data) = match guard.apply(&ack_cmd) {
         ApplyResult::Ok(k, d) => (k, d),
-        _ => return Ok(msgs),
+        _ => return Ok((msgs, RoutineDigest::default())),
     };
 
     if let Err(e) = ensure_run_dir(base, run_id) {
@@ -329,7 +520,7 @@ fn collect_ack_sync(
         entry.event_seq = event_seq;
     }
 
-    Ok(msgs)
+    Ok((msgs, routine))
 }
 
 pub fn init() {
@@ -350,6 +541,9 @@ pub fn init() {
             let Some(run_id) = entry.file_name().to_str().map(str::to_string) else { continue };
             let path = entry.path().join("events.jsonl");
             load_into(&mut guard, &path, &run_id);
+        }
+        for entry in guard.runs.values().filter(|entry| !entry.run.status.is_terminal()) {
+            restart_verifications(entry).for_each(drop);
         }
     }
     tokio::runtime::Handle::current().spawn(supervision_loop());
@@ -407,31 +601,60 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
 }
 
 pub(crate) fn recheck_coordinator(run_id: &str, tile_id: &str) {
-    let count = {
+    let now = unix_ms() as i64;
+    let (count, detached) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         guard.runs.get(run_id).filter(|e| !e.run.status.is_terminal()
             && e.run.coordinator_tile.as_deref() == Some(tile_id))
-            .map_or(0, |e| e.messages.iter().filter(|m| !m.acked && m.to == "coordinator").count())
+            .map_or((0, false), |e| (coordinator_unacked(e, now), e.run.detached))
     };
-    maybe_nudge_tile(tile_id, run_id, count, &crate::panorama_cli_path());
+    maybe_nudge_tile(tile_id, run_id, count, detached);
+}
+
+fn is_current_idle_msg(msg: &Message, entry: &RunEntry, now: i64, expected_reason: &str) -> bool {
+    let is_latest = entry.messages.iter().rev()
+        .find(|m| matches!(m.msg_type.as_str(), "run_idle" | "run_finished"))
+        .is_some_and(|last| last.seq == msg.seq);
+    is_latest && autonomy::idle_reason(entry, now)
+        .is_some_and(|report| report.reason == expected_reason)
+}
+
+fn needs_decision(msg: &Message, entry: &RunEntry, now: i64) -> bool {
+    if !entry.run.detached {
+        return true;
+    }
+    match msg.msg_type.as_str() {
+        "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" | "late_report" => true,
+        "question" => !matches!(msg.from.as_str(), "coordinator" | "user" | "brain"),
+        "status" => msg.body.as_deref()
+            .is_some_and(|body| body.to_ascii_lowercase().contains("waiting for permission")),
+        "note" => msg.from == "user",
+        "run_idle" => is_current_idle_msg(msg, entry, now, "idle"),
+        "run_finished" => is_current_idle_msg(msg, entry, now, "finished"),
+        _ => false,
+    }
+}
+
+fn coordinator_unacked(entry: &RunEntry, now: i64) -> usize {
+    entry.messages.iter()
+        .filter(|m| !m.acked && m.to == "coordinator" && needs_decision(m, entry, now))
+        .count()
 }
 
 pub fn on_agent_idle(tile_id: &str) {
     let cli = crate::panorama_cli_path();
+    let now = unix_ms() as i64;
     let guard = state().lock().unwrap_or_else(|e| e.into_inner());
     for (run_id, entry) in &guard.runs {
         if entry.run.status.is_terminal() { continue; }
         if let Some(ref coord_tile) = entry.run.coordinator_tile {
             if coord_tile == tile_id {
-                let unacked: usize = entry.messages.iter()
-                    .filter(|m| !m.acked && m.to == "coordinator")
-                    .count();
+                let unacked = coordinator_unacked(entry, now);
                 if unacked > 0 {
                     let run_id = run_id.clone();
-                    let tile = tile_id.to_string();
-                    let cli2 = cli.clone();
+                    let detached = entry.run.detached;
                     drop(guard);
-                    maybe_nudge_tile(&tile, &run_id, unacked, &cli2);
+                    maybe_nudge_tile(tile_id, &run_id, unacked, detached);
                     return;
                 }
             }
@@ -522,7 +745,7 @@ fn parse_autonomy_field(v: &Value) -> Result<Option<Autonomy>, String> {
     Ok(Some(autonomy))
 }
 
-fn run_extra_fields(autonomy: Option<Autonomy>, max_operational_attempts: Option<u64>) -> Value {
+fn run_extra_fields(autonomy: Option<Autonomy>, max_operational_attempts: Option<u64>, detached: Option<bool>) -> Value {
     let mut fields = serde_json::Map::new();
     if let Some(a) = autonomy {
         fields.insert("autonomy".into(), serde_json::to_value(a).unwrap_or_default());
@@ -530,7 +753,28 @@ fn run_extra_fields(autonomy: Option<Autonomy>, max_operational_attempts: Option
     if let Some(n) = max_operational_attempts {
         fields.insert("maxOperationalAttempts".into(), n.into());
     }
+    if let Some(detached) = detached {
+        fields.insert("detached".into(), detached.into());
+    }
     Value::Object(fields)
+}
+
+fn parse_detached_field(v: &Value) -> Result<Option<bool>, String> {
+    match &v["detached"] {
+        Value::Null => Ok(None),
+        Value::Bool(detached) => Ok(Some(*detached)),
+        _ => Err(err_resp("bad_request", "detached must be a boolean")),
+    }
+}
+
+fn run_create_fields(v: &Value) -> Result<Value, String> {
+    let detached = parse_detached_field(v)?;
+    let autonomy = parse_autonomy_field(v)?.or_else(|| {
+        (detached == Some(true)).then_some(Autonomy {
+            operational: true, execution: true, integration: true,
+        })
+    });
+    Ok(run_extra_fields(autonomy, None, detached))
 }
 
 fn parse_limits(v: &Value) -> Result<Limits, String> {
@@ -567,7 +811,7 @@ async fn handle_run_create(body: &[u8]) -> String {
         return err_resp("bad_request", "repo is not an existing directory");
     }
     let limits = match parse_limits(&v) { Ok(l) => l, Err(e) => return e };
-    let autonomy = match parse_autonomy_field(&v) { Ok(a) => a, Err(e) => return e };
+    let fields = match run_create_fields(&v) { Ok(fields) => fields, Err(e) => return e };
     let id = gen_run_id();
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let base_ref = v["baseRef"].as_str().map(str::to_string);
@@ -584,7 +828,7 @@ async fn handle_run_create(body: &[u8]) -> String {
     let now = unix_ms();
     let result = commit(move |_| {
         let cmd = Cmd::RunCreate { id: id_c, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
-        Ok(cmd.with_fields(run_extra_fields(autonomy, None)))
+        Ok(cmd.with_fields(fields))
     }, id.clone()).await;
     match result {
         CommitResult::Ok(_) => {
@@ -790,7 +1034,7 @@ fn handle_run_show(body: &[u8]) -> String {
             .map(|g| serde_json::json!({"id": g["id"], "taskId": g["taskId"], "question": g["question"]}))
             .collect();
         return ok_resp(serde_json::json!({
-            "run": {"id": run_val["id"], "title": run_val["title"], "status": run_val["status"]},
+            "run": {"id": run_val["id"], "title": run_val["title"], "status": run_val["status"], "detached": run_val["detached"]},
             "tasks": tasks_brief,
             "dispatches": dispatches_brief,
             "gates": gates_brief,
@@ -924,12 +1168,13 @@ async fn handle_run_update(body: &[u8]) -> String {
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
     let title = v["title"].as_str().unwrap_or("").to_string();
     let autonomy = match parse_autonomy_field(&v) { Ok(a) => a, Err(e) => return e };
+    let detached = match parse_detached_field(&v) { Ok(d) => d, Err(e) => return e };
     let max_operational = v.get("maxOperationalAttempts").filter(|n| !n.is_null()).and_then(|n| n.as_u64());
     if v.get("maxOperationalAttempts").map(|n| !n.is_null()).unwrap_or(false) && max_operational.map(|n| n < 1).unwrap_or(true) {
         return err_resp("bad_request", "maxOperationalAttempts must be an integer >= 1");
     }
-    if title.is_empty() && autonomy.is_none() && max_operational.is_none() {
-        return err_resp("bad_request", "title, autonomy or maxOperationalAttempts required");
+    if title.is_empty() && autonomy.is_none() && max_operational.is_none() && detached.is_none() {
+        return err_resp("bad_request", "title, autonomy, maxOperationalAttempts or detached required");
     }
     let now = unix_ms();
     let run_id_c = run_id.clone();
@@ -940,7 +1185,7 @@ async fn handle_run_update(body: &[u8]) -> String {
             title
         };
         let cmd = Cmd::RunUpdate { run_id: run_id_c, title, now };
-        Ok(cmd.with_fields(run_extra_fields(autonomy, max_operational)))
+        Ok(cmd.with_fields(run_extra_fields(autonomy, max_operational, detached)))
     }, run_id).await;
     match result {
         CommitResult::Ok(_) => ok_resp(serde_json::json!({})),
@@ -1336,17 +1581,21 @@ async fn handle_send(body: &[u8]) -> String {
     };
     let task_id = v["taskId"].as_str().map(str::to_string);
     let dispatch_id = v["dispatchId"].as_str().map(str::to_string);
-    let dispatch_id_for_hook = dispatch_id.clone();
+    let dispatch_id_for_hook = if msg_type == "worker_done" && !matches!(from.as_str(), "coordinator" | "user" | "brain") {
+        Some(from.clone())
+    } else {
+        dispatch_id.clone()
+    };
     let reply_to = v["replyTo"].as_u64().map(|n| n as u32);
     let body_str = if msg_type == "worker_done" { v["report"].as_str().or_else(|| v["body"].as_str()) } else { v["body"].as_str() }.map(str::to_string);
     let outcome = v["outcome"].as_str().map(str::to_string);
     let summary = v["summary"].as_str().map(str::to_string);
     if msg_type == "worker_done" {
-        if let Some(did) = dispatch_id.as_deref() {
+        if let Some(did) = dispatch_id_for_hook.as_deref() {
             commit_worker_leftovers(&run_id, did).await;
         }
     }
-    let failure = match (msg_type.as_str(), outcome.as_deref(), dispatch_id.as_deref()) {
+    let failure = match (msg_type.as_str(), outcome.as_deref(), dispatch_id_for_hook.as_deref()) {
         ("worker_done", Some("failed"), Some(did)) => {
             classify_dispatch(&run_id, did, "worker_failed_report", &dispatch_screen_tail(&run_id, did))
         }
@@ -1359,7 +1608,9 @@ async fn handle_send(body: &[u8]) -> String {
     let from_c = from.clone();
     let files_modified_c = files_modified.clone();
 
-    let result = commit(move |state| {
+    let routed_failure = failure.as_ref().is_some_and(|f| f.routing == 1);
+    let successful_report = msg_type == "worker_done" && outcome.as_deref() == Some("succeeded");
+    let make_send = move |state: &State| {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let to: Vec<String> = if to_raw.as_str() == Some("@workers") {
@@ -1375,17 +1626,22 @@ async fn handle_send(body: &[u8]) -> String {
             return Err("bad_request:to required".into());
         };
         let seq = entry.next_msg_seq();
-        Ok(with_legacy_failure_class(Cmd::Send {
+        Ok(with_failure_class(Cmd::Send {
             run_id: run_id_c, seq, from: from_c, to,
             msg_type: msg_type_c, task_id, dispatch_id, reply_to,
             body: body_str, outcome, files_modified: files_modified_c, summary, now,
         }, failure_c.as_ref()))
-    }, run_id.clone()).await;
+    };
+    let result = if routed_failure || successful_report {
+        commit_deferred_idle(make_send, run_id.clone()).await
+    } else {
+        commit(make_send, run_id.clone()).await
+    };
 
     match result {
         CommitResult::Ok(_) => {
             if let (Some(f), Some(did)) = (&failure, dispatch_id_for_hook.as_deref()) {
-                send_follow_up(record_failure(&run_id, did, f, false).await).await;
+                send_follow_up(after_recorded_failure(&run_id, did, f, false).await).await;
             }
             if msg_type == "worker_done" && v["outcome"].as_str() == Some("succeeded") {
                 if let Some(did) = dispatch_id_for_hook.as_deref() {
@@ -1395,10 +1651,14 @@ async fn handle_send(body: &[u8]) -> String {
             if msg_type == "worker_done" {
                 if let Some(did) = dispatch_id_for_hook {
                     let run_id_wd = run_id.clone();
+                    let verification = successful_report.then(|| VerificationFlight::for_report(&run_id, &did)).flatten();
                     tokio::spawn(async move {
-                        worker_done_side_effects(run_id_wd, did).await;
+                        worker_done_side_effects(run_id_wd, did, verification).await;
                     });
                 }
+            }
+            if successful_report {
+                sync_idle(&run_id).await;
             }
             ok_resp(serde_json::json!({}))
         }
@@ -1521,7 +1781,7 @@ async fn commit_worker_leftovers(run_id: &str, dispatch_id: &str) {
     }).await;
 }
 
-async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
+async fn worker_done_side_effects(run_id: String, dispatch_id: String, verification: Option<VerificationFlight>) {
     let (wt_path, base_sha, commit_msg, task_id, tile_id, dispatch_profile) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
@@ -1532,10 +1792,7 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
             Some(d) => d,
             None => return,
         };
-        let wt = match d.worktree.clone() {
-            Some(p) => p,
-            None => return,
-        };
+        let wt = d.worktree.clone();
         let task_id = d.task_id.clone();
         let tile_id = d.tile_id.clone();
         let dispatch_profile = d.profile.clone();
@@ -1543,7 +1800,12 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
         (wt, entry.run.base_sha.clone(), format!("orch({task_id}): {title}"), task_id, tile_id, dispatch_profile)
     };
 
-    let wt = wt_path.clone();
+    let Some(wt) = wt_path else {
+        if let Some(flight) = verification {
+            run_verification(run_id, task_id, flight, None).await;
+        }
+        return;
+    };
     let base = base_sha.clone();
     let result = tokio::task::spawn_blocking(move || -> (Option<String>, Vec<String>) {
         let status = crate::orch::git::status_porcelain(&wt).unwrap_or_default();
@@ -1623,21 +1885,8 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String) {
         })
     }, run_id.clone()).await;
 
-    let needs_verify = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(&run_id)
-            .and_then(|e| e.tasks.get(&task_id))
-            .map(|t| t.status == TaskStatus::Verifying && !t.verify.is_empty())
-            .unwrap_or(false)
-    };
-    if needs_verify {
-        let run_id2 = run_id.clone();
-        let task_id2 = task_id.clone();
-        let dispatch_id2 = dispatch_id.clone();
-        let head = head_sha.clone();
-        tokio::spawn(async move {
-            run_verification(run_id2, task_id2, dispatch_id2, head).await;
-        });
+    if let Some(flight) = verification {
+        run_verification(run_id, task_id, flight, head_sha).await;
     }
 }
 
@@ -1675,10 +1924,54 @@ fn pick_escalation(input: EscalationInput) -> (String, Option<String>) {
     }
 }
 
-async fn run_verification(run_id: String, task_id: String, dispatch_id: String, head_sha: Option<String>) {
+struct VerificationFlight(String);
+
+impl VerificationFlight {
+    fn active() -> &'static Mutex<HashSet<String>> {
+        static ACTIVE: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+        ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn contains(dispatch_id: &str) -> bool {
+        Self::active().lock().unwrap_or_else(|e| e.into_inner()).contains(dispatch_id)
+    }
+
+    fn reserve(dispatch_id: &str) -> Option<Self> {
+        Self::active().lock().unwrap_or_else(|e| e.into_inner())
+            .insert(dispatch_id.to_string()).then(|| Self(dispatch_id.to_string()))
+    }
+
+    fn for_report(run_id: &str, dispatch_id: &str) -> Option<Self> {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.runs.get(run_id)?;
+        let dispatch = entry.dispatches.get(dispatch_id)?;
+        let task = entry.tasks.get(&dispatch.task_id)?;
+        (task.status == TaskStatus::Verifying
+            && entry.latest_dispatch_for_task(&task.id).is_some_and(|d| d.id == dispatch_id))
+            .then(|| Self::reserve(dispatch_id)).flatten()
+    }
+}
+
+impl Drop for VerificationFlight {
+    fn drop(&mut self) {
+        Self::active().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
+fn restart_verifications(entry: &RunEntry) -> impl Iterator<Item = tokio::task::JoinHandle<()>> + '_ {
+    entry.tasks.values().filter(|task| task.status == TaskStatus::Verifying).filter_map(|task| {
+        let dispatch = entry.latest_dispatch_for_task(&task.id)
+            .filter(|d| d.status == DispatchStatus::Reported)?;
+        let flight = VerificationFlight::reserve(&dispatch.id)?;
+        Some(tokio::spawn(run_verification(entry.run.id.clone(), task.id.clone(), flight, dispatch.head_sha.clone())))
+    })
+}
+
+async fn run_verification(run_id: String, task_id: String, flight: VerificationFlight, head_sha: Option<String>) {
     use crate::orch::exec::{RunToExitInput, run_to_exit};
 
-    let (verify_cmds, worktree, verify_timeout_min, run_repo) = {
+    let dispatch_id = flight.0.clone();
+    let (verify_cmds, worktree, verify_timeout_min) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -1692,10 +1985,14 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
             Some(d) => d,
             None => return,
         };
+        if task.status != TaskStatus::Verifying
+            || !entry.latest_dispatch_for_task(&task_id).is_some_and(|latest| latest.id == dispatch_id)
+        {
+            return;
+        }
         let cwd = d.worktree.clone().unwrap_or_else(|| entry.run.repo.clone());
-        (task.verify.clone(), cwd, entry.run.limits.verify_timeout_min, entry.run.repo.clone())
+        (task.verify.clone(), cwd, entry.run.limits.verify_timeout_min)
     };
-    let _ = run_repo;
 
     for cmd in &verify_cmds {
         let input = RunToExitInput {
@@ -1707,10 +2004,9 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
         };
         let outcome = match run_to_exit(input).await {
             Ok(o) => o,
-            Err(e) => {
-                eprintln!("[orch] run_verification start error for {dispatch_id}: {e}");
-                return;
-            }
+            Err(e) => crate::orch::exec::RunOutcome {
+                exit_code: None, timed_out: false, tail: vec![e],
+            },
         };
 
         let tail: Vec<String> = outcome.tail.iter().rev().take(40).rev().cloned().collect();
@@ -1733,10 +2029,6 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
         let passed = !outcome.timed_out && outcome.exit_code == Some(0);
         if !passed {
             let tail_str = tail.join("\n");
-            let seq = {
-                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(1)
-            };
             let run_id_c = run_id.clone();
             let task_id_c = task_id.clone();
             let dispatch_id_c = dispatch_id.clone();
@@ -1744,32 +2036,38 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
             let now2 = unix_ms();
             let failure = classify_dispatch(&run_id, &dispatch_id, "verification_failed", &[]);
             let failure_c = failure.clone();
-            commit(move |_| {
-                Ok(with_legacy_failure_class(Cmd::TaskVerificationFailed {
+            let routed_failure = failure.as_ref().is_some_and(|f| f.routing == 1);
+            let make_fail = move |g: &State| {
+                let entry = g.runs.get(&run_id_c)
+                    .ok_or_else(|| "not_found:run not found".to_string())?;
+                Ok(with_failure_class(Cmd::TaskVerificationFailed {
                     run_id: run_id_c, task_id: task_id_c, dispatch_id: dispatch_id_c,
                     command: cmd_c, exit_code: exit_c, timed_out: timed_c,
-                    tail: tail_str, msg_seq: seq, now: now2,
+                    tail: tail_str, msg_seq: entry.next_msg_seq(), now: now2,
                 }, failure_c.as_ref()))
-            }, run_id.clone()).await;
-            if let Some(f) = &failure {
-                send_follow_up(record_failure(&run_id, &dispatch_id, f, false).await).await;
+            };
+            let committed = if routed_failure {
+                commit_deferred_idle(make_fail, run_id.clone()).await
+            } else {
+                commit(make_fail, run_id.clone()).await
+            };
+            if let (CommitResult::Ok(_), Some(f)) = (committed, &failure) {
+                send_follow_up(after_recorded_failure(&run_id, &dispatch_id, f, false).await).await;
             }
             return;
         }
     }
 
-    let seq = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(1)
-    };
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
     let dispatch_id_c = dispatch_id.clone();
     let now = unix_ms();
-    commit(move |_| {
+    commit(move |g| {
+        let entry = g.runs.get(&run_id_c)
+            .ok_or_else(|| "not_found:run not found".to_string())?;
         Ok(Cmd::TaskVerified {
             run_id: run_id_c, task_id: task_id_c, dispatch_id: dispatch_id_c,
-            msg_seq: seq, now,
+            msg_seq: entry.next_msg_seq(), now,
         })
     }, run_id).await;
 }
@@ -1993,23 +2291,25 @@ async fn supervision_tick() {
                     let summary_c = summary.clone();
                     let failure = classify_dispatch(&run_id, &dispatch_id, &reason, &tail_lines(&screen_text));
                     let failure_c = failure.clone();
-                    commit(move |_| {
-                        Ok(with_legacy_failure_class(Cmd::DispatchUpdate {
+                    let routed_failure = failure.as_ref().is_some_and(|f| f.routing == 1);
+                    let make_fail = move |_: &State| {
+                        Ok(with_failure_class(Cmd::DispatchUpdate {
                             run_id: run_id_c, dispatch_id: dispatch_id_c,
                             status: DispatchStatus::Failed,
                             summary: Some(summary_c),
                             now,
                         }, failure_c.as_ref()))
-                    }, run_id.clone()).await;
-                    let follow_up = match &failure {
-                        Some(f) => record_failure(&run_id, &dispatch_id, f, false).await,
-                        None => None,
+                    };
+                    let committed = if routed_failure {
+                        commit_deferred_idle(make_fail, run_id.clone()).await
+                    } else {
+                        commit(make_fail, run_id.clone()).await
+                    };
+                    let follow_up = match (committed, &failure) {
+                        (CommitResult::Ok(_), Some(f)) => after_recorded_failure(&run_id, &dispatch_id, f, false).await,
+                        _ => None,
                     };
 
-                    let seq = {
-                        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                        guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(1)
-                    };
                     let run_id_c = run_id.clone();
                     let dispatch_id_c = dispatch_id.clone();
                     let now2 = unix_ms();
@@ -2021,7 +2321,7 @@ async fn supervision_tick() {
                             .ok_or_else(|| "not_found:dispatch not found".to_string())?;
                         Ok(Cmd::Send {
                             run_id: run_id_c.clone(),
-                            seq,
+                            seq: entry.next_msg_seq(),
                             from: "brain".into(),
                             to: vec!["coordinator".into()],
                             msg_type: "worker_failed".into(),
@@ -2044,10 +2344,6 @@ async fn supervision_tick() {
                     let tail = screen_text.lines().rev().take(20).collect::<Vec<_>>()
                         .into_iter().rev().collect::<Vec<_>>().join("\n");
                     let body_str = serde_json::json!({"reason": reason, "tail": tail}).to_string();
-                    let seq = {
-                        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                        guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(1)
-                    };
                     let run_id_c = run_id.clone();
                     let dispatch_id_c = dispatch_id.clone();
                     let now = unix_ms();
@@ -2059,7 +2355,7 @@ async fn supervision_tick() {
                             .ok_or_else(|| "not_found:dispatch not found".to_string())?;
                         Ok(Cmd::Send {
                             run_id: run_id_c.clone(),
-                            seq,
+                            seq: entry.next_msg_seq(),
                             from: "brain".into(),
                             to: vec!["coordinator".into()],
                             msg_type: "worker_stalled".into(),
@@ -2117,6 +2413,9 @@ async fn handle_verify(body: &[u8]) -> String {
         (d.id.clone(), d.head_sha.clone(), needs_re)
     };
 
+    let Some(flight) = VerificationFlight::reserve(&dispatch_id) else {
+        return err_resp("conflict", "verification is already running");
+    };
     if needs_re_verify {
         let now = unix_ms();
         let run_id_c = run_id.clone();
@@ -2129,12 +2428,7 @@ async fn handle_verify(body: &[u8]) -> String {
         }
     }
 
-    let run_id2 = run_id.clone();
-    let task_id2 = task_id.clone();
-    let dispatch_id2 = dispatch_id.clone();
-    tokio::spawn(async move {
-        run_verification(run_id2, task_id2, dispatch_id2, head_sha).await;
-    });
+    tokio::spawn(run_verification(run_id, task_id, flight, head_sha));
     ok_resp(serde_json::json!({"started": true}))
 }
 
@@ -2195,6 +2489,9 @@ async fn handle_retry(body: &[u8]) -> String {
 
     let by_retry = v["by"].as_str().unwrap_or("coordinator");
 
+    if by_retry != "brain" {
+        autonomy::clear_action_failure(&run_id, &task_id).await;
+    }
     let routed_limit = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
@@ -2533,6 +2830,9 @@ async fn handle_integrate(body: &[u8]) -> String {
     if run_id.is_empty() || task_id.is_empty() {
         return err_resp("bad_request", "runId and taskId required");
     }
+    if v["by"].as_str().unwrap_or("coordinator") != "brain" {
+        autonomy::clear_action_failure(&run_id, &task_id).await;
+    }
     let explicit_dispatch_id = v["dispatchId"].as_str().map(str::to_string);
 
     let (repo, branch, dispatch_id_chosen, base_sha, task_status) = {
@@ -2619,17 +2919,15 @@ async fn handle_integrate(body: &[u8]) -> String {
             let task_id_c = task_id.clone();
             let dispatch_id_c = dispatch_id_chosen.clone();
             let now = unix_ms();
-            let seq = {
-                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(0)
-            };
-            let result = commit(move |_| {
+            let result = commit(move |g| {
+                let entry = g.runs.get(&run_id_c)
+                    .ok_or_else(|| "not_found:run not found".to_string())?;
                 Ok(Cmd::TaskIntegrate {
                     run_id: run_id_c,
                     task_id: task_id_c,
                     dispatch_id: dispatch_id_c,
                     integrated_sha: sha.clone(),
-                    msg_seq: seq,
+                    msg_seq: entry.next_msg_seq(),
                     now,
                 })
             }, run_id.clone()).await;
@@ -2655,18 +2953,16 @@ async fn handle_integrate(body: &[u8]) -> String {
                 .await
                 .unwrap_or_default();
             let now = unix_ms();
-            let seq = {
-                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                guard.runs.get(&run_id).map(|e| e.next_msg_seq()).unwrap_or(0)
-            };
-            let result = commit(move |_| {
+            let result = commit(move |g| {
+                let entry = g.runs.get(&run_id_c)
+                    .ok_or_else(|| "not_found:run not found".to_string())?;
                 Ok(Cmd::TaskConflict {
                     run_id: run_id_c,
                     task_id: task_id_c,
                     files: files_c,
                     branch: branch_c,
                     integration_tip,
-                    msg_seq: seq,
+                    msg_seq: entry.next_msg_seq(),
                     now,
                 })
             }, run_id.clone()).await;
@@ -2797,7 +3093,12 @@ async fn handle_check(body: &[u8]) -> String {
             Err(_) => return err_resp("bad_request", "types must be array of strings"),
         }
     };
-    let peek = v["peek"].as_bool().unwrap_or(false);
+    let options = CheckOptions {
+        recipient,
+        types,
+        peek: v["peek"].as_bool().unwrap_or(false),
+        decisions: v["decisions"].as_bool().unwrap_or(false),
+    };
     let wait = v["wait"].as_bool().unwrap_or(false);
     let timeout_ms = v["timeoutMs"].as_u64().unwrap_or(30_000).min(600_000);
 
@@ -2814,34 +3115,27 @@ async fn handle_check(body: &[u8]) -> String {
     };
 
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-
     loop {
         // Enable Notified BEFORE collect to avoid missing notifications
         let mut n = Box::pin(notify.notified());
         n.as_mut().enable();
 
-        let run_id_c = run_id.clone();
-        let recipient_c = recipient.clone();
-        let types_c = types.clone();
-        let base_c = base.clone();
-        let result = tokio::task::block_in_place(move || {
-            collect_ack_sync(&run_id_c, &recipient_c, &types_c, peek, &base_c)
+        let waiting = wait && tokio::time::Instant::now() < deadline;
+        let result = tokio::task::block_in_place(|| {
+            collect_ack_sync(&run_id, &options, &base, waiting)
         });
 
         match result {
             Err(e) => return err_from_str(&e),
-            Ok(msgs) if !msgs.is_empty() || !wait => {
-                return ok_resp(serde_json::json!({"messages": msgs}));
+            Ok((msgs, routine)) if !msgs.is_empty() || !waiting => {
+                return routine.response(msgs, options.decisions);
             }
             Ok(_) => {}
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() { break; }
         let _ = tokio::time::timeout(remaining, n).await;
     }
-
-    ok_resp(serde_json::json!({"messages": []}))
 }
 
 async fn handle_gate_create(body: &[u8]) -> String {
@@ -3289,11 +3583,10 @@ fn classify_dispatch(run_id: &str, dispatch_id: &str, reason_code: &str, tail: &
     Some(DispatchFailure { classification, routing })
 }
 
-fn with_legacy_failure_class(cmd: Cmd, failure: Option<&DispatchFailure>) -> Cmd {
-    match failure.filter(|f| f.routing == 0) {
-        Some(f) => cmd.with_fields(serde_json::json!({"failureClass": f.classification.class})),
-        None => cmd,
-    }
+fn with_failure_class(cmd: Cmd, failure: Option<&DispatchFailure>) -> Cmd {
+    let Some(failure) = failure else { return cmd };
+    let field = if failure.routing == 1 { "routedFailureClass" } else { "failureClass" };
+    cmd.with_fields(serde_json::json!({(field): failure.classification.class}))
 }
 
 fn dispatch_screen_tail(run_id: &str, dispatch_id: &str) -> Vec<String> {
@@ -3310,52 +3603,53 @@ fn tail_lines(text: &str) -> Vec<String> {
     text.lines().map(str::to_string).collect()
 }
 
-async fn record_failure(run_id: &str, dispatch_id: &str, failure: &DispatchFailure, live: bool) -> Option<FollowUp> {
+async fn after_recorded_failure(run_id: &str, dispatch_id: &str, failure: &DispatchFailure, live: bool) -> Option<FollowUp> {
     if failure.routing != 1 {
         return None;
     }
-    let class = failure.classification.class;
-    let (task_id, chain_index, dispatch) = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        let d = guard.runs.get(run_id)?.dispatches.get(dispatch_id)?;
-        if d.failure_class.is_some() {
-            return None;
+    let follow_up = async {
+        let class = failure.classification.class;
+        let dispatch = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let entry = guard.runs.get(run_id)?;
+            let dispatch = entry.dispatches.get(dispatch_id)?;
+            if dispatch.failure_class != Some(class)
+                || !entry.latest_dispatch_for_task(&dispatch.task_id).is_some_and(|latest| latest.id == dispatch_id)
+            {
+                return None;
+            }
+            dispatch.clone()
+        };
+        let task_id = dispatch.task_id.clone();
+        let now = unix_ms();
+        let (after, snapshot) = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let mut states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+            let marked = wiring::mark_candidate(&mut states, &dispatch, &failure.classification, now as i64);
+            let snapshot = marked.then(|| snapshot_candidates(&states));
+            let entry = guard.runs.get(run_id)?;
+            let after = wiring::after_failure(wiring::AfterFailureInput {
+                entry, states: &states, dispatch_id, live, now: now as i64,
+            });
+            (after, snapshot)
+        };
+        if let Some(snapshot) = snapshot {
+            if let Err(e) = persist_candidates(&snapshot) {
+                eprintln!("[orch] candidate states not persisted: {e}");
+            }
         }
-        (d.task_id.clone(), d.chain_index, d.clone())
-    };
-    let (run_c, task_c, dispatch_c) = (run_id.to_string(), task_id.clone(), dispatch_id.to_string());
-    let now = unix_ms();
-    let recorded = commit(move |_| {
-        Ok(Cmd::TaskRecordFailure { run_id: run_c, task_id: task_c, dispatch_id: dispatch_c, class, chain_index, now })
-    }, run_id.to_string()).await;
-    if !matches!(recorded, CommitResult::Ok(_)) {
-        return None;
-    }
-    let (after, snapshot) = {
-        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        let mut states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
-        let marked = wiring::mark_candidate(&mut states, &dispatch, &failure.classification, now as i64);
-        let snapshot = marked.then(|| snapshot_candidates(&states));
-        let entry = guard.runs.get(run_id)?;
-        let after = wiring::after_failure(wiring::AfterFailureInput {
-            entry, states: &states, dispatch_id, live, now: now as i64,
-        });
-        (after, snapshot)
-    };
-    if let Some(snapshot) = snapshot {
-        if let Err(e) = persist_candidates(&snapshot) {
-            eprintln!("[orch] candidate states not persisted: {e}");
+        let mut notices: Vec<(&'static str, String)> = Vec::new();
+        if let Some(wait) = after.wait {
+            if let Ok(body) = commit_wait(run_id, &task_id, wait).await {
+                notices.push(("task_waiting", body));
+            }
+        } else if let Some(suggested) = after.suggested.filter(|_| class.counter() == FailureCounter::Operational) {
+            notices.push(("operational_failure", wiring::operational_failure_body(class, dispatch_id, &suggested)));
         }
-    }
-    let mut notices: Vec<(&'static str, String)> = Vec::new();
-    if let Some(wait) = after.wait {
-        if let Ok(body) = commit_wait(run_id, &task_id, wait).await {
-            notices.push(("task_waiting", body));
-        }
-    } else if let Some(suggested) = after.suggested.filter(|_| class.counter() == FailureCounter::Operational) {
-        notices.push(("operational_failure", wiring::operational_failure_body(class, dispatch_id, &suggested)));
-    }
-    Some(FollowUp { run_id: run_id.to_string(), task_id, dispatch_id: dispatch_id.to_string(), notices })
+        Some(FollowUp { run_id: run_id.to_string(), task_id, dispatch_id: dispatch_id.to_string(), notices })
+    }.await;
+    sync_idle(run_id).await;
+    follow_up
 }
 
 async fn send_follow_up(follow_up: Option<FollowUp>) {
@@ -3374,15 +3668,16 @@ async fn fail_live_dispatch_on_quota(run_id: &str, dispatch_id: &str, screen: &s
     let (run_c, dispatch_c) = (run_id.to_string(), dispatch_id.to_string());
     let summary = format!("worker blocked: {}", failure.classification.source);
     let now = unix_ms();
-    let updated = commit(move |_| {
-        Ok(Cmd::DispatchUpdate {
+    let failure_c = failure.clone();
+    let updated = commit_deferred_idle(move |_| {
+        Ok(with_failure_class(Cmd::DispatchUpdate {
             run_id: run_c, dispatch_id: dispatch_c, status: DispatchStatus::Failed, summary: Some(summary), now,
-        })
+        }, Some(&failure_c)))
     }, run_id.to_string()).await;
     if !matches!(updated, CommitResult::Ok(_)) {
         return false;
     }
-    send_follow_up(record_failure(run_id, dispatch_id, &failure, true).await).await;
+    send_follow_up(after_recorded_failure(run_id, dispatch_id, &failure, true).await).await;
     true
 }
 
@@ -3449,17 +3744,23 @@ async fn fail_dispatch_and_message_coordinator(input: FailDispatchInput) {
     let tail = tail_lines(parsed_body["tail"].as_str().unwrap_or(""));
     let failure = classify_dispatch(&run_id, &dispatch_id, &reason_code, &tail);
     let failure_c = failure.clone();
-    commit(move |_| {
-        Ok(with_legacy_failure_class(Cmd::DispatchUpdate {
+    let routed_failure = failure.as_ref().is_some_and(|f| f.routing == 1);
+    let make_fail = move |_: &State| {
+        Ok(with_failure_class(Cmd::DispatchUpdate {
             run_id: run_id2, dispatch_id: dispatch_id2,
             status: DispatchStatus::Failed,
             summary: Some(summary2),
             now,
         }, failure_c.as_ref()))
-    }, run_id.clone()).await;
-    let follow_up = match &failure {
-        Some(f) => record_failure(&run_id, &dispatch_id, f, false).await,
-        None => None,
+    };
+    let committed = if routed_failure {
+        commit_deferred_idle(make_fail, run_id.clone()).await
+    } else {
+        commit(make_fail, run_id.clone()).await
+    };
+    let follow_up = match (committed, &failure) {
+        (CommitResult::Ok(_), Some(f)) => after_recorded_failure(&run_id, &dispatch_id, f, false).await,
+        _ => None,
     };
 
     let seq = {
@@ -4782,6 +5083,7 @@ fn coordinator_block(tile_id: &str) -> Option<String> {
          - If the `panorama:orchestrate` skill is not loaded in this conversation yet, load it with the Skill tool and follow it.\n\
          - Treat the user's message as work to split across workers. Do not edit project files yourself.\n\
          - When the request is clear, state the plan in a few lines and dispatch right away; ask first only if it is ambiguous.\n\
+         - Default to plan and detach: create the run with --detach, dispatch, and end the turn; on wake use check --decisions.\n\
          - {boards_block}\n\
          - Tasks owned by the user (owner: user) are not yours to dispatch.\n\
          - Set --review on task-create only when the user asked to check results before the task counts as done.\n\
@@ -4924,6 +5226,515 @@ mod tests {
         }
     }
 
+    #[test]
+    fn needs_decision_classifies_detached_messages() {
+        let now = 5_000_000_000i64;
+        let mut entry = mk_run_entry("r1");
+        entry.run.detached = true;
+        entry.run.autonomy = Autonomy { operational: true, execution: true, integration: true };
+        let mut msg = Message {
+            seq: 1, from: String::new(), to: "coordinator".into(), msg_type: String::new(),
+            task_id: None, dispatch_id: None, reply_to: None, body: None, at: 0, acked: false,
+        };
+        for (kind, from, body, expected) in [
+            ("integration_conflict", "brain", "", true),
+            ("question", "r1.t1.1", "Can I continue?", true),
+            ("question", "coordinator", "", false),
+            ("question", "brain", "", false),
+            ("question", "user", "", false),
+            ("status", "r1.t1.1", "Worker waiting for permission", true),
+            ("status", "r1.t1.1", "worker waiting on a command", false),
+            ("worker_stalled", "brain", "", true),
+            ("setup_failed", "brain", "", true),
+            ("gate", "brain", "g1", true),
+            ("note", "user", "", true),
+            ("note", "coordinator", "", false),
+            ("late_report", "brain", "", true),
+            ("worker_done", "r1.t1.1", r#"{"outcome":"failed"}"#, false),
+            ("worker_done", "r1.t1.1", r#"{"outcome":"succeeded"}"#, false),
+            ("verification_passed", "brain", "", false),
+            ("verification_failed", "brain", "", false),
+            ("worker_failed", "brain", "", false),
+            ("operational_failure", "brain", "", false),
+            ("auto_action", "brain", "", false),
+            ("task_integrated", "brain", "", false),
+            ("task_waiting", "brain", r#"{"kind":"intervention"}"#, false),
+            ("task_waiting", "brain", r#"{"kind":"quota"}"#, false),
+            ("resume_ready", "brain", "", false),
+            ("task_exhausted", "brain", "", false),
+            ("progress", "r1.t1.1", "", false),
+        ] {
+            msg.msg_type = kind.into();
+            msg.from = from.into();
+            msg.body = Some(body.into());
+            assert_eq!(needs_decision(&msg, &entry, now), expected, "{kind} from {from}: {body}");
+            entry.run.detached = false;
+            assert!(needs_decision(&msg, &entry, now), "{kind} on an attached run");
+            entry.run.detached = true;
+        }
+
+        let mut task = mk_task_entry("t1", TaskStatus::Failed, 1);
+        task.routing = 0;
+        entry.tasks.insert("t1".into(), task);
+        let idle_msg = Message {
+            seq: 10, from: "brain".into(), to: "coordinator".into(), msg_type: "run_idle".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: Some("{}".into()), at: 0, acked: false,
+        };
+        entry.messages.push(idle_msg.clone());
+        assert!(needs_decision(&idle_msg, &entry, now));
+
+        entry.tasks.get_mut("t1").unwrap().status = TaskStatus::Dispatched;
+        assert!(!needs_decision(&idle_msg, &entry, now));
+
+        let t1 = entry.tasks.get_mut("t1").unwrap();
+        t1.status = TaskStatus::Completed;
+        t1.integrated_sha = Some("abc".into());
+        assert!(!needs_decision(&idle_msg, &entry, now));
+
+        let finished_msg = Message {
+            seq: 11, from: "brain".into(), to: "coordinator".into(), msg_type: "run_finished".into(),
+            task_id: None, dispatch_id: None, reply_to: None, body: Some("{}".into()), at: 0, acked: false,
+        };
+        entry.messages.push(finished_msg.clone());
+        assert!(needs_decision(&finished_msg, &entry, now));
+
+        entry.tasks.get_mut("t1").unwrap().status = TaskStatus::Failed;
+        assert!(!needs_decision(&finished_msg, &entry, now));
+        entry.tasks.get_mut("t1").unwrap().status = TaskStatus::Dispatched;
+        assert!(!needs_decision(&finished_msg, &entry, now));
+    }
+
+    #[test]
+    fn coordinator_recheck_counts_only_unacked_decisions_when_detached() {
+        let now = 5_000_000_000i64;
+        let mut entry = mk_run_entry("r1");
+        for (msg_type, to, acked) in [
+            ("progress", "coordinator", false),
+            ("gate", "coordinator", false),
+            ("question", "coordinator", true),
+            ("integration_conflict", "r1.t1.1", false),
+        ] {
+            entry.messages.push(Message {
+                seq: entry.messages.len() as u32 + 1, from: "r1.t1.1".into(), to: to.into(),
+                msg_type: msg_type.into(), task_id: None, dispatch_id: None, reply_to: None,
+                body: None, at: 0, acked,
+            });
+        }
+        assert_eq!(coordinator_unacked(&entry, now), 2);
+        entry.run.detached = true;
+        assert_eq!(coordinator_unacked(&entry, now), 1);
+    }
+
+    #[test]
+    fn idle_episode_emits_once_and_again_after_leaving_idle_and_replays() {
+        let run_id = format!("r-idle-ep-{}", unix_ms());
+        let base = std::env::temp_dir().join(format!("panorama-idle-ep-{}", unix_ms()));
+        std::fs::create_dir_all(&base).unwrap();
+        let run_cmd = |cmd: Cmd| {
+            let res = commit_sync(|_| Ok(cmd), &run_id, &base);
+            assert!(matches!(res, CommitResult::Ok(_)));
+        };
+
+        run_cmd(Cmd::RunCreate {
+            id: run_id.clone(), title: "ep".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits { max_attempts: 1, ..Limits::default() }, now: 1,
+        }.with_fields(serde_json::json!({
+            "detached": true,
+            "autonomy": Autonomy { operational: false, execution: true, integration: false },
+        })));
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t1".into(), title: "Task 1".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 2,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        let count_type = |kind: &str| -> usize {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs[&run_id].messages.iter().filter(|m| m.msg_type == kind).count()
+        };
+        assert_eq!(count_type("run_idle"), 0);
+
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: format!("{run_id}.t1.1"), task_id: "t1".into(),
+            attempt: 1, retry_of: None, profile: Some("codex".into()), model: Some("m".into()),
+            tile_id: None, merge_branch: None, owner: None, now: 3,
+        });
+        run_cmd(Cmd::DispatchUpdate {
+            run_id: run_id.clone(), dispatch_id: format!("{run_id}.t1.1"),
+            status: DispatchStatus::Failed, summary: Some("boom".into()), now: 4,
+        });
+        run_cmd(Cmd::TaskRecordFailure {
+            run_id: run_id.clone(), task_id: "t1".into(), dispatch_id: format!("{run_id}.t1.1"),
+            class: FailureClass::QualityFailed, chain_index: Some(0), now: 5,
+        });
+        assert_eq!(count_type("run_idle"), 1);
+
+        run_cmd(Cmd::RunUpdate { run_id: run_id.clone(), title: "ep2".into(), now: 6 });
+        assert_eq!(count_type("run_idle"), 1);
+
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t2".into(), title: "Task 2".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 7,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        assert_eq!(state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].idle_state, IdleState::Active);
+
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: format!("{run_id}.t2.1"), task_id: "t2".into(),
+            attempt: 1, retry_of: None, profile: Some("codex".into()), model: Some("m".into()),
+            tile_id: None, merge_branch: None, owner: None, now: 8,
+        });
+        run_cmd(Cmd::DispatchUpdate {
+            run_id: run_id.clone(), dispatch_id: format!("{run_id}.t2.1"),
+            status: DispatchStatus::Failed, summary: Some("boom again".into()), now: 9,
+        });
+        run_cmd(Cmd::TaskRecordFailure {
+            run_id: run_id.clone(), task_id: "t2".into(), dispatch_id: format!("{run_id}.t2.1"),
+            class: FailureClass::QualityFailed, chain_index: Some(0), now: 10,
+        });
+        assert_eq!(count_type("run_idle"), 2);
+
+        run_cmd(Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
+            result: None, spec: None, acceptance: None, verify: None, profile: None,
+            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 11,
+        });
+        run_cmd(Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: "t2".into(), status: Some(TaskStatus::Cancelled),
+            result: None, spec: None, acceptance: None, verify: None, profile: None,
+            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 12,
+        });
+        assert_eq!(count_type("run_finished"), 1);
+
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t3".into(), title: "Task 3".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 13,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: format!("{run_id}.t3.1"), task_id: "t3".into(),
+            attempt: 1, retry_of: None, profile: Some("codex".into()), model: Some("m".into()),
+            tile_id: None, merge_branch: None, owner: None, now: 14,
+        });
+        run_cmd(Cmd::DispatchSetWorktree {
+            run_id: run_id.clone(), dispatch_id: format!("{run_id}.t3.1"),
+            worktree: "/tmp/wt".into(), branch: "orch/b".into(), now: 15,
+        });
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::Send {
+            run_id: run_id.clone(), seq, from: format!("{run_id}.t3.1"),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: Some("t3".into()), dispatch_id: Some(format!("{run_id}.t3.1")),
+            reply_to: None, body: None, outcome: Some("succeeded".into()),
+            files_modified: vec![], summary: Some("done".into()), now: 16,
+        });
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::TaskIntegrate {
+            run_id: run_id.clone(), task_id: "t3".into(),
+            dispatch_id: format!("{run_id}.t3.1"), integrated_sha: "sha1".into(),
+            msg_seq: seq, now: 17,
+        });
+        assert_eq!(count_type("run_finished"), 2);
+
+        let mut replayed = State::default();
+        let events_path = run_events_path(&base, &run_id);
+        load_into(&mut replayed, &events_path, &run_id);
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let live = &guard.runs[&run_id];
+        let fresh = &replayed.runs[&run_id];
+        assert_eq!(fresh.idle_state, live.idle_state);
+        assert_eq!(fresh.messages.len(), live.messages.len());
+        for (a, b) in fresh.messages.iter().zip(live.messages.iter()) {
+            assert_eq!((a.seq, &a.msg_type, &a.body), (b.seq, &b.msg_type, &b.body));
+        }
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn autonomy_turned_off_via_run_update_emits_run_idle() {
+        let run_id = format!("r-auto-off-{}", unix_ms());
+        let base = std::env::temp_dir().join(format!("panorama-auto-off-{}", unix_ms()));
+        std::fs::create_dir_all(&base).unwrap();
+        let run_cmd = |cmd: Cmd| {
+            let res = commit_sync(|_| Ok(cmd), &run_id, &base);
+            assert!(matches!(res, CommitResult::Ok(_)));
+        };
+
+        run_cmd(Cmd::RunCreate {
+            id: run_id.clone(), title: "a".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1,
+        }.with_fields(serde_json::json!({
+            "detached": true,
+            "autonomy": Autonomy { operational: false, execution: true, integration: false },
+        })));
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t1".into(), title: "Ready".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 2,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+
+        {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            assert!(guard.runs[&run_id].messages.iter().all(|m| m.msg_type != "run_idle"));
+        }
+
+        run_cmd(Cmd::RunUpdate { run_id: run_id.clone(), title: "a".into(), now: 3 }
+            .with_fields(serde_json::json!({"autonomy": Autonomy::default()})));
+
+        {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let idle_msgs: Vec<&Message> = guard.runs[&run_id].messages.iter()
+                .filter(|m| m.msg_type == "run_idle").collect();
+            assert_eq!(idle_msgs.len(), 1);
+            let report: autonomy::IdleReport = serde_json::from_str(idle_msgs[0].body.as_deref().unwrap()).unwrap();
+            assert_eq!(report.reason, "idle");
+            assert_eq!(report.tasks.pending.len(), 1);
+            assert_eq!(report.tasks.pending[0].id, "t1");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_decisions_acks_stale_run_idle_as_routine() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        let run_id = format!("r-stale-idle-{}", unix_ms());
+        let run_cmd = |cmd: Cmd| {
+            let res = commit_sync(|_| Ok(cmd), &run_id, &base);
+            assert!(matches!(res, CommitResult::Ok(_)));
+        };
+
+        run_cmd(Cmd::RunCreate {
+            id: run_id.clone(), title: "s".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1,
+        }.with_fields(serde_json::json!({
+            "detached": true,
+            "autonomy": Autonomy::default(),
+        })));
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t1".into(), title: "Ready".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 2,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+
+        let peek_resp = handle_check(
+            serde_json::json!({"runId": run_id, "decisions": true, "peek": true}).to_string().as_bytes()
+        ).await;
+        let peek_val: Value = serde_json::from_str(&peek_resp).unwrap();
+        assert_eq!(peek_val["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(peek_val["messages"][0]["type"], "run_idle");
+
+        run_cmd(Cmd::RunUpdate { run_id: run_id.clone(), title: "s".into(), now: 3 }
+            .with_fields(serde_json::json!({"autonomy": Autonomy { operational: false, execution: true, integration: false }})));
+
+        let resp = handle_check(
+            serde_json::json!({"runId": run_id, "decisions": true}).to_string().as_bytes()
+        ).await;
+        let val: Value = serde_json::from_str(&resp).unwrap();
+        assert!(val["messages"].as_array().unwrap().is_empty(), "{resp}");
+        assert_eq!(val["routine"]["byType"]["run_idle"], 1, "{resp}");
+        {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let idle_msg = guard.runs[&run_id].messages.iter().find(|m| m.msg_type == "run_idle").unwrap();
+            assert!(idle_msg.acked);
+        }
+
+        run_cmd(Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
+            result: None, spec: None, acceptance: None, verify: None, profile: None,
+            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 4,
+        });
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t2".into(), title: "More".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 5,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+
+        let resp2 = handle_check(
+            serde_json::json!({"runId": run_id, "decisions": true}).to_string().as_bytes()
+        ).await;
+        let val2: Value = serde_json::from_str(&resp2).unwrap();
+        assert!(val2["messages"].as_array().unwrap().is_empty(), "{resp2}");
+        assert_eq!(val2["routine"]["byType"]["run_finished"], 1, "{resp2}");
+        {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let fin_msg = guard.runs[&run_id].messages.iter().find(|m| m.msg_type == "run_finished").unwrap();
+            assert!(fin_msg.acked);
+        }
+    }
+
+    #[test]
+    fn non_detached_run_emits_no_idle_finished_or_exhausted_messages() {
+        let now = 5_000_000_000i64;
+        let run_id = format!("r-attached-{}", unix_ms());
+        let base = std::env::temp_dir().join(format!("panorama-attached-{}", unix_ms()));
+        std::fs::create_dir_all(&base).unwrap();
+        let run_cmd = |cmd: Cmd| {
+            let res = commit_sync(|_| Ok(cmd), &run_id, &base);
+            assert!(matches!(res, CommitResult::Ok(_)));
+        };
+
+        run_cmd(Cmd::RunCreate {
+            id: run_id.clone(), title: "att".into(), repo: "/tmp".into(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits { max_attempts: 1, ..Limits::default() }, now: 1,
+        });
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t1".into(), title: "T1".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 2,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: format!("{run_id}.t1.1"), task_id: "t1".into(),
+            attempt: 1, retry_of: None, profile: Some("codex".into()), model: Some("m".into()),
+            tile_id: None, merge_branch: None, owner: None, now: 3,
+        });
+        run_cmd(Cmd::DispatchUpdate {
+            run_id: run_id.clone(), dispatch_id: format!("{run_id}.t1.1"),
+            status: DispatchStatus::Failed, summary: Some("err".into()), now: 4,
+        });
+        run_cmd(Cmd::TaskRecordFailure {
+            run_id: run_id.clone(), task_id: "t1".into(), dispatch_id: format!("{run_id}.t1.1"),
+            class: FailureClass::QualityFailed, chain_index: Some(0), now: 5,
+        });
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t2".into(), title: "T2".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()),
+            escalation: vec!["codex:m".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 6,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::GateCreate {
+            run_id: run_id.clone(), id: "g1".into(), task_id: "t2".into(),
+            question: "ok?".into(), options: vec![], msg_seq: seq, now: 7,
+        });
+        run_cmd(Cmd::GateResolve {
+            run_id: run_id.clone(), gate_id: "g1".into(), resolution: "yes".into(), now: 8,
+        });
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: format!("{run_id}.t2.1"), task_id: "t2".into(),
+            attempt: 1, retry_of: None, profile: Some("codex".into()), model: Some("m".into()),
+            tile_id: None, merge_branch: None, owner: None, now: 9,
+        });
+        run_cmd(Cmd::DispatchSetWorktree {
+            run_id: run_id.clone(), dispatch_id: format!("{run_id}.t2.1"),
+            worktree: "/tmp/wt".into(), branch: "orch/b".into(), now: 10,
+        });
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::Send {
+            run_id: run_id.clone(), seq, from: format!("{run_id}.t2.1"),
+            to: vec!["coordinator".into()], msg_type: "worker_done".into(),
+            task_id: Some("t2".into()), dispatch_id: Some(format!("{run_id}.t2.1")),
+            reply_to: None, body: None, outcome: Some("succeeded".into()),
+            files_modified: vec![], summary: Some("done".into()), now: 11,
+        });
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::TaskIntegrate {
+            run_id: run_id.clone(), task_id: "t2".into(),
+            dispatch_id: format!("{run_id}.t2.1"), integrated_sha: "sha1".into(),
+            msg_seq: seq, now: 12,
+        });
+        run_cmd(Cmd::TaskUpdate {
+            run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
+            result: None, spec: None, acceptance: None, verify: None, profile: None,
+            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 13,
+        });
+        run_cmd(Cmd::RunUpdate { run_id: run_id.clone(), title: "att2".into(), now: 14 });
+
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = &guard.runs[&run_id];
+        for forbidden in ["run_idle", "run_finished", "task_exhausted"] {
+            assert!(
+                entry.messages.iter().all(|m| m.msg_type != forbidden),
+                "unexpected {forbidden} message on attached run"
+            );
+        }
+        assert!(entry.messages.iter().filter(|m| m.to == "coordinator").all(|m| needs_decision(m, entry, now)));
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_decisions_acks_and_summarizes_routine_regardless_of_type() {
+        f12_test_home();
+        let run_id = "r-check-decisions-digest";
+        setup_run_in_state(run_id);
+        {
+            let mut guard = state().lock().unwrap();
+            guard.replay("run-update", &serde_json::json!({"runId": run_id, "detached": true})).unwrap();
+            guard.replay("task-create", &serde_json::json!({
+                "runId": run_id, "id": "t1", "title": "Write code",
+            })).unwrap();
+            let entry = guard.runs.get_mut(run_id).unwrap();
+            entry.run.autonomy.integration = true;
+            for (msg_type, to) in [
+                ("progress", "coordinator"),
+                ("verification_passed", "coordinator"),
+                ("question", "coordinator"),
+                ("integration_conflict", "coordinator"),
+                ("progress", "r1.t1.1"),
+            ] {
+                entry.msg_seq = entry.next_msg_seq();
+                entry.messages.push(Message {
+                    seq: entry.msg_seq, from: "r1.t1.1".into(), to: to.into(),
+                    msg_type: msg_type.into(), task_id: Some("t1".into()), dispatch_id: None,
+                    reply_to: None, body: Some(format!("{msg_type} full body")), at: 0, acked: false,
+                });
+            }
+        }
+        let body = serde_json::json!({"runId": run_id, "decisions": true, "types": ["question"]});
+        let response = handle_check(body.to_string().as_bytes()).await;
+        let value: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["ok"], true, "{response}");
+        assert_eq!(value["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(value["messages"][0]["type"], "question");
+        assert_eq!(value["messages"][0]["body"], "question full body");
+        assert_eq!(value["routine"], serde_json::json!({
+            "count": 2,
+            "byType": {"progress": 1, "verification_passed": 1},
+            "tasks": [{"id": "t1", "title": "Write code", "status": "pending"}],
+        }));
+        let guard = state().lock().unwrap();
+        let entry = &guard.runs[run_id];
+        assert_eq!(entry.messages.iter().map(|m| m.acked).collect::<Vec<_>>(),
+            [true, true, true, false, false]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_decisions_waits_past_routine_messages() {
+        f12_test_home();
+        let run_id = "r-check-decisions-wait";
+        setup_run_in_state(run_id);
+        state().lock().unwrap().runs.get_mut(run_id).unwrap().run.detached = true;
+        inject_message(run_id, "coordinator");
+        let body = serde_json::json!({
+            "runId": run_id, "decisions": true, "wait": true, "timeoutMs": 5000,
+        }).to_string();
+        let check = tokio::spawn(async move { handle_check(body.as_bytes()).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!check.is_finished());
+        inject_message(run_id, "coordinator");
+        state().lock().unwrap().runs.get_mut(run_id).unwrap()
+            .messages.last_mut().unwrap().from = "user".into();
+        run_notify(run_id).notify_waiters();
+        let response = tokio::time::timeout(Duration::from_secs(3), check).await.unwrap().unwrap();
+        let value: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["ok"], true, "{response}");
+        assert_eq!(value["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(value["messages"][0]["from"], "user");
+        assert_eq!(value["routine"]["byType"], serde_json::json!({"note": 1}));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn long_poll_wakes_on_message() {
         let run_id = format!("r-lp-{}", std::time::SystemTime::now()
@@ -4994,6 +5805,7 @@ mod tests {
             status: RunStatus::Active,
             limits: Limits::default(),
             autonomy: Autonomy::default(),
+            detached: false,
             coordinator_wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
@@ -5005,6 +5817,9 @@ mod tests {
             messages: vec![],
             gates: std::collections::HashMap::new(),
             task_count: 0,
+            idle_state: IdleState::Active,
+            idle_fingerprint: None,
+            auto_action_failures: HashMap::new(),
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
@@ -5626,6 +6441,7 @@ mod tests {
         let result = orch_context(&tile);
         if let Some(ctx) = result {
             assert!(ctx.contains("Orchestrate mode is ON"), "missing header: {ctx}");
+            assert!(ctx.contains("Default to plan and detach: create the run with --detach, dispatch, and end the turn; on wake use check --decisions."));
             assert!(ctx.contains("No active boards yet"), "expected no-boards line: {ctx}");
             assert!(ctx.contains("Roles"), "missing roles line: {ctx}");
         }
@@ -5748,7 +6564,7 @@ mod tests {
             id: "r1".into(), title: "test".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None,
             coordinator_tile: None, status: RunStatus::Active,
-            limits: Limits::default(), autonomy: Autonomy::default(), coordinator_wait: None,
+            limits: Limits::default(), autonomy: Autonomy::default(), detached: false, coordinator_wait: None,
             created_at: 0, updated_at: 0,
         };
         let mut entry = RunEntry::new(run);
@@ -6034,7 +6850,7 @@ mod tests {
             profile: Some("claude".into()), model: None, tile_id: None, owner: None, now: 1_000_000,
         });
         let failure = DispatchFailure { classification: f12_classification(FailureClass::QuotaExhausted, None), routing: 0 };
-        let cmd = with_legacy_failure_class(Cmd::DispatchUpdate {
+        let cmd = with_failure_class(Cmd::DispatchUpdate {
             run_id: "r1".into(), dispatch_id: "r1.t1.1".into(), status: DispatchStatus::Failed, summary: None, now: 1_000_000,
         }, Some(&failure));
         f12_commit(&mut s, cmd);
@@ -6296,6 +7112,190 @@ mod tests {
         assert_eq!(candidates::load(&dir).entries(now).len(), 1);
     }
 
+    fn replay_task_attempt(run_id: &str, base: &std::path::Path, verify: &[&str], reported: bool) {
+        let dispatch_id = format!("{run_id}.t1.1");
+        let run_cmd = |cmd: Cmd| {
+            assert!(matches!(commit_sync_raw(|_| Ok(cmd), run_id, base), CommitResult::Ok(_)));
+        };
+        run_cmd(Cmd::RunCreate {
+            id: run_id.into(), title: "test".into(), repo: String::new(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits::default(), now: 1,
+        }.with_fields(serde_json::json!({"detached": true, "autonomy": {"integration": true}})));
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.into(), id: "t1".into(), title: "test".into(), spec: "test".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()), escalation: vec![],
+            verify: verify.iter().map(|cmd| (*cmd).into()).collect(), role: None, review: false,
+            owner: None, now: 2,
+        }.with_fields(serde_json::json!({"routing": 1})));
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.into(), task_id: "t1".into(), id: dispatch_id.clone(), attempt: 1,
+            retry_of: None, profile: Some("codex".into()), model: None, tile_id: None, owner: None,
+            merge_branch: None, now: 3,
+        }.with_fields(serde_json::json!({"chainIndex": 0})));
+        if reported {
+            run_cmd(Cmd::Send {
+                run_id: run_id.into(), seq: 1, from: dispatch_id.clone(), to: vec!["coordinator".into()],
+                msg_type: "worker_done".into(), task_id: Some("t1".into()), dispatch_id: Some(dispatch_id),
+                reply_to: None, body: None, outcome: Some("succeeded".into()), files_modified: vec![],
+                summary: None, now: 4,
+            });
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_auto_integrate_is_reported_once_and_coordinator_retry_clears_it() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        let run_id = format!("r-auto-integrate-failure-{}", unix_ms());
+        replay_task_attempt(&run_id, &base, &[], true);
+        let dispatch_id = format!("{run_id}.t1.1");
+        let invalid_repo = base.join("nonexistent-auto-integration-repo");
+        {
+            let mut guard = state().lock().unwrap();
+            let entry = guard.runs.get_mut(&run_id).unwrap();
+            entry.run.repo = invalid_repo.to_string_lossy().into_owned();
+            entry.dispatches.get_mut(&dispatch_id).unwrap().branch = Some("missing-branch".into());
+        }
+        for _ in 0..2 {
+            autonomy::tick_run(&run_id, unix_ms() as i64).await;
+        }
+        {
+            let guard = state().lock().unwrap();
+            let entry = &guard.runs[&run_id];
+            assert_eq!(entry.auto_action_failures["t1"].action, "integrate");
+            assert!(entry.auto_action_failures["t1"].error.contains("integration worktree create failed"));
+            assert!(autonomy::plan(autonomy::TickInput { entry, now: unix_ms() as i64, is_live: &|_| false }).is_empty());
+            let messages: Vec<_> = entry.messages.iter().filter(|m| m.msg_type == "run_idle").collect();
+            assert_eq!(messages.len(), 1);
+            let report: autonomy::IdleReport = serde_json::from_str(messages[0].body.as_deref().unwrap()).unwrap();
+            assert_eq!(report.tasks.auto_action_failed[0].id, "t1");
+            assert!(report.tasks.auto_action_failed[0].detail.as_ref().unwrap().contains("integration worktree create failed"));
+        }
+
+        let mut replayed = State::default();
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        assert_eq!(replayed.runs[&run_id].auto_action_failures["t1"].action, "integrate");
+        let body = serde_json::json!({"runId": run_id, "taskId": "t1"});
+        handle_retry(body.to_string().as_bytes()).await;
+        assert!(state().lock().unwrap().runs[&run_id].auto_action_failures.is_empty());
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        assert!(replayed.runs[&run_id].auto_action_failures.is_empty());
+    }
+
+    #[test]
+    fn failed_continue_does_not_leave_a_running_dispatch() {
+        let base = std::env::temp_dir().join(format!("panorama-continue-failure-{}-{}", std::process::id(), unix_ms()));
+        let run_id = format!("r-continue-failure-{}", unix_ms());
+        replay_task_attempt(&run_id, &base, &[], false);
+        let cmd = Cmd::TaskAutoActionFailure {
+            run_id: run_id.clone(), task_id: "t1".into(),
+            failure: Some(("continue", "worker tile closed".into())),
+            expected: Some((TaskStatus::Dispatched, 3)), now: 4,
+        };
+        assert!(matches!(commit_sync(|_| Ok(cmd), &run_id, &base), CommitResult::Ok(_)));
+        let mut replayed = State::default();
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        let entry = &replayed.runs[&run_id];
+        assert_eq!(entry.running_dispatch_count(), 0);
+        assert_eq!(entry.tasks["t1"].status, TaskStatus::Failed);
+        assert_eq!(entry.auto_action_failures["t1"].error, "worker tile closed");
+        assert!(entry.messages.iter().any(|msg| msg.msg_type == "run_idle"));
+    }
+
+    #[test]
+    fn classification_survives_log_cut_after_failure_event() {
+        let base = std::env::temp_dir().join(format!("panorama-crash-cut-{}-{}", std::process::id(), unix_ms()));
+        for (source, class) in [
+            ("worker", FailureClass::QualityFailed),
+            ("supervision", FailureClass::ExecutionFailed),
+            ("verification", FailureClass::QualityFailed),
+        ] {
+            let run_id = format!("r-crash-cut-{source}-{}", unix_ms());
+            let dispatch_id = format!("{run_id}.t1.1");
+            let verify = source == "verification";
+            replay_task_attempt(&run_id, &base, &["verify"], verify);
+            let failure = DispatchFailure { classification: f12_classification(class, None), routing: 1 };
+            let cmd = match source {
+                "worker" => Cmd::Send {
+                    run_id: run_id.clone(), seq: 1, from: dispatch_id.clone(), to: vec!["coordinator".into()],
+                    msg_type: "worker_done".into(), task_id: Some("t1".into()), dispatch_id: Some(dispatch_id.clone()),
+                    reply_to: None, body: None, outcome: Some("failed".into()), files_modified: vec![],
+                    summary: None, now: 5,
+                },
+                "supervision" => Cmd::DispatchUpdate {
+                    run_id: run_id.clone(), dispatch_id: dispatch_id.clone(),
+                    status: DispatchStatus::Failed, summary: None, now: 5,
+                },
+                _ => Cmd::TaskVerificationFailed {
+                    run_id: run_id.clone(), task_id: "t1".into(), dispatch_id: dispatch_id.clone(),
+                    command: "verify".into(), exit_code: Some(1), timed_out: false, tail: String::new(),
+                    msg_seq: 2, now: 5,
+                },
+            };
+            assert!(matches!(commit_sync_raw(|_| Ok(with_failure_class(cmd, Some(&failure))), &run_id, &base), CommitResult::Ok(_)));
+            let mut replayed = State::default();
+            load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+            let entry = &replayed.runs[&run_id];
+            let task = &entry.tasks["t1"];
+            assert_eq!(entry.dispatches[&dispatch_id].failure_class, Some(class));
+            assert_eq!((task.status.clone(), task.last_failure), (TaskStatus::Failed, Some(class)));
+            assert_eq!(task.quality_attempts + task.operational_attempts, 1);
+            if class.counter() == FailureCounter::Quality {
+                assert_eq!(task.quality_floor, 1);
+            }
+            assert!(sync_idle_locked(&mut replayed, &run_id, &base));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verification_spawn_failure_is_committed_and_classified() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        let run_id = format!("r-verify-spawn-failure-{}", unix_ms());
+        replay_task_attempt(&run_id, &base, &["echo verify"], true);
+        let dispatch_id = format!("{run_id}.t1.1");
+        let flight = VerificationFlight::for_report(&run_id, &dispatch_id).unwrap();
+        run_verification(run_id.clone(), "t1".into(), flight, None).await;
+        let guard = state().lock().unwrap();
+        let entry = &guard.runs[&run_id];
+        let result = &entry.dispatches[&dispatch_id].verifications[0];
+        assert_eq!(result.exit_code, None);
+        assert!(result.tail.iter().any(|line| line.contains("cwd, cmd and tile required")));
+        assert_eq!(entry.tasks["t1"].last_failure, Some(FailureClass::QualityFailed));
+        assert!(entry.messages.iter().any(|m| m.msg_type == "verification_failed"));
+        assert!(!VerificationFlight::contains(&dispatch_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_restarts_replayed_verification_once() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        let run_id = format!("r-verify-replay-{}", unix_ms());
+        replay_task_attempt(&run_id, &base, &["echo verify"], true);
+        let mut replayed = State::default();
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        let entry = &replayed.runs[&run_id];
+        assert_eq!(entry.tasks["t1"].status, TaskStatus::Verifying);
+        let idle = autonomy::idle_reason(entry, unix_ms() as i64).unwrap();
+        assert_eq!(idle.tasks.verifying[0].id, "t1");
+
+        let handle = {
+            let mut guard = state().lock().unwrap();
+            guard.runs.extend(replayed.runs);
+            let entry = &guard.runs[&run_id];
+            let handles: Vec<_> = restart_verifications(entry).collect();
+            assert_eq!(handles.len(), 1);
+            assert!(autonomy::idle_reason(entry, unix_ms() as i64).is_none());
+            assert!(restart_verifications(entry).next().is_none());
+            handles.into_iter().next().unwrap()
+        };
+        handle.await.unwrap();
+
+        let guard = state().lock().unwrap();
+        assert_eq!(guard.runs[&run_id].dispatches[&format!("{run_id}.t1.1")].verifications.len(), 1);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn f12_second_record_failure_for_a_dispatch_counts_once() {
         f12_test_home();
@@ -6304,8 +7304,15 @@ mod tests {
         let dispatch_id = format!("{run_id}.t1.1");
         let failure = classify_dispatch(&run_id, &dispatch_id, "session_gone", &[]).expect("classified");
 
-        assert!(record_failure(&run_id, &dispatch_id, &failure, false).await.is_some());
-        assert!(record_failure(&run_id, &dispatch_id, &failure, false).await.is_none());
+        for _ in 0..2 {
+            let run = run_id.clone();
+            let dispatch = dispatch_id.clone();
+            let failure = failure.clone();
+            let _ = commit_deferred_idle(move |_| Ok(with_failure_class(Cmd::DispatchUpdate {
+                run_id: run, dispatch_id: dispatch, status: DispatchStatus::Failed,
+                summary: None, now: unix_ms(),
+            }, Some(&failure))), run_id.clone()).await;
+        }
 
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let t = &guard.runs[&run_id].tasks["t1"];

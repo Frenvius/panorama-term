@@ -231,6 +231,8 @@ pub struct Run {
     pub limits: Limits,
     #[serde(default)]
     pub autonomy: Autonomy,
+    #[serde(default)]
+    pub detached: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_wait: Option<CoordinatorWait>,
     pub created_at: u64,

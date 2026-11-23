@@ -123,7 +123,8 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
     let brief_path = dispatch_dir.join("brief.md");
 
-    let mut content = format!("# Task: {}\n\n", task.title);
+    let mut content = String::from("Read CLAUDE.md and AGENTS.md at the worktree root if they exist, and follow their conventions.\nIf those instructions conflict with the task spec below, the task spec wins.\n\n");
+    content.push_str(&format!("# Task: {}\n\n", task.title));
     content.push_str(&format!("## Spec\n\n{}\n\n", task.spec));
 
     if let Some(ref acceptance) = task.acceptance {
@@ -485,7 +486,7 @@ fn nudge_decision(idle: bool, unacked: usize, elapsed: Option<Duration>, replayi
     }
 }
 
-pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, cli_path: &str) {
+pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, detached: bool) {
     static PENDING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     let session = sessions().lock().unwrap().get(tile_id).cloned();
     let idle = !is_tile_waiting(tile_id) && session.as_ref().and_then(|s| cached_agent_state(s))
@@ -513,7 +514,12 @@ pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, cli_path: &str) {
         }
     }
     drop(times);
-    let msg = format!("[panorama] {n} new orchestration message(s) in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id}");
+    let cli_path = crate::panorama_cli_path();
+    let msg = if detached {
+        format!("[panorama] {n} decision(s) needed in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id} --decisions")
+    } else {
+        format!("[panorama] {n} new orchestration message(s) in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id}")
+    };
     let _ = send_to_tile(tile_id, &msg);
 }
 
@@ -657,6 +663,19 @@ mod tests {
         assert!(content.contains("PANORAMA_RUN_ID"), "env var reference in brief");
         assert!(content.contains("Create hello.txt"), "task title in brief");
         assert!(content.contains("/tmp/work"), "cwd in brief");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn brief_starts_with_instructions_and_preserves_spec() {
+        let dir = tmp_dir("preamble");
+        let mut task = dummy_task();
+        task.spec = "First line.\n\n  Preserve spacing and `markdown`.\n".into();
+        let dispatch = dummy_dispatch();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
+        let content = std::fs::read_to_string(&brief_path).unwrap();
+        assert!(content.starts_with("Read CLAUDE.md and AGENTS.md at the worktree root if they exist, and follow their conventions.\nIf those instructions conflict with the task spec below, the task spec wins.\n\n"));
+        assert!(content.contains(&format!("## Spec\n\n{}\n\n", task.spec)));
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -6,13 +6,13 @@ allowed-tools: Bash({cli} orch:*), PowerShell({cli} orch:*)
 
 # Orchestrating workers in Panorama
 
-You are the coordinator. You plan, start workers, read their results, and decide what happens next.
-The Panorama brain records every step in an event log, runs verification, and commits and merges
-the work. Unless the run has autonomy switched on (section 7), it never starts a worker on its own:
-every dispatch is your decision.
+You are the coordinator. Plan and detach by default. Agree the plan, create the run with `--detach`,
+create all tasks up front, start tasks with no dependencies, and end your turn. The Panorama brain
+runs checks, retries workers, starts dependents, and integrates their work. It wakes you when a
+decision is needed.
 
-Do not implement the tasks yourself. Small glue fixes are fine when a worker is clearly the wrong
-tool, but tell the user.
+Do not implement, verify, test, or read code yourself. Put checks in `--verify` commands. Add `test`
+or `review` role tasks with `--dep` when judgment is needed.
 
 All commands go through the Panorama CLI:
 
@@ -25,7 +25,7 @@ JSON says why), 4 brain unreachable. Pass `--pretty` to read a reply comfortably
 
 ## 1. Plan with the user
 
-Do not orchestrate small work. One task that one agent can finish quickly is cheaper done directly.
+Do not orchestrate a single small task. One task that one agent can finish quickly is cheaper done directly.
 Orchestration pays off for large or parallelizable work - several independent tasks or work that
 benefits from cheaper worker models.
 
@@ -47,7 +47,8 @@ Agree on these before creating anything:
 Good tasks:
 
 - The spec is self-contained. The worker sees only its brief, never this conversation. Name the
-  files, the expected behavior, and the constraints.
+  files, behavior, constraints, and acceptance. Do not restate repository conventions. The brief
+  already tells workers to read CLAUDE.md / AGENTS.md.
 - Tasks that run in parallel touch different files. Overlapping edits end in merge conflicts.
 - Real ordering goes in `--dep`. A dependent task starts from the integration branch, so it sees
   the work of its integrated dependencies.
@@ -57,13 +58,13 @@ Good tasks:
 ## 2. Create the run and its tasks
 
 ```
-{cli} orch run-create --repo <abs path> --title "<title>"
+{cli} orch run-create --repo <abs path> --title "<title>" --detach
 ```
 
 Optional: `--base-ref <ref>`, `--setup "<command run in each new worktree>"` (e.g. `bun install`),
 `--max-workers 4`, `--max-attempts 3`, `--dispatch-timeout-min 60`, `--verify-timeout-min 15`,
-`--stall-quiet-min 5`, `--max-operational-attempts 6`, `--autonomy <list>` (section 7). Note the
-returned `run.id`.
+`--stall-quiet-min 5`, `--detach`, `--autonomy <list>` (section 7). Note the returned `run.id`.
+Use `run-update --max-operational-attempts 6` to change that limit after creation.
 
 The CLI records this terminal as the coordinator tile (from `PANORAMA_TILE_ID`), so the brain can
 type a short notice into it when messages arrive while you are idle.
@@ -82,9 +83,10 @@ type a short notice into it when messages arrive while you are idle.
   attempt ladder: operational failures (quota, rate limit, auth, crash, launch) fall back to the next
   eligible entry without spending attempts; quality failures (the worker gave up, verification failed)
   move past the entry that failed and spend an attempt. A rejected entry never comes back.
-- `--review` keeps the task in `verifying` after its checks pass, until you approve it (step 4).
+- `--review` moves the task to `review` after checks pass, or after the worker finishes when there are no checks. Detached runs include it in `run_idle` when work stops. Tell the user which task is waiting. Do not read the diff or approve it yourself. Set the task to `completed` only when the user approves in chat or on the board. Integration autonomy integrates it; otherwise integrate it yourself.
 
-Task ids are `t1`, `t2`, and so on.
+Task ids are `t1`, `t2`, and so on. Create all tasks before starting any workers, with `--dep`
+for each ordering constraint.
 
 ## 3. Start workers
 
@@ -109,9 +111,22 @@ If an earlier attempt of the task still has a live, unreported agent, `worker-st
 fail with `live_attempt`. Check it with `worker-read`. Add `--stop-live` to stop it and start the
 new attempt.
 
-Start every task whose dependencies are completed and integrated, up to `maxWorkers`. Then wait.
+For a detached run with execution autonomy, start the tasks with no dependencies, up to `maxWorkers`, and end your turn. The brain starts remaining tasks as capacity and dependencies allow. For an attached run or a run without execution autonomy, start every ready task up to `maxWorkers` and dispatch dependents yourself as earlier tasks integrate.
 
-## 4. Wait and react
+## 4. React to a wake
+
+For a detached run, the brain wakes you when a decision is needed. On each wake, run:
+
+```
+{cli} orch check --run-id <run> --decisions
+```
+
+Act on each decision message, then end your turn again. Never poll or loop on `check --wait` in a
+detached run. `--decisions` returns decision messages and acknowledges routine messages in a
+`routine` digest with `count`, `byType`, and affected `tasks`. `--peek` does not acknowledge them.
+On `run_idle`, read the grouped report and decide what to do for each listed task (retry, resume, start, integrate, resolve gate, cancel, or ask the user). On `run_finished`, follow section 6 and stop.
+
+For a run the user wants to steer step by step, omit `--detach` and use:
 
 ```
 {cli} orch check --run-id <run> --wait --timeout-ms 540000
@@ -119,31 +134,34 @@ Start every task whose dependencies are completed and integrated, up to `maxWork
 
 Give the Bash call a 600000 ms timeout. `check` blocks until messages arrive, then returns them and
 marks them read. Without `--wait` it returns at once. `--peek` reads without marking. `--type
-worker_done` filters, and it repeats.
+worker_done` filters, and it repeats. If nothing arrives and there is nothing else to do, end your
+turn. The brain wakes you when messages arrive.
 
-If nothing arrives and there is nothing else to do, end your turn and say you are waiting. The
-brain types `[panorama] N new orchestration message(s)...` into this terminal when something
-arrives. Run `check` then.
+The actions below describe the step-by-step workflow. In detached runs the brain handles routine
+retries, starts, and integration; act on the decision messages it returns.
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `worker_done` (succeeded) | The worker finished. The brain committed its changes and runs `--verify` | Wait for the verification result. With no `--verify`, the task is already `completed`: integrate it |
+| `run_finished` | All tasks are cancelled or completed and integrated. JSON body has `completed`, `integrated`, `cancelled`, and `integrationBranch` | Produce the report in section 6 and stop |
+| `run_idle` | No worker is running and the brain has no autonomous action left. JSON body has `reason` (`"idle"`), `counts` (`completed`, `integrated`, `cancelled`), and `tasks` grouped by `failed`, `blocked`, `review`, `pending`, `waitingIntervention`, `openGate`, `waitingNoResume`, `resumeDue`, and `unintegrated` | Decide per task: retry, resume, start, integrate, resolve gate, cancel, or ask the user |
+| `worker_done` (succeeded) | The worker finished. The brain committed its changes and runs `--verify` | Wait for the verification result. With no `--verify`, integrate a `completed` task. If it is in `review`, tell the user and wait for approval |
 | `worker_done` (failed) | The worker gave up. The body says why | Read it. Fix the spec with `task-update` if needed, then `retry` |
-| `verification_passed` | The checks passed | Integrate. With `--review`, check the diff first, then run `task-update --status completed` |
+| `verification_passed` | The checks passed | Integrate. With `--review`, wait for the user to decide whether it is complete |
 | `verification_failed` | A check failed. The body has the command, exit code and output tail | `retry` (escalates), or fix the spec first |
 | `status` "waiting for permission" | The worker is blocked on an approval prompt | `worker-read`, then answer with `worker-send` |
 | `question` | The worker asks something | Reply with `send --type answer --to <dispatchId> --body "..."` |
+| `gate` | A gate was opened on a task. Body has the gate id | Inspect the gate with `run-show`, ask the user if needed, and run `gate-resolve` |
 | `worker_stalled` | No screen change for `stallQuietMin`, or past the timeout. The body has the screen tail | `worker-read`. Unstick it with `worker-send`, or `worker-stop` then `retry` |
 | `worker_failed` | JSON body with `reason`: `session_gone`, `agent_exited` (with screen `tail`), `worktree_failed`, `brief_failed`, `spawn_failed` | `retry`. If the agent turns out to still be working, its `worker_done` is still accepted |
 | `setup_failed` | The run's `--setup` command failed. JSON body with `detail` and output `tail` | Fix the setup or the repo, then `retry` |
-| `task_waiting` | No eligible candidate right now, or the run needs you. JSON body: `kind` (`quota`, `availability`, `intervention`), `resumeAt`, `reason`, `candidate`. The task is `waiting` | `quota`/`availability`: nothing to do, it resumes at `resumeAt` (autonomy) or you get `resume_ready`. `intervention`: read `reason`, fix the cause (setup, auth, chain), then resume it |
+| `task_waiting` | No eligible candidate right now, or the run needs you. JSON body: `kind` (`quota`, `availability`, `intervention`), `resumeAt`, `reason`, `candidate`. The task is `waiting` | `quota`/`availability`: nothing to do, it resumes at `resumeAt` (autonomy) or the next `run_idle` reports `resumeDue`. `resume_ready` is routine. `intervention`: read `reason`, fix the cause (setup, auth, chain), then resume it |
 | `operational_failure` | A worker stopped for a reason that is not its fault. JSON body: `class`, `dispatchId`, `suggested` (the next candidate), `hint` | `retry`. It costs no quality attempt |
 | `resume_ready` | A waiting task is due. JSON body: `resumeId`, `kind`, `resumeAt` | `task-update --status pending`, then `worker-start`. Sent once per resume |
 | `auto_action` | The brain acted on its own under the run's autonomy. JSON body: `action` (`retry`, `start`, `continue`, `integrate`), `taskId`, `dispatchId`, `reason` | Read it so your picture of the run stays correct. Do not repeat the action |
 | `late_report` | A `worker_done` arrived from an attempt already superseded by a newer one. Not applied | Compare with the newer attempt. Integrate the old one with `integrate --dispatch-id` if it is the better result |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
 | `integration_conflict` | The merge conflicted and was aborted. Nothing changed on any branch. The task is `blocked`. JSON body with `files`, `branch`, `integrationTip` and `hint` | Explain it to the user in a sentence or two, then run `conflict-resolve`. Do not retry and do not present it as redoing the task |
-| `note` from `user` with a task id | The user cancelled that task from the run board. The task is now `cancelled` | Do not retry it unless the user explicitly asks |
+| `note` from `user` | The user sent a note, including when they cancel a task from the run board | Follow the note. Do not retry a cancelled task unless the user explicitly asks |
 
 Inspecting and steering a worker:
 
@@ -215,6 +233,9 @@ Conflict resolution:
 
 ## 5. Integrate
 
+For detached runs, the brain integrates completed tasks automatically. These commands are for
+step-by-step runs or decisions requiring intervention.
+
 ```
 {cli} orch integrate --run-id <run> --task-id t1
 {cli} orch integrate --run-id <run> --task-id t1 --dispatch-id <id>
@@ -271,11 +292,17 @@ attempt, live tile and agent status only), `task-list --run-id <run>`,
 
 ## 7. Autonomy
 
-Off by default. The user turns it on per run, and you may set it only when they ask:
+Autonomy is off for runs created without `--detach`. A user asking for plan-and-detach behavior
+counts as asking for autonomy on that run. `run-create --detach` enables operational, execution,
+and integration autonomy unless an explicit `--autonomy` list overrides it. Set autonomy on other
+runs only when the user asks:
 
 ```
 {cli} orch run-update --run-id <run> --autonomy operational,execution,integration
 ```
+
+Use `run-update --run-id <run> --detach on|off` to change detached wake behavior on an existing
+run. This does not change its autonomy levels.
 
 A comma list; empty clears it. Each level lets the brain act without waiting for you, through the
 same commands you use, and send you an `auto_action` message for each action:
@@ -283,18 +310,18 @@ same commands you use, and send you an `auto_action` message for each action:
 - `operational` - retries a task that failed operationally (it never spends quality attempts), and
   resumes a `waiting` task when its `resumeAt` passes. If the worker's session is still alive it
   types `continue` into it instead of starting a new attempt. Without this level you get
-  `resume_ready` instead.
+  a `run_idle` with `resumeDue` when it is due. `resume_ready` is routine.
 - `execution` - retries quality failures while attempts remain, and starts a `pending` task once
   every dependency is `completed` and integrated, up to `maxWorkers`. User-owned tasks and tasks
   with an open gate are skipped. `--review` tasks still stop at review.
-- `integration` - integrates a `completed` task that is not `--review` into the integration branch.
+- `integration` - integrates a `completed` task into the integration branch. Detached runs also integrate approved `--review` tasks.
   A conflict leaves that task `blocked`. It never pushes and never touches the user's branch.
 
 Autonomy never creates tasks, changes limits, picks an agent outside the task's list, or merges
 anywhere else. With it on, do not repeat what an `auto_action` already did.
 
 If this terminal hits its own usage limit, the brain records it and, after the reset time, types one
-`[panorama] Coordinator resume for run ...` line into it. Run `check` then.
+`[panorama] Coordinator resume for run ...` line into it. Run `check --decisions` for a detached run, or `check` otherwise.
 
 ## Rules
 

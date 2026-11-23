@@ -201,11 +201,11 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         let flag = &arg[2..];
 
         let allowed = match command {
-            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min",
+            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach",
             "run-show" => "run-id full brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
-            "run-update" => "run-id title autonomy max-operational-attempts",
+            "run-update" => "run-id title autonomy max-operational-attempts detach",
             "candidate-list" | "metrics" => "",
             "candidate-clear" => "agent model account",
             "usage-report" => "agent account-id windows",
@@ -215,7 +215,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
             "task-list" => "run-id status",
             "dispatch" => "run-id task-id profile model retry-of tile-id",
             "send" => "run-id type from to task-id dispatch-id body outcome summary file report report-file reply-to",
-            "check" => "run-id recipient type peek wait timeout-ms",
+            "check" => "run-id recipient type peek wait timeout-ms decisions",
             "gate-create" => "run-id task-id question option",
             "gate-resolve" => "run-id gate-id resolution",
             "worker-start" => "run-id task-id by profile model retry-of stop-live stopLive worktree",
@@ -257,7 +257,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         }
 
         let field = flag_to_field(flag, command);
-        let is_bool = is_bool_flag(flag);
+        let is_bool = is_bool_flag(flag) || (flag == "detach" && command == "run-create");
         let is_arr = is_array_field(field, command);
 
         if is_bool {
@@ -267,6 +267,9 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         }
 
         if i + 1 >= args.len() {
+            if flag == "detach" {
+                return Err("--detach requires on or off".into());
+            }
             i += 1;
             continue;
         }
@@ -281,7 +284,15 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
             continue;
         }
 
-        let json_val = coerce_value(field, raw);
+        let json_val = if flag == "detach" {
+            match raw.as_str() {
+                "on" => true.into(),
+                "off" => false.into(),
+                _ => return Err("--detach requires on or off".into()),
+            }
+        } else {
+            coerce_value(field, raw)
+        };
         if is_arr {
             arrays.entry(field.into()).or_default().push(json_val);
         } else {
@@ -311,6 +322,7 @@ fn flag_to_field<'a>(flag: &'a str, command: &str) -> &'a str {
         "tile-id" => "tileId",
         "base-ref" => "baseRef",
         "coordinator-tile" => "coordinatorTile",
+        "detach" => "detached",
         "timeout-ms" => "timeoutMs",
         "max-workers" => "maxWorkers",
         "max-attempts" => "maxAttempts",
@@ -353,7 +365,7 @@ fn kebab_to_camel(s: &str) -> String {
 }
 
 fn is_bool_flag(flag: &str) -> bool {
-    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
+    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "decisions" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
 }
 
 fn is_array_field(field: &str, command: &str) -> bool {
@@ -493,6 +505,43 @@ mod tests {
         let mut with_run = body.clone();
         with_run.insert("runId".into(), "r1".into());
         assert!(validate_required("run-update", &with_run).is_ok());
+    }
+
+    #[test]
+    fn run_create_detach_enables_autonomy_unless_explicit() {
+        use super::super::{run_create_fields, ApplyResult, Cmd, Limits, State};
+
+        for (flags, expected) in [
+            (&["--detach"][..], [true, true, true]),
+            (&["--detach", "--autonomy", "execution"][..], [false, true, false]),
+            (&["--detach", "--autonomy", ""][..], [false, false, false]),
+        ] {
+            let mut state = State::default();
+            let fields = run_create_fields(&parse(flags, "run-create").into()).unwrap();
+            let cmd = Cmd::RunCreate {
+                id: "r1".into(), title: "run".into(), repo: ".".into(), base_ref: None,
+                base_sha: None, setup: None, coordinator_tile: None, limits: Limits::default(), now: 1,
+            }.with_fields(fields);
+            let ApplyResult::Ok(kind, data) = state.apply(&cmd) else { panic!("run-create failed") };
+            state.replay(&kind, &data).unwrap();
+            let run = &state.runs["r1"].run;
+            assert!(run.detached);
+            let a = run.autonomy;
+            assert_eq!([a.operational, a.execution, a.integration], expected);
+        }
+        assert_eq!(parse(&["--detach", "on"], "run-update")["detached"], true);
+        assert_eq!(parse(&["--detach", "off"], "run-update")["detached"], false);
+        assert!(parse_flags(&["--detach".into()], "run-update").is_err());
+        assert!(parse_flags(&["--detach".into(), "invalid".into()], "run-update").is_err());
+    }
+
+    #[test]
+    fn check_decisions_parses_with_wait_and_type() {
+        let body = parse(&["--run-id", "r1", "--decisions", "--wait", "--type", "question"], "check");
+        assert_eq!(body["runId"], "r1");
+        assert_eq!(body["decisions"], true);
+        assert_eq!(body["wait"], true);
+        assert_eq!(body["types"], serde_json::json!(["question"]));
     }
 
     #[test]

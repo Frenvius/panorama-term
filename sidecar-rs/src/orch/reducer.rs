@@ -33,6 +33,32 @@ pub enum ApplyResult {
     Err(OrchError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum IdleState {
+    #[default]
+    Active,
+    Idle,
+    Finished,
+}
+
+pub(crate) fn idle_fingerprint(msg_type: &str, body: &str) -> String {
+    let mut value: Value = serde_json::from_str(body).unwrap_or_default();
+    if let Some(groups) = value["tasks"].as_object_mut() {
+        for tasks in groups.values_mut().filter_map(Value::as_array_mut) {
+            tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        }
+    }
+    serde_json::to_string(&(msg_type == "run_finished", value)).unwrap_or_default()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct AutoActionFailure {
+    pub action: String,
+    pub error: String,
+    pub at: u64,
+    status: TaskStatus,
+}
+
 pub struct RunEntry {
     pub run: Run,
     pub tasks: HashMap<String, Task>,
@@ -40,6 +66,9 @@ pub struct RunEntry {
     pub messages: Vec<Message>,
     pub gates: HashMap<String, Gate>,
     pub task_count: u32,
+    pub(crate) idle_state: IdleState,
+    pub(crate) idle_fingerprint: Option<String>,
+    pub(crate) auto_action_failures: HashMap<String, AutoActionFailure>,
     pub gate_count: u32,
     pub msg_seq: u32,
     pub event_seq: u32,
@@ -56,6 +85,9 @@ impl RunEntry {
             messages: Vec::new(),
             gates: HashMap::new(),
             task_count: 0,
+            idle_state: IdleState::Active,
+            idle_fingerprint: None,
+            auto_action_failures: HashMap::new(),
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
@@ -310,6 +342,14 @@ pub enum Cmd {
         resume_id: String,
         now: u64,
     },
+    TaskAutoActionFailure {
+        run_id: String,
+        task_id: String,
+        failure: Option<(&'static str, String)>,
+        expected: Option<(TaskStatus, u64)>,
+        now: u64,
+    },
+    #[cfg(test)]
     TaskRecordFailure {
         run_id: String,
         task_id: String,
@@ -332,6 +372,17 @@ pub enum Cmd {
     RunClearCoordinatorWait {
         run_id: String,
         resume_id: String,
+        now: u64,
+    },
+    RunIdle {
+        run_id: String,
+        msg_seq: u32,
+        msg_type: String,
+        body: String,
+        now: u64,
+    },
+    RunActive {
+        run_id: String,
         now: u64,
     },
     Extra {
@@ -406,6 +457,35 @@ impl State {
                 }))
             }
 
+            Cmd::TaskAutoActionFailure { run_id, task_id, failure, expected, now } => {
+                let Some(entry) = self.runs.get(run_id) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                let Some(task) = entry.tasks.get(task_id) else {
+                    return ApplyResult::Err(OrchError::NotFound("task not found".into()));
+                };
+                let recorded = entry.auto_action_failures.contains_key(task_id);
+                if failure.is_some() == recorded
+                    || (failure.is_some() && !entry.run.detached)
+                    || expected.as_ref().is_some_and(|(status, at)| task.status != *status || task.updated_at != *at)
+                {
+                    return ApplyResult::Err(OrchError::Conflict("autonomous action state changed".into()));
+                }
+                let failed_dispatch = failure.as_ref()
+                    .filter(|(action, _)| *action == "continue" && task.status == TaskStatus::Dispatched)
+                    .and_then(|_| entry.latest_dispatch_for_task(task_id))
+                    .filter(|dispatch| dispatch.status == DispatchStatus::Running);
+                let failure = failure.as_ref().map(|(action, error)| AutoActionFailure {
+                    action: (*action).into(), error: error.clone(), at: *now,
+                    status: if failed_dispatch.is_some() { TaskStatus::Failed } else { task.status.clone() },
+                });
+                ApplyResult::Ok("task-auto-action-failure".into(), serde_json::json!({
+                    "runId": run_id, "taskId": task_id, "failure": failure,
+                    "failedDispatchId": failed_dispatch.map(|dispatch| &dispatch.id), "now": now,
+                }))
+            }
+
+            #[cfg(test)]
             Cmd::TaskRecordFailure { run_id, task_id, dispatch_id, class, chain_index, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
@@ -422,6 +502,32 @@ impl State {
                 ApplyResult::Ok("task-record-failure".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
                     "class": class, "chainIndex": chain_index, "now": now
+                }))
+            }
+
+            Cmd::RunIdle { run_id, msg_seq, msg_type, body, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                let next = if msg_type == "run_finished" { IdleState::Finished } else { IdleState::Idle };
+                let fingerprint = idle_fingerprint(msg_type, body);
+                if entry.idle_state == next && entry.idle_fingerprint.as_deref() == Some(&fingerprint) {
+                    return ApplyResult::Err(OrchError::Conflict("idle state unchanged".into()));
+                }
+                ApplyResult::Ok("run-idle".into(), serde_json::json!({
+                    "runId": run_id, "msgSeq": msg_seq, "msgType": msg_type, "body": body, "fingerprint": fingerprint, "now": now
+                }))
+            }
+
+            Cmd::RunActive { run_id, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.idle_state == IdleState::Active {
+                    return ApplyResult::Err(OrchError::Conflict("run already active".into()));
+                }
+                ApplyResult::Ok("run-active".into(), serde_json::json!({
+                    "runId": run_id, "now": now
                 }))
             }
 
@@ -1003,6 +1109,7 @@ impl State {
 
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
         match kind {
+            "task-auto-action-failure" => self.replay_auto_action_failure(data),
             "run-create" => self.replay_run_create(data),
             "run-update" => self.replay_run_update(data),
             "run-set-coordinator" => self.replay_run_set_coordinator(data),
@@ -1032,8 +1139,43 @@ impl State {
             "dispatch-revive" => self.replay_dispatch_revive(data),
             "run-coordinator-wait" => self.replay_run_coordinator_wait(data),
             "run-coordinator-resume" => self.replay_run_coordinator_resume(data),
+            "run-idle" => self.replay_run_idle(data),
+            "run-active" => self.replay_run_active(data),
             other => Err(format!("unknown event kind: {other}")),
+        }?;
+        if data["stale"] == true {
+            return Ok(());
         }
+        if let Some(entry) = self.runs.get_mut(data["runId"].as_str().unwrap_or_default()) {
+            entry.auto_action_failures.retain(|id, failure| {
+                entry.tasks.get(id).is_some_and(|task| task.status == failure.status)
+            });
+            if let Some(class) = parse_opt(data, "routedFailureClass") {
+                let dispatch_id = str_field(data, if kind == "send" { "from" } else { "dispatchId" });
+                let chain_index = entry.dispatches.get(&dispatch_id).and_then(|d| d.chain_index);
+                Self::replay_failure_class(entry, &dispatch_id, (class, chain_index), u64_field(data, "now"));
+            }
+        }
+        Ok(())
+    }
+
+    fn replay_auto_action_failure(&mut self, data: &Value) -> Result<(), String> {
+        if let Some(dispatch_id) = data["failedDispatchId"].as_str() {
+            self.replay_dispatch_update(&serde_json::json!({
+                "runId": data["runId"], "dispatchId": dispatch_id, "status": "failed",
+                "summary": data["failure"]["error"], "now": data["now"],
+            }))?;
+        }
+        if let Some(entry) = self.runs.get_mut(&str_field(data, "runId")) {
+            let task_id = str_field(data, "taskId");
+            if data["failure"].is_null() {
+                entry.auto_action_failures.remove(&task_id);
+            } else {
+                let failure = serde_json::from_value(data["failure"].clone()).map_err(|e| e.to_string())?;
+                entry.auto_action_failures.insert(task_id, failure);
+            }
+        }
+        Ok(())
     }
 
     fn replay_run_create(&mut self, data: &Value) -> Result<(), String> {
@@ -1052,6 +1194,7 @@ impl State {
             status: RunStatus::Active,
             limits,
             autonomy: parse_autonomy(data.get("autonomy")).unwrap_or_default(),
+            detached: data["detached"].as_bool().unwrap_or(false),
             coordinator_wait: None,
             created_at: now,
             updated_at: now,
@@ -1143,6 +1286,7 @@ impl State {
             }
         }
 
+        entry.auto_action_failures.remove(&task_id);
         let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
         if let Some(s) = new_status {
             if s != TaskStatus::Waiting {
@@ -1669,6 +1813,9 @@ impl State {
         if let Some(autonomy) = parse_autonomy(data.get("autonomy")) {
             entry.run.autonomy = autonomy;
         }
+        if let Some(detached) = data["detached"].as_bool() {
+            entry.run.detached = detached;
+        }
         if let Some(n) = data["maxOperationalAttempts"].as_u64() {
             entry.run.limits.max_operational_attempts = n as u32;
         }
@@ -1728,24 +1875,31 @@ impl State {
         };
         let now = u64_field(data, "now");
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
-        if let Some(d) = entry.dispatches.get_mut(&str_field(data, "dispatchId")) {
-            d.failure_class = Some(class);
+        let chain_index = data["chainIndex"].as_u64().map(|v| v as u32);
+        Self::replay_failure_class(entry, &str_field(data, "dispatchId"), (class, chain_index), now);
+        Ok(())
+    }
+
+    fn replay_failure_class(entry: &mut RunEntry, dispatch_id: &str, failure: (FailureClass, Option<u32>), now: u64) {
+        let (class, chain_index) = failure;
+        let Some(dispatch) = entry.dispatches.get_mut(dispatch_id) else { return };
+        if dispatch.failure_class.is_some() {
+            return;
         }
-        let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
+        dispatch.failure_class = Some(class);
+        let Some(task) = entry.tasks.get_mut(&dispatch.task_id) else { return };
         match class.counter() {
             FailureCounter::Operational => {
                 task.operational_attempts = task.operational_attempts.saturating_add(1);
             }
             FailureCounter::Quality => {
                 task.quality_attempts = task.quality_attempts.saturating_add(1);
-                let chain_index = data["chainIndex"].as_u64().map(|v| v as u32);
                 task.quality_floor = crate::orch::routing::floor_after_quality_failure(task.quality_floor, chain_index);
             }
             FailureCounter::None => {}
         }
         task.last_failure = Some(class);
         task.updated_at = now;
-        Ok(())
     }
 
     fn replay_dispatch_revive(&mut self, data: &Value) -> Result<(), String> {
@@ -1818,6 +1972,40 @@ impl State {
         if run_id.is_empty() { return Err("run-coordinator-baseline: empty runId".into()); }
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         entry.coordinator_cost_baseline = data["costUsd"].as_f64();
+        Ok(())
+    }
+
+    fn replay_run_idle(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        let msg_type = str_field(data, "msgType");
+        if run_id.is_empty() { return Err("run-idle: empty runId".into()); }
+        if msg_type.is_empty() { return Err("run-idle: empty msgType".into()); }
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        let msg_seq = data["msgSeq"].as_u64().map(|v| v as u32).unwrap_or_else(|| entry.next_msg_seq());
+        entry.idle_state = if msg_type == "run_finished" { IdleState::Finished } else { IdleState::Idle };
+        entry.idle_fingerprint = Some(data["fingerprint"].as_str().map(str::to_owned).unwrap_or_else(|| idle_fingerprint(&msg_type, data["body"].as_str().unwrap_or(""))));
+        entry.msg_seq = entry.msg_seq.max(msg_seq);
+        entry.messages.push(Message {
+            seq: msg_seq,
+            from: "brain".into(),
+            to: "coordinator".into(),
+            msg_type,
+            task_id: None,
+            dispatch_id: None,
+            reply_to: None,
+            body: opt_str(data, "body"),
+            at: u64_field(data, "now"),
+            acked: false,
+        });
+        Ok(())
+    }
+
+    fn replay_run_active(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-active: empty runId".into()); }
+        if let Some(entry) = self.runs.get_mut(&run_id) {
+            entry.idle_state = IdleState::Active;
+        }
         Ok(())
     }
 }
@@ -3481,6 +3669,155 @@ mod tests {
             }
             ApplyResult::Err(e) => Err(e),
         }
+    }
+
+    #[test]
+    fn run_idle_and_run_active_replay_and_reject_duplicate_transitions() {
+        let mut state = State::default();
+        let create = serde_json::json!({"id": "r1", "detached": true});
+        state.replay("run-create", &create).unwrap();
+        let mut log: Vec<(String, Value)> = vec![("run-create".into(), create)];
+        let mut push = |s: &mut State, cmd: Cmd| {
+            let ev = commit_cmd(s, cmd).unwrap();
+            log.push(ev);
+        };
+        assert_eq!(state.runs["r1"].idle_state, IdleState::Active);
+
+        assert!(matches!(
+            commit_cmd(&mut state, Cmd::RunActive { run_id: "r1".into(), now: ts() }),
+            Err(OrchError::Conflict(_))
+        ));
+
+        let seq1 = state.runs["r1"].next_msg_seq();
+        push(&mut state, Cmd::RunIdle {
+            run_id: "r1".into(), msg_seq: seq1, msg_type: "run_idle".into(),
+            body: r#"{"reason":"idle"}"#.into(), now: ts(),
+        });
+        assert_eq!(state.runs["r1"].idle_state, IdleState::Idle);
+        assert_eq!(state.runs["r1"].messages.len(), 1);
+        assert_eq!(state.runs["r1"].messages[0].seq, seq1);
+        assert_eq!(state.runs["r1"].messages[0].msg_type, "run_idle");
+        assert_eq!(state.runs["r1"].messages[0].to, "coordinator");
+
+        let dup_seq = state.runs["r1"].next_msg_seq();
+        assert!(matches!(
+            commit_cmd(&mut state, Cmd::RunIdle {
+                run_id: "r1".into(), msg_seq: dup_seq,
+                msg_type: "run_idle".into(), body: r#"{"reason":"idle"}"#.into(), now: ts(),
+            }),
+            Err(OrchError::Conflict(_))
+        ));
+
+        push(&mut state, Cmd::RunActive { run_id: "r1".into(), now: ts() });
+        assert_eq!(state.runs["r1"].idle_state, IdleState::Active);
+
+        let seq2 = state.runs["r1"].next_msg_seq();
+        push(&mut state, Cmd::RunIdle {
+            run_id: "r1".into(), msg_seq: seq2, msg_type: "run_finished".into(),
+            body: r#"{"completed":1,"integrated":1,"cancelled":0}"#.into(), now: ts(),
+        });
+        assert_eq!(state.runs["r1"].idle_state, IdleState::Finished);
+        assert_eq!(state.runs["r1"].messages.len(), 2);
+        assert_eq!(state.runs["r1"].messages[1].seq, seq2);
+        assert_eq!(state.runs["r1"].messages[1].msg_type, "run_finished");
+
+        let dup_seq2 = state.runs["r1"].next_msg_seq();
+        assert!(matches!(
+            commit_cmd(&mut state, Cmd::RunIdle {
+                run_id: "r1".into(), msg_seq: dup_seq2,
+                msg_type: "run_finished".into(), body: r#"{"completed":1,"integrated":1,"cancelled":0}"#.into(), now: ts(),
+            }),
+            Err(OrchError::Conflict(_))
+        ));
+
+        let mut replayed = State::default();
+        for (kind, data) in &log {
+            replayed.replay(kind, data).unwrap();
+        }
+        assert_eq!(replayed.runs["r1"].idle_state, state.runs["r1"].idle_state);
+        assert_eq!(replayed.runs["r1"].msg_seq, state.runs["r1"].msg_seq);
+        assert_eq!(replayed.runs["r1"].messages.len(), state.runs["r1"].messages.len());
+        for (a, b) in replayed.runs["r1"].messages.iter().zip(state.runs["r1"].messages.iter()) {
+            assert_eq!((a.seq, &a.msg_type, &a.body, &a.from, &a.to), (b.seq, &b.msg_type, &b.body, &b.from, &b.to));
+        }
+    }
+
+    #[test]
+    fn changed_idle_fingerprint_emits_and_replays() {
+        let mut state = State::default();
+        let create = serde_json::json!({"id": "r-fingerprint", "detached": true});
+        state.replay("run-create", &create).unwrap();
+        let idle = |body: &str, seq| Cmd::RunIdle {
+            run_id: "r-fingerprint".into(), msg_seq: seq, msg_type: "run_idle".into(),
+            body: body.into(), now: 1,
+        };
+        let pending = r#"{"tasks":{"failed":[{"id":"t1","detail":"first"}]}}"#;
+        let blocked = r#"{"tasks":{"failed":[{"id":"t1","detail":"second"}]}}"#;
+        let first = commit_cmd(&mut state, idle(pending, 1)).unwrap();
+        assert!(commit_cmd(&mut state, idle(pending, 2)).is_err());
+        let second = commit_cmd(&mut state, idle(blocked, 2)).unwrap();
+        let mut replayed = State::default();
+        replayed.replay("run-create", &create).unwrap();
+        for (kind, data) in [first, second] { replayed.replay(&kind, &data).unwrap(); }
+        assert_eq!(replayed.runs["r-fingerprint"].messages.len(), 2);
+        assert!(commit_cmd(&mut replayed, idle(blocked, 3)).is_err());
+    }
+
+    #[test]
+    fn task_record_failure_emits_no_task_exhausted_and_replays_legacy_payload() {
+        for detached in [false, true] {
+            let mut state = State::default();
+            state.replay("run-create", &serde_json::json!({
+                "id": "r1", "detached": detached,
+                "limits": Limits { max_attempts: 2, ..Limits::default() },
+            })).unwrap();
+            mk_routed_task(&mut state, "r1", "t1");
+            record_on_new_dispatch(&mut state, 1, FailureClass::QualityFailed, Some(0));
+            let dispatch_id = mk_dispatch(&mut state, "r1", "t1", 2);
+            commit_cmd(&mut state, Cmd::DispatchUpdate {
+                run_id: "r1".into(), dispatch_id: dispatch_id.clone(), status: DispatchStatus::Failed,
+                summary: Some("test failure\nlog follow-up".into()), now: ts(),
+            }).unwrap();
+            let (kind, data) = commit_cmd(&mut state, Cmd::TaskRecordFailure {
+                run_id: "r1".into(), task_id: "t1".into(), dispatch_id,
+                class: FailureClass::QualityFailed, chain_index: Some(1), now: ts(),
+            }).unwrap();
+            assert!(data.get("taskExhausted").is_none());
+            assert_eq!(state.runs["r1"].tasks["t1"].quality_attempts, 2);
+            assert!(state.runs["r1"].messages.is_empty());
+            state.replay(&kind, &data).unwrap();
+            assert!(state.runs["r1"].messages.is_empty());
+        }
+
+        let mut legacy = State::default();
+        legacy.replay("run-create", &serde_json::json!({"id": "r1", "detached": true})).unwrap();
+        mk_routed_task(&mut legacy, "r1", "t1");
+        let dispatch_id = mk_dispatch(&mut legacy, "r1", "t1", 1);
+        legacy.replay("task-record-failure", &serde_json::json!({
+            "runId": "r1", "taskId": "t1", "dispatchId": dispatch_id,
+            "class": "quality_failed", "chainIndex": 0, "now": ts(),
+            "taskExhausted": {"taskId": "t1", "title": "t", "summary": "failed"},
+        })).unwrap();
+        assert_eq!(legacy.runs["r1"].tasks["t1"].quality_attempts, 1);
+        assert!(legacy.runs["r1"].messages.is_empty());
+    }
+
+    #[test]
+    fn old_events_replay_without_detached_fields() {
+        let mut state = State::default();
+        state.replay("run-create", &serde_json::json!({"id": "r1", "title": "old"})).unwrap();
+        state.replay("run-update", &serde_json::json!({"runId": "r1", "title": "updated"})).unwrap();
+        mk_routed_task(&mut state, "r1", "t1");
+        let dispatch_id = mk_dispatch(&mut state, "r1", "t1", 1);
+        state.replay("task-record-failure", &serde_json::json!({
+            "runId": "r1", "taskId": "t1", "dispatchId": dispatch_id, "class": "quality_failed",
+        })).unwrap();
+        let entry = &state.runs["r1"];
+        assert_eq!(entry.run.title, "updated");
+        assert!(!entry.run.detached);
+        assert_eq!(entry.run.autonomy, Autonomy::default());
+        assert_eq!(entry.tasks["t1"].quality_attempts, 1);
+        assert!(entry.messages.is_empty());
     }
 
     fn mk_routed_task(s: &mut State, run_id: &str, task_id: &str) {
