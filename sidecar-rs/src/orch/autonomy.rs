@@ -1586,10 +1586,7 @@ mod tests {
         let messages = &s.runs["r1"].messages;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].msg_type, "run_idle");
-        let report: IdleReport = serde_json::from_str(messages[0].body.as_deref().unwrap()).unwrap();
-        assert_eq!(report.tasks.review.len(), 1);
-        assert_eq!(report.tasks.review[0].id, "t2");
-        assert!(report.tasks.waiting_no_resume.is_empty());
+        assert!(messages[0].body.as_deref().unwrap().contains("t2 (t2): Review"));
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -1610,7 +1607,7 @@ mod tests {
         tick_run(&run_id, now).await;
         let messages = messages_of(&run_id, "run_idle");
         assert_eq!(messages.len(), 2);
-        assert!(messages[1].body.as_deref().unwrap().contains("resumeDue"));
+        assert!(messages[1].body.as_deref().unwrap().contains("resume due"));
     }
 
     #[test]

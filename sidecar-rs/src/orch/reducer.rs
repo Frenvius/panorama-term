@@ -42,7 +42,7 @@ pub(crate) enum IdleState {
 }
 
 pub(crate) fn idle_fingerprint(msg_type: &str, body: &str) -> String {
-    let mut value: Value = serde_json::from_str(body).unwrap_or_default();
+    let Ok(mut value) = serde_json::from_str::<Value>(body) else { return format!("{msg_type}:{body}") };
     if let Some(groups) = value["tasks"].as_object_mut() {
         for tasks in groups.values_mut().filter_map(Value::as_array_mut) {
             tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
