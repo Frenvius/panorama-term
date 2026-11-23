@@ -3,6 +3,7 @@ mod autonomy;
 mod candidates;
 mod carry;
 mod metrics;
+mod plan;
 mod usage;
 mod routing;
 mod wiring;
@@ -553,6 +554,7 @@ pub fn init() {
 pub async fn handle(command: &str, body: &[u8]) -> String {
     match command {
         "run-create" => handle_run_create(body).await,
+        "plan-apply" => plan::handle(body).await,
         "run-update" => handle_run_update(body).await,
         "run-list" => handle_run_list(),
         "run-show" => handle_run_show(body),
@@ -836,16 +838,14 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
     })
 }
 
-async fn handle_run_create(body: &[u8]) -> String {
-    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+async fn run_create_cmd(v: &Value, id: String) -> Result<Cmd, String> {
     let repo = v["repo"].as_str().unwrap_or("").to_string();
-    if repo.is_empty() { return err_resp("bad_request", "repo required"); }
+    if repo.is_empty() { return Err(err_resp("bad_request", "repo required")); }
     if !std::path::Path::new(&repo).is_dir() {
-        return err_resp("bad_request", "repo is not an existing directory");
+        return Err(err_resp("bad_request", "repo is not an existing directory"));
     }
-    let limits = match parse_limits(&v) { Ok(l) => l, Err(e) => return e };
-    let fields = match run_create_fields(&v) { Ok(fields) => fields, Err(e) => return e };
-    let id = gen_run_id();
+    let limits = parse_limits(v)?;
+    let fields = run_create_fields(v)?;
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let base_ref = v["baseRef"].as_str().map(str::to_string);
     let setup = v["setup"].as_str().map(str::to_string);
@@ -857,31 +857,36 @@ async fn handle_run_create(body: &[u8]) -> String {
         crate::orch::git::rev_parse(&repo_c, &rev).ok()
     }).await.unwrap_or(None);
 
-    let id_c = id.clone();
     let now = unix_ms();
-    let result = commit(move |_| {
-        let cmd = Cmd::RunCreate { id: id_c, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
-        Ok(cmd.with_fields(fields))
-    }, id.clone()).await;
-    match result {
-        CommitResult::Ok(_) => {
-            let (run_val, coord_tile) = {
-                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                let entry = guard.runs.get(&id);
-                let run = entry.map(|e| serde_json::to_value(&e.run).unwrap_or_default());
-                let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
-                (run, tile)
-            };
-            if let Some(ref tile) = coord_tile {
-                let cost_usd = crate::tile_cost_usd(tile);
-                let run_id_b = id.clone();
-                let now_b = unix_ms();
-                let _ = commit(move |_| {
-                    Ok(Cmd::RunRecordCoordinatorBaseline { run_id: run_id_b, cost_usd, now: now_b })
-                }, id.clone()).await;
-            }
-            ok_resp(serde_json::json!({"run": run_val}))
-        }
+    let cmd = Cmd::RunCreate { id, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
+    Ok(cmd.with_fields(fields))
+}
+
+async fn created_run(id: &str) -> Value {
+    let (run, tile) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.runs.get(id);
+        let run = entry.map(|e| serde_json::to_value(&e.run).unwrap_or_default()).unwrap_or_default();
+        let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
+        (run, tile)
+    };
+    if let Some(tile) = tile {
+        let cost_usd = crate::tile_cost_usd(&tile);
+        let run_id = id.to_owned();
+        let now = unix_ms();
+        let _ = commit(move |_| {
+            Ok(Cmd::RunRecordCoordinatorBaseline { run_id, cost_usd, now })
+        }, id.to_owned()).await;
+    }
+    run
+}
+
+async fn handle_run_create(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let id = gen_run_id();
+    let cmd = match run_create_cmd(&v, id.clone()).await { Ok(cmd) => cmd, Err(e) => return e };
+    match commit(move |_| Ok(cmd), id.clone()).await {
+        CommitResult::Ok(_) => ok_resp(serde_json::json!({"run": created_run(&id).await})),
         CommitResult::Stale => err_resp("stale", "run create stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
@@ -1404,39 +1409,36 @@ async fn handle_run_set_coordinator(body: &[u8]) -> String {
     }
 }
 
-async fn handle_task_create(body: &[u8]) -> String {
-    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
-    let run_id = v["runId"].as_str().unwrap_or("").to_string();
-    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+fn task_create_cmd(
+    v: &Value, run_id: String, deps: Vec<String>,
+) -> Result<impl FnOnce(String) -> Cmd, String> {
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let spec = v["spec"].as_str().unwrap_or("").to_string();
     let acceptance = v["acceptance"].as_str().map(str::to_string);
     let profile = v["profile"].as_str().map(str::to_string);
     let review = v["review"].as_bool().unwrap_or(false);
     let owner: Option<String> = v["owner"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
-    let by = v["by"].as_str().unwrap_or("coordinator").to_string();
     let now = unix_ms();
     let pinned = profile.is_some();
 
-    let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
-    let mut escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
-    let verify = match strict_str_arr(&v, "verify") { Ok(a) => a, Err(e) => return e };
+    let mut escalation = strict_str_arr(v, "escalation")?;
+    let verify = strict_str_arr(v, "verify")?;
 
     let role: Option<model::Role> = match v.get("role").filter(|r| !r.is_null()) {
         None => None,
         Some(r) => match serde_json::from_value::<model::Role>(r.clone()) {
             Ok(role) => Some(role),
-            Err(_) => return err_resp("bad_role", &format!(
+            Err(_) => return Err(err_resp("bad_role", &format!(
                 "role must be one of: {}; got: {}",
                 model::Role::all().join(", "),
                 r.as_str().unwrap_or("(invalid)")
-            )),
+            ))),
         },
     };
 
     if escalation.is_empty() && profile.is_none() {
         let Some(base) = crate::panorama_dir() else {
-            return err_resp("io", "no panorama dir");
+            return Err(err_resp("io", "no panorama dir"));
         };
         let s = settings::load(&base);
         let effective_role = role.as_ref().map(|r| r.as_str()).unwrap_or("implement");
@@ -1449,27 +1451,38 @@ async fn handle_task_create(body: &[u8]) -> String {
             _ => &s.roles.implement,
         };
         if chain.is_empty() {
-            return err_resp("empty_role_chain", &format!(
+            return Err(err_resp("empty_role_chain", &format!(
                 "role chain for '{effective_role}' is empty; set it in Settings > Orchestration or pass --escalation"
-            ));
+            )));
         }
         escalation = chain.clone();
     }
 
-    let owner_c = owner.clone();
+    Ok(move |id| {
+        let cmd = Cmd::TaskCreate {
+            run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role,
+            review, owner, now,
+        };
+        cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned}))
+    })
+}
+
+async fn handle_task_create(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+    let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
+    let make_cmd = match task_create_cmd(&v, run_id.clone(), deps) {
+        Ok(make_cmd) => make_cmd,
+        Err(e) => return e,
+    };
+    let by = v["by"].as_str().unwrap_or("coordinator");
+    let title = v["title"].as_str().unwrap_or("untitled");
     let run_id_c = run_id.clone();
-    let title_c = title.clone();
-    let role_c = role.clone();
     let result = commit(move |state| {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
-        let task_id = entry.next_task_id();
-        let cmd = Cmd::TaskCreate {
-            run_id: run_id_c, id: task_id,
-            title: title_c, spec, acceptance, deps, profile, escalation, verify, role: role_c,
-            review, owner: owner_c, now,
-        };
-        Ok(cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned})))
+        Ok(make_cmd(entry.next_task_id()))
     }, run_id.clone()).await;
 
     match result {

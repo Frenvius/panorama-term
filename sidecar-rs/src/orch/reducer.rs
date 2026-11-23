@@ -211,6 +211,11 @@ pub struct State {
 }
 
 pub enum Cmd {
+    PlanApply {
+        run: Box<Cmd>,
+        tasks: Vec<Cmd>,
+        order: Vec<usize>,
+    },
     RunCreate {
         id: String,
         title: String,
@@ -492,6 +497,30 @@ impl Cmd {
 impl State {
     pub fn apply(&self, cmd: &Cmd) -> ApplyResult {
         match cmd {
+            Cmd::PlanApply { run, tasks, order } => {
+                let run_data = match self.apply(run) {
+                    ApplyResult::Ok(_, data) => data,
+                    result => return result,
+                };
+                let mut staged = State::default();
+                if let Err(e) = staged.replay_run_create(&run_data) {
+                    return ApplyResult::Err(OrchError::BadRequest(e));
+                }
+                let mut task_data = vec![Value::Null; tasks.len()];
+                for &index in order {
+                    let data = match staged.apply(&tasks[index]) {
+                        ApplyResult::Ok(_, data) => data,
+                        result => return result,
+                    };
+                    if let Err(e) = staged.replay_task_create(&data) {
+                        return ApplyResult::Err(OrchError::BadRequest(e));
+                    }
+                    task_data[index] = data;
+                }
+                ApplyResult::Ok("plan-apply".into(), serde_json::json!({
+                    "run": run_data, "tasks": task_data,
+                }))
+            }
             Cmd::Extra { cmd, fields } => match self.apply(cmd) {
                 ApplyResult::Ok(kind, data) => ApplyResult::Ok(kind, merge_fields(data, fields)),
                 ApplyResult::Stale(kind, data) => ApplyResult::Stale(kind, merge_fields(data, fields)),
@@ -1213,6 +1242,7 @@ impl State {
 
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
         match kind {
+            "plan-apply" => self.replay_plan_apply(data),
             "task-auto-action-failure" => self.replay_auto_action_failure(data),
             "run-create" => self.replay_run_create(data),
             "run-update" => self.replay_run_update(data),
@@ -1294,6 +1324,17 @@ impl State {
                 entry.auto_action_failures.insert(task_id, failure);
             }
         }
+        Ok(())
+    }
+
+    fn replay_plan_apply(&mut self, data: &Value) -> Result<(), String> {
+        let mut staged = State::default();
+        staged.replay_run_create(&data["run"])?;
+        let tasks = data["tasks"].as_array().ok_or("plan-apply: missing tasks")?;
+        for task in tasks {
+            staged.replay_task_create(task)?;
+        }
+        self.runs.extend(staged.runs);
         Ok(())
     }
 
