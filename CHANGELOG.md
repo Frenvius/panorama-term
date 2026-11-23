@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.13]
+
+### Added
+- Dormant terminals: closing a Project mode tab on an idle shell stops the shell but keeps the tile in the sidebar, dimmed; opening it again starts a fresh shell in the same folder.
+- Closing a tab with an agent or command running keeps it running in the background.
+- Canvas terminals get a Stop terminal button; a stopped terminal shows a Start terminal placeholder.
+
+### Fixed
+- Closed Project mode tabs stay closed when switching tabs or projects instead of all reopening.
+
 ## [0.4.12]
 
 ### Fixed
