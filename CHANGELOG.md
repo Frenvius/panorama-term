@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.9]
+
+### Added
+- Orchestration model routing with fallback to the next model, waiting out quota limits, and run autonomy levels.
+- Workers send reports, the coordinator can resolve merge conflicts, and tasks can be handed over between owners.
+- Board events show as toasts, and worker tiles stay silent.
+- Project panel items can be reordered with drag and drop.
+- A global tab scope setting.
+
+### Fixed
+- Notification toasts hidden by a fullscreen app come back when the fullscreen app closes, instead of being lost.
+- Duplicate rows in the project panel and clashing agent icon ids.
+
 ## [0.4.8]
 
 ### Added
