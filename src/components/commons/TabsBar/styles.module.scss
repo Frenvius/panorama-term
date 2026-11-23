@@ -60,6 +60,15 @@
   text-overflow: ellipsis;
 }
 
+.projectHint {
+  max-width: 80px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .renameInput {
   width: 120px;
   height: 18px;

@@ -39,6 +39,7 @@ export interface SettingsIndexEntry {
 }
 
 export const SETTINGS_INDEX: SettingsIndexEntry[] = [
+  { id: 'canvas.tabScope', section: 'canvas', label: 'Tab scope', keywords: ['tabs', 'project', 'global'] },
   { id: 'canvas.maxZoom', section: 'canvas', label: 'Maximum zoom', keywords: ['zoom', 'scale'] },
   { id: 'canvas.reorderMode', section: 'canvas', label: 'Reorder layout', keywords: ['layout', 'spaced', 'compact'] },
   { id: 'canvas.gap', section: 'canvas', label: 'Gap', keywords: ['padding', 'space', 'tiles', 'frames'] },

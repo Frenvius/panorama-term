@@ -8,15 +8,44 @@ import styles from './styles.module.scss';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { getAlerts, subscribeAlerts } from '~/usecase/util/alerts';
+import { clearTabAlerts } from '~/usecase/util/alerts';
+import { workspaceService } from '~/usecase/service/workspace.service';
+import { getTabScope, subscribeTabScope, visibleTabs, showWorkspacePrefix } from '~/usecase/util/tabScope';
 
 interface TabContextState {
   x: number;
   y: number;
-  tab: TabMeta;
+  tab: TabMeta & { workspaceId: string };
 }
 
 const TabsBar = () => {
-  const { tabs, activeTabId, switchTab, createTab, deleteTab, renameTab, setTabMode } = useWorkspace();
+  const { tabs, activeId, workspaces, activeTabId, switchTab, switchWorkspace, createTab, deleteTab, renameTab, setTabMode } = useWorkspace();
+  const scope = React.useSyncExternalStore(subscribeTabScope, getTabScope);
+  const [otherTabs, setOtherTabs] = React.useState<(TabMeta & { workspaceId: string })[]>([]);
+  const [revision, setRevision] = React.useState(0);
+  React.useEffect(() => {
+    if (scope !== 'global') return;
+    let alive = true;
+    void Promise.all(workspaces.filter((ws) => ws.id !== activeId).map(async (ws) =>
+      (await workspaceService.getTabs(ws.id)).tabs.map((tab) => ({ ...tab, workspaceId: ws.id }))
+    )).then((result) => { if (alive) setOtherTabs(result.flat()); }).catch(console.error);
+    return () => { alive = false; };
+  }, [scope, workspaces, activeId, tabs, revision]);
+  const allTabs = [...tabs.map((tab) => ({ ...tab, workspaceId: activeId ?? '' })), ...otherTabs.filter((tab) => tab.workspaceId !== activeId)];
+  const shownTabs = visibleTabs(allTabs, activeId, scope);
+  const showPrefix = showWorkspacePrefix(shownTabs);
+  const refreshOtherTabs = () => setRevision((value) => value + 1);
+  const changeMode = async (tab: TabMeta & { workspaceId: string }, mode: 'canvas' | 'project') => {
+    if (tab.workspaceId === activeId) return setTabMode(tab.id, mode);
+    await workspaceService.setTabMode(tab.workspaceId, tab.id, mode);
+    refreshOtherTabs();
+  };
+  const closeTab = async (tab: TabMeta & { workspaceId: string }) => {
+    if (tab.workspaceId === activeId) return deleteTab(tab.id);
+    const result = await workspaceService.deleteTab(tab.workspaceId, tab.id);
+    if (result.deleted) clearTabAlerts(tab.id);
+    refreshOtherTabs();
+  };
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
   const [addMenuOpen, setAddMenuOpen] = React.useState(false);
   const [ctxMenu, setCtxMenu] = React.useState<TabContextState | null>(null);
@@ -67,9 +96,12 @@ const TabsBar = () => {
   const commitRename = () => {
     if (!renamingId) return;
     const next = draft.trim();
-    const current = tabs.find((tab) => tab.id === renamingId);
+    const current = shownTabs.find((tab) => tab.id === renamingId);
     setRenamingId(null);
-    if (next && next !== current?.name) void renameTab(renamingId, next);
+    if (next && current && next !== current.name) {
+      if (current.workspaceId === activeId) void renameTab(renamingId, next);
+      else void workspaceService.renameTab(current.workspaceId, renamingId, next).then(refreshOtherTabs);
+    }
   };
 
   const onRenameKey = (e: React.KeyboardEvent) => {
@@ -91,7 +123,7 @@ const TabsBar = () => {
       {
         label: isProject ? 'Switch to Canvas' : 'Switch to Project panels',
         icon: isProject ? <LayoutGrid size={14} /> : <Columns3 size={14} />,
-        onSelect: () => void setTabMode(tab.id, nextMode)
+        onSelect: () => void changeMode(tab, nextMode)
       },
       {
         label: 'Rename tab',
@@ -109,25 +141,26 @@ const TabsBar = () => {
         onSelect: () => void createTab('project')
       }
     ];
-    if (tabs.length > 1) {
+    if (shownTabs.filter((item) => item.workspaceId === tab.workspaceId).length > 1) {
       items.push('separator', {
         label: 'Close tab',
         danger: true,
-        onSelect: () => void deleteTab(tab.id)
+        onSelect: () => void closeTab(tab)
       });
     }
     return items;
-  }, [ctxMenu, tabs.length, setTabMode, createTab, deleteTab]);
+  }, [ctxMenu, shownTabs, activeId, setTabMode, createTab, deleteTab]);
 
   return (
     <div data-no-drag className={styles.bar}>
-      {tabs.map((tab) => {
+      {shownTabs.map((tab) => {
         const mode = tab.mode ?? 'canvas';
-        const select = () => void switchTab(tab.id);
+        const workspace = workspaces.find((ws) => ws.id === tab.workspaceId);
+        const select = () => void (tab.workspaceId === activeId ? switchTab(tab.id) : switchWorkspace(tab.workspaceId, tab.id));
         const rename = () => startRename(tab);
         const close = (e: React.MouseEvent) => {
           e.stopPropagation();
-          void deleteTab(tab.id);
+          void closeTab(tab);
         };
         const openContext = (e: React.MouseEvent) => {
           e.preventDefault();
@@ -146,6 +179,7 @@ const TabsBar = () => {
             data-active={tab.id === activeTabId}
           >
             {alerted.has(tab.id) && tab.id !== activeTabId && <span className={styles.dot} />}
+            {showPrefix && workspace && <span className={styles.projectHint} title={workspace.name}>{workspace.name}</span>}
             <span className={styles.modeIcon}>
               {mode === 'project' ? <Columns3 size={12} /> : <LayoutGrid size={12} />}
             </span>
@@ -169,7 +203,7 @@ const TabsBar = () => {
               className={styles.close}
               onClick={close}
               aria-label="Close tab"
-              data-hidden={tabs.length <= 1}
+              data-hidden={shownTabs.filter((item) => item.workspaceId === tab.workspaceId).length <= 1}
             >
               <X size={13} strokeWidth={2} />
             </button>

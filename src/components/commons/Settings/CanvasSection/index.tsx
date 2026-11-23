@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { getSetting, setSetting } from '~/adapter/settings/settings.client';
+import { getTabScope, setTabScope, subscribeTabScope } from '~/usecase/util/tabScope';
 import { isReorderMode, type ReorderMode } from '~/usecase/util/reorderLayout';
 import { getMinimapCorner, getMinimapPinned, setMinimapCorner, setMinimapPinned, type MinimapCorner } from '~/usecase/util/minimap';
 import { getCanvasSidebarMode, setCanvasSidebarMode, CANVAS_SIDEBAR_MODE_EVENT, type CanvasSidebarMode } from '~/usecase/util/canvasSidebars';
@@ -33,6 +34,7 @@ const SIDEBAR_DESC: Record<CanvasSidebarMode, string> = {
 };
 
 const CanvasSection = () => {
+  const tabScope = React.useSyncExternalStore(subscribeTabScope, getTabScope);
   const [maxZoom, setMaxZoom] = React.useState(() => getSetting(MAX_ZOOM_KEY, 1));
   const [framePad, setFramePad] = React.useState(() => getSetting(FRAME_PAD_KEY, FRAME_PAD_DEFAULT));
   const [reorderMode, setReorderMode] = React.useState<ReorderMode>(() => {
@@ -84,6 +86,11 @@ const CanvasSection = () => {
 
   return (
     <>
+      <Group label="Tabs">
+        <Row settingId="canvas.tabScope" label="Tab scope" description="Show tabs for the current project or all projects.">
+          <Segmented options={[{ value: 'project', label: 'Per project' }, { value: 'global', label: 'Global' }]} value={tabScope} onChange={(value) => setTabScope(value === 'global' ? 'global' : 'project')} label="Tab scope" />
+        </Row>
+      </Group>
       <Group label="Zoom">
         <Row
           settingId="canvas.maxZoom"

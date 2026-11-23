@@ -1,4 +1,5 @@
 import { setSetting } from '~/adapter/settings/settings.client';
+import { setTabScope } from '~/usecase/util/tabScope';
 import { KEYBINDINGS, resetBinding } from '~/usecase/util/keybindings';
 import { DEFAULT_FONT, setFontChoice } from '~/usecase/util/fonts';
 import { setNotifToasts, setNotifPlacement, setNotifHideOverFullscreen } from '~/usecase/util/notifPlacement';
@@ -13,6 +14,7 @@ import { setUsageProviders } from '~/usecase/hooks/useUsageProviders';
 import { MAX_ZOOM_KEY, FRAME_PAD_KEY, FRAME_PAD_DEFAULT, REORDER_MODE_KEY, USAGE_PROVIDERS, IDLE_COMPACTION_KEY } from '~/usecase/util/constants';
 
 export const resetCanvas = (): void => {
+  setTabScope('project');
   void setSetting(MAX_ZOOM_KEY, 1);
   void setSetting(REORDER_MODE_KEY, 'default');
   void setSetting(FRAME_PAD_KEY, FRAME_PAD_DEFAULT);
@@ -61,7 +63,7 @@ export const resetShortcuts = (): void => {
 };
 
 export const RESET_DESCRIPTIONS: Partial<Record<string, string>> = {
-  canvas: 'Maximum zoom, layout mode, gap, minimap visibility and corner, sidebar placement.',
+  canvas: 'Tab scope, maximum zoom, layout mode, gap, minimap visibility and corner, sidebar placement.',
   appearance: 'Theme mode, dark and light theme, interface and code fonts, tile header parts.',
   terminal: 'Default shell and terminal font.',
   notifications: 'Toasts on, hidden over fullscreen apps, toast corner and display monitor.',

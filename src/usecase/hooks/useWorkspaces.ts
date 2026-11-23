@@ -95,10 +95,11 @@ export const useWorkspaces = () => {
   }, []);
 
   const switchWorkspace = React.useCallback(
-    async (id: string) => {
+    async (id: string, tabId?: string) => {
       await workspaceService.setActive(id);
+      if (tabId) await workspaceService.setActiveTab(id, tabId);
+      await loadTabs(id, tabId);
       setActiveId(id);
-      await loadTabs(id);
     },
     [loadTabs]
   );
