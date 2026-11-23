@@ -11,6 +11,7 @@ import { listen } from '@tauri-apps/api/event';
 import { clearAlert } from '~/usecase/util/alerts';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { getPref, setPref } from '~/usecase/util/prefs';
+import { getTabScope, subscribeTabScope } from '~/usecase/util/tabScope';
 import { touchTile } from '~/usecase/util/tileRecency';
 import { placeTileInFrame } from '~/usecase/util/frameLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
@@ -22,6 +23,7 @@ import { unlinkNote, deleteNote, unlinkTerm } from '~/adapter/notes/notes.client
 import { withFrameCreated, withFramePatched } from '~/usecase/util/frame';
 import { CELL, TILE_WIDTH, NOTE_WIDTH, NOTE_HEIGHT, TILE_HEIGHT } from '~/usecase/util/constants';
 import {
+  GLOBAL_PANEL,
   closePanelGroup,
   DEFAULT_PROJECT,
   splitPanelGroup,
@@ -40,6 +42,8 @@ const createId = (): string => Math.random().toString(36).slice(2, 10);
 
 const syncWithFrames = (view: ProjectViewState | undefined, tiles: Tile[], frames: Frame[]): ProjectViewState =>
   syncProjectViewWithTiles(view, tiles, groupPathResolver(buildProjectGroups({ frames, tiles, projects: view?.projects ?? [] })));
+
+const panelKey = (project: string): string => (getTabScope() === 'global' ? GLOBAL_PANEL : project);
 
 const ownedBy = (tiles: Tile[], frames: Frame[], projects: string[], project: string): Tile[] => {
   const ownerOf = tileOwnerResolver({ frames, tiles, projects });
@@ -293,8 +297,11 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     return tile?.ptySessionId ?? id;
   }, []);
 
+  const tabScope = React.useSyncExternalStore(subscribeTabScope, getTabScope);
   const activeProject = projectView.activeProject;
-  const panelState: ProjectPanelState | null = activeProject ? (projectView.byProject[activeProject] ?? null) : null;
+  const panelState: ProjectPanelState | null = activeProject
+    ? (projectView.byProject[tabScope === 'global' ? GLOBAL_PANEL : activeProject] ?? null)
+    : null;
 
   const activeTileId = React.useMemo(() => {
     if (panelState) {
@@ -310,6 +317,9 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     }
     return tiles[tiles.length - 1]?.id ?? null;
   }, [panelState, fallbackActiveTileId, tiles]);
+
+  const activeTileRef = React.useRef(activeTileId);
+  activeTileRef.current = activeTileId;
 
   React.useEffect(() => {
     if (!activeTileId) return;
@@ -327,14 +337,14 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const canonical = existing ?? norm;
         const nextProjects = existing ? prev.projects : [...prev.projects, canonical];
         const matchingIds = ownedBy(tilesRef.current, framesRef.current, nextProjects, canonical).map((t) => t.id);
-        const panel = prev.byProject[canonical] ?? emptyProjectPanelState(matchingIds);
+        const panel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState(matchingIds);
         const next: ProjectViewState = {
           ...prev,
           projects: nextProjects,
           activeProject: canonical,
           byProject: {
             ...prev.byProject,
-            [canonical]: panel
+            [panelKey(canonical)]: panel
           }
         };
         projectViewRef.current = next;
@@ -385,7 +395,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const proj = prevExisting ?? norm;
         const projects = prevExisting ? prev.projects : [...prev.projects, proj];
         const baseIds = spawnedTileId ? [spawnedTileId] : existingMatching.map((t) => t.id);
-        const basePanel = prev.byProject[proj] ?? emptyProjectPanelState(baseIds);
+        const basePanel = prev.byProject[panelKey(proj)] ?? emptyProjectPanelState(baseIds);
         const nextPanel = spawnedTileId ? activateTileInProject(basePanel, { tileId: spawnedTileId }) : basePanel;
         const next: ProjectViewState = {
           ...prev,
@@ -393,7 +403,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
           activeProject: proj,
           byProject: {
             ...prev.byProject,
-            [proj]: nextPanel
+            [panelKey(proj)]: nextPanel
           }
         };
         projectViewRef.current = next;
@@ -463,13 +473,13 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const panel = prev.byProject[proj];
+      const panel = prev.byProject[panelKey(proj)];
       if (!panel || !panel.groups[groupId] || panel.activeGroupId === groupId) return prev;
       const next: ProjectViewState = {
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: {
+          [panelKey(proj)]: {
             ...panel,
             activeGroupId: groupId
           }
@@ -483,6 +493,18 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   const activateTile = React.useCallback((tileId: string, groupId?: string) => {
     setFallbackActiveTileId(tileId);
     setProjectView((prev) => {
+      if (getTabScope() === 'global') {
+        const tile = tilesRef.current.find((t) => t.id === tileId);
+        const owner = tile ? tileOwnerResolver({ frames: framesRef.current, tiles: tilesRef.current, projects: prev.projects })(tile) : null;
+        const basePanel = prev.byProject[GLOBAL_PANEL] ?? emptyProjectPanelState([tileId], groupId);
+        const next: ProjectViewState = {
+          ...prev,
+          activeProject: owner ?? prev.activeProject,
+          byProject: { ...prev.byProject, [GLOBAL_PANEL]: activateTileInProject(basePanel, { tileId, groupId }) }
+        };
+        projectViewRef.current = next;
+        return next;
+      }
       const activeProj = prev.activeProject;
       const activePanel = activeProj ? prev.byProject[activeProj] : undefined;
       const inActiveProj =
@@ -506,14 +528,14 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       targetProj = targetProj ?? activeProj;
       if (!targetProj) return prev;
 
-      const basePanel = prev.byProject[targetProj] ?? emptyProjectPanelState([tileId], groupId);
+      const basePanel = prev.byProject[panelKey(targetProj)] ?? emptyProjectPanelState([tileId], groupId);
       const nextPanel = activateTileInProject(basePanel, { tileId, groupId });
       const next: ProjectViewState = {
         ...prev,
         activeProject: targetProj,
         byProject: {
           ...prev.byProject,
-          [targetProj]: nextPanel
+          [panelKey(targetProj)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -521,11 +543,24 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     });
   }, []);
 
+  const syncedScope = React.useRef(tabScope);
+  React.useEffect(() => {
+    if (syncedScope.current === tabScope) return;
+    syncedScope.current = tabScope;
+    const keepActive = activeTileRef.current;
+    setProjectView((prev) => {
+      const next = syncWithFrames(prev, tilesRef.current, framesRef.current);
+      projectViewRef.current = next;
+      return next;
+    });
+    if (keepActive) activateTile(keepActive);
+  }, [tabScope, activateTile]);
+
   const splitGroup = React.useCallback((direction: SplitDirection, groupId?: string, spawnTerm?: boolean) => {
     const currentPv = projectViewRef.current;
     const activeProj = currentPv.activeProject;
     if (!activeProj) return;
-    const panel = currentPv.byProject[activeProj] ?? emptyProjectPanelState();
+    const panel = currentPv.byProject[panelKey(activeProj)] ?? emptyProjectPanelState();
     const targetGroupId = groupId ?? panel.activeGroupId;
     const targetGroup = panel.groups[targetGroupId];
     if (!targetGroup) return;
@@ -559,7 +594,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const currentPanel = prev.byProject[proj] ?? emptyProjectPanelState();
+      const currentPanel = prev.byProject[panelKey(proj)] ?? emptyProjectPanelState();
       const nextPanel = splitPanelGroup(currentPanel, {
         direction,
         groupId: targetGroupId,
@@ -569,7 +604,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: nextPanel
+          [panelKey(proj)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -581,14 +616,14 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const panel = prev.byProject[proj];
+      const panel = prev.byProject[panelKey(proj)];
       if (!panel) return prev;
       const nextPanel = moveTileBetweenGroups(panel, opts);
       const next: ProjectViewState = {
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: nextPanel
+          [panelKey(proj)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -600,7 +635,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const panel = prev.byProject[proj];
+      const panel = prev.byProject[panelKey(proj)];
       if (!panel) return prev;
       const nextLayout = updateSplitRatio(panel.layout, path, ratio);
       if (nextLayout === panel.layout) return prev;
@@ -608,7 +643,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: {
+          [panelKey(proj)]: {
             ...panel,
             layout: nextLayout
           }
@@ -623,7 +658,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const panel = prev.byProject[proj];
+      const panel = prev.byProject[panelKey(proj)];
       if (!panel) return prev;
       const targetId = groupId ?? panel.activeGroupId;
       if (!panel.groups[targetId]) return prev;
@@ -632,7 +667,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: {
+          [panelKey(proj)]: {
             ...panel,
             activeGroupId: targetId,
             maximizedGroupId: nextMaximized
@@ -648,14 +683,14 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     setProjectView((prev) => {
       const proj = prev.activeProject;
       if (!proj) return prev;
-      const panel = prev.byProject[proj];
+      const panel = prev.byProject[panelKey(proj)];
       if (!panel) return prev;
       const nextPanel = closePanelGroup(panel, groupId);
       const next: ProjectViewState = {
         ...prev,
         byProject: {
           ...prev.byProject,
-          [proj]: nextPanel
+          [panelKey(proj)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -691,7 +726,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const existing = prev.projects.find((p) => p.toLowerCase() === targetProject.toLowerCase());
       const canonical = existing ?? targetProject;
       const projects = existing ? prev.projects : [...prev.projects, canonical];
-      const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([id], groupId);
+      const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([id], groupId);
       const nextPanel = activateTileInProject(basePanel, { tileId: id, groupId });
       const next: ProjectViewState = {
         ...prev,
@@ -699,7 +734,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         activeProject: canonical,
         byProject: {
           ...prev.byProject,
-          [canonical]: nextPanel
+          [panelKey(canonical)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -738,7 +773,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const existing = prev.projects.find((p) => p.toLowerCase() === targetProject.toLowerCase());
       const canonical = existing ?? targetProject;
       const projects = existing ? prev.projects : [...prev.projects, canonical];
-      const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([id], groupId);
+      const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([id], groupId);
       const nextPanel = activateTileInProject(basePanel, { tileId: id, groupId });
       const next: ProjectViewState = {
         ...prev,
@@ -746,7 +781,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         activeProject: canonical,
         byProject: {
           ...prev.byProject,
-          [canonical]: nextPanel
+          [panelKey(canonical)]: nextPanel
         }
       };
       projectViewRef.current = next;
@@ -778,7 +813,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const existing2 = prev.projects.find((p) => p.toLowerCase() === proj.toLowerCase());
       const canonical = existing2 ?? proj;
       const projects = existing2 ? prev.projects : [...prev.projects, canonical];
-      const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([id]);
+      const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([id]);
       const nextPanel = activateTileInProject(basePanel, { tileId: id });
       const next: ProjectViewState = {
         ...prev,
@@ -809,7 +844,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
           setProjectView((prev) => {
             const canonical =
               prev.projects.find((p) => p.toLowerCase() === normRoot.toLowerCase()) ?? prev.activeProject ?? normRoot;
-            const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([existingTile.id]);
+            const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([existingTile.id]);
             const nextPanel = splitPanelGroup(basePanel, {
               direction: 'horizontal',
               tileId: existingTile.id
@@ -819,7 +854,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
               activeProject: canonical,
               byProject: {
                 ...prev.byProject,
-                [canonical]: nextPanel
+                [panelKey(canonical)]: nextPanel
               }
             };
             projectViewRef.current = next;
@@ -858,7 +893,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
           const existingProj = prev.projects.find((p) => p.toLowerCase() === normRoot.toLowerCase());
           const canonical = existingProj ?? normRoot;
           const projects = existingProj ? prev.projects : [...prev.projects, canonical];
-          const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState();
+          const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState();
           const activeGroup = basePanel.groups[basePanel.activeGroupId];
           const nextPanel =
             sideSplit && activeGroup && activeGroup.tileIds.length > 0
@@ -870,7 +905,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
             activeProject: canonical,
             byProject: {
               ...prev.byProject,
-              [canonical]: nextPanel
+              [panelKey(canonical)]: nextPanel
             }
           };
           projectViewRef.current = next;
@@ -939,7 +974,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
           const existingProj = prev.projects.find((p) => p.toLowerCase() === targetProj.toLowerCase());
           const canonical = existingProj ?? targetProj;
           const projects = existingProj ? prev.projects : [...prev.projects, canonical];
-          const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState();
+          const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState();
           const srcGroup = Object.values(basePanel.groups).find((g) => g.tileIds.includes(srcId));
           const nextPanel =
             srcGroup && srcGroup.tileIds.length > 0
@@ -955,7 +990,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
             activeProject: canonical,
             byProject: {
               ...prev.byProject,
-              [canonical]: nextPanel
+              [panelKey(canonical)]: nextPanel
             }
           };
           projectViewRef.current = next;
@@ -1047,7 +1082,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       const existing = prev.projects.find((p) => p.toLowerCase() === proj.toLowerCase());
       const canonical = existing ?? proj;
       const projects = existing ? prev.projects : [...prev.projects, canonical];
-      const basePanel = prev.byProject[canonical] ?? emptyProjectPanelState([restored.id]);
+      const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([restored.id]);
       const nextPanel = activateTileInProject(basePanel, { tileId: restored.id });
       const next: ProjectViewState = {
         ...prev,
@@ -1055,7 +1090,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         activeProject: canonical,
         byProject: {
           ...prev.byProject,
-          [canonical]: nextPanel
+          [panelKey(canonical)]: nextPanel
         }
       };
       projectViewRef.current = next;

@@ -14,6 +14,7 @@ const MAX_SPLIT_RATIO = 0.9;
 const newGroupId = (): string => `grp-${Math.random().toString(36).slice(2, 10)}`;
 
 export const DEFAULT_PROJECT = '~';
+export const GLOBAL_PANEL = '*';
 
 export const normalizeProjectPath = (raw: string): string => {
   const trimmed = raw.trim().replace(/\\/g, '/');
@@ -478,6 +479,7 @@ export const syncProjectViewWithTiles = (
       : tiles.filter((t) => tileMatchesProject(t, proj, knownProjects));
     byProject[proj] = syncPanelStateForProject(existingEntry, matchingTiles);
   }
+  if (tiles.length > 0) byProject[GLOBAL_PANEL] = syncPanelStateForProject(view?.byProject[GLOBAL_PANEL], tiles);
 
   return {
     leftOpen: view?.leftOpen,
