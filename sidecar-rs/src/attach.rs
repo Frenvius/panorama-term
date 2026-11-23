@@ -43,7 +43,29 @@ pub fn save(data: &str, mime: &str) -> Result<Value, String> {
     let name = format!("phone_{stamp}_{}.{ext}", SEQ.fetch_add(1, Ordering::Relaxed));
     let path = dir.join(name);
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    remove_stale(&dir, &path);
     Ok(json!({ "path": path.to_string_lossy() }))
+}
+
+fn remove_stale(dir: &Path, keep: &Path) {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(24 * 60 * 60)) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_file() && meta.modified().is_ok_and(|m| m < cutoff) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn is_attachment(path: &str) -> bool {
