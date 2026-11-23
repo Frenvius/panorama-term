@@ -1,0 +1,47 @@
+.dormant {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.icon {
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+
+.label {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.cwd {
+  max-width: 240px;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start {
+  margin-top: 8px;
+  padding: 4px 16px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--border-3);
+    background: var(--hover-2);
+  }
+}

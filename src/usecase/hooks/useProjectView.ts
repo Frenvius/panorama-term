@@ -336,7 +336,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const existing = prev.projects.find((p) => p.toLowerCase() === norm.toLowerCase());
         const canonical = existing ?? norm;
         const nextProjects = existing ? prev.projects : [...prev.projects, canonical];
-        const matchingIds = ownedBy(tilesRef.current, framesRef.current, nextProjects, canonical).map((t) => t.id);
+        const matchingIds = ownedBy(tilesRef.current, framesRef.current, nextProjects, canonical).filter((t) => !t.tabClosed).map((t) => t.id);
         const panel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState(matchingIds);
         const next: ProjectViewState = {
           ...prev,
@@ -394,7 +394,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
         const prevExisting = prev.projects.find((p) => p.toLowerCase() === norm.toLowerCase());
         const proj = prevExisting ?? norm;
         const projects = prevExisting ? prev.projects : [...prev.projects, proj];
-        const baseIds = spawnedTileId ? [spawnedTileId] : existingMatching.map((t) => t.id);
+        const baseIds = spawnedTileId ? [spawnedTileId] : existingMatching.filter((t) => !t.tabClosed).map((t) => t.id);
         const basePanel = prev.byProject[panelKey(proj)] ?? emptyProjectPanelState(baseIds);
         const nextPanel = spawnedTileId ? activateTileInProject(basePanel, { tileId: spawnedTileId }) : basePanel;
         const next: ProjectViewState = {
@@ -492,6 +492,13 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
   const activateTile = React.useCallback((tileId: string, groupId?: string) => {
     setFallbackActiveTileId(tileId);
+    setTiles((prev) => {
+      const tile = prev.find((t) => t.id === tileId);
+      if (!tile || (!tile.dormant && !tile.tabClosed)) return prev;
+      const next = prev.map((t) => (t.id === tileId ? { ...t, dormant: undefined, tabClosed: undefined } : t));
+      tilesRef.current = next;
+      return next;
+    });
     setProjectView((prev) => {
       if (getTabScope() === 'global') {
         const tile = tilesRef.current.find((t) => t.id === tileId);
@@ -1003,6 +1010,11 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
   const detachTile = React.useCallback((id: string) => {
     setFallbackActiveTileId((a) => (a === id ? null : a));
+    setTiles((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, tabClosed: true } : t));
+      tilesRef.current = next;
+      return next;
+    });
     setProjectView((prev) => {
       const nextByProject: Record<string, ProjectPanelState> = {};
       for (const [proj, panel] of Object.entries(prev.byProject)) {
@@ -1015,6 +1027,25 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       projectViewRef.current = next;
       return next;
     });
+  }, []);
+
+  const sleepTile = React.useCallback((id: string) => {
+    setFallbackActiveTileId((a) => (a === id ? null : a));
+    setTiles((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, dormant: true, tabClosed: true } : t));
+      tilesRef.current = next;
+      return next;
+    });
+    setProjectView((prev) => {
+      const nextByProject: Record<string, ProjectPanelState> = {};
+      for (const [proj, panel] of Object.entries(prev.byProject)) {
+        nextByProject[proj] = removeTileFromPanelState(panel, id);
+      }
+      const next: ProjectViewState = { ...prev, byProject: nextByProject };
+      projectViewRef.current = next;
+      return next;
+    });
+    void killPtySession(id);
   }, []);
 
   const closeTile = React.useCallback(
@@ -1061,6 +1092,8 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     const restored: Tile = {
       ...tile,
       zIndex,
+      dormant: undefined,
+      tabClosed: undefined,
       ptySessionId: undefined,
       ...(activeProj && !tile.workspacePath ? { workspacePath: activeProj } : {})
     };
@@ -1299,6 +1332,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     openFile,
     openDiff,
     openRunOutput,
+    sleepTile,
     closeTile,
     detachTile,
     reopenTile,

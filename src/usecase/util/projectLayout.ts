@@ -387,8 +387,9 @@ export const updateSplitRatio = (node: PanelLayoutNode, path: ('first' | 'second
 };
 
 const syncPanelStateForProject = (existing: ProjectPanelState | undefined, projectTiles: Tile[]): ProjectPanelState => {
+  const openTiles = projectTiles.filter((t) => !t.tabClosed);
   const validTileIds = new Set(projectTiles.map((t) => t.id));
-  let state = existing ?? emptyProjectPanelState(projectTiles.map((t) => t.id));
+  let state = existing ?? emptyProjectPanelState(openTiles.map((t) => t.id));
 
   if (existing) {
     const currentTilesInState = Object.values(state.groups).flatMap((g) => g.tileIds);
@@ -398,7 +399,7 @@ const syncPanelStateForProject = (existing: ProjectPanelState | undefined, proje
       }
     }
     const afterRemovalSet = new Set(Object.values(state.groups).flatMap((g) => g.tileIds));
-    for (const tile of projectTiles) {
+    for (const tile of openTiles) {
       if (!afterRemovalSet.has(tile.id)) {
         const targetGroupId = state.groups[state.activeGroupId] ? state.activeGroupId : collectGroupIds(state.layout)[0]!;
         const grp = state.groups[targetGroupId]!;

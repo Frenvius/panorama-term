@@ -1,6 +1,6 @@
 import { isRemote } from '~/adapter/transport';
 import React from 'react';
-import { X, Pin, Play, Code2, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, SquareKanban, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
+import { X, Pin, Play, Code2, Power, History, Minus, Square, Link2, PinOff, Copy, Focus, Pencil, Hammer, Trash2, ArrowUp, Loader2, Maximize, Minimize, RotateCw, CopyPlus, ArrowDown, Link2Off, GitBranch, ShieldCheck, SquareTerminal, SquareKanban, ChevronDown, FolderOpen, ClipboardCopy, ClipboardPaste, ArrowLeftRight } from 'lucide-react';
 
 import type { Tile, View } from '~/domain/interfaces/canvas.interface';
 import type { RunPhase } from '~/domain/interfaces/run.interface';
@@ -32,6 +32,8 @@ import { reportAgent } from '~/usecase/util/tileActivity';
 import { useTileRestart } from '~/usecase/util/tileRestart';
 import type { TerminalRestart } from '~/domain/interfaces/pty.interface';
 import GridTerminal from '~/components/Terminal/GridTerminal';
+import DormantTerminal from '~/components/Terminal/DormantTerminal';
+import { canSleep } from '~/usecase/util/dormant';
 import { useRun } from '~/usecase/hooks/useRun';
 import { stopRun } from '~/adapter/run/run.client';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
@@ -78,7 +80,7 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
   const unlink = tile.type === 'term' ? actions.unlinkTerm : actions.unlinkNote;
   const {
     onSnap, onClose, onReveal, onLink, onCwd, onMove, onRename, onResize, onActivate,
-    onCopyNote, onCopyPath, onPasteNote, onNoteTitle, onOscTitle, onDuplicate, onFocusTile,
+    onSleep, onWake, onCopyNote, onCopyPath, onPasteNote, onNoteTitle, onOscTitle, onDuplicate, onFocusTile,
     onTogglePin, onToggleRaw, onMoveToTab, onPatchOrchTile, onNoteChange, onNoteEditor,
     onAgentState, onLinkDragStart, onOpenRunOutput, onToggleSelect, onToggleFullscreen,
     onCopyNoteSelection
@@ -171,6 +173,8 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
     setRestart((r) => ({ key: r.key + 1 }));
   };
   const closeTile = () => onClose(tile.id);
+  const sleepThisTile = () => onSleep(tile.id);
+  const wakeThisTile = () => onWake(tile.id);
   const focusTile = () => onFocusTile(tile.id, true);
   const toggleFullscreen = () => onToggleFullscreen(tile.id);
   const oscTitle = tile.oscTitle ? stripStarPrefix(tile.oscTitle).trim() : '';
@@ -913,7 +917,12 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
                 {fullscreen ? <Minimize size={13} strokeWidth={2} /> : <Maximize size={13} strokeWidth={2} />}
               </button>
             )}
-            {!note && !code && !editor && !runView && parts.restart && (
+            {!note && !code && !editor && !runView && canSleep(tile) && !tile.dormant && (
+              <button className={styles.action} onClick={sleepThisTile} aria-label="Stop terminal" data-tooltip="Stop terminal">
+                <Power size={13} strokeWidth={2} />
+              </button>
+            )}
+            {!note && !code && !editor && !runView && parts.restart && !tile.dormant && (
               <button
                 className={styles.action}
                 onClick={restartTile}
@@ -953,7 +962,8 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
             )}
             {code && tile.cwd && tile.filePath && <DiffViewer root={tile.cwd} file={tile.filePath} mode={EMBED} />}
             {editor && tile.filePath && <EditorTile tile={tile} active={active} onActivate={onActivate} />}
-            {term && (
+            {term && tile.dormant && <DormantTerminal cwd={tile.cwd} onStart={wakeThisTile} />}
+            {term && !tile.dormant && (
               <GridTerminal
                 sessionId={tile.ptySessionId}
                 readOnly={runView}

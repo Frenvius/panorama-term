@@ -5624,6 +5624,30 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
+    if path_only == "/busy" {
+        let q = parse_query(query);
+        let tid = q.get("tileId").cloned().unwrap_or_default();
+        let s = sessions().lock().unwrap().get(&tid).cloned();
+        let body = match s {
+            None => "0".to_string(),
+            Some(s) => {
+                let pid = s.pid;
+                let busy = tokio::task::spawn_blocking(move || foreground_command(pid).is_some())
+                    .await
+                    .unwrap_or(false);
+                if busy { "1" } else { "0" }.to_string()
+            }
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            mobile::cors_origin(origin),
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
     if path_only == "/run/start" {
         let q = parse_query(query);
         let cwd = q.get("cwd").cloned().unwrap_or_default();

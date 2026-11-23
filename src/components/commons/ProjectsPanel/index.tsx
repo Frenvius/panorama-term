@@ -105,8 +105,9 @@ const TileRow = ({
 
   const tileAlert = signals.alerts.has(tile.id);
   const tileAgent = signals.agents.get(tile.id);
+  const isDormant = Boolean(signals.dormant?.has(tile.id));
   const isDetached = Boolean(signals.detached?.has(tile.id));
-  const dotKind: 'alert' | 'busy' | 'idle' | 'detached' | null = tileAlert
+  const dotKind: 'alert' | 'busy' | 'idle' | 'detached' | null = isDormant ? null : tileAlert
     ? 'alert'
     : tileAgent === 'busy'
       ? 'busy'
@@ -158,6 +159,7 @@ const TileRow = ({
       onContextMenu={handleContextMenu}
       data-active={isActive || undefined}
       data-outside={isOutside || undefined}
+      data-dormant={isDormant || undefined}
     >
       <div className={styles.tileMain}>
         <span className={styles.tileIcon}>{renderTileIcon(tile)}</span>

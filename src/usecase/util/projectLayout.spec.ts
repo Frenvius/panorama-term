@@ -245,4 +245,16 @@ describe('binary split panel tree operations', () => {
     expect(alphaIds).toEqual(['t1', 't3']);
     expect(alphaIds).not.toContain('t2');
   });
+
+  test('syncProjectViewWithTiles does not re-add tabClosed tiles to panels', () => {
+    const tiles = [
+      makeTile('t1', { workspacePath: '/projects/alpha', cwd: '/projects/alpha' }),
+      makeTile('t2', { workspacePath: '/projects/alpha', cwd: '/projects/alpha', tabClosed: true })
+    ];
+    const view = { projects: ['/projects/alpha'], activeProject: '/projects/alpha', byProject: {} };
+    const result = syncProjectViewWithTiles(view, tiles);
+    const alphaIds = Object.values(result.byProject['/projects/alpha']!.groups).flatMap((g) => g.tileIds);
+    expect(alphaIds).toContain('t1');
+    expect(alphaIds).not.toContain('t2');
+  });
 });

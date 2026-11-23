@@ -8,6 +8,7 @@ import type { TidyState } from '~/usecase/hooks/useTidyAI';
 export interface ProjectsPanelSignals {
   alerts: Map<string, NotifyKind>;
   agents: Map<string, 'idle' | 'busy'>;
+  dormant?: Set<string>;
   detached?: Set<string>;
 }
 

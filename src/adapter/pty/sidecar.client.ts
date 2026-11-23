@@ -38,6 +38,16 @@ export const initSidecar = async (
 export const killPtySession = (tileId: string): Promise<unknown> =>
   fetch(`${SIDECAR_HTTP}/kill?tileId=${encodeURIComponent(tileId)}`).catch(() => undefined);
 
+export const isTerminalBusy = async (tileId: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${SIDECAR_HTTP}/busy?tileId=${encodeURIComponent(tileId)}`);
+    if (!res.ok) return true;
+    return (await res.text()) === '1';
+  } catch {
+    return true;
+  }
+};
+
 export const submitPtyMessage = async (tileId: string, text: string): Promise<boolean> => {
   try {
     const response = await fetch(`${SIDECAR_HTTP}/agent/send?tileId=${encodeURIComponent(tileId)}`, {

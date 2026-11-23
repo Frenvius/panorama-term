@@ -56,6 +56,8 @@ export interface TileActions {
   onNoteChange: (id: string, content: string) => void;
   unlinkTerm: (noteId: string, termId: string) => void;
   unlinkNote: (noteId: string, termId: string) => void;
+  onSleep: (id: string) => void;
+  onWake: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
   onFocusTile: (id: string, zoomToMax?: boolean) => void;
   onMoveToTab: (id: string, targetTabId: string) => void;

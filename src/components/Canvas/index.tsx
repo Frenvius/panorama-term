@@ -141,6 +141,8 @@ const Canvas = () => {
     linkTermTo,
     unlinkTermFrom,
     dragFrame,
+    sleepTile,
+    wakeTile,
     closeTile,
     reopenTile,
     snapFrame,
@@ -1209,6 +1211,8 @@ const Canvas = () => {
     () => ({
       onSnap: snapTile,
       onClose: requestCloseTile,
+      onSleep: sleepTile,
+      onWake: wakeTile,
       onReveal: revealTilePath,
       onLink: linkNoteTo,
       onCwd: setTileCwd,
@@ -1239,7 +1243,7 @@ const Canvas = () => {
       unlinkNote: unlinkNoteFrom
     }),
     [
-      snapTile, requestCloseTile, revealTilePath, linkNoteTo, setTileCwd, moveTile,
+      snapTile, requestCloseTile, sleepTile, wakeTile, revealTilePath, linkNoteTo, setTileCwd, moveTile,
       setTileTitle, resizeTile, activateAndClear, copyNote, copyTilePath, pasteNote,
       setNoteTitle, setTileOscTitle, duplicateTile, focusTile, togglePin, toggleNoteRaw,
       moveTileToTabWrapper, patchOrchTile, setNoteContent, registerEditor, setAgentState,

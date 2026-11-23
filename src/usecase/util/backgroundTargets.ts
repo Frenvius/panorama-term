@@ -12,7 +12,7 @@ export interface WatchTarget {
 
 export const backgroundTargets = (workspaces: { id: string; tabs: TabState[] }[], isLive: (id: string) => boolean): WatchTarget[] =>
   workspaces.flatMap(({ id, tabs }) => tabs.flatMap((tab) => tab.state.tiles
-    .filter((tile) => tile.type === 'term' && !tile.runCwd && !muteWorkerNotifications(tile) && !isLive(tile.id))
+    .filter((tile) => tile.type === 'term' && !tile.runCwd && !tile.dormant && !muteWorkerNotifications(tile) && !isLive(tile.id))
     .map((tile) => ({
       tileId: tile.id,
       wsId: id,

@@ -650,6 +650,15 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     if (!isWorker) void killPtySession(id);
   }, [bindKey]);
 
+  const sleepTile = React.useCallback((id: string) => {
+    setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, dormant: true } : t)));
+    void killPtySession(id);
+  }, []);
+
+  const wakeTile = React.useCallback((id: string) => {
+    setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, dormant: undefined } : t)));
+  }, []);
+
   const reopenTile = React.useCallback(() => {
     const ws = wsIdRef.current;
     const stack = loadClosed(ws);
@@ -659,7 +668,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     setTiles((prev) => {
       if (prev.some((t) => t.id === tile.id)) return prev;
       const zIndex = prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1;
-      return [...prev, { ...tile, zIndex, ptySessionId: undefined }];
+      return [...prev, { ...tile, zIndex, dormant: undefined, tabClosed: undefined, ptySessionId: undefined }];
     });
     setActiveTile(tile.id);
   }, []);
@@ -681,6 +690,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
         x: spot.x,
         y: spot.y,
         zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1,
+        dormant: undefined,
+        tabClosed: undefined,
         ptySessionId: undefined,
         content: undefined
       }
@@ -1244,6 +1255,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     linkTermTo,
     unlinkTermFrom,
     dragFrame,
+    sleepTile,
+    wakeTile,
     closeTile,
     reopenTile,
     snapFrame,

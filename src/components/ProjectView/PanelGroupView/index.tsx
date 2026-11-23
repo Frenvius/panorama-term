@@ -42,6 +42,7 @@ import { registerTileRestart } from '~/usecase/util/tileRestart';
 import ContextMenu from '~/components/commons/ContextMenu';
 import CrashNotice from '~/components/commons/CrashNotice';
 import GridTerminal from '~/components/Terminal/GridTerminal';
+import DormantTerminal from '~/components/Terminal/DormantTerminal';
 import ErrorBoundary from '~/components/commons/ErrorBoundary';
 import { isDirty, subscribeDirty } from '~/usecase/util/dirtyFiles';
 import { fitCells, TERM_ROW_PX } from '~/usecase/util/termGrid';
@@ -165,7 +166,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
     return groupTiles[0] ?? null;
   }, [group.activeTileId, group.tileIds, tileMap, groupTiles]);
 
-  const termTiles = React.useMemo(() => groupTiles.filter((t) => t.type === 'term'), [groupTiles]);
+  const termTiles = React.useMemo(() => groupTiles.filter((t) => t.type === 'term' && !t.dormant), [groupTiles]);
 
   const termCols = Math.max(20, fitCells(bodySize.w, 8, cellW));
   const termRows = Math.max(2, fitCells(bodySize.h, 10, TERM_ROW_PX));
@@ -607,6 +608,15 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
               </div>
             );
           })}
+
+          {activeTile?.type === 'term' && activeTile.dormant && (
+            <div className={styles.contentSlot}>
+              <DormantTerminal
+                cwd={activeTile.cwd}
+                onStart={activateTab(activeTile.id)}
+              />
+            </div>
+          )}
 
           {activeTile?.type === 'editor' && (
             <div className={styles.contentSlot}>

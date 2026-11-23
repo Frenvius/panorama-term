@@ -48,6 +48,8 @@ import { getBinding, isCapturing, formatCombo, matchCommand } from '~/usecase/ut
 import { setAgentStatus, getAgentStatuses, subscribeAgentStatuses } from '~/usecase/util/agentStatus';
 import { isDirty, requestFind, requestSave, dispatchSave, requestPreview } from '~/usecase/util/dirtyFiles';
 import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
+import { canSleep } from '~/usecase/util/dormant';
+import { isTerminalBusy } from '~/adapter/pty/sidecar.client';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
@@ -97,6 +99,7 @@ const ProjectView = () => {
     openFile,
     openDiff,
     openRunOutput,
+    sleepTile,
     closeTile,
     detachTile,
     reopenTile,
@@ -227,8 +230,13 @@ const ProjectView = () => {
     for (const panel of Object.values(projectView.byProject)) {
       for (const group of Object.values(panel.groups)) for (const id of group.tileIds) docked.add(id);
     }
-    return new Set(tiles.filter((t) => t.type === 'term' && !docked.has(t.id)).map((t) => t.id));
+    return new Set(tiles.filter((t) => t.type === 'term' && !docked.has(t.id) && !t.dormant).map((t) => t.id));
   }, [projectView.byProject, tiles]);
+
+  const dormantTileIds = React.useMemo(
+    () => new Set(tiles.filter((t) => t.dormant).map((t) => t.id)),
+    [tiles]
+  );
 
   const projectNotes = React.useMemo(() => {
     if (!activeProject) return [];
@@ -270,13 +278,15 @@ const ProjectView = () => {
 
   const requestCloseTab = React.useCallback(
     (id: string) => {
-      if (tileMap.get(id)?.type === 'term') {
+      const tile = tileMap.get(id);
+      if (tile?.type === 'term') {
         detachTile(id);
+        if (canSleep(tile)) void isTerminalBusy(id).then((busy) => !busy && sleepTile(id));
         return;
       }
       requestCloseTile(id);
     },
-    [tileMap, detachTile, requestCloseTile]
+    [tileMap, detachTile, sleepTile, requestCloseTile]
   );
   closeTileRef.current = requestCloseTab;
 
@@ -759,7 +769,7 @@ const ProjectView = () => {
               activeTileId={activeTileId}
               activeGroupKey={pvActiveGroupKey}
               recentProjects={recentProjects}
-              signals={{ alerts: alertKinds, agents, detached: detachedTileIds }}
+              signals={{ alerts: alertKinds, agents, dormant: dormantTileIds, detached: detachedTileIds }}
               actions={projectActionsWithBoards}
               tidy={tidyAI}
             />

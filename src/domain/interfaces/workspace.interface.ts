@@ -27,10 +27,12 @@ export interface Tile {
   content?: string;
   pinned?: boolean;
   runId?: string;
+  dormant?: boolean;
+  runCwd?: string;
   orchWorker?: boolean;
   renderOnly?: boolean;
+  tabClosed?: boolean;
   linkedTo?: string[];
-  runCwd?: string;
 }
 
 export interface Frame {

@@ -511,6 +511,13 @@
   &[data-outside='true'] {
     opacity: 0.72;
   }
+
+  &[data-dormant='true'] {
+    .tileIcon,
+    .tileTitle {
+      opacity: 0.5;
+    }
+  }
 }
 
 .tileMain {
