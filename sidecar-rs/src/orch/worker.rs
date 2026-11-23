@@ -40,6 +40,7 @@ pub struct BriefInput<'a> {
     pub deps_results: &'a [(String, Option<String>)],
     pub cli_path: &'a str,
     pub cwd: &'a str,
+    pub merge_note: Option<&'a str>,
     pub handoff: Option<&'a str>,
 }
 
@@ -84,8 +85,33 @@ pub fn write_worker_settings(brief_path: &Path, verify_commands: &[String]) -> R
     Ok(path)
 }
 
+pub fn conflict_brief(branch: &str, files: &[String], integrated_titles: &[String]) -> String {
+    let mut note = String::from("## Resolve merge conflict\n\n");
+    note.push_str(&format!(
+        "The work for this task is already done on `{branch}`. Its merge into the run's integration branch conflicted, so `git merge --no-ff --no-commit {branch}` is in progress in your working directory.\n\n"
+    ));
+    if files.is_empty() {
+        note.push_str("The merge applied cleanly; check that the result builds and passes the verify commands.\n\n");
+    } else {
+        note.push_str("Resolve the conflict markers in these files, keeping both sides' intent:\n\n");
+        for f in files {
+            note.push_str(&format!("- `{f}`\n"));
+        }
+        note.push('\n');
+    }
+    if !integrated_titles.is_empty() {
+        note.push_str("The integration branch side contains these already integrated tasks:\n\n");
+        for t in integrated_titles {
+            note.push_str(&format!("- {t}\n"));
+        }
+        note.push('\n');
+    }
+    note.push_str("Do not change anything else. Do not abort the merge or run git commit. Report when done.\n\n");
+    note
+}
+
 pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
-    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, handoff } = input;
+    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, merge_note, handoff } = input;
     let dispatch_dir = base
         .join("orch")
         .join("runs")
@@ -129,6 +155,10 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
     content.push_str(&format!("## Working directory\n\n`{cwd}`\n\n"));
 
+    if let Some(note) = merge_note {
+        content.push_str(note);
+    }
+
     let attempt = dispatch.attempt;
     if attempt > 1 {
         content.push_str(&format!("## Attempt\n\nThis is attempt {attempt}.\n\n"));
@@ -137,8 +167,9 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
     content.push_str("## Contract\n\n");
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
     content.push_str("Run each command below as written, on its own: no `cd`/`Set-Location` before it, nothing appended after it. Only that exact form is pre-approved; anything else stops you on a permission prompt nobody may be watching.\n\n");
+    content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Keep the summary to one line. Pass the report inline or write it to a temporary file outside the worktree and use --report-file.\n\n");
     content.push_str(&format!(
-        "Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" [--file path ...]\n```\n\n"
+        "Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" --report-file <temp-file> [--file path ...]\n```\n\n"
     ));
     content.push_str(&format!(
         "Blocking question:\n```\n{cli_path} orch send --type question --body \"...\"\n{cli_path} orch check --wait --timeout-ms 600000\n```\n\n"
@@ -147,7 +178,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
         "Optional progress:\n```\n{cli_path} orch send --type progress --body \"...\"\n```\n\n"
     ));
     content.push_str("Leave your changes in the working directory; Panorama commits them when you report. Do not run git commit.\n");
-    content.push_str("Do not change files outside the working directory. Do not push.\n");
+    content.push_str("Do not change files outside the working directory except the temporary report file. Do not push.\n");
 
     std::fs::write(&brief_path, &content)
         .map_err(|e| format!("write brief: {e}"))?;
@@ -290,10 +321,20 @@ fn exited_error(tile_id: &str) -> String {
     format!("agent exited during startup; screen: {}", tail.trim())
 }
 
+fn codex_trust_dialog(screen: &str) -> bool {
+    screen.contains("Trust this folder?") && screen.contains("Trust and continue")
+}
+
 async fn answer_startup_prompt(tile_id: &str, profile: &Profile, answer_sends: &mut [u8]) -> bool {
     let screen = capture_worker_screen(tile_id, 40);
     let pending = profile.startup_answers.iter().zip(answer_sends.iter_mut())
-        .find(|(answer, sends)| **sends < STARTUP_ANSWER_MAX_SENDS && screen.contains(&answer.contains));
+        .find(|(answer, sends)| {
+            if profile.id == "codex" && answer.contains == "Trust this folder?" {
+                **sends == 0 && codex_trust_dialog(&screen)
+            } else {
+                **sends < STARTUP_ANSWER_MAX_SENDS && screen.contains(&answer.contains)
+            }
+        });
     let Some((answer, sends)) = pending else { return false };
     *sends += 1;
     if let Some(s) = lookup_live(tile_id) {
@@ -392,6 +433,31 @@ fn ready_text_visible(tile_id: &str, profile: &Profile) -> bool {
     profile.ready_text.as_ref().map_or(true, |text| capture_worker_screen(tile_id, 40).contains(text.as_str()))
 }
 
+pub fn capture_worker_history(tile_id: &str) -> Result<String, String> {
+    let session = sessions().lock().unwrap().get(tile_id).cloned().ok_or("worker session not found")?;
+    let mut parser = session.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let disk = parser.callbacks_mut().scroll_store.as_mut().map(|store| {
+        let (path, _, _, end) = store.snapshot();
+        std::fs::read(path).map(|mut bytes| { bytes.truncate(end as usize); bytes })
+    }).transpose().map_err(|e| e.to_string())?.unwrap_or_default();
+    let mut text = String::from_utf8_lossy(&disk).lines()
+        .map(|line| vt100::capture::basic_formatted_to_plain(line).collect::<String>())
+        .collect::<Vec<_>>().join("\n");
+    let (rows, cols) = crate::grid_size(parser.screen());
+    let raw = crate::history::main_history(parser.screen_mut());
+    let rest = crate::capture_text(&raw, rows, cols, usize::MAX);
+    if !text.is_empty() && !rest.is_empty() { text.push('\n'); }
+    text.push_str(&rest);
+    if parser.screen().alternate_screen() {
+        let visible = parser.screen().contents();
+        if !visible.is_empty() {
+            if !text.is_empty() { text.push('\n'); }
+            text.push_str(&visible);
+        }
+    }
+    Ok(text)
+}
+
 pub fn capture_worker_screen(tile_id: &str, lines: usize) -> String {
     let lines = lines.min(5000).max(1);
     let (raw, rows, cols) = match sessions().lock().unwrap().get(tile_id).cloned() {
@@ -408,20 +474,46 @@ pub fn capture_worker_screen(tile_id: &str, lines: usize) -> String {
     crate::capture_text(&raw, rows, cols, lines)
 }
 
-pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, cli_path: &str) {
-    let now = Instant::now();
-    {
-        let mut map = nudge_times().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(last) = map.get(tile_id) {
-            if now.duration_since(*last) < Duration::from_secs(NUDGE_COOLDOWN_S) {
-                return;
-            }
-        }
-        map.insert(tile_id.to_string(), now);
+#[derive(Debug, PartialEq)]
+enum NudgeDecision { Skip, Now, Defer(Duration) }
+
+fn nudge_decision(idle: bool, unacked: usize, elapsed: Option<Duration>, replaying: bool) -> NudgeDecision {
+    if replaying || !idle || unacked == 0 { return NudgeDecision::Skip; }
+    match elapsed.and_then(|d| Duration::from_secs(NUDGE_COOLDOWN_S).checked_sub(d)) {
+        Some(delay) if !delay.is_zero() => NudgeDecision::Defer(delay),
+        _ => NudgeDecision::Now,
     }
-    let msg = format!(
-        "[panorama] {n} new orchestration message(s) in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id}"
-    );
+}
+
+pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, cli_path: &str) {
+    static PENDING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let session = sessions().lock().unwrap().get(tile_id).cloned();
+    let idle = !is_tile_waiting(tile_id) && session.as_ref().and_then(|s| cached_agent_state(s))
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["lastStatus"].as_str().map(|s| s == "idle")).unwrap_or(false);
+    let mut times = nudge_times().lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    match nudge_decision(idle, n, times.get(tile_id).map(|t| now.duration_since(*t)), false) {
+        NudgeDecision::Skip => return,
+        NudgeDecision::Now => { times.insert(tile_id.to_string(), now); }
+        NudgeDecision::Defer(delay) => {
+            let pending = PENDING.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+            if pending.lock().unwrap_or_else(|e| e.into_inner()).insert(tile_id.to_string()) {
+                let tile = tile_id.to_string();
+                let run = run_id.to_string();
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&tile);
+                        crate::orch::recheck_coordinator(&run, &tile);
+                    });
+                } else { pending.lock().unwrap_or_else(|e| e.into_inner()).remove(tile_id); }
+            }
+            return;
+        }
+    }
+    drop(times);
+    let msg = format!("[panorama] {n} new orchestration message(s) in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id}");
     let _ = send_to_tile(tile_id, &msg);
 }
 
@@ -457,6 +549,16 @@ mod tests {
     use super::*;
     use crate::orch::model::{Task, TaskStatus, Dispatch, DispatchStatus};
     use std::path::PathBuf;
+
+    #[test]
+    fn nudge_policy() {
+        assert_eq!(nudge_decision(true, 1, None, false), NudgeDecision::Now);
+        assert_eq!(nudge_decision(true, 1, Some(Duration::from_secs(10)), false), NudgeDecision::Defer(Duration::from_secs(20)));
+        assert_eq!(nudge_decision(true, 1, Some(Duration::from_secs(30)), false), NudgeDecision::Now);
+        assert_eq!(nudge_decision(false, 1, None, false), NudgeDecision::Skip);
+        assert_eq!(nudge_decision(true, 0, None, false), NudgeDecision::Skip);
+        assert_eq!(nudge_decision(true, 1, None, true), NudgeDecision::Skip);
+    }
 
     #[test]
     fn early_exit_needs_polls_and_min_wait() {
@@ -502,6 +604,7 @@ mod tests {
             role: None,
             review: false,
             owner: None,
+            owner_reason: None,
             status: TaskStatus::Dispatched,
             result: None,
             integrated_sha: None,
@@ -521,12 +624,13 @@ mod tests {
             profile: Some("claude".into()),
             model: Some("claude-haiku-4-5".into()),
             tile_id: Some("tile123".into()),
+            merge_branch: None,
             worktree: None,
             branch: None,
             status: DispatchStatus::Running,
             outcome: None,
             files_modified: vec![],
-            summary: None,
+            summary: None, report: None,
             head_sha: None,
             started_at: 1_000_000,
             ended_at: None,
@@ -544,10 +648,12 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let cli = "/usr/local/bin/panorama-cli";
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", merge_note: None, handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains(cli), "cli path in brief");
         assert!(content.contains("worker_done"), "worker_done in brief");
+        assert!(content.contains("file:line evidence"));
+        assert!(content.contains("temporary file outside the worktree"));
         assert!(content.contains("PANORAMA_RUN_ID"), "env var reference in brief");
         assert!(content.contains("Create hello.txt"), "task title in brief");
         assert!(content.contains("/tmp/work"), "cwd in brief");
@@ -559,7 +665,7 @@ mod tests {
         let dir = tmp_dir("accept");
         let task = dummy_task();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("hello.txt exists"), "acceptance in brief");
         assert!(content.contains("test -f hello.txt"), "verify cmd in brief");
@@ -572,7 +678,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let deps = vec![("t0".to_string(), Some("output: done".to_string()))];
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("output: done"), "dep result in brief");
         std::fs::remove_dir_all(&dir).ok();
@@ -612,4 +718,14 @@ mod tests {
         let tile = "tile-no-waiting-xyz";
         assert!(!is_tile_waiting(tile), "unknown tile not waiting");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn detects_codex_trust_dialog() {
+    let screen = "Folder access\n/worktree\nNote: You're in a subdirectory of a Git project. Trusting will apply to the repository root: /repo\nTrust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n> 1. Trust and continue\n  2. Back to Agent Command Center\n  enter continue . esc back";
+    assert!(codex_trust_dialog(screen));
+    assert!(!codex_trust_dialog("Trust this folder?"));
+    assert!(!codex_trust_dialog("Trust and continue"));
+    assert!(!codex_trust_dialog("Ready for your prompt"));
 }

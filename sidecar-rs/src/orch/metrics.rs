@@ -128,7 +128,7 @@ mod tests {
             autonomy: Autonomy::default(), coordinator_wait: None, created_at: 0, updated_at: 0,
         };
         let mut e = RunEntry::new(run);
-        e.tasks.insert("t1".into(), Task {
+        e.tasks.insert("t1".into(), Task { owner_reason: None,
             id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: None, escalation: vec![], verify: vec![], role, review: false,
             owner: None, status: TaskStatus::Pending, result: None, integrated_sha: None, attempts: 0,
@@ -142,7 +142,7 @@ mod tests {
     }
 
     fn disp(id: &str, outcome: Option<&str>, class: Option<FailureClass>, dur: u64, cost: Option<f64>) -> Dispatch {
-        Dispatch {
+        Dispatch { merge_branch: None, report: None,
             id: id.into(), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some("claude".into()), model: Some("opus".into()), tile_id: None,
             worktree: None, branch: None, status: DispatchStatus::Reported,

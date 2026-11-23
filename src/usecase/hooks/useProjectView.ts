@@ -986,7 +986,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     (id: string) => {
       clearAlert(id);
       const closing = tilesRef.current.find((t) => t.id === id);
-      const isWorker = closing?.type === 'term' && Boolean(closing.runId);
+      const isWorker = closing?.type === 'term' && Boolean(closing.orchWorker || closing.runId);
       if (closing && !closing.runCwd && !isWorker) {
         const ws = wsIdRef.current;
         saveClosed(ws, [...loadClosed(ws), closing]);

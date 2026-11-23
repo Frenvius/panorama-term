@@ -1,16 +1,17 @@
 import type { Task, Limits, Dispatch, RunStatus } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, ExternalLink } from 'lucide-react';
+import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, GitMerge, ExternalLink, FileText, ArrowLeftRight } from 'lucide-react';
 
+import MarkdownView from '~/components/MarkdownView';
 import EditForm from './EditForm';
 import styles from './styles.module.scss';
 import ReopenForm from './ReopenForm';
 import CardButton from './CardButton';
 import RoutingInfo from './RoutingInfo';
 import { latestDispatch } from '../columns';
-import { cancelTask, updateTask, startWorker, workerStop, OrchError } from '~/adapter/orch/orch.client';
-import { totalCost, formatDuration } from '~/usecase/util/orch';
+import { cancelTask, updateTask, startWorker, workerStop, resolveConflict, OrchError } from '~/adapter/orch/orch.client';
+import { totalCost, formatDuration, conflictFiles } from '~/usecase/util/orch';
 import { requestOrchDiff, requestShowWorker } from '~/usecase/util/orchBoardRequest';
 
 export interface TaskCardProps {
@@ -24,7 +25,7 @@ export interface TaskCardProps {
   runBaseSha?: string;
 }
 
-type InlineView = 'reopen' | 'edit' | 'confirm-retry' | null;
+type InlineView = 'reopen' | 'edit' | 'confirm-retry' | 'report' | null;
 
 const FLAGGED_STATUS: Partial<Record<Task['status'], string>> = {
   failed: 'failed',
@@ -48,6 +49,9 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
   const starting = dispatch?.starting ?? false;
   const waiting = dispatch?.agentStatus === 'waiting' || (task.status === 'dispatched' && dispatch?.waiting === true);
   const flag = FLAGGED_STATUS[task.status];
+  const conflicted = conflictFiles(task);
+  const hasConflict = conflicted.length > 0;
+  const flagLabel = hasConflict ? `Merge conflict: ${conflicted.length} ${conflicted.length === 1 ? 'file' : 'files'}` : flag;
   const failureReason = dispatch?.summary ? dispatch.summary.split('\n')[0] : null;
 
   const handleShowWorker = () => {
@@ -96,6 +100,15 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
     setActionError(null);
     setActing(true);
     startWorker({ runId, taskId: task.id, by: 'user' })
+      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setActing(false));
+  };
+
+  const handleResolveClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActionError(null);
+    setActing(true);
+    resolveConflict({ runId, taskId: task.id })
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setActing(false));
   };
@@ -150,6 +163,15 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
     setInlineView('edit');
   };
 
+  const handleOwnerClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActionError(null);
+    setActing(true);
+    updateTask({ runId, taskId: task.id, owner: task.owner === 'user' ? 'coordinator' : 'user', by: 'user' })
+      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setActing(false));
+  };
+
   const handleAcceptClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     setActionError(null);
@@ -195,6 +217,8 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
 
   const actions = (
     <>
+      <CardButton label={task.owner === 'user' ? 'Hand to coordinator' : 'Take over'} icon={ArrowLeftRight} disabled={acting} onClick={handleOwnerClick} />
+      {dispatch?.report && <CardButton label="Report" icon={FileText} onClick={(e) => { e.stopPropagation(); setInlineView('report'); }} />}
       {task.status === 'pending' && (
         <>
           <CardButton
@@ -264,6 +288,16 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
 
       {task.status === 'blocked' && (
         <>
+          {hasConflict && (
+            <CardButton
+              tone="play"
+              label="Resolve"
+              icon={GitMerge}
+              disabled={acting || runPaused}
+              hint={runPaused ? 'Run is paused' : 'Resolve: a worker merges this task into the integration branch and fixes the conflict'}
+              onClick={handleResolveClick}
+            />
+          )}
           {showBtn}
           {cancelBtn}
         </>
@@ -274,8 +308,9 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
   );
 
   return (
-    <div className={styles.card} data-clickable={isClickable ? '' : undefined} onClick={handleCardClick}>
+    <div className={styles.card} title={task.ownerReason} data-clickable={isClickable ? '' : undefined} onClick={handleCardClick}>
       <div className={styles.cardHead}>
+        <span className={styles.cardId} onClick={(e) => e.stopPropagation()}>{task.id}</span>
         <span className={styles.cardTitle}>{task.title}</span>
         {waiting && <span className={styles.waitBadge}>needs approval</span>}
         {task.owner === 'user' && <span className={styles.ownerBadge}>you</span>}
@@ -289,6 +324,13 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
 
       {task.status === 'failed' && live && inlineView === null && (
         <div className={styles.infoMsg}>failed, but the agent is still running</div>
+      )}
+
+      {inlineView === 'report' && dispatch?.report && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <button type="button" className={styles.cardBtn} onClick={handleInlineCancel}>Close report</button>
+          <MarkdownView path={runRepo} source={dispatch.report} />
+        </div>
       )}
 
       {inlineView === 'reopen' && (
@@ -319,9 +361,13 @@ const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatu
       {(hasMeta || inlineView === null) && (
         <div className={styles.cardFoot}>
           <div className={styles.cardMeta}>
-            {flag && <span className={styles.flagChip} data-status={task.status}>{flag}</span>}
+            {flag && (
+              <span className={styles.flagChip} data-status={task.status} title={hasConflict ? conflicted.join('\n') : undefined}>
+                {flagLabel}
+              </span>
+            )}
             {task.role && <span className={styles.roleChip}>{task.role}</span>}
-            {profile && <span className={styles.metaChip}>{profile}</span>}
+            {profile && <span className={styles.modelChip} title={profile}>{profile}</span>}
             {task.attempts > 1 && <span className={styles.metaChip}>#{task.attempts}</span>}
             {starting ? (
               <span className={styles.startingChip}>starting</span>

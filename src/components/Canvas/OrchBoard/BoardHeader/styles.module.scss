@@ -372,3 +372,29 @@
   background: var(--hover-1);
   word-break: break-word;
 }
+
+.integrationLabel {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 4px;
+  min-width: 0;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  background: var(--hover-2);
+  cursor: help;
+
+  svg {
+    flex: none;
+  }
+}
+
+.integrationName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

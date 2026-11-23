@@ -115,6 +115,17 @@ mod tests {
     }
 
     #[test]
+    fn remove_run_deletes_transcripts() {
+        let dir = tmp_dir("remove-transcripts");
+        let run = dir.join("orch").join("runs").join("r1");
+        std::fs::create_dir_all(run.join("transcripts")).unwrap();
+        std::fs::write(run.join("transcripts").join("x.txt"), "history").unwrap();
+        remove_run_dir(&dir, "r1").unwrap();
+        assert!(!run.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn removed_run_does_not_reload() {
         let dir = tmp_dir("remove");
         ensure_run_dir(&dir, "r1").unwrap();

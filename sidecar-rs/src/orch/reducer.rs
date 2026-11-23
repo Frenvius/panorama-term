@@ -168,6 +168,9 @@ pub enum Cmd {
         profile: Option<String>,
         escalation: Option<Vec<String>>,
         review: Option<bool>,
+        owner: Option<String>,
+        by: String,
+        reason: Option<String>,
         now: u64,
     },
     Dispatch {
@@ -180,6 +183,7 @@ pub enum Cmd {
         model: Option<String>,
         tile_id: Option<String>,
         owner: Option<String>,
+        merge_branch: Option<String>,
         now: u64,
     },
     Send {
@@ -249,6 +253,8 @@ pub enum Cmd {
         run_id: String,
         task_id: String,
         files: Vec<String>,
+        branch: String,
+        integration_tip: String,
         msg_seq: u32,
         now: u64,
     },
@@ -563,7 +569,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, review, now } => {
+            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, review, owner, by, reason, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -607,6 +613,14 @@ impl State {
                         }
                     }
                 }
+                if let Some(owner) = owner {
+                    if !matches!(owner.as_str(), "user" | "coordinator") || !matches!(by.as_str(), "user" | "coordinator") {
+                        return ApplyResult::Err(OrchError::Conflict("invalid owner or actor".into()));
+                    }
+                    if owner == "coordinator" && by == "coordinator" && reason.as_deref().unwrap_or("").trim().is_empty() {
+                        return ApplyResult::Err(OrchError::Conflict("coordinator ownership requires a reason".into()));
+                    }
+                }
                 let field_edit = spec.is_some() || acceptance.is_some() || verify.is_some()
                     || profile.is_some() || escalation.is_some() || review.is_some();
                 let end_status = status.as_ref().unwrap_or(&task.status);
@@ -618,11 +632,11 @@ impl State {
                 ApplyResult::Ok("task-update".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "status": status, "result": result,
                     "spec": spec, "acceptance": acceptance, "verify": verify,
-                    "profile": profile, "escalation": escalation, "review": review, "now": now
+                    "profile": profile, "escalation": escalation, "review": review, "owner": owner, "by": by, "reason": reason, "now": now
                 }))
             }
 
-            Cmd::Dispatch { run_id, id, task_id, attempt, retry_of, profile, model, tile_id, owner, now } => {
+            Cmd::Dispatch { run_id, id, task_id, attempt, retry_of, profile, model, tile_id, owner, merge_branch, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -632,7 +646,10 @@ impl State {
                 let Some(task) = entry.tasks.get(task_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("task not found".into()));
                 };
-                let can_dispatch = entry.task_ready(task) || task.status == TaskStatus::Failed;
+                let resolving_conflict = merge_branch.is_some()
+                    && task.status == TaskStatus::Blocked
+                    && entry.gates.values().all(|g| g.task_id != task.id || g.resolution.is_some());
+                let can_dispatch = entry.task_ready(task) || task.status == TaskStatus::Failed || resolving_conflict;
                 if !can_dispatch {
                     return ApplyResult::Err(OrchError::Conflict("task not ready for dispatch".into()));
                 }
@@ -668,7 +685,7 @@ impl State {
                 ApplyResult::Ok("dispatch".into(), serde_json::json!({
                     "runId": run_id, "id": id, "taskId": task_id, "attempt": attempt,
                     "retryOf": retry_of, "profile": profile, "model": model,
-                    "tileId": tile_id, "owner": owner, "now": now
+                    "tileId": tile_id, "owner": owner, "mergeBranch": merge_branch, "now": now
                 }))
             }
 
@@ -860,7 +877,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskConflict { run_id, task_id, files, msg_seq, now } => {
+            Cmd::TaskConflict { run_id, task_id, files, branch, integration_tip, msg_seq, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -872,9 +889,14 @@ impl State {
                         "task must be completed to record integration conflict".into()
                     ));
                 }
+                let hint = format!(
+                    "Merge of {} into the run's integration branch conflicted in {} file(s). Nothing was changed on your branches. Run orch conflict-resolve to have a worker resolve it on top of the integration branch.",
+                    task.title, files.len()
+                );
                 ApplyResult::Ok("task-conflict".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id,
-                    "files": files, "msgSeq": msg_seq, "now": now
+                    "files": files, "branch": branch, "integrationTip": integration_tip,
+                    "hint": hint, "msgSeq": msg_seq, "now": now
                 }))
             }
 
@@ -1080,6 +1102,7 @@ impl State {
             role,
             review: data["review"].as_bool().unwrap_or(false),
             owner: opt_str(data, "owner"),
+            owner_reason: None,
             status: TaskStatus::Pending,
             result: None,
             integrated_sha: None,
@@ -1139,6 +1162,10 @@ impl State {
         if let Some(v) = data.get("review").filter(|v| !v.is_null()).and_then(|v| v.as_bool()) {
             task.review = v;
         }
+        if let Some(owner) = opt_str(data, "owner") {
+            task.owner = Some(owner);
+            task.owner_reason = opt_str(data, "reason");
+        }
         task.updated_at = now;
         Ok(())
     }
@@ -1160,6 +1187,7 @@ impl State {
             profile: opt_str(data, "profile"),
             model: opt_str(data, "model"),
             tile_id: opt_str(data, "tileId"),
+            merge_branch: opt_str(data, "mergeBranch"),
             worktree: None,
             branch: None,
             status: DispatchStatus::Running,
@@ -1167,6 +1195,7 @@ impl State {
             head_sha: None,
             files_modified: vec![],
             summary: None,
+            report: None,
             started_at: now,
             ended_at: None,
             last_heartbeat: None,
@@ -1184,6 +1213,7 @@ impl State {
         if let Some(owner) = opt_str(data, "owner") {
             if let Some(task) = entry.tasks.get_mut(&task_id) {
                 task.owner = Some(owner);
+                task.owner_reason = None;
             }
         }
         entry.dispatches.insert(dispatch_id, dispatch);
@@ -1227,6 +1257,7 @@ impl State {
                 dispatch.ended_at = Some(now);
                 dispatch.files_modified = str_arr(data, "filesModified");
                 dispatch.summary = opt_str(data, "summary");
+                dispatch.report = opt_str(data, "body");
                 if let Some(class) = parse_opt(data, "failureClass") {
                     dispatch.failure_class = Some(class);
                 }
@@ -1413,7 +1444,10 @@ impl State {
             task_id: Some(task_id),
             dispatch_id,
             reply_to: None,
-            body: opt_str(data, "integratedSha"),
+            body: Some(format!(
+                "{}\nMerged into orch/{run_id}/integration (your main branch is untouched)",
+                str_field(data, "integratedSha")
+            )),
             at: now,
             acked: false,
         };
@@ -1447,7 +1481,12 @@ impl State {
             task_id: Some(task_id),
             dispatch_id: None,
             reply_to: None,
-            body: Some(serde_json::to_string(&data["files"]).unwrap_or_default()),
+            body: Some(serde_json::json!({
+                "files": data["files"],
+                "branch": data["branch"],
+                "integrationTip": data["integrationTip"],
+                "hint": data["hint"],
+            }).to_string()),
             at: now,
             acked: false,
         };
@@ -1900,6 +1939,7 @@ mod tests {
             model: None,
             tile_id: None,
             owner: None,
+            merge_branch: None,
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -1931,6 +1971,26 @@ mod tests {
             }
             ApplyResult::Err(e) => panic!("worker_done failed: {}", e.message()),
         }
+    }
+
+    #[test]
+    fn worker_report_survives_event_replay() {
+        let mut state = State::default();
+        mk_run(&mut state, "r1");
+        mk_task(&mut state, "r1", "t1", vec![]);
+        let did = mk_dispatch(&mut state, "r1", "t1", 1);
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 1, from: did.clone(), to: vec!["coordinator".into()],
+            msg_type: "worker_done".into(), task_id: None, dispatch_id: Some(did.clone()),
+            reply_to: None, body: Some("# Full report\nEvidence".into()), outcome: Some("succeeded".into()),
+            files_modified: vec![], summary: Some("Done".into()), now: ts(),
+        };
+        let (kind, event) = match state.apply(&cmd) { ApplyResult::Ok(k, d) => (k, d), _ => panic!("send failed") };
+        let event: Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        state.replay(&kind, &event).unwrap();
+        let entry = &state.runs["r1"];
+        assert_eq!(entry.dispatches[&did].report.as_deref(), Some("# Full report\nEvidence"));
+        assert_eq!(entry.messages.last().unwrap().body.as_deref(), Some("# Full report\nEvidence"));
     }
 
     fn mk_gate(state: &mut State, run_id: &str, gate_id: &str, task_id: &str, msg_seq: u32) {
@@ -2001,7 +2061,7 @@ mod tests {
         mk_task(&mut s, "r1", "t2", vec!["t1".into()]);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t2.1".into(), task_id: "t2".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2014,7 +2074,7 @@ mod tests {
         s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().attempts = 3;
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.4".into(), task_id: "t1".into(),
-            attempt: 4, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 4, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -2031,7 +2091,7 @@ mod tests {
         }
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t5.1".into(), task_id: "t5".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -2044,7 +2104,7 @@ mod tests {
         mk_dispatch(&mut s, "r1", "t1", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2058,7 +2118,7 @@ mod tests {
         worker_done(&mut s, "r1", "r1.t1.1", "failed", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: Some("r1.t1.1".into()), profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 2, retry_of: Some("r1.t1.1".into()), profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)));
     }
@@ -2070,7 +2130,7 @@ mod tests {
         mk_task(&mut s, "r1", "t1", vec![]);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(),
-            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 2, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2088,7 +2148,7 @@ mod tests {
             id: "r1.t1.1".into(),
             task_id: "t1".into(),
             attempt: 2,
-            retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2313,7 +2373,7 @@ mod tests {
             let cmd = Cmd::TaskUpdate {
                 run_id: "r1".into(), task_id: tid.to_string(),
                 status: Some(to.clone()), result: None, spec: None,
-                acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+                acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
             };
             assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)), "transition failed for {tid}");
         }
@@ -2336,7 +2396,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: None, result: Some("done".into()), spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2390,7 +2450,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Pending), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2435,9 +2495,10 @@ mod tests {
         let d2 = crate::orch::model::Dispatch {
             id: "r1.t1.2".into(), task_id: "t1".into(), attempt: 2,
             retry_of: None, profile: None, model: None, tile_id: None,
+            merge_branch: None,
             worktree: None, branch: None,
             status: DispatchStatus::Running, outcome: None, head_sha: None, files_modified: vec![],
-            summary: None, started_at: ts(), ended_at: None, last_heartbeat: None,
+            summary: None, report: None, started_at: ts(), ended_at: None, last_heartbeat: None,
             verifications: vec![], cost_usd: None, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
         };
@@ -2446,7 +2507,7 @@ mod tests {
         let update = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Failed), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&update) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -2487,7 +2548,7 @@ mod tests {
         });
         apply_capture!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         });
 
         let mut fresh = State::default();
@@ -2531,7 +2592,7 @@ mod tests {
                     let dispatch_id = format!("r1.{task_id}.{attempt}");
                     let cmd = Cmd::Dispatch {
                         run_id: "r1".into(), id: dispatch_id, task_id: task_id.clone(),
-                        attempt, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+                        attempt, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
                     };
                     match guard.apply(&cmd) {
                         ApplyResult::Ok(k, d) => {
@@ -2669,7 +2730,7 @@ mod tests {
         mk_dispatch(&mut s, "r1", "t2", 1);
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t3.1".into(), task_id: "t3".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Limit(_))));
     }
@@ -2801,7 +2862,8 @@ mod tests {
 
         let cmd = Cmd::TaskConflict {
             run_id: "r1".into(), task_id: "t1".into(),
-            files: vec!["a.rs".into(), "b.rs".into()], msg_seq: 2, now: ts(),
+            files: vec!["a.rs".into(), "b.rs".into()],
+            branch: "orch/r1/t1-1".into(), integration_tip: "tip1".into(), msg_seq: 2, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -2812,6 +2874,71 @@ mod tests {
         assert!(result.contains("a.rs"), "conflict result should list files");
         let msgs = &s.runs["r1"].messages;
         assert!(msgs.iter().any(|m| m.msg_type == "integration_conflict" && m.task_id.as_deref() == Some("t1")));
+    }
+
+    #[test]
+    fn conflict_resolve_dispatch_completes_blocked_user_owned_task() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_task(&mut s, "r1", "t1", vec![]);
+        let did = mk_dispatch(&mut s, "r1", "t1", 1);
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().owner = Some("user".into());
+        s.runs.get_mut("r1").unwrap().dispatches.get_mut(&did).unwrap().branch = Some("orch/r1/t1-1".into());
+        worker_done(&mut s, "r1", &did, "succeeded", 1);
+        let conflict = Cmd::TaskConflict {
+            run_id: "r1".into(), task_id: "t1".into(), files: vec!["a.rs".into()],
+            branch: "orch/r1/t1-1".into(), integration_tip: "tip1".into(), msg_seq: 2, now: ts(),
+        };
+        match s.apply(&conflict) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-conflict failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Blocked);
+        let body = s.runs["r1"].messages.iter()
+            .find(|m| m.msg_type == "integration_conflict").and_then(|m| m.body.clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["files"][0], "a.rs");
+        assert_eq!(parsed["branch"], "orch/r1/t1-1");
+        assert_eq!(parsed["integrationTip"], "tip1");
+        assert!(parsed["hint"].as_str().unwrap().contains("orch conflict-resolve"));
+
+        let plain = Cmd::Dispatch {
+            run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(), attempt: 2,
+            retry_of: None, profile: None, model: None, tile_id: None, owner: None,
+            merge_branch: None, now: ts(),
+        };
+        assert!(matches!(s.apply(&plain), ApplyResult::Err(OrchError::Conflict(_))), "plain dispatch must not unblock");
+
+        let resolve = Cmd::Dispatch {
+            run_id: "r1".into(), id: "r1.t1.2".into(), task_id: "t1".into(), attempt: 2,
+            retry_of: None, profile: None, model: None, tile_id: None, owner: None,
+            merge_branch: Some("orch/r1/t1-1".into()), now: ts(),
+        };
+        match s.apply(&resolve) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("resolve dispatch failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Dispatched);
+        assert_eq!(s.runs["r1"].dispatches["r1.t1.2"].merge_branch.as_deref(), Some("orch/r1/t1-1"));
+        assert!(s.runs["r1"].dispatches.contains_key("r1.t1.1"), "original attempt stays recorded");
+
+        s.runs.get_mut("r1").unwrap().dispatches.get_mut("r1.t1.2").unwrap().branch = Some("orch/r1/t1-2".into());
+        worker_done(&mut s, "r1", "r1.t1.2", "succeeded", 3);
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Completed);
+
+        let integrate = Cmd::TaskIntegrate {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: "r1.t1.2".into(),
+            integrated_sha: "sha2".into(), msg_seq: 4, now: ts(),
+        };
+        match s.apply(&integrate) {
+            ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
+            _ => panic!("task-integrate failed"),
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].integrated_sha.as_deref(), Some("sha2"));
+        let integrated = s.runs["r1"].messages.iter()
+            .find(|m| m.msg_type == "task_integrated").and_then(|m| m.body.clone()).unwrap();
+        assert!(integrated.contains("sha2"));
+        assert!(integrated.contains("Merged into orch/r1/integration (your main branch is untouched)"));
     }
 
     #[test]
@@ -3061,7 +3188,7 @@ mod tests {
         });
         apply_ev!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: ts(),
         });
         s.runs.get_mut("r1").unwrap().tasks.get_mut("t1").unwrap().status = TaskStatus::Verifying;
         apply_ev!(Cmd::DispatchAppendVerification {
@@ -3156,7 +3283,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Completed), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -3174,7 +3301,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Pending), result: None, spec: Some("new spec".into()),
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -3193,7 +3320,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)));
     }
@@ -3206,13 +3333,36 @@ mod tests {
         let cmd = Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
             attempt: 1, retry_of: None, profile: None, model: None, tile_id: None,
-            owner: Some("user".into()), now: ts(),
+            owner: Some("user".into()), merge_branch: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
             _ => panic!("dispatch failed"),
         }
         assert_eq!(s.runs["r1"].tasks["t1"].owner.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn ownership_change_requires_reason_and_replays() {
+        let mut state = State::default();
+        mk_run(&mut state, "r1");
+        mk_task(&mut state, "r1", "t1", vec![]);
+        let mut cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(), status: None, result: None,
+            spec: None, acceptance: None, verify: None, profile: None, escalation: None,
+            review: None, owner: Some("coordinator".into()), by: "coordinator".into(),
+            reason: None, now: ts(),
+        };
+        assert!(matches!(state.apply(&cmd), ApplyResult::Err(_)));
+        if let Cmd::TaskUpdate { reason, .. } = &mut cmd { *reason = Some("user asked in chat".into()); }
+        let (kind, data) = match state.apply(&cmd) {
+            ApplyResult::Ok(kind, data) => (kind, data),
+            _ => panic!("ownership update failed"),
+        };
+        assert_eq!(data["by"], "coordinator");
+        state.replay(&kind, &data).unwrap();
+        assert_eq!(state.runs["r1"].tasks["t1"].owner.as_deref(), Some("coordinator"));
+        assert_eq!(state.runs["r1"].tasks["t1"].owner_reason.as_deref(), Some("user asked in chat"));
     }
 
     #[test]
@@ -3343,7 +3493,7 @@ mod tests {
     }
 
     fn dispatch_cmd(run_id: &str, task_id: &str, attempt: u32) -> Cmd {
-        Cmd::Dispatch {
+        Cmd::Dispatch { merge_branch: None,
             run_id: run_id.into(), id: format!("{run_id}.{task_id}.{attempt}"), task_id: task_id.into(),
             attempt, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
         }
@@ -3460,7 +3610,7 @@ mod tests {
         let mut s = State::default();
         mk_run(&mut s, "r1");
         mk_routed_task(&mut s, "r1", "t1");
-        let cmd = Cmd::TaskUpdate {
+        let cmd = Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: None, result: None, spec: None,
             acceptance: None, verify: None, profile: Some("codex".into()), escalation: None,
             review: None, now: ts(),
@@ -3643,7 +3793,7 @@ mod tests {
     fn f12_waiting_task_can_be_cancelled_and_clears_wait() {
         let mut s = routed_failed_task();
         commit_cmd(&mut s, wait_cmd(None)).unwrap();
-        let cmd = Cmd::TaskUpdate {
+        let cmd = Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled), result: None,
             spec: None, acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
         };

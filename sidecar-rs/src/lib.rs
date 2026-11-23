@@ -3417,7 +3417,7 @@ pub(crate) fn shell_name_for(session: &Session) -> String {
 pub(crate) fn capture_text(raw: &[u8], rows: u16, cols: u16, lines: usize) -> String {
     let rows = rows.max(2);
     let cols = cols.max(2);
-    let mut p = vt100::Parser::new(dim(rows), dim(cols), CAPTURE_LINES);
+    let mut p = vt100::Parser::new(dim(rows), dim(cols), if lines == usize::MAX { raw.len().max(CAPTURE_LINES) } else { CAPTURE_LINES });
     p.process(raw);
     let screen = p.screen_mut();
     screen.set_scrollback(usize::MAX);
@@ -4704,6 +4704,42 @@ fn current_command_line(s: &Arc<Session>) -> Option<String> {
     }
 }
 
+fn tile_screen(tile_id: &str) -> String {
+    let session = sessions().lock().unwrap().get(tile_id).cloned();
+    match session {
+        Some(s) => {
+            let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let screen = parser.screen();
+            let (row, _) = screen.cursor_position();
+            let cols = grid_size(screen).1;
+            let lines: Vec<String> = screen.rows(0, cols).collect();
+            format!("{}\n\0{}", lines.join("\n"), lines.get(row as usize).map(String::as_str).unwrap_or(""))
+        }
+        None => String::new(),
+    }
+}
+
+fn queue_hint(screen: &str) -> bool {
+    screen.to_ascii_lowercase().contains("tab to queue message")
+}
+
+fn input_contains(screen: &str, text: &str) -> bool {
+    let input = screen.rsplit_once('\0').map_or("", |(_, input)| input);
+    let tail = text.lines().last().unwrap_or("").trim();
+    let suffix: String = tail.chars().rev().take(20).collect::<String>().chars().rev().collect();
+    !tail.is_empty() && (input.contains(tail) || (tail.chars().count() > 20 && input.contains(&suffix)))
+}
+
+#[cfg(test)]
+#[test]
+fn submission_screen_markers() {
+    assert!(queue_hint("working · Tab to queue message"));
+    assert!(!queue_hint("ready"));
+    assert!(input_contains("screen\n\0> hello world", "hello world"));
+    assert!(!input_contains("> hello world\n\0> ", "hello world"));
+    assert!(!input_contains("\0> ", ""));
+}
+
 pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     let msg = text.trim_end_matches(['\r', '\n']).to_string();
     let session = sessions().lock().unwrap().get(tile_id).cloned();
@@ -4730,8 +4766,17 @@ pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     }
     let tile_id = tile_id.to_string();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        host_handle().write(&tile_id, b"\r");
+        for _ in 0..15 {
+            if input_contains(&tile_screen(&tile_id), &msg) { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let screen = tile_screen(&tile_id);
+        host_handle().write(&tile_id, if queue_hint(&screen) { b"\t" } else { b"\r" });
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let screen = tile_screen(&tile_id);
+        if input_contains(&screen, &msg) {
+            host_handle().write(&tile_id, if queue_hint(&screen) { b"\t" } else { b"\r" });
+        }
         if let Some(s) = sessions().lock().unwrap().get(&tile_id) {
             s.dirty.fetch_add(1, Ordering::Relaxed);
         }
@@ -4740,14 +4785,18 @@ pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
 }
 
 pub(crate) fn write_input(s: &Arc<Session>, d: &str) {
+    write_input_bytes(s, d.as_bytes());
+}
+
+pub(crate) fn write_input_bytes(s: &Arc<Session>, d: &[u8]) {
     s.scrollback.store(0, Ordering::Relaxed);
     s.dirty.fetch_add(1, Ordering::Relaxed);
-    if d.contains('\r') || d.contains('\n') {
+    if d.contains(&b'\r') || d.contains(&b'\n') {
         let line = current_command_line(s);
         let mut cmd = s.cmd.lock().unwrap_or_else(|e| e.into_inner());
         *cmd = line.map(|l| (Instant::now(), l));
     }
-    host_handle().write(&s.tile_id, d.as_bytes());
+    host_handle().write(&s.tile_id, d);
 }
 
 #[derive(Default)]

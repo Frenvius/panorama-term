@@ -2,7 +2,8 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  min-width: min-content;
   padding: 8px;
   border: 1px solid var(--border-2);
   border-radius: 6px;
@@ -58,8 +59,23 @@
   }
 }
 
+.cardId {
+  flex: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  user-select: text;
+  white-space: nowrap;
+}
+
 .cardTitle {
   flex: 1;
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--text-strong);
   font-size: 12.5px;
   font-weight: 600;
@@ -77,19 +93,45 @@
 .cardMeta {
   display: flex;
   flex: 1;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: 4px;
   min-width: 0;
+  white-space: nowrap;
 }
 
-.metaChip {
+.metaChip,
+.modelChip {
   padding: 1px 6px;
   border-radius: 4px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 10.5px;
   background: var(--hover-2);
+}
+
+.modelChip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardMeta > :not(.modelChip) {
+  flex-shrink: 0;
+}
+
+.flagChip,
+.roleChip,
+.metaChip,
+.startingChip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+}
+
+.modelChip {
+  height: 20px;
+  padding-block: 0;
+  line-height: 20px;
 }
 
 .metaDim {
@@ -101,8 +143,8 @@
 .cardActions {
   display: flex;
   flex: none;
-  gap: 2px;
-  margin-right: -4px;
+  align-items: center;
+  gap: 4px;
 
   &:empty {
     display: none;

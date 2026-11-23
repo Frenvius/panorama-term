@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Coordinate a multi-agent run in Panorama - split work into tasks, start CLI agent workers (claude, codex, opencode, kimi, pi, antigravity) in their own git worktrees, react to their reports, verify, retry, integrate, and report. Use when the user asks to orchestrate, delegate, fan out, or parallelize work across worker agents, or to run tasks overnight with cheaper models.
+description: Coordinate a multi-agent run in Panorama - split work into tasks, start CLI agent workers (claude, codex, opencode, kimi, pi, antigravity) in their own git worktrees, react to their reports, verify, retry, resolve merge conflicts, integrate, and report. Use when the user asks to orchestrate, delegate, fan out, or parallelize work across worker agents, or to run tasks overnight with cheaper models.
 allowed-tools: Bash({cli} orch:*), PowerShell({cli} orch:*)
 ---
 
@@ -142,7 +142,7 @@ arrives. Run `check` then.
 | `auto_action` | The brain acted on its own under the run's autonomy. JSON body: `action` (`retry`, `start`, `continue`, `integrate`), `taskId`, `dispatchId`, `reason` | Read it so your picture of the run stays correct. Do not repeat the action |
 | `late_report` | A `worker_done` arrived from an attempt already superseded by a newer one. Not applied | Compare with the newer attempt. Integrate the old one with `integrate --dispatch-id` if it is the better result |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
-| `integration_conflict` | The merge conflicted and was aborted. The task is `blocked` | Lists the files. Re-scope the task against the new base and retry, or ask the user |
+| `integration_conflict` | The merge conflicted and was aborted. Nothing changed on any branch. The task is `blocked`. JSON body with `files`, `branch`, `integrationTip` and `hint` | Explain it to the user in a sentence or two, then run `conflict-resolve`. Do not retry and do not present it as redoing the task |
 | `note` from `user` with a task id | The user cancelled that task from the run board. The task is now `cancelled` | Do not retry it unless the user explicitly asks |
 
 Inspecting and steering a worker:
@@ -159,7 +159,7 @@ Inspecting and steering a worker:
 - `worker-show` gives status, worktree and branch.
 - `worker-read` shows the screen tail.
 - `worker-send --text` types a line and presses Enter.
-- `worker-send --keys` sends raw keys with no Enter. Use it to pick option 1 of a prompt.
+- `worker-send --keys` sends raw keys with no Enter. Use it to pick option 1 of a prompt. Escapes: `\r`, `\n`, `\t`, `\e`, `\xNN` (hex byte), and `\\`.
 - `worker-stop` stops a worker and marks the attempt stopped. It also closes the live terminal of
   an attempt that is already failed.
 - `dispatch-adopt --run-id <run> --dispatch-id <id> [--summary "..."]` treats an attempt as if its
@@ -200,6 +200,19 @@ Waiting and model status:
   until when, and the source. `candidate-clear` removes a block you know is stale, for example after
   the user topped up credit or logged in again. Do not clear a block to force a retry.
 
+Conflict resolution:
+
+```
+{cli} orch conflict-resolve --run-id <run> --task-id t2
+```
+
+- Works on a `blocked` task whose integration merge conflicted, including a user-owned one: it merges
+  the finished work, it does not redo it. `--profile`/`--model` override the escalation entry.
+- It starts a worker on a new worktree branched from the current integration tip, with the task's
+  branch merge already in progress. The worker resolves the conflict markers and reports. The brain
+  commits the merge and runs the task's `--verify` commands.
+- When the task is `completed` again, run `integrate` as usual.
+
 ## 5. Integrate
 
 ```
@@ -210,6 +223,22 @@ Waiting and model status:
 This merges the task branch into `orch/<run>/integration` with `--no-ff`. Without `--dispatch-id`
 it takes the newest attempt that reported success and passed verification, not simply the newest
 attempt. Integrate in dependency order. Never merge into the user's branch, and never push, unless the user asks.
+
+## Talking to the user
+
+The user may not know this vocabulary. Plain words, short sentences.
+
+- Always mention a task by its id and a short title, for example `t10 (board toasts)`, never a bare id.
+- Define a term the first time it comes up in a conversation. Integrate means merging a finished
+  task into the run's integration branch `orch/<run>/integration`. It never touches the user's
+  own branch.
+- Every status report says what is on the integration branch now, and that the main branch is
+  untouched until the user asks you to merge.
+- On an integration conflict, say in one or two sentences which files conflicted and why (two
+  tasks changed the same lines), then run `conflict-resolve`. Never call it redoing the task: the
+  finished work is kept and merged by a worker.
+- When the CLI refuses something (`owned_by_user`, `live_attempt`, a limit), say what the rule is
+  and what the alternative is, before acting.
 
 ## 6. Finish
 
@@ -286,11 +315,11 @@ attached as coordinator.
   before the task counts as done. Without that ask, leave it off so tasks complete on their own.
 - `review` status means the task is waiting for the user. Do not set it to `completed` yourself
   unless the user tells you to (by sending you a note or message in the conversation).
-- owner `user` on a task means the user will start and retry that task themselves. Do not
-  dispatch it. Do not retry it. If you receive a worker_done or failure for a user-owned task,
-  report it to the user and wait for their instruction.
+- User-owned tasks belong to the user until handed over. If the user asks you in chat to take over a task or all their tasks, run `task-update --owner coordinator --reason "user asked in chat"` for each task, then treat them as yours. Never take over a user-owned task without that request.
 - `run-set-coordinator` is how a board gets a coordinator. When the user opens a board tile
   and attaches you, the brain sends `run-set-coordinator {runId, tileId}`. You will see it as
   a note in the next `check`. Read the board with `run-show` / `task-list` and pick up from
   the current state without re-creating tasks.
 - Boards can be renamed with `run-update --run-id <id> --title "<new name>".
+
+Worker reports arrive in the `worker_done` body and are available through `worker-show`. If a report is missing, use `worker-send` to ask the worker for it. Use `worker-read --all` for live scrollback or `worker-transcript --run-id <run> --dispatch-id <id> [--tail N]` for live or saved transcripts.

@@ -49,3 +49,8 @@ export const taskCountSummary = (counts: Record<string, number>): string => {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   return `${done}/${total}`;
 };
+
+export const conflictFiles = (task: Task): string[] =>
+  task.status === 'blocked' && task.result ? task.result.split(', ').filter(Boolean) : [];
+
+export const integrationBranchName = (runId: string): string => `orch/${runId}/integration`;

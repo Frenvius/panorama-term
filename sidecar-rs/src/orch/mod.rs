@@ -168,6 +168,36 @@ enum CommitResult {
     Err(String),
 }
 
+fn transition_notifications(before: Option<&(RunStatus, HashMap<String, TaskStatus>)>, after: &reducer::RunEntry, kind: &str, data: &Value) -> Vec<Value> {
+    let mut events = Vec::new();
+    let event = |name: &str, task: Option<&Task>, detail: Option<String>| serde_json::json!({
+        "t": "orch.notify", "runId": after.run.id, "runTitle": after.run.title,
+        "kind": name, "taskId": task.map(|t| &t.id), "taskTitle": task.map(|t| &t.title), "detail": detail
+    });
+    if kind == "gate-create" {
+        let task = data["taskId"].as_str().and_then(|id| after.tasks.get(id));
+        events.push(event("gate", task, data["question"].as_str().map(str::to_owned)));
+    }
+    if kind == "task-conflict" {
+        let task = data["taskId"].as_str().and_then(|id| after.tasks.get(id));
+        let detail = data["files"].as_array().map(|files| files.iter().filter_map(Value::as_str).take(5).collect::<Vec<_>>().join(", "));
+        events.push(event("conflict", task, detail));
+    }
+    for task in after.tasks.values() {
+        let old = before.and_then(|entry| entry.1.get(&task.id));
+        if old == Some(&task.status) { continue; }
+        if task.status == TaskStatus::Review {
+            events.push(event("review", Some(task), None));
+        } else if task.status == TaskStatus::Failed && task.attempts >= after.run.limits.max_attempts {
+            events.push(event("exhausted", Some(task), None));
+        }
+    }
+    if after.run.status == RunStatus::Completed && before.map(|entry| &entry.0) != Some(&RunStatus::Completed) {
+        events.push(event("completed", None, None));
+    }
+    events
+}
+
 fn commit_sync<F>(make_cmd: F, run_id: &str, base: &std::path::Path) -> CommitResult
 where
     F: FnOnce(&State) -> Result<Cmd, String>,
@@ -181,6 +211,7 @@ where
 
     let event_seq = guard.runs.get(run_id).map(|e| e.event_seq + 1).unwrap_or(1);
     let now = unix_ms();
+    let previous_messages = guard.runs.get(run_id).map_or(0, |e| e.messages.len());
 
     match guard.apply(&cmd) {
         ApplyResult::Ok(kind, data) => {
@@ -192,11 +223,27 @@ where
             if let Err(e) = append_event(&path, &record) {
                 return CommitResult::Err(format!("io:{e}"));
             }
+            let before = guard.runs.get(run_id).map(|entry| (
+                entry.run.status.clone(),
+                entry.tasks.iter().map(|(id, task)| (id.clone(), task.status.clone())).collect(),
+            ));
             if let Err(e) = guard.replay(&kind, &data) {
                 eprintln!("[orch] replay after commit {kind}: {e}");
+            } else if let Some(after) = guard.runs.get(run_id) {
+                for event in transition_notifications(before.as_ref(), after, &kind, &data) {
+                    crate::ui::broadcast_orch_notify(event);
+                }
             }
             if let Some(entry) = guard.runs.get_mut(run_id) {
                 entry.event_seq = event_seq;
+            }
+            let wake = guard.runs.get(run_id).and_then(|entry| {
+                entry.messages.iter().skip(previous_messages)
+                    .any(|m| m.to == "coordinator").then(|| entry.run.coordinator_tile.clone()).flatten()
+            });
+            drop(guard);
+            if let Some(tile) = wake {
+                recheck_coordinator(run_id, &tile);
             }
             CommitResult::Ok(data)
         }
@@ -328,6 +375,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "worker-start" => handle_worker_start(body).await,
         "worker-show" => handle_worker_show(body),
         "worker-read" => handle_worker_read(body),
+        "worker-transcript" => handle_worker_transcript(body),
         "worker-send" => handle_worker_send(body),
         "task-cancel" => handle_task_cancel(body).await,
         "worker-stop" => handle_worker_stop(body).await,
@@ -336,6 +384,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "worktree-clean" => handle_worktree_clean(body).await,
         "verify" => handle_verify(body).await,
         "retry" => handle_retry(body).await,
+        "conflict-resolve" => handle_conflict_resolve(body).await,
         "report" => handle_report(body).await,
         "candidate-list" => handle_candidate_list(),
         "candidate-clear" => handle_candidate_clear(body),
@@ -355,6 +404,16 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "ai-progress" => handle_ai_progress(body),
         _ => err_resp("bad_request", "unknown command"),
     }
+}
+
+pub(crate) fn recheck_coordinator(run_id: &str, tile_id: &str) {
+    let count = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(run_id).filter(|e| !e.run.status.is_terminal()
+            && e.run.coordinator_tile.as_deref() == Some(tile_id))
+            .map_or(0, |e| e.messages.iter().filter(|m| !m.acked && m.to == "coordinator").count())
+    };
+    maybe_nudge_tile(tile_id, run_id, count, &crate::panorama_cli_path());
 }
 
 pub fn on_agent_idle(tile_id: &str) {
@@ -398,7 +457,6 @@ pub fn on_agent_idle(tile_id: &str) {
 
 pub fn on_agent_waiting(tile_id: &str) {
     let now = unix_ms();
-    let cli = crate::panorama_cli_path();
     let guard = state().lock().unwrap_or_else(|e| e.into_inner());
     for (run_id, entry) in &guard.runs {
         if entry.run.status.is_terminal() { continue; }
@@ -430,14 +488,6 @@ pub fn on_agent_waiting(tile_id: &str) {
                                 now,
                             })
                         }, run_id.clone()).await;
-                        if let Some(coord_tile) = {
-                            let g = state().lock().unwrap_or_else(|e| e.into_inner());
-                            g.runs.get(&run_id).and_then(|e| e.run.coordinator_tile.clone())
-                        } {
-                            if !is_tile_waiting(&coord_tile) {
-                                maybe_nudge_tile(&coord_tile, &run_id, 1, &cli);
-                            }
-                        }
                     });
                     return;
                 }
@@ -624,7 +674,10 @@ fn handle_run_list() -> String {
         let open_gates = e.gates.values().filter(|g| g.resolution.is_none()).count();
         let (cost_by_role, cost_by_model) = cost_aggregates(e);
         let coord_cost = coordinator_cost_usd(e);
+        let latest_activity = e.dispatches.values().flat_map(|d| [Some(d.started_at), d.ended_at, d.last_heartbeat])
+            .flatten().chain(e.messages.iter().map(|m| m.at)).max().unwrap_or(0).max(e.run.updated_at);
         let mut row = serde_json::json!({"run": e.run, "taskCounts": counts, "openGates": open_gates,
+            "runningDispatches": e.running_dispatch_count(), "latestActivity": latest_activity,
             "costByRole": cost_by_role, "costByModel": cost_by_model});
         if let Some(c) = coord_cost {
             row["coordinatorCostUsd"] = c.into();
@@ -639,6 +692,7 @@ fn handle_run_show(body: &[u8]) -> String {
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
     let brief_mode = v["brief"].as_bool().unwrap_or(false);
+    let full = v["full"].as_bool().unwrap_or(false);
 
     struct DispatchRow {
         val: Value,
@@ -661,8 +715,10 @@ fn handle_run_show(body: &[u8]) -> String {
             tv
         }).collect();
         let dispatch_rows: Vec<DispatchRow> = entry.dispatches.values().map(|d| {
+            let mut val = serde_json::to_value(d).unwrap_or_default();
+            if !full { val.as_object_mut().map(|obj| obj.remove("report")); }
             DispatchRow {
-                val: serde_json::to_value(d).unwrap_or_default(),
+                val,
                 tile_id: d.tile_id.clone(),
                 dispatch_id: d.id.clone(),
                 is_running: d.status == DispatchStatus::Running,
@@ -822,7 +878,7 @@ async fn handle_run_delete(body: &[u8]) -> String {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = guard.runs.get(&run_id) else { return err_resp("not_found", "run not found"); };
         let live = matches!(entry.run.status, RunStatus::Active | RunStatus::Paused);
-        let tiles: Vec<String> = entry.dispatches.values().filter_map(|d| d.tile_id.clone()).collect();
+        let tiles: Vec<(String, String)> = entry.dispatches.values().filter_map(|d| d.tile_id.clone().map(|t| (d.id.clone(), t))).collect();
         (live, tiles)
     };
 
@@ -836,7 +892,8 @@ async fn handle_run_delete(body: &[u8]) -> String {
     }
 
     let mut released = false;
-    for tile in &worker_tiles {
+    for (dispatch_id, tile) in &worker_tiles {
+        if let Err(e) = save_worker_transcript(&run_id, dispatch_id, tile) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
         if let Some(session) = crate::lookup_live(tile) {
             crate::kill_session(&session);
             released = true;
@@ -1149,6 +1206,12 @@ async fn handle_task_update(body: &[u8]) -> String {
     let profile = v["profile"].as_str().map(str::to_string);
     let review_field: Option<bool> = v.get("review").filter(|s| !s.is_null()).and_then(|s| s.as_bool());
     let by = v["by"].as_str().unwrap_or("coordinator").to_string();
+    let owner = match v.get("owner").filter(|v| !v.is_null()) {
+        None => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        _ => return err_resp("bad_request", "owner must be user or coordinator"),
+    };
+    let reason = v["reason"].as_str().map(str::to_string);
     let now = unix_ms();
 
     let prev_status = {
@@ -1160,10 +1223,11 @@ async fn handle_task_update(body: &[u8]) -> String {
 
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
+    let actor = by.clone();
     let commit_result = commit(move |_| {
         Ok(Cmd::TaskUpdate {
             run_id: run_id_c, task_id: task_id_c, status, result: result_val,
-            spec, acceptance, verify, profile, escalation, review: review_field, now,
+            spec, acceptance, verify, profile, escalation, review: review_field, owner, by: actor, reason, now,
         })
     }, run_id.clone()).await;
 
@@ -1241,7 +1305,7 @@ async fn handle_dispatch(body: &[u8]) -> String {
         let dispatch_id = format!("{run_id_c}.{task_id_c}.{attempt}");
         Ok(Cmd::Dispatch {
             run_id: run_id_c, id: dispatch_id, task_id: task_id_c,
-            attempt, retry_of, profile, model, tile_id, owner: None, now,
+            attempt, retry_of, profile, model, tile_id, owner: None, merge_branch: None, now,
         })
     }, run_id.clone()).await;
     match result {
@@ -1274,7 +1338,7 @@ async fn handle_send(body: &[u8]) -> String {
     let dispatch_id = v["dispatchId"].as_str().map(str::to_string);
     let dispatch_id_for_hook = dispatch_id.clone();
     let reply_to = v["replyTo"].as_u64().map(|n| n as u32);
-    let body_str = v["body"].as_str().map(str::to_string);
+    let body_str = if msg_type == "worker_done" { v["report"].as_str().or_else(|| v["body"].as_str()) } else { v["body"].as_str() }.map(str::to_string);
     let outcome = v["outcome"].as_str().map(str::to_string);
     let summary = v["summary"].as_str().map(str::to_string);
     if msg_type == "worker_done" {
@@ -1344,6 +1408,7 @@ async fn handle_send(body: &[u8]) -> String {
                     let run_id_lr = run_id.clone();
                     let outcome_lr = v["outcome"].as_str().unwrap_or("").to_string();
                     let summary_lr = v["summary"].as_str().unwrap_or("").to_string();
+                    let report_lr = v["report"].as_str().unwrap_or("").to_string();
                     let files_lr = files_modified.clone();
                     tokio::spawn(async move {
                         let now_lr = unix_ms();
@@ -1351,6 +1416,7 @@ async fn handle_send(body: &[u8]) -> String {
                             "dispatchId": did,
                             "outcome": outcome_lr,
                             "summary": summary_lr,
+                            "report": report_lr,
                             "filesModified": files_lr,
                             "reason": "superseded"
                         }).to_string();
@@ -1805,6 +1871,15 @@ async fn supervision_loop() {
 
 async fn supervision_tick() {
     let now_secs = unix_ms() / 1000;
+    let overdue: Vec<(String, String)> = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.values().filter(|e| !e.run.status.is_terminal()
+            && e.messages.iter().any(|m| !m.acked && m.to == "coordinator"
+                && unix_ms().saturating_sub(m.at) >= 60_000))
+            .filter_map(|e| e.run.coordinator_tile.clone().map(|tile| (e.run.id.clone(), tile)))
+            .collect()
+    };
+    for (run_id, tile) in overdue { recheck_coordinator(&run_id, &tile); }
 
     let starting_set = starting().lock().unwrap_or_else(|e| e.into_inner()).clone();
     let running_dispatches: Vec<(String, String, String, u64, Limits)> = {
@@ -2063,6 +2138,53 @@ async fn handle_verify(body: &[u8]) -> String {
     ok_resp(serde_json::json!({"started": true}))
 }
 
+async fn handle_conflict_resolve(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    let task_id = v["taskId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() || task_id.is_empty() {
+        return err_resp("bad_request", "runId and taskId required");
+    }
+
+    let merge_branch = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = match guard.runs.get(&run_id) {
+            Some(e) => e,
+            None => return err_resp("not_found", "run not found"),
+        };
+        let task = match entry.tasks.get(&task_id) {
+            Some(t) => t,
+            None => return err_resp("not_found", "task not found"),
+        };
+        let has_open_gate = entry.gates.values().any(|g| g.task_id == task_id && g.resolution.is_none());
+        if task.status != TaskStatus::Blocked || has_open_gate {
+            return err_resp("conflict", "task must be blocked by an integration conflict to resolve it");
+        }
+        let source = entry.dispatches.values()
+            .filter(|d| d.task_id == task_id
+                && d.status == DispatchStatus::Reported
+                && d.outcome.as_deref() == Some("succeeded")
+                && d.branch.is_some())
+            .max_by_key(|d| d.attempt);
+        match source {
+            Some(d) => d.branch.clone().unwrap(),
+            None => return err_resp("conflict", "no reported dispatch with a branch to merge"),
+        }
+    };
+
+    let mut inner = serde_json::json!({
+        "runId": run_id,
+        "taskId": task_id,
+        "by": "coordinator",
+    });
+    for key in ["profile", "model"] {
+        if let Some(s) = v[key].as_str() {
+            inner[key] = s.into();
+        }
+    }
+    worker_start_inner(inner, Some(merge_branch)).await
+}
+
 async fn handle_retry(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
@@ -2229,6 +2351,7 @@ fn build_report(entry: &crate::orch::reducer::RunEntry, integration_tip: Option<
                     "headSha": d.head_sha,
                     "costUsd": d.cost_usd,
                     "costSource": d.cost_source,
+                    "report": d.report,
                 })
             })
             .collect();
@@ -2336,6 +2459,7 @@ fn render_report_markdown(data: &Value) -> String {
                         None => out.push_str(" cost=unknown"),
                     }
                     out.push('\n');
+                    if let Some(report) = d["report"].as_str() { out.push_str(&format!("\n{report}\n\n")); }
                     for v in d["verifications"].as_array().into_iter().flatten() {
                         out.push_str(&format!(
                             "  - verify `{}`: {} (exit {})\n",
@@ -2468,6 +2592,7 @@ async fn handle_integrate(body: &[u8]) -> String {
     let int_path_c = int_path.clone();
     let int_branch_c = int_branch.clone();
     let base_sha_c = base_sha.clone();
+    let branch_for_conflict = branch.clone();
 
     let outcome = tokio::task::spawn_blocking(move || {
         if !std::path::Path::new(&int_path_c).exists() {
@@ -2524,6 +2649,11 @@ async fn handle_integrate(body: &[u8]) -> String {
             let run_id_c = run_id.clone();
             let task_id_c = task_id.clone();
             let files_c = files.clone();
+            let branch_c = branch_for_conflict.clone();
+            let tip_path = int_path.clone();
+            let integration_tip = tokio::task::spawn_blocking(move || git::head_sha(&tip_path).unwrap_or_default())
+                .await
+                .unwrap_or_default();
             let now = unix_ms();
             let seq = {
                 let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2534,6 +2664,8 @@ async fn handle_integrate(body: &[u8]) -> String {
                     run_id: run_id_c,
                     task_id: task_id_c,
                     files: files_c,
+                    branch: branch_c,
+                    integration_tip,
                     msg_seq: seq,
                     now,
                 })
@@ -2586,7 +2718,7 @@ async fn handle_worktree_clean(body: &[u8]) -> String {
         (removable, kept)
     }).await.unwrap_or_default();
 
-    if release_worker_sessions(&removable).await {
+    if release_worker_sessions(&run_id, &removable).await {
         tokio::time::sleep(Duration::from_millis(SESSION_RELEASE_SETTLE_MS)).await;
     }
 
@@ -2615,9 +2747,11 @@ struct CleanCandidate {
 }
 
 // A live worker shell keeps its cwd open, and Windows refuses to delete that folder.
-async fn release_worker_sessions(candidates: &[CleanCandidate]) -> bool {
+async fn release_worker_sessions(run_id: &str, candidates: &[CleanCandidate]) -> bool {
     let mut released = false;
-    for tile in candidates.iter().filter_map(|c| c.tile_id.as_deref()) {
+    for candidate in candidates {
+        let Some(tile) = candidate.tile_id.as_deref() else { continue };
+        if let Err(e) = save_worker_transcript(run_id, &candidate.id, tile) { eprintln!("[orch] transcript run {run_id} dispatch {}: {e}", candidate.id); }
         if let Some(session) = crate::lookup_live(tile) {
             crate::kill_session(&session);
             released = true;
@@ -2769,6 +2903,10 @@ async fn handle_gate_resolve(body: &[u8]) -> String {
 
 async fn handle_worker_start(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    worker_start_inner(v, None).await
+}
+
+async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     let task_id = v["taskId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() || task_id.is_empty() {
@@ -2789,7 +2927,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
             Some(t) => t,
             None => return err_resp("not_found", "task not found"),
         };
-        if by != "user" && task.owner.as_deref() == Some("user") {
+        if by != "user" && merge_branch.is_none() && task.owner.as_deref() == Some("user") {
             return err_resp("owned_by_user", "this task is owned by the user; only the user can dispatch it");
         }
         if task.routing == 1 {
@@ -2891,6 +3029,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
     let model_c = model.clone();
     let retry_of_c = retry_of.clone();
     let owner_c = owner_for_dispatch.clone();
+    let merge_branch_c = merge_branch.clone();
     let account = routed.as_ref().and_then(|_| account_for_profile(&profile));
     let routed_c = routed.clone();
     let v_c = v.clone();
@@ -2919,6 +3058,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
             model: model_c,
             tile_id: Some(tile_id_c.clone()),
             owner: owner_c,
+            merge_branch: merge_branch_c,
             now,
         };
         Ok(match fields {
@@ -3449,7 +3589,9 @@ async fn start_dispatch(input: StartDispatchInput) {
         return;
     }
 
+    let resolves_conflict = dispatch_clone.merge_branch.is_some();
     let use_worktree = worktree_mode != "none" && run_base_sha.is_some();
+    let mut merge_note: Option<String> = None;
     let mut handoff_text: Option<String> = None;
     let cwd = if use_worktree {
         let base_sha_val = run_base_sha.clone().unwrap_or_default();
@@ -3457,7 +3599,7 @@ async fn start_dispatch(input: StartDispatchInput) {
         let repo_c = repo.clone();
         let int_br_c = int_branch.clone();
         let base_for_wt = tokio::task::spawn_blocking(move || {
-            if task_has_deps {
+            if task_has_deps || resolves_conflict {
                 git::rev_parse(&repo_c, &int_br_c).unwrap_or(base_sha_val)
             } else {
                 base_sha_val
@@ -3566,6 +3708,41 @@ async fn start_dispatch(input: StartDispatchInput) {
             }
         }
 
+        if let Some(source_branch) = dispatch_clone.merge_branch.clone() {
+            if !is_running() { remove_starting(); return; }
+            let wt_merge = wt_path.clone();
+            let branch_merge = source_branch.clone();
+            let merged = tokio::task::spawn_blocking(move || git::merge_no_commit(&wt_merge, &branch_merge)).await;
+            let conflicted = match merged {
+                Ok(Ok(files)) => files,
+                Ok(Err(e)) => {
+                    bail_fail!(
+                        format!("conflict merge failed: {e}"),
+                        "worker_failed".into(),
+                        serde_json::json!({"reason":"merge_failed","detail":e}).to_string()
+                    );
+                }
+                Err(e) => {
+                    bail_fail!(
+                        "conflict merge: spawn failed".into(),
+                        "worker_failed".into(),
+                        serde_json::json!({"reason":"merge_failed","detail":format!("spawn panic: {e}")}).to_string()
+                    );
+                }
+            };
+            let integrated_titles: Vec<String> = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                guard.runs.get(&run_id).map(|e| {
+                    let mut tasks: Vec<&Task> = e.tasks.values()
+                        .filter(|t| t.integrated_sha.is_some() && t.id != task_id)
+                        .collect();
+                    tasks.sort_by_key(|t| t.id.trim_start_matches('t').parse::<u32>().unwrap_or(u32::MAX));
+                    tasks.into_iter().map(|t| t.title.clone()).collect()
+                }).unwrap_or_default()
+            };
+            merge_note = Some(worker::conflict_brief(&source_branch, &conflicted, &integrated_titles));
+        }
+
         wt_path
     } else {
         base_cwd
@@ -3587,6 +3764,7 @@ async fn start_dispatch(input: StartDispatchInput) {
         dispatch_id: &dispatch_id,
         task: &task_clone,
         dispatch: &dispatch_for_brief,
+        merge_note: merge_note.as_deref(),
         deps_results: &deps_results,
         cli_path: &cli_path,
         cwd: &cwd,
@@ -3686,8 +3864,64 @@ fn handle_worker_read(body: &[u8]) -> String {
         Ok(t) => t,
         Err(e) => return e,
     };
-    let text = capture_worker_screen(&tile_id, lines);
+    let text = if v["all"].as_bool().unwrap_or(false) {
+        match worker::capture_worker_history(&tile_id) { Ok(text) => text, Err(e) => return err_resp("io", &e) }
+    } else { capture_worker_screen(&tile_id, lines) };
     ok_resp(serde_json::json!({"text": text}))
+}
+
+fn transcript_path(run_id: &str, dispatch_id: &str) -> Result<std::path::PathBuf, String> {
+    if [run_id, dispatch_id].iter().any(|id| id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.') || *id == "." || *id == "..") {
+        return Err("invalid run or dispatch id".into());
+    }
+    let base = crate::panorama_dir().ok_or("no panorama dir")?;
+    Ok(base.join("orch").join("runs").join(run_id).join("transcripts").join(format!("{dispatch_id}.txt")))
+}
+
+fn cap_worker_transcript(text: &str) -> String {
+    const CAP: usize = 2 * 1024 * 1024;
+    if text.len() <= CAP { return text.to_owned(); }
+    let mut start = text.len() - CAP;
+    loop {
+        while !text.is_char_boundary(start) { start += 1; }
+        let header = format!("[transcript truncated: {start} bytes dropped]\n");
+        if header.len() + text.len() - start <= CAP { break; }
+        start += header.len() + text.len() - start - CAP;
+    }
+    if let Some(newline) = text[start..].find('\n') {
+        if start + newline + 1 < text.len() { start += newline + 1; }
+    }
+    format!("[transcript truncated: {start} bytes dropped]\n{}", &text[start..])
+}
+
+fn save_worker_transcript(run_id: &str, dispatch_id: &str, tile_id: &str) -> Result<(), String> {
+    if !crate::sessions().lock().unwrap().contains_key(tile_id) { return Ok(()); }
+    let text = worker::capture_worker_history(tile_id)?;
+    let path = transcript_path(run_id, dispatch_id)?;
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(path, cap_worker_transcript(&text)).map_err(|e| e.to_string())
+}
+
+fn handle_worker_transcript(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("");
+    let dispatch_id = v["dispatchId"].as_str().unwrap_or("");
+    let tile = dispatch_tile(run_id, dispatch_id).ok();
+    let text = if let Some(tile) = tile.filter(|t| crate::lookup_live(t).is_some()) {
+        worker::capture_worker_history(&tile)
+    } else {
+        transcript_path(run_id, dispatch_id).and_then(|p| std::fs::read_to_string(p).map_err(|e| e.to_string()))
+    };
+    match text {
+        Ok(text) => {
+            let text = if let Some(n) = v["tail"].as_u64() {
+                let lines: Vec<_> = text.lines().collect();
+                lines[lines.len().saturating_sub(n as usize)..].join("\n")
+            } else { text };
+            ok_resp(serde_json::json!({"text": text}))
+        }
+        Err(e) => err_resp("io", &e),
+    }
 }
 
 fn dispatch_tile(run_id: &str, dispatch_id: &str) -> Result<String, String> {
@@ -3720,7 +3954,13 @@ fn handle_worker_send(body: &[u8]) -> String {
     let Some(session) = crate::lookup_live(&tile_id) else {
         return err_resp("conflict", "worker session not running");
     };
-    crate::write_input(&session, text);
+    if let Some(bytes) = v["keysBytes"].as_array() {
+        let bytes: Option<Vec<u8>> = bytes.iter().map(|b| b.as_u64().and_then(|n| u8::try_from(n).ok())).collect();
+        let Some(bytes) = bytes else { return err_resp("bad_request", "invalid keysBytes"); };
+        crate::write_input_bytes(&session, &bytes);
+    } else {
+        crate::write_input(&session, text);
+    }
     ok_resp(serde_json::json!({}))
 }
 
@@ -3734,12 +3974,13 @@ async fn stop_running_dispatch(run_id: String, dispatch_id: String, tile_id: Str
             status: DispatchStatus::Stopped,
             summary: None, now,
         })
-    }, run_id).await;
+    }, run_id.clone()).await;
     match result {
         CommitResult::Ok(_) | CommitResult::Stale => {}
         CommitResult::Err(e) => return Err(e),
     }
     if !tile_id.is_empty() {
+        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
         if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
             crate::kill_session(&s);
         }
@@ -3781,6 +4022,7 @@ async fn handle_worker_stop(body: &[u8]) -> String {
         }
     }
     if !tile_id.is_empty() {
+        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
         if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
             crate::kill_session(&s);
         }
@@ -3825,7 +4067,7 @@ async fn handle_task_cancel(body: &[u8]) -> String {
             run_id: run_id_c, task_id: task_id_c,
             status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None,
-            verify: None, profile: None, escalation: None, review: None, now,
+            verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now,
         })
     }, run_id.clone()).await;
     if let CommitResult::Err(e) = cancel_result {
@@ -3887,6 +4129,7 @@ async fn handle_worker_release(body: &[u8]) -> String {
         return err_resp("conflict", "dispatch must be in a terminal state to release");
     }
     if !tile_id.is_empty() {
+        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
         if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
             crate::kill_session(&s);
         }
@@ -4560,6 +4803,77 @@ mod tests {
     use crate::orch::model::Limits;
 
     #[test]
+    fn transcript_cap_preserves_utf8_tail() {
+        const CAP: usize = 2 * 1024 * 1024;
+        assert_eq!(cap_worker_transcript("small\ntext"), "small\ntext");
+        assert_eq!(cap_worker_transcript(&"a".repeat(CAP)).len(), CAP);
+        let text = format!("{}end", "é".repeat(CAP / 2 + 50));
+        let capped = cap_worker_transcript(&text);
+        let (header, tail) = capped.split_once('\n').unwrap();
+        let dropped: usize = header.strip_prefix("[transcript truncated: ").unwrap()
+            .strip_suffix(" bytes dropped]").unwrap().parse().unwrap();
+        assert!(capped.len() <= CAP);
+        assert!(text.is_char_boundary(dropped));
+        assert_eq!(tail, &text[dropped..]);
+        assert!(tail.ends_with("end"));
+
+        let text = format!("{}\nlast line", "a".repeat(CAP + 10));
+        assert!(cap_worker_transcript(&text).ends_with("\nlast line"));
+    }
+
+    #[test]
+    fn transition_notifications_cover_board_events() {
+        let run: Run = serde_json::from_value(serde_json::json!({
+            "id": "r", "title": "Board", "repo": "/repo", "status": "active",
+            "limits": { "maxWorkers": 1, "maxAttempts": 1, "dispatchTimeoutMin": 1 },
+            "createdAt": 1, "updatedAt": 1
+        })).unwrap();
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "t", "title": "Task", "spec": "", "deps": [], "escalation": [], "verify": [],
+            "review": false, "status": "pending", "attempts": 1, "createdAt": 1, "updatedAt": 1
+        })).unwrap();
+        let mut entry = reducer::RunEntry::new(run);
+        entry.tasks.insert(task.id.clone(), task);
+        let snapshot = || (RunStatus::Active, HashMap::from([("t".to_string(), TaskStatus::Pending)]));
+        let data = serde_json::json!({ "taskId": "t", "question": "Proceed?", "files": ["a.rs"] });
+        for (kind, expected) in [("gate-create", "gate"), ("task-conflict", "conflict")] {
+            let events = transition_notifications(Some(&snapshot()), &entry, kind, &data);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["kind"], expected);
+        }
+        for (status, expected) in [(TaskStatus::Review, "review"), (TaskStatus::Failed, "exhausted")] {
+            entry.tasks.get_mut("t").unwrap().status = status.clone();
+            let events = transition_notifications(Some(&snapshot()), &entry, "test", &data);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["kind"], expected);
+            let unchanged = (RunStatus::Active, HashMap::from([("t".to_string(), status)]));
+            assert!(transition_notifications(Some(&unchanged), &entry, "test", &data).is_empty());
+        }
+        entry.tasks.get_mut("t").unwrap().status = TaskStatus::Pending;
+        entry.run.status = RunStatus::Completed;
+        let events = transition_notifications(Some(&snapshot()), &entry, "run-set-status", &data);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "completed");
+
+        let mut receiver = crate::ui::subscribe_events();
+        let mut replayed = State::default();
+        replayed.runs.insert("r".into(), entry);
+        for (kind, event) in [
+            ("gate-create", serde_json::json!({"runId":"r", "id":"g1", "taskId":"t", "question":"Proceed?"})),
+            ("task-update", serde_json::json!({"runId":"r", "taskId":"t", "status":"review"})),
+            ("task-update", serde_json::json!({"runId":"r", "taskId":"t", "status":"failed"})),
+            ("task-conflict", serde_json::json!({"runId":"r", "taskId":"t", "files":["a.rs"]})),
+            ("run-set-status", serde_json::json!({"runId":"r", "status":"completed"})),
+        ] {
+            replayed.replay(kind, &event).unwrap();
+        }
+        while let Ok(message) = receiver.try_recv() {
+            let event: Value = serde_json::from_str(&message).unwrap();
+            assert!(event["t"] != "orch.notify" || event["runId"] != "r");
+        }
+    }
+
+    #[test]
     fn build_commit_diff_truncates_on_char_boundary() {
         let mut s = String::from("a");
         while s.len() < 60_010 {
@@ -4712,6 +5026,7 @@ mod tests {
             role: None,
             review: false,
             owner: None,
+            owner_reason: None,
             status,
             result: None,
             integrated_sha: None,
@@ -4731,6 +5046,7 @@ mod tests {
             profile: Some("claude".to_string()),
             model: None,
             tile_id: None,
+            merge_branch: None,
             worktree: None,
             branch: None,
             status: DispatchStatus::Reported,
@@ -4738,6 +5054,7 @@ mod tests {
             head_sha: None,
             files_modified: vec![],
             summary: None,
+            report: None,
             started_at: 1_000_000,
             ended_at: Some(1_000_000 + duration_ms),
             last_heartbeat: None,
@@ -5148,7 +5465,7 @@ mod tests {
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::Dispatch {
             run_id: run_id.clone(), id: dispatch_id.clone(), task_id: task_id.clone(),
-            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: 1_000_000,
+            attempt: 1, retry_of: None, profile: None, model: None, tile_id: None, owner: None, merge_branch: None, now: 1_000_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::DispatchUpdate {
@@ -5162,7 +5479,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_002_000,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_002_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let entry = guard.runs.get(&run_id).unwrap();
@@ -5201,7 +5518,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_001_000,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
         };
         match guard.apply(&cmd) {
             ApplyResult::Ok(k, d) => guard.replay(&k, &d).unwrap(),
@@ -5243,7 +5560,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 1_001_000,
+            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
         };
         match guard.apply(&cmd) {
             ApplyResult::Err(e) => assert!(
@@ -5411,7 +5728,7 @@ mod tests {
                 run_id: run_id.clone(), id: format!("{run_id}.t1.1"),
                 task_id: "t1".into(), attempt: 1, retry_of: None,
                 profile: None, model: None, tile_id: Some(tile.clone()),
-                owner: None, now: unix_ms(),
+                owner: None, merge_branch: None, now: unix_ms(),
             };
             match guard.apply(&cmd) {
                 ApplyResult::Ok(k, d) => guard.replay(&k, &d).expect("replay"),
@@ -5438,7 +5755,7 @@ mod tests {
         let t1 = Task {
             id: "t1".into(), title: "t1".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: None, escalation: vec![], verify: vec![],
-            role: Some(Role::Explore), review: false, owner: None,
+            role: Some(Role::Explore), review: false, owner: None, owner_reason: None,
             status: TaskStatus::Completed, result: None, integrated_sha: None,
             attempts: 1, routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None, created_at: 0, updated_at: 0,
         };
@@ -5450,8 +5767,8 @@ mod tests {
         let d1 = Dispatch {
             id: "d1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some("claude".into()), model: Some("haiku".into()),
-            tile_id: None, worktree: None, branch: None, status: DispatchStatus::Reported,
-            outcome: None, head_sha: None, files_modified: vec![], summary: None,
+            tile_id: None, merge_branch: None, worktree: None, branch: None, status: DispatchStatus::Reported,
+            outcome: None, head_sha: None, files_modified: vec![], summary: None, report: None,
             started_at: 0, ended_at: None, last_heartbeat: None, verifications: vec![],
             cost_usd: Some(0.1), cost_source: Some("exact".into()),
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
@@ -5548,7 +5865,7 @@ mod tests {
         let wiring::DispatchPlan::Dispatch(planned) = f12_plan(s, states, None) else { panic!("expected dispatch") };
         let attempt = s.runs["r1"].tasks["t1"].attempts + 1;
         let id = format!("r1.t1.{attempt}");
-        f12_commit(s, Cmd::Dispatch {
+        f12_commit(s, Cmd::Dispatch { merge_branch: None,
             run_id: "r1".into(), id: id.clone(), task_id: "t1".into(), attempt, retry_of: None,
             profile: Some(planned.profile.clone()), model: planned.model.clone(), tile_id: None, owner: None, now: 1_000_000,
         }.with_fields(wiring::dispatch_fields(&planned, Some("system".into()))));
@@ -5712,7 +6029,7 @@ mod tests {
     #[test]
     fn f12_legacy_failure_stores_only_failure_class() {
         let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 0 });
-        f12_commit(&mut s, Cmd::Dispatch {
+        f12_commit(&mut s, Cmd::Dispatch { merge_branch: None,
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some("claude".into()), model: None, tile_id: None, owner: None, now: 1_000_000,
         });
@@ -5754,7 +6071,7 @@ mod tests {
         let states = candidates::CandidateStates::default();
         let wiring::DispatchPlan::Dispatch(planned) = f12_plan(&s, &states, None) else { panic!("dispatch") };
         let cmds = vec![
-            Cmd::Dispatch {
+            Cmd::Dispatch { merge_branch: None,
                 run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
                 profile: Some(planned.profile.clone()), model: planned.model.clone(), tile_id: None, owner: None, now: 1_000_000,
             }.with_fields(wiring::dispatch_fields(&planned, Some("system".into()))),
@@ -5806,7 +6123,7 @@ mod tests {
             deps: vec![], profile: None, escalation: vec![format!("{profile}:{}", model.unwrap_or("m"))],
             verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
-        f12_commit(&mut s, Cmd::Dispatch {
+        f12_commit(&mut s, Cmd::Dispatch { merge_branch: None,
             run_id: run_id.into(), id: format!("{run_id}.t1.1"), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some(profile.into()), model: model.map(str::to_string), tile_id: None, owner: None, now: 1_000_000,
         });

@@ -10,8 +10,19 @@ pub fn main() {
     }
     let command = args[0].clone();
     let rest = &args[1..];
-    let (mut body, pretty) = parse_flags(rest, &command);
+    let (mut body, pretty) = parse_flags(rest, &command).unwrap_or_else(|msg| {
+        eprintln!("[orch] {msg}");
+        std::process::exit(2);
+    });
     apply_env_defaults(&command, &mut body);
+    if command == "worker-send" && body.get("keys").and_then(|v| v.as_bool()) == Some(true) {
+        if let Some(text) = body.get("text").and_then(|v| v.as_str()) {
+            match decode_keys(text) {
+                Ok(bytes) => { body.insert("keysBytes".into(), serde_json::json!(bytes)); }
+                Err(e) => { eprintln!("[orch] {e}"); std::process::exit(2); }
+            }
+        }
+    }
 
     if let Err(msg) = validate_required(&command, &body) {
         eprintln!("[orch] {msg}");
@@ -69,6 +80,37 @@ pub fn main() {
     }
 }
 
+fn decode_keys(text: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut bytes = text.bytes();
+    while let Some(b) = bytes.next() {
+        if b != b'\\' { out.push(b); continue; }
+        match bytes.next() {
+            Some(b'r') => out.push(b'\r'),
+            Some(b'n') => out.push(b'\n'),
+            Some(b't') => out.push(b'\t'),
+            Some(b'e') => out.push(27),
+            Some(b'\\') => out.push(b'\\'),
+            Some(b'x') => {
+                let hi = bytes.next().and_then(|b| (b as char).to_digit(16));
+                let lo = bytes.next().and_then(|b| (b as char).to_digit(16));
+                match (hi, lo) { (Some(h), Some(l)) => out.push((h * 16 + l) as u8), _ => return Err("invalid hex key escape".into()) }
+            }
+            Some(other) => { out.push(b'\\'); out.push(other); }
+            None => out.push(b'\\'),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+#[test]
+fn key_escapes() {
+    assert_eq!(decode_keys(r"a\r\n\t\e\xFF\\").unwrap(), b"a\r\n\t\x1b\xff\\");
+    assert_eq!(decode_keys("é").unwrap(), "é".as_bytes());
+    assert!(decode_keys(r"\xG0").is_err());
+}
+
 fn apply_env_defaults(command: &str, body: &mut serde_json::Map<String, serde_json::Value>) {
     if let Ok(run_id) = std::env::var("PANORAMA_RUN_ID") {
         if !run_id.is_empty() && !body.contains_key("runId") {
@@ -117,7 +159,7 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "gate-resolve" => &["runId", "gateId", "resolution"],
         "worker-start" => &["runId", "taskId"],
         "worker-show" => &["runId", "dispatchId"],
-        "worker-read" => &["runId", "dispatchId"],
+        "worker-read" | "worker-transcript" => &["runId", "dispatchId"],
         "worker-send" => &["runId", "dispatchId", "text"],
         "worker-stop" => &["runId", "dispatchId"],
         "worker-release" => &["runId", "dispatchId"],
@@ -126,6 +168,7 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "worktree-clean" => &["runId"],
         "verify" => &["runId", "taskId"],
         "retry" => &["runId", "taskId"],
+        "conflict-resolve" => &["runId", "taskId"],
         "report" => &["runId"],
         "dispatch-adopt" => &["runId", "dispatchId"],
         "candidate-list" | "metrics" => &[],
@@ -144,7 +187,7 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
     Ok(())
 }
 
-fn parse_flags(args: &[String], command: &str) -> (serde_json::Map<String, serde_json::Value>, bool) {
+fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String, serde_json::Value>, bool), String> {
     let mut body: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     let mut arrays: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut pretty = false;
@@ -157,18 +200,54 @@ fn parse_flags(args: &[String], command: &str) -> (serde_json::Map<String, serde
         }
         let flag = &arg[2..];
 
+        let allowed = match command {
+            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min",
+            "run-show" => "run-id full brief last-status",
+            "run-list" => "",
+            "run-set-status" => "run-id status",
+            "run-update" => "run-id title autonomy max-operational-attempts",
+            "candidate-list" | "metrics" => "",
+            "candidate-clear" => "agent model account",
+            "usage-report" => "agent account-id windows",
+            "run-set-coordinator" => "run-id tile-id",
+            "task-create" => "run-id title spec spec-file acceptance dep profile escalation verify role review owner by",
+            "task-update" => "run-id task-id status result spec spec-file acceptance verify profile escalation review owner by reason",
+            "task-list" => "run-id status",
+            "dispatch" => "run-id task-id profile model retry-of tile-id",
+            "send" => "run-id type from to task-id dispatch-id body outcome summary file report report-file reply-to",
+            "check" => "run-id recipient type peek wait timeout-ms",
+            "gate-create" => "run-id task-id question option",
+            "gate-resolve" => "run-id gate-id resolution",
+            "worker-start" => "run-id task-id by profile model retry-of stop-live stopLive worktree",
+            "worker-show" | "worker-stop" | "worker-release" => "run-id dispatch-id",
+            "dispatch-adopt" => "run-id dispatch-id summary",
+            "worker-read" => "run-id dispatch-id lines all",
+            "worker-transcript" => "run-id dispatch-id tail",
+            "worker-send" => "run-id dispatch-id text keys",
+            "integrate" => "run-id task-id dispatch-id",
+            "worktree-clean" => "run-id",
+            "verify" => "run-id task-id",
+            "conflict-resolve" => "run-id task-id profile model",
+            "retry" => "run-id task-id by profile model",
+            "report" => "run-id format",
+            _ => return Err(format!("unknown command: {command}")),
+        };
+        if flag != "pretty" && !allowed.split_whitespace().any(|item| item == flag) {
+            return Err(format!("unknown flag --{flag} for {command}"));
+        }
+
         if flag == "pretty" {
             pretty = true;
             i += 1;
             continue;
         }
 
-        if flag == "spec-file" {
+        if flag == "spec-file" || flag == "report-file" {
             if i + 1 < args.len() {
                 let path = &args[i + 1];
                 match std::fs::read_to_string(path) {
-                    Ok(content) => { body.insert("spec".into(), content.into()); }
-                    Err(e) => { eprintln!("cannot read spec-file: {e}"); std::process::exit(2); }
+                    Ok(content) => { body.insert(if flag == "spec-file" { "spec" } else { "report" }.into(), content.into()); }
+                    Err(e) => { eprintln!("cannot read {flag}: {e}"); std::process::exit(2); }
                 }
                 i += 2;
             } else {
@@ -214,7 +293,7 @@ fn parse_flags(args: &[String], command: &str) -> (serde_json::Map<String, serde
     for (key, vals) in arrays {
         body.insert(key, serde_json::Value::Array(vals));
     }
-    (body, pretty)
+    Ok((body, pretty))
 }
 
 fn flag_to_field<'a>(flag: &'a str, command: &str) -> &'a str {
@@ -274,7 +353,7 @@ fn kebab_to_camel(s: &str) -> String {
 }
 
 fn is_bool_flag(flag: &str) -> bool {
-    matches!(flag, "review" | "peek" | "wait" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
+    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
 }
 
 fn is_array_field(field: &str, command: &str) -> bool {
@@ -292,7 +371,7 @@ fn coerce_value(field: &str, raw: &str) -> serde_json::Value {
 }
 
 fn is_numeric_field(field: &str) -> bool {
-    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "replyTo" | "lines")
+    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "replyTo" | "lines" | "tail")
 }
 
 fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
@@ -339,7 +418,71 @@ mod tests {
 
     fn parse(args: &[&str], command: &str) -> serde_json::Map<String, serde_json::Value> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_flags(&owned, command).0
+        parse_flags(&owned, command).unwrap().0
+    }
+
+    #[test]
+    fn documented_flags_parse() {
+        let commands = [
+            ("run-create", "repo title base-ref setup max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min"),
+            ("task-create", "run-id title spec spec-file acceptance verify dep role escalation profile review"),
+            ("task-update", "run-id task-id spec acceptance verify escalation profile status result owner reason"),
+            ("worker-start", "run-id task-id profile model stop-live"),
+            ("check", "run-id wait timeout-ms peek type"),
+            ("worker-show", "run-id dispatch-id"),
+            ("worker-read", "run-id dispatch-id lines all"),
+            ("worker-transcript", "run-id dispatch-id tail"),
+            ("worker-send", "run-id dispatch-id text keys"),
+            ("worker-stop", "run-id dispatch-id"),
+            ("worker-release", "run-id dispatch-id"),
+            ("dispatch-adopt", "run-id dispatch-id summary"),
+            ("retry", "run-id task-id profile model"),
+            ("verify", "run-id task-id"),
+            ("conflict-resolve", "run-id task-id profile model"),
+            ("integrate", "run-id task-id dispatch-id"),
+            ("send", "type to body report report-file"),
+            ("report", "run-id format"),
+            ("worktree-clean", "run-id"),
+            ("run-set-status", "run-id status"),
+            ("run-show", "run-id brief"),
+            ("task-list", "run-id"),
+            ("gate-create", "run-id task-id question option"),
+            ("gate-resolve", "run-id gate-id resolution"),
+            ("run-update", "run-id title"),
+        ];
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/claude-mod/skills/orchestrate/SKILL.md");
+        for (command, flags) in commands {
+            for flag in flags.split_whitespace() {
+                let value = if matches!(flag, "spec-file" | "report-file") { file } else { "1" };
+                let args = [format!("--{flag}"), value.to_string()];
+                let (body, _) = parse_flags(&args, command).unwrap_or_else(|e| panic!("{command}: {e}"));
+                let field = match flag { "spec-file" => "spec", "report-file" => "report", _ => flag_to_field(flag, command) };
+                assert!(body.contains_key(field), "{command} --{flag}");
+            }
+            assert!(parse_flags(&["--pretty".into()], command).unwrap().1);
+        }
+        let body = parse(&["--profile", "codex", "--model", "gpt-6-luna"], "conflict-resolve");
+        assert_eq!(body["profile"], "codex");
+        assert_eq!(body["model"], "gpt-6-luna");
+    }
+
+    #[test]
+    fn owner_and_unknown_flags() {
+        let args = vec!["--owner".into(), "coordinator".into(), "--reason".into(), "asked".into()];
+        let body = parse_flags(&args, "task-update").unwrap().0;
+        assert_eq!(body["owner"], "coordinator");
+        assert_eq!(body["reason"], "asked");
+        assert!(parse_flags(&["--owner".into(), "user".into()], "check").unwrap_err().contains("--owner"));
+        assert!(parse_flags(&["--typo".into()], "task-update").unwrap_err().contains("--typo"));
+    }
+
+    #[test]
+    fn report_flags_read_inline_and_file() {
+        let path = std::env::temp_dir().join(format!("orch-report-{}.md", std::process::id()));
+        std::fs::write(&path, "full report").unwrap();
+        assert_eq!(parse(&["--report", "inline"], "send")["report"], "inline");
+        assert_eq!(parse(&["--report-file", path.to_str().unwrap()], "send")["report"], "full report");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

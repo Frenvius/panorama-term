@@ -275,6 +275,8 @@ pub struct Task {
     pub review: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_reason: Option<String>,
     pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
@@ -336,6 +338,8 @@ pub struct Dispatch {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -348,6 +352,8 @@ pub struct Dispatch {
     pub files_modified: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
     pub started_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,

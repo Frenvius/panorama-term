@@ -27,6 +27,7 @@ export interface TileLink {
 export interface BoardActions {
   allRuns: RunSummary[];
   projectOf: (tileId: string) => BoardProject;
+  runsForTile: (tileId: string) => RunSummary[];
   openBoard: (runId: string, nearTileId?: string, repo?: string, frameId?: string) => void;
   newBoard: (repo: string, nearTileId?: string, frameId?: string) => void;
   createProject: (tileId: string) => void;

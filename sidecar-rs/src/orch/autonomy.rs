@@ -506,7 +506,7 @@ mod tests {
     fn dispatch(s: &mut State, run_id: &str, task_id: &str, tile: Option<&str>) -> String {
         let attempt = s.runs[run_id].tasks[task_id].attempts + 1;
         let id = format!("{run_id}.{task_id}.{attempt}");
-        f12_commit(s, Cmd::Dispatch {
+        f12_commit(s, Cmd::Dispatch { merge_branch: None,
             run_id: run_id.into(), id: id.clone(), task_id: task_id.into(), attempt, retry_of: None,
             profile: Some("codex".into()), model: Some("f12c2".into()), tile_id: tile.map(str::to_string),
             owner: None, now: 1_000_000,
@@ -730,7 +730,7 @@ mod tests {
             deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()],
             verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
         }.with_fields(json!({"routing": 1, "pinned": false})));
-        apply(&mut s, Cmd::Dispatch {
+        apply(&mut s, Cmd::Dispatch { merge_branch: None,
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some("codex".into()), model: None, tile_id: None, owner: None, now: 1_000_000,
         });
@@ -761,7 +761,7 @@ mod tests {
         let mut s = failed_state("r1", autonomy(true, false, false), FailureClass::QuotaExhausted);
         let revive = || Cmd::DispatchRevive { run_id: "r1".into(), dispatch_id: "r1.t1.1".into(), now: 9 };
         assert!(matches!(s.apply(&revive()), ApplyResult::Err(_)), "task is failed, not pending");
-        f12_commit(&mut s, Cmd::TaskUpdate {
+        f12_commit(&mut s, Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: Some(TaskStatus::Pending), result: None,
             spec: None, acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 5,
         });

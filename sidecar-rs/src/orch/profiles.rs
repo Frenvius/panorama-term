@@ -81,6 +81,7 @@ fn codex_profile() -> Profile {
         pin_env_via_config: true,
         startup_answers: vec![
             StartupAnswer { contains: "Hooks need review".into(), send: "2\r".into() },
+            StartupAnswer { contains: "Trust this folder?".into(), send: "\r".into() },
             StartupAnswer { contains: "1. Trust and continue".into(), send: "\r".into() },
         ],
         ..cli_profile("codex", &["-c", "check_for_update_on_startup=false"], "-m")

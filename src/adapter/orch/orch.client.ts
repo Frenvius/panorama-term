@@ -36,7 +36,7 @@ const post = async <T>(command: string, body: unknown): Promise<T> => {
 
 export const listRuns = (): Promise<{ ok: boolean; runs: RunSummary[] }> => post('run-list', {});
 
-export const showRun = (runId: string): Promise<{ ok: boolean } & RunDetail> => post('run-show', { runId });
+export const showRun = (runId: string): Promise<{ ok: boolean } & RunDetail> => post('run-show', { runId, full: true });
 
 interface ResolveGateOpts {
   runId: string;
@@ -148,6 +148,7 @@ export interface UpdateTaskOpts {
   runId: string;
   taskId: string;
   status?: string;
+  owner?: 'user' | 'coordinator';
   spec?: string;
   profile?: string;
   review?: boolean;
@@ -167,6 +168,14 @@ export interface StartWorkerOpts {
 
 export const startWorker = (opts: StartWorkerOpts): Promise<void> =>
   post('worker-start', opts).then(() => undefined);
+
+export interface ResolveConflictOpts {
+  runId: string;
+  taskId: string;
+}
+
+export const resolveConflict = (opts: ResolveConflictOpts): Promise<void> =>
+  post('conflict-resolve', opts).then(() => undefined);
 
 export interface WorkerStopOpts {
   runId: string;

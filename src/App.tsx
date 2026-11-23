@@ -8,9 +8,9 @@ import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { useBackgroundNotify } from '~/components/commons/Notifications/backgroundWatch';
 
 const App = () => {
-  const { tabKey, activeId, activeTabId, activeTabMode } = useWorkspace();
+  const { tabKey, activeTabId, activeTabMode } = useWorkspace();
 
-  useBackgroundNotify(activeId, tabKey);
+  useBackgroundNotify();
 
   React.useEffect(() => {
     const blockBrowserFind = (e: KeyboardEvent) => {

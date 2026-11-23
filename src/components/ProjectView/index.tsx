@@ -1,3 +1,4 @@
+import { orphanBoards } from '~/usecase/util/boardProject';
 import type { EditorView } from '@codemirror/view';
 import type { PanelId } from '~/domain/interfaces/dock.interface';
 import type { CommandId } from '~/usecase/util/keybindings';
@@ -37,6 +38,7 @@ import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { dockerAvailable } from '~/adapter/docker/docker.client';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
+import { useOrchNotifications } from '~/components/commons/Notifications/orchWatch';
 import { setAlert, getAlerts, clearAlert, subscribeAlerts } from '~/usecase/util/alerts';
 import { buildProjectGroups, tileOwnerResolver } from '~/usecase/util/projectGroups';
 import { useProjectsPanelActions } from '~/usecase/hooks/useProjectsPanelActions';
@@ -174,14 +176,15 @@ const ProjectView = () => {
   }, [tiles, activeTabId, activateTile]);
 
   const openRemote = React.useCallback(
-    (id: string, cwd: string) => {
+    (id: string, cwd: string, group?: { id: string; title: string }, orchWorker?: boolean) => {
       if (tiles.some((t) => t.id === id)) {
         activateTile(id);
         return;
       }
       addTerminal(cwd || activeProject || undefined, undefined, undefined, id);
+      if (orchWorker) patchTile(id, { orchWorker, runId: group?.id });
     },
-    [tiles, activeProject, activateTile, addTerminal]
+    [tiles, activeProject, activateTile, addTerminal, patchTile]
   );
   useRemoteTiles(openRemote);
 
@@ -191,7 +194,7 @@ const ProjectView = () => {
       return;
     }
     addTerminal(cwd || undefined, undefined, undefined, tileId);
-    patchTile(tileId, { runId: group.id });
+    patchTile(tileId, { runId: group.id, orchWorker: true });
   };
   handleShowWorkerRef.current = handleShowWorker;
 
@@ -360,7 +363,12 @@ const ProjectView = () => {
   }, []);
 
   const openNotified = React.useCallback(
-    ({ tileId, wsId, tabId }: NotifyTarget) => {
+    ({ tileId, wsId, tabId, runId }: NotifyTarget) => {
+      if (runId && tileId === `orch:${runId}`) {
+        clearAlert(tileId);
+        addOrchBoard(runId);
+        return;
+      }
       if (tiles.some((t) => t.id === tileId)) {
         clearAlert(tileId);
         activateTile(tileId);
@@ -376,7 +384,7 @@ const ProjectView = () => {
       pendingFocusTileId = tileId;
       void switchTab(tabId);
     },
-    [tiles, tabs, activeId, activateTile, switchTab, switchWorkspace]
+    [tiles, tabs, activeId, activateTile, switchTab, switchWorkspace, addOrchBoard]
   );
 
   useNotifyBridge({
@@ -387,6 +395,12 @@ const ProjectView = () => {
     onOpen: openNotified,
     onAlert: addAlert,
     onClear: clearAlert
+  });
+
+  useOrchNotifications({
+    tiles, workspaces, wsId: activeId, tabId: activeTabId,
+    suppressed: (tile) => !!panelState && document.hasFocus() && tile.id === activeTileId &&
+      (!panelState.maximizedGroupId || panelState.maximizedGroupId === panelState.activeGroupId)
   });
 
   const switchToCanvasMode = React.useCallback(() => {
@@ -709,11 +723,12 @@ const ProjectView = () => {
   const projectActionsWithBoards = React.useMemo(() => ({
     ...projectActions,
     allRuns,
-    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, group.path ?? undefined),
+    orphanRuns: orphanBoards(allRuns, frames, tiles),
+    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, allRuns.find((s) => s.run.id === runId)?.run.repo ?? group.path ?? undefined),
     onNewBoard: (group: ProjectGroup) => {
       if (group.path) setNewBoard({ repo: group.path });
     }
-  }), [projectActions, allRuns, addOrchBoard]);
+  }), [projectActions, allRuns, frames, tiles, addOrchBoard]);
 
   const pvActiveGroupKey = React.useMemo(() => {
     if (!activeProject) return null;

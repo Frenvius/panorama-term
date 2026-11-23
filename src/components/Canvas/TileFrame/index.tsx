@@ -43,7 +43,6 @@ import { useTermCellWidth } from '~/usecase/hooks/useTermCellWidth';
 import { operationTag } from '~/usecase/util/repoOperation';
 import { useHeaderParts } from '~/usecase/hooks/useHeaderParts';
 import { tileLabel, stripSpinner, stripStarPrefix, hasSpinnerPrefix } from '~/usecase/util/title';
-import { projectBoards } from '~/usecase/util/boardProject';
 import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 import { TILE_GAP } from '~/usecase/util/constants';
 import { termGridOf } from '~/usecase/util/termGrid';
@@ -606,31 +605,35 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
 
   const orch = tile.type === 'orch';
   const boardProject = orch ? null : boards.projectOf(tile.id);
-  const activeBoards = boardProject?.kind === 'project' ? projectBoards(boards.allRuns, boardProject.repo) : [];
+  const activeBoards = boardProject ? boards.runsForTile(tile.id) : [];
 
   const boardSubmenuItems: ContextMenuEntry[] =
     boardProject?.kind === 'project'
       ? boardSubmenu(
           activeBoards,
           (runId) => boards.openBoard(runId, tile.id, boardProject.repo, boardProject.frameId),
-          () => boards.newBoard(boardProject.repo, tile.id, boardProject.frameId)
+          () => boards.newBoard(boardProject.repo, tile.id, boardProject.frameId),
+          boardProject.repo
         )
       : boardProject?.kind === 'noFolder'
-      ? [{ label: 'Set folder...', onSelect: () => boards.setFolder(boardProject.frameId) }]
+      ? [...activeBoards.map((s) => ({ label: `${s.run.title} (${s.run.repo.replace(/[\\/]+$/, '').split(/[\\/]/).pop()})`, onSelect: () => boards.openBoard(s.run.id, tile.id, s.run.repo, boardProject.frameId) })), { label: 'Set folder...', onSelect: () => boards.setFolder(boardProject.frameId) }]
       : [];
 
   const boardMenuItem: ContextMenuEntry | null =
     boardProject === null
       ? null
       : boardProject.kind === 'loose'
-      ? { label: 'Create project...', icon: <SquareKanban size={15} strokeWidth={1.75} />, onSelect: () => boards.createProject(tile.id) }
+      ? activeBoards.length === 0 ? { label: 'Create project...', icon: <SquareKanban size={15} strokeWidth={1.75} />, onSelect: () => boards.createProject(tile.id) } : { label: 'Board', icon: <SquareKanban size={15} strokeWidth={1.75} />, submenu: [...activeBoards.map((s) => ({ label: `Open board: ${s.run.title}`, onSelect: () => boards.openBoard(s.run.id, tile.id, s.run.repo) })), { label: 'Create project...', onSelect: () => boards.createProject(tile.id) }] }
       : { label: 'Board', icon: <SquareKanban size={15} strokeWidth={1.75} />, submenu: boardSubmenuItems };
+
+  const coordinatorBoards = activeBoards.filter((s) => s.run.coordinatorTile === tile.id);
 
   const menuItems: ContextMenuEntry[] = note
     ? noteMenuItems
     : runView
     ? runViewMenuItems
     : [
+        ...coordinatorBoards.map((s) => ({ label: `Open board: ${s.run.title}`, onSelect: () => boards.openBoard(s.run.id, tile.id, s.run.repo) })),
         { label: 'Rename', icon: <Pencil size={15} strokeWidth={1.75} />, onSelect: startRename },
         { label: 'Duplicate', icon: <CopyPlus size={15} strokeWidth={1.75} />, onSelect: duplicate },
         pinItem,

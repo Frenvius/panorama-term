@@ -1,12 +1,12 @@
 import type { Run, Dispatch, Autonomy, RunSummary, CostEntry } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
-import { X, Play, Plus, Pause, Trash2, ChevronDown } from 'lucide-react';
+import { X, Play, Plus, Pause, Trash2, GitBranch, ChevronDown } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import AutonomyToggles from './AutonomyToggles';
 import { formatClock } from '~/usecase/util/orchRouting';
-import { formatDuration, totalCost } from '~/usecase/util/orch';
+import { formatDuration, totalCost, integrationBranchName } from '~/usecase/util/orch';
 import { forgetProjectBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { deleteRun, setRunCoordinator, setRunStatus, setRunAutonomy, updateRun } from '~/adapter/orch/orch.client';
 
@@ -22,6 +22,8 @@ interface BoardHeaderProps {
   costByRole?: Record<string, CostEntry>;
   costByModel?: Record<string, CostEntry>;
 }
+
+const INTEGRATION_HINT = 'Finished tasks are merged here. Your main branch is never touched until you merge this branch yourself.';
 
 const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNewBoard, onChanged, coordinatorCostUsd, costByRole, costByModel }: BoardHeaderProps) => {
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
@@ -211,6 +213,13 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
                 New board
               </button>
             </div>
+          )}
+
+          {!renaming && (
+            <span className={styles.integrationLabel} title={INTEGRATION_HINT}>
+              <GitBranch size={11} strokeWidth={1.75} />
+              <span className={styles.integrationName}>{integrationBranchName(run.id)}</span>
+            </span>
           )}
 
           {run.coordinatorTile && !renaming && (

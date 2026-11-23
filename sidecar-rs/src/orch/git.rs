@@ -154,6 +154,23 @@ pub(crate) fn merge_no_ff(path: &str, branch: &str) -> Result<MergeOutcome, Stri
     }
 }
 
+pub(crate) fn merge_no_commit(path: &str, branch: &str) -> Result<Vec<String>, String> {
+    match git(path, &["merge", "--no-ff", "--no-commit", branch]) {
+        Ok(_) => Ok(vec![]),
+        Err(merge_err) => {
+            let conflicted: Vec<String> = git(path, &["diff", "--name-only", "--diff-filter=U"])
+                .map(|raw| String::from_utf8_lossy(&raw).lines().map(str::to_string).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default();
+            if conflicted.is_empty() {
+                let _ = git(path, &["merge", "--abort"]);
+                Err(format!("merge failed: {merge_err}"))
+            } else {
+                Ok(conflicted)
+            }
+        }
+    }
+}
+
 pub(crate) fn reset_hard(path: &str, rev: &str) -> Result<(), String> {
     git(path, &["reset", "--hard", rev]).map(|_| ())
 }
@@ -387,6 +404,40 @@ mod tests {
 
         let status = status_porcelain(&int_path).unwrap();
         assert!(status.trim().is_empty(), "integration worktree dirty after conflict abort: {status}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn merge_no_commit_leaves_conflict_in_progress() {
+        let repo = tmp_dir("wt-merge-nocommit");
+        init_repo(&repo);
+        let base = write_commit(&repo, "shared.txt", "original");
+        let repo_s = repo.to_str().unwrap();
+
+        let wt1 = worktree_path(repo_s, "r1", "t1", 1);
+        let br1 = worktree_branch("r1", "t1", 1);
+        worktree_add(repo_s, &wt1, &br1, &base).expect("wt1 add");
+        write_commit_in(&wt1, "shared.txt", "worker1 version");
+
+        let int_path = integration_worktree_path(repo_s, "r1");
+        let int_branch = integration_branch("r1");
+        worktree_add(repo_s, &int_path, &int_branch, &base).expect("int add");
+        write_commit_in(&int_path, "shared.txt", "integration version");
+
+        let wt2 = worktree_path(repo_s, "r1", "t1", 2);
+        let br2 = worktree_branch("r1", "t1", 2);
+        let tip = rev_parse(repo_s, &int_branch).unwrap();
+        worktree_add(repo_s, &wt2, &br2, &tip).expect("wt2 add");
+
+        let files = merge_no_commit(&wt2, &br1).expect("merge in progress");
+        assert_eq!(files, vec!["shared.txt".to_string()]);
+        let content = std::fs::read_to_string(format!("{wt2}/shared.txt")).unwrap();
+        assert!(content.contains("<<<<<<<"), "conflict markers present");
+
+        std::fs::write(format!("{wt2}/shared.txt"), "resolved").unwrap();
+        commit_leftovers(&wt2, "resolve").expect("commit merge");
+        assert!(is_merged_into(repo_s, &br1, &br2), "resolved branch contains the task branch");
+        assert!(matches!(merge_no_ff(&int_path, &br2).expect("merge"), MergeOutcome::Success(_)));
         std::fs::remove_dir_all(&repo).ok();
     }
 

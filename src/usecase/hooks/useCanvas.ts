@@ -15,7 +15,7 @@ import { THEME_EVENT } from '~/usecase/util/theme';
 import { snapTermSize } from '~/usecase/util/termGrid';
 import { clearAlert } from '~/usecase/util/alerts';
 import { tileInFrame, withFramePatched } from '~/usecase/util/frame';
-import { placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
+import { findFreeRect, placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
@@ -351,12 +351,13 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     });
   }, [cellW]);
 
-  const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd'>, at?: { x: number; y: number }) => {
+  const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd' | 'orchWorker'>, at?: { x: number; y: number }) => {
     setView((v) => {
       const p = at ?? mouseRef.current;
       const cx = p ? p.x : (window.innerWidth / 2 - v.x) / v.k;
       const cy = p ? p.y : ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
       setTiles((prev) => {
+        if (prev.some((tile) => tile.id === seed.id)) return prev;
         const last = lastTermSize.current ?? [...prev].reverse().find((t) => t.type === 'term');
         const { width, height } = snapTermSize(last?.width ?? TILE_WIDTH, last?.height ?? TILE_HEIGHT, termMetrics.cellW);
         return [
@@ -382,7 +383,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   );
 
   const placeGroupedTerm = React.useCallback(
-    (id: string, cwd: string, group: { id: string; title: string }) => {
+    (id: string, cwd: string, group: { id: string; title: string }, orchWorker?: boolean) => {
       setView((v) => {
         const cx = (window.innerWidth / 2 - v.x) / v.k;
         const cy = ((window.innerHeight - TOOLBAR_HEIGHT) / 2 - v.y) / v.k;
@@ -398,9 +399,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           const result = placeTileInFrame({
             frame: existing, frames: prevFrames, width, height, tiles: prevTiles, spacing
           });
-          setTiles((prev) => [
+          setTiles((prev) => prev.some((tile) => tile.id === id) ? prev : [
             ...prev,
-            { id, cwd, type: 'term' as const, runId: group.id, x: result.x, y: result.y, width, height, zIndex }
+            { id, cwd, type: 'term' as const, runId: group.id, orchWorker, x: result.x, y: result.y, width, height, zIndex }
           ]);
           if (result.frame !== null) {
             const patch = result.frame;
@@ -422,9 +423,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
               height: height + pad * 2
             }
           ]);
-          setTiles((prev) => [
+          setTiles((prev) => prev.some((tile) => tile.id === id) ? prev : [
             ...prev,
-            { id, cwd, type: 'term' as const, runId: group.id, x: cx, y: cy, width, height, zIndex }
+            { id, cwd, type: 'term' as const, runId: group.id, orchWorker, x: cx, y: cy, width, height, zIndex }
           ]);
         }
         return v;
@@ -434,9 +435,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   );
 
   const openRemoteTile = React.useCallback(
-    (id: string, cwd: string, group?: { id: string; title: string }) => {
-      if (!group) { placeTerm({ id, cwd }); return; }
-      placeGroupedTerm(id, cwd, group);
+    (id: string, cwd: string, group?: { id: string; title: string }, orchWorker?: boolean) => {
+      if (!group) { placeTerm({ id, cwd, orchWorker }); return; }
+      placeGroupedTerm(id, cwd, group, orchWorker);
     },
     [placeTerm, placeGroupedTerm]
   );
@@ -548,15 +549,18 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
         x = nearTile.x + nearTile.width + 16;
         y = nearTile.y;
       } else {
-        x = cx - 360;
-        y = cy - 210;
+        ({ x, y } = findFreeRect({ width: 720, height: 420, near: { x: cx - 360, y: cy - 210 }, obstacles: [...tilesRef.current, ...framesRef.current] }));
       }
       setTiles((prev) => [
         ...prev,
         { id, type: 'orch' as const, runId, cwd: resolvedCwd, x, y, width: 720, height: 420, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
       ]);
       setActiveTile(id);
-      return v;
+      if (frame || nearTile) return v;
+      const bg = bgRef.current;
+      const next = { ...v, x: (bg?.clientWidth ?? window.innerWidth) / 2 - (x + 360) * v.k, y: (bg?.clientHeight ?? window.innerHeight - TOOLBAR_HEIGHT) / 2 - (y + 210) * v.k };
+      viewRef.current = next;
+      return next;
     });
     return id;
   }, []);
@@ -620,7 +624,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const closeTile = React.useCallback((id: string) => {
     clearAlert(id);
     const closing = tilesRef.current.find((t) => t.id === id);
-    const isWorker = closing?.type === 'term' && Boolean(closing.runId);
+    const isWorker = closing?.type === 'term' && Boolean(closing.orchWorker || closing.runId);
     if (closing && !closing.runCwd && !isWorker) {
       const ws = wsIdRef.current;
       saveClosed(ws, [...loadClosed(ws), closing]);
@@ -1058,15 +1062,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     const frame = framesRef.current.find((f) => f.id === id);
     if (!frame) return;
     const memberTiles = tilesRef.current.filter((t) => tileInFrame(frame, t));
-    const members = new Set(memberTiles.map((t) => t.id));
     setFrames((prev) => prev.filter((f) => f.id !== id));
-    setTiles((prev) => prev.filter((t) => !members.has(t.id)));
-    setActiveTile((a) => (a && members.has(a) ? null : a));
-    for (const tile of memberTiles) {
-      if (tile.type === 'term' && tile.runId) continue;
-      void killPtySession(tile.id);
-    }
-  }, []);
+    for (const tile of memberTiles) closeTile(tile.id);
+  }, [closeTile]);
 
   const fitFrame = React.useCallback((id: string) => {
     const frame = framesRef.current.find((f) => f.id === id);

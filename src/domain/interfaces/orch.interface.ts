@@ -147,6 +147,7 @@ export interface Task {
   verify: string[];
   review: boolean;
   owner?: string;
+  ownerReason?: string;
   status: TaskStatus;
   result?: string;
   integratedSha?: string;
@@ -191,6 +192,7 @@ export interface Dispatch {
   headSha?: string;
   filesModified: string[];
   summary?: string;
+  report?: string;
   startedAt: number;
   endedAt?: number;
   lastHeartbeat?: number;
@@ -302,6 +304,8 @@ export interface RunSummary {
   run: Run;
   taskCounts: Record<string, number>;
   openGates: number;
+  runningDispatches: number;
+  latestActivity: number;
   coordinatorCostUsd?: number;
   costByRole?: Record<string, CostEntry>;
   costByModel?: Record<string, CostEntry>;

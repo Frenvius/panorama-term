@@ -196,8 +196,8 @@ const FrameBar = ({ frame, view, tiles, recede, board, actions }: FrameBarProps)
                     label: 'Board',
                     icon: <SquareKanban size={15} strokeWidth={1.75} />,
                     submenu: frame.path
-                      ? boardSubmenu(board.runs, (runId) => board.onOpen(runId, frame.id), board.onNew)
-                      : [{ label: 'Set folder...', onSelect: board.onSetFolder }]
+                      ? boardSubmenu(board.runs, (runId) => board.onOpen(runId, frame.id), board.onNew, frame.path)
+                      : [...board.runs.map((s) => ({ label: `${s.run.title} (${s.run.repo.replace(/[\\/]+$/, '').split(/[\\/]/).pop()})`, onSelect: () => board.onOpen(s.run.id, frame.id) })), { label: 'Set folder...', onSelect: board.onSetFolder }]
                   }
                 ] as ContextMenuEntry[])
               : []),

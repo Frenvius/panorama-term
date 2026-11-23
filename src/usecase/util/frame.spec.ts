@@ -36,6 +36,15 @@ describe('tileInFrame', () => {
     const tile = makeTile('t1', 150, 0);
     expect(tileInFrame(frame, tile)).toBe(false);
   });
+
+  test('boards belong only to frames with the same normalized repository', () => {
+    const board = { ...makeTile('board', 50, 50), type: 'orch' as const, cwd: 'D:\\repo\\' };
+    const frame = { ...makeFrame('f1', 0, 0, 200, 200), path: 'd:/REPO' };
+    expect(tileInFrame(frame, board)).toBe(true);
+    expect(tileInFrame({ ...frame, path: 'd:/other' }, board)).toBe(false);
+    expect(tileInFrame({ ...frame, path: undefined }, board)).toBe(false);
+    expect(frameOf([{ ...frame, path: 'd:/other' }], board)).toBeNull();
+  });
 });
 
 describe('frameOf', () => {

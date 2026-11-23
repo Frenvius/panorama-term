@@ -32,6 +32,7 @@ import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { TileHostProvider } from '~/usecase/context/TileHostContext';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
+import { useOrchNotifications } from '~/components/commons/Notifications/orchWatch';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH, TILE_WIDTH, TILE_HEIGHT, NOTE_WIDTH, NOTE_HEIGHT, TOOLBAR_HEIGHT } from '~/usecase/util/constants';
 import { showToast } from '~/usecase/util/toasts';
 import { projectsInUse, buildProjectGroups } from '~/usecase/util/projectGroups';
@@ -48,7 +49,7 @@ import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
-import { tileBoardProject, projectBoards } from '~/usecase/util/boardProject';
+import { tileBoardProject, frameBoards, orphanBoards } from '~/usecase/util/boardProject';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
 import { gitRoot } from '~/adapter/git/git.client';
@@ -271,9 +272,9 @@ const Canvas = () => {
   const fsTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activated = React.useRef<Set<string>>(new Set());
 
-  const openPhoneTile = (id: string, cwd: string, group?: { id: string; title: string }) => {
+  const openPhoneTile = (id: string, cwd: string, group?: { id: string; title: string }, orchWorker?: boolean) => {
     activated.current.add(id);
-    openRemoteTile(id, cwd, group);
+    openRemoteTile(id, cwd, group, orchWorker);
   };
   useRemoteTiles(openPhoneTile);
 
@@ -729,7 +730,13 @@ const Canvas = () => {
   );
 
   const openNotified = React.useCallback(
-    ({ tileId, wsId, tabId }: NotifyTarget) => {
+    ({ tileId, wsId, tabId, runId }: NotifyTarget) => {
+      if (runId && tileId === `orch:${runId}`) {
+        const id = addOrchBoard(runId);
+        clearAlert(tileId);
+        focusTile(id, true);
+        return;
+      }
       if (tiles.some((t) => t.id === tileId)) {
         activateAndClear(tileId);
         focusTile(tileId, true);
@@ -745,7 +752,7 @@ const Canvas = () => {
       pendingFocusTileId = tileId;
       void switchTab(tabId);
     },
-    [tiles, tabs, activeId, activateAndClear, focusTile, switchTab, switchWorkspace]
+    [tiles, tabs, activeId, activateAndClear, focusTile, switchTab, switchWorkspace, addOrchBoard]
   );
 
   const navFocus = React.useCallback(
@@ -861,7 +868,7 @@ const Canvas = () => {
       return;
     }
     pendingFocusTileId = tileId;
-    openRemoteTile(tileId, cwd, group);
+    openRemoteTile(tileId, cwd, group, true);
   };
   handleShowWorkerRef.current = handleShowWorker;
 
@@ -1086,8 +1093,8 @@ const Canvas = () => {
   }, []);
 
   const boardOpenBoard = React.useCallback((runId: string, nearTileId?: string, repo?: string, frameId?: string) => {
-    addOrchBoard(runId, nearTileId, repo, frameId);
-  }, [addOrchBoard]);
+    addOrchBoard(runId, nearTileId, allRuns.find((s) => s.run.id === runId)?.run.repo ?? repo, frameId);
+  }, [addOrchBoard, allRuns]);
 
   const boardNewBoard = React.useCallback((repo: string, nearTileId?: string, frameId?: string) => {
     setNewBoard({ repo, nearTileId, frameId });
@@ -1113,11 +1120,16 @@ const Canvas = () => {
   const boards = React.useMemo(() => ({
     allRuns,
     projectOf: (tileId: string) => tileBoardProject(framesR.current, tilesR.current, tileId),
+    runsForTile: (tileId: string) => {
+      const project = tileBoardProject(framesR.current, tilesR.current, tileId);
+      const members = project.kind === 'loose' ? [tileId] : tilesR.current.filter((tile) => frameOf(framesR.current, tile)?.id === project.frameId).map((tile) => tile.id);
+      return frameBoards(allRuns, project.kind === 'project' ? project.repo : undefined, members);
+    },
     openBoard: boardOpenBoard,
     newBoard: boardNewBoard,
     createProject: boardCreateProject,
     setFolder: projectActions.onSetFolder
-  }), [allRuns, boardOpenBoard, boardNewBoard, boardCreateProject, projectActions.onSetFolder]);
+  }), [allRuns, frames, tiles, boardOpenBoard, boardNewBoard, boardCreateProject, projectActions.onSetFolder]);
 
   const handleNewBoardCreated = React.useCallback((runId: string) => {
     if (!newBoard) return;
@@ -1145,23 +1157,25 @@ const Canvas = () => {
   }), [fitFrame, dragFrame, removeFrame, renameFrame, recolorFrame, settleFrameDrag, reorderFrame, removeFrameWithTiles, toggleFrameOrderLock]);
 
   const boardPropsForFrame = React.useCallback((frame: { id: string; path?: string }): FrameBoardProp => {
-    const frameRuns = frame.path ? projectBoards(allRuns, frame.path) : [];
+    const members = tilesR.current.filter((tile) => frameOf(framesR.current, tile)?.id === frame.id).map((tile) => tile.id);
+    const frameRuns = frameBoards(allRuns, frame.path, members);
     return {
       runs: frameRuns,
-      onOpen: (runId, frameId) => addOrchBoard(runId, undefined, frame.path, frameId),
+      onOpen: (runId, frameId) => addOrchBoard(runId, undefined, allRuns.find((s) => s.run.id === runId)?.run.repo, frameId),
       onNew: () => setNewBoard({ repo: frame.path ?? '', frameId: frame.id }),
       onSetFolder: () => projectActions.onSetFolder(frame.id)
     };
-  }, [allRuns, addOrchBoard, projectActions.onSetFolder]);
+  }, [allRuns, frames, tiles, addOrchBoard, projectActions.onSetFolder]);
 
   const projectActionsWithBoards = React.useMemo(() => ({
     ...projectActions,
     allRuns,
-    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, group.tiles[0]?.id, group.path ?? undefined, group.frameId ?? undefined),
+    orphanRuns: orphanBoards(allRuns, frames, tiles),
+    onOpenBoard: (runId: string, group: ProjectGroup) => addOrchBoard(runId, group.tiles[0]?.id, allRuns.find((s) => s.run.id === runId)?.run.repo, group.frameId ?? undefined),
     onNewBoard: (group: ProjectGroup) => {
       if (group.path) setNewBoard({ repo: group.path, frameId: group.frameId ?? undefined });
     }
-  }), [projectActions, allRuns, addOrchBoard]);
+  }), [projectActions, allRuns, frames, tiles, addOrchBoard]);
 
   const activeGroupKey = React.useMemo(() => {
     if (!activeTile) return null;
@@ -1181,6 +1195,14 @@ const Canvas = () => {
     onOpen: openNotified,
     onAlert: addAlert,
     onClear: clearAlert
+  });
+
+  useOrchNotifications({
+    tiles, workspaces, wsId: activeId, tabId: activeTabId,
+    suppressed: (tile) => document.hasFocus() && tile.id === activeTile &&
+      (fsId === tile.id || (!fsId && (tile.x + inset) * view.k + view.x < size.w &&
+        (tile.x + tile.width - inset) * view.k + view.x > 0 &&
+        (tile.y + inset) * view.k + view.y < size.h && (tile.y + tile.height - inset) * view.k + view.y > 0))
   });
 
   const actions = React.useMemo(
