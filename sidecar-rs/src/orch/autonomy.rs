@@ -284,6 +284,9 @@ fn failed_detail(entry: &RunEntry, task: &Task) -> Option<String> {
                 format!("Verification failed: {}", v.command)
             });
         }
+        if let Some(handoff) = entry.failed_worker_handoff(dispatch) {
+            return Some(handoff);
+        }
         if let Some(line) = dispatch.summary.as_deref()
             .and_then(|s| s.lines().find(|line| !line.trim().is_empty()))
         {

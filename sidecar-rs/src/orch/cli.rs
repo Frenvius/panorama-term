@@ -201,11 +201,11 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         let flag = &arg[2..];
 
         let allowed = match command {
-            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach corrective-retry",
+            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach corrective-retry worker-summary-cap",
             "run-show" => "run-id full brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
-            "run-update" => "run-id title autonomy max-operational-attempts detach corrective-retry",
+            "run-update" => "run-id title autonomy max-operational-attempts detach corrective-retry worker-summary-cap",
             "candidate-list" | "metrics" => "",
             "candidate-clear" => "agent model account",
             "usage-report" => "agent account-id windows",
@@ -269,6 +269,9 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         if i + 1 >= args.len() {
             if matches!(flag, "detach" | "corrective-retry") {
                 return Err(format!("--{flag} requires on or off"));
+            }
+            if flag == "worker-summary-cap" {
+                return Err("--worker-summary-cap requires a positive integer".into());
             }
             i += 1;
             continue;
@@ -383,7 +386,7 @@ fn coerce_value(field: &str, raw: &str) -> serde_json::Value {
 }
 
 fn is_numeric_field(field: &str) -> bool {
-    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "replyTo" | "lines" | "tail")
+    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "workerSummaryCap" | "replyTo" | "lines" | "tail")
 }
 
 fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
@@ -442,6 +445,14 @@ mod tests {
         }
         let body = parse(&["--corrective-retry", "off"], "run-create");
         assert_eq!(crate::orch::run_create_fields(&body.into()).unwrap()["correctiveRetry"], false);
+    }
+
+    #[test]
+    fn run_commands_parse_worker_summary_cap() {
+        for command in ["run-create", "run-update"] {
+            assert_eq!(parse(&["--worker-summary-cap", "42"], command)["workerSummaryCap"], 42);
+            assert!(parse_flags(&["--worker-summary-cap".into()], command).is_err());
+        }
     }
 
     #[test]
