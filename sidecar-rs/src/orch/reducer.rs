@@ -59,11 +59,29 @@ pub(crate) struct AutoActionFailure {
     status: TaskStatus,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeReason {
+    CoordinatorResume,
+    #[serde(untagged)]
+    Messages(Vec<String>),
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatorWake {
+    pub reason: WakeReason,
+    pub message_count: usize,
+    pub detached: bool,
+    pub at: u64,
+}
+
 pub struct RunEntry {
     pub run: Run,
     pub tasks: HashMap<String, Task>,
     pub dispatches: HashMap<String, Dispatch>,
     pub messages: Vec<Message>,
+    pub(super) late_reports: HashMap<String, Vec<Value>>,
     pub gates: HashMap<String, Gate>,
     pub task_count: u32,
     pub(crate) idle_state: IdleState,
@@ -74,6 +92,8 @@ pub struct RunEntry {
     pub event_seq: u32,
     pub coordinator_cost_baseline: Option<f64>,
     pub coordinator_cost_final: Option<f64>,
+    pub(super) coordinator_wakes: Vec<CoordinatorWake>,
+    pub(super) worktree_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl RunEntry {
@@ -83,6 +103,7 @@ impl RunEntry {
             tasks: HashMap::new(),
             dispatches: HashMap::new(),
             messages: Vec::new(),
+            late_reports: HashMap::new(),
             gates: HashMap::new(),
             task_count: 0,
             idle_state: IdleState::Active,
@@ -93,11 +114,63 @@ impl RunEntry {
             event_seq: 0,
             coordinator_cost_baseline: None,
             coordinator_cost_final: None,
+            coordinator_wakes: Vec::new(),
+            worktree_lock: Default::default(),
         }
     }
 
     pub fn next_task_id(&self) -> String {
         format!("t{}", self.task_count + 1)
+    }
+
+    fn worker_handoff(
+        &self, dispatch_id: &str, outcome: &str, summary: Option<&str>,
+        report: Option<&str>, files: &[String],
+    ) -> String {
+        let summary = summary.filter(|s| !s.trim().is_empty());
+        let text = summary.or(report).unwrap_or("");
+        let failure_first = summary.filter(|_| outcome == "failed").and_then(|summary| {
+            let mut lines: Vec<_> = summary.split_inclusive('\n').collect();
+            let index = lines.iter().position(|line| {
+                line.trim_start().split_once(':').is_some_and(|(label, reason)| {
+                    (label.eq_ignore_ascii_case("blocker") || label.eq_ignore_ascii_case("reason"))
+                        && !reason.trim().is_empty()
+                })
+            })?;
+            if index == 0 { return None; }
+            let reason = lines.remove(index);
+            let rest = lines.concat();
+            Some(if reason.ends_with('\n') {
+                format!("{reason}{rest}")
+            } else {
+                let separator = if rest.ends_with("\r\n") { "\r\n" } else { "\n" };
+                format!("{reason}{separator}{}", rest.strip_suffix(separator).unwrap_or(&rest))
+            })
+        });
+        let excerpt = failure_first.as_deref().unwrap_or(text);
+        let cap = self.run.worker_summary_cap as usize;
+        let mut body = format!("Outcome: {outcome}");
+        if let Some((end, _)) = excerpt.char_indices().nth(cap) {
+            let original_len = text.chars().count();
+            body.push_str(&format!("\n{}\n[Truncated; original length: {original_len} characters]", &excerpt[..end]));
+        } else if !excerpt.is_empty() {
+            body.push('\n');
+            body.push_str(excerpt);
+        }
+        let files = if files.is_empty() { "none".into() } else { files.join(", ") };
+        body.push_str(&format!(
+            "\nChanged files: {files}\nFull report: panorama-cli orch worker-show --run-id {} --dispatch-id {dispatch_id}",
+            self.run.id,
+        ));
+        body
+    }
+
+    pub(super) fn failed_worker_handoff(&self, dispatch: &Dispatch) -> Option<String> {
+        let outcome = dispatch.outcome.as_deref().filter(|outcome| *outcome == "failed")?;
+        Some(self.worker_handoff(
+            &dispatch.id, outcome, dispatch.summary.as_deref(), dispatch.report.as_deref(),
+            &dispatch.files_modified,
+        ))
     }
 
     pub fn next_gate_id(&self) -> String {
@@ -259,6 +332,12 @@ pub enum Cmd {
         summary: Option<String>,
         now: u64,
     },
+    DispatchBindSession {
+        run_id: String,
+        dispatch_id: String,
+        session: NativeSession,
+        now: u64,
+    },
     DispatchSetWorktree {
         run_id: String,
         dispatch_id: String,
@@ -373,6 +452,10 @@ pub enum Cmd {
         run_id: String,
         resume_id: String,
         now: u64,
+    },
+    RunCoordinatorWake {
+        run_id: String,
+        wake: CoordinatorWake,
     },
     RunIdle {
         run_id: String,
@@ -583,6 +666,15 @@ impl State {
                 }
                 ApplyResult::Ok("run-coordinator-resume".into(), serde_json::json!({
                     "runId": run_id, "resumeId": resume_id, "now": now
+                }))
+            }
+
+            Cmd::RunCoordinatorWake { run_id, wake } => {
+                if !self.runs.contains_key(run_id) {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                }
+                ApplyResult::Ok("run-coordinator-wake".into(), serde_json::json!({
+                    "runId": run_id, "wake": wake, "now": wake.at,
                 }))
             }
 
@@ -932,6 +1024,16 @@ impl State {
                 }
             }
 
+            Cmd::DispatchBindSession { run_id, dispatch_id, session, now } => {
+                let dispatch = self.runs.get(run_id).and_then(|e| e.dispatches.get(dispatch_id));
+                if !dispatch.is_some_and(|d| d.native_session.is_none()) {
+                    return ApplyResult::Err(OrchError::Conflict("dispatch already bound or missing".into()));
+                }
+                ApplyResult::Ok("dispatch-bind-session".into(), serde_json::json!({
+                    "runId": run_id, "dispatchId": dispatch_id, "session": session, "now": now
+                }))
+            }
+
             Cmd::DispatchSetWorktree { run_id, dispatch_id, worktree, branch, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
@@ -1063,10 +1165,12 @@ impl State {
                         "task must be verifying".into()
                     ));
                 }
+                let retry_same_entry = entry.run.corrective_retry
+                    && entry.dispatches.get(dispatch_id).is_some_and(|d| !d.corrective_retry && d.merge_branch.is_none());
                 ApplyResult::Ok("task-verification-failed".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
                     "command": command, "exitCode": exit_code, "timedOut": timed_out,
-                    "tail": tail, "msgSeq": msg_seq, "now": now
+                    "tail": tail, "msgSeq": msg_seq, "now": now, "retrySameEntry": retry_same_entry
                 }))
             }
 
@@ -1123,6 +1227,14 @@ impl State {
             "gate-resolve" => self.replay_gate_resolve(data),
             "dispatch-update" => self.replay_dispatch_update(data),
             "dispatch-set-worktree" => self.replay_dispatch_set_worktree(data),
+            "dispatch-bind-session" => {
+                if let Some(dispatch) = self.runs.get_mut(&str_field(data, "runId"))
+                    .and_then(|e| e.dispatches.get_mut(&str_field(data, "dispatchId")))
+                {
+                    dispatch.native_session = parse_opt(data, "session");
+                }
+                Ok(())
+            }
             "dispatch-record-head" => self.replay_dispatch_record_head(data),
             "task-integrate" => self.replay_task_integrate(data),
             "task-conflict" => self.replay_task_conflict(data),
@@ -1139,6 +1251,13 @@ impl State {
             "dispatch-revive" => self.replay_dispatch_revive(data),
             "run-coordinator-wait" => self.replay_run_coordinator_wait(data),
             "run-coordinator-resume" => self.replay_run_coordinator_resume(data),
+            "run-coordinator-wake" => {
+                if let Some(entry) = self.runs.get_mut(&str_field(data, "runId")) {
+                    let wake = serde_json::from_value(data["wake"].clone()).map_err(|e| e.to_string())?;
+                    entry.coordinator_wakes.push(wake);
+                }
+                Ok(())
+            }
             "run-idle" => self.replay_run_idle(data),
             "run-active" => self.replay_run_active(data),
             other => Err(format!("unknown event kind: {other}")),
@@ -1195,6 +1314,8 @@ impl State {
             limits,
             autonomy: parse_autonomy(data.get("autonomy")).unwrap_or_default(),
             detached: data["detached"].as_bool().unwrap_or(false),
+            corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(true),
+            worker_summary_cap: parse_opt(data, "workerSummaryCap").unwrap_or_else(default_worker_summary_cap),
             coordinator_wait: None,
             created_at: now,
             updated_at: now,
@@ -1353,6 +1474,11 @@ impl State {
             failure_class: None,
             by: parse_opt(data, "by"),
             start_ref: None,
+            native_home: opt_str(data, "nativeHome"),
+            native_session: None,
+            corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(false),
+            retry_same_entry: false,
+            operational_wait: false,
         };
         if let Some(owner) = opt_str(data, "owner") {
             if let Some(task) = entry.tasks.get_mut(&task_id) {
@@ -1389,19 +1515,23 @@ impl State {
             return Ok(());
         }
 
-        if msg_type == "worker_done" {
-            let outcome = data["outcome"].as_str().unwrap_or("").to_string();
+        let body = data["body"].as_str();
+        let coordinator_body = if msg_type == "worker_done" {
+            let outcome = data["outcome"].as_str().unwrap_or("");
+            let summary = data["summary"].as_str();
+            let files = str_arr(data, "filesModified");
+            let handoff = entry.worker_handoff(&from, outcome, summary, body, &files);
             if let Some(dispatch) = entry.dispatches.get_mut(&from) {
                 dispatch.status = if outcome == "succeeded" {
                     DispatchStatus::Reported
                 } else {
                     DispatchStatus::Failed
                 };
-                dispatch.outcome = Some(outcome.clone());
+                dispatch.outcome = Some(outcome.to_owned());
                 dispatch.ended_at = Some(now);
-                dispatch.files_modified = str_arr(data, "filesModified");
-                dispatch.summary = opt_str(data, "summary");
-                dispatch.report = opt_str(data, "body");
+                dispatch.files_modified = files;
+                dispatch.summary = summary.map(str::to_owned);
+                dispatch.report = body.map(str::to_owned);
                 if let Some(class) = parse_opt(data, "failureClass") {
                     dispatch.failure_class = Some(class);
                 }
@@ -1423,8 +1553,20 @@ impl State {
                     task.updated_at = now;
                 }
             }
-        }
-
+            Some(handoff)
+        } else if msg_type == "late_report" && from == "brain" {
+            body.and_then(|body| serde_json::from_str::<Value>(body).ok()).and_then(|late| {
+                let dispatch_id = late["dispatchId"].as_str()?;
+                let compact = entry.worker_handoff(
+                    dispatch_id, late["outcome"].as_str().unwrap_or(""), late["summary"].as_str(),
+                    late["report"].as_str(), &str_arr(&late, "filesModified"),
+                );
+                entry.late_reports.entry(dispatch_id.to_owned()).or_default().push(late);
+                Some(format!("Report from a superseded dispatch.\n{compact}"))
+            })
+        } else {
+            None
+        };
         let seq = data["seq"].as_u64().unwrap_or(0) as u32;
         let recipients = to_recipients(&data["to"]);
         for (i, recipient) in recipients.iter().enumerate() {
@@ -1436,7 +1578,11 @@ impl State {
                 task_id: opt_str(data, "taskId"),
                 dispatch_id: opt_str(data, "dispatchId"),
                 reply_to: data["replyTo"].as_u64().map(|v| v as u32),
-                body: opt_str(data, "body"),
+                body: if recipient == "coordinator" {
+                    coordinator_body.as_deref().or(body).map(str::to_owned)
+                } else {
+                    body.map(str::to_owned)
+                },
                 at: now,
                 acked: false,
             };
@@ -1541,7 +1687,11 @@ impl State {
         if dispatch_id.is_empty() { return Err("dispatch-set-worktree: empty dispatchId".into()); }
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         if let Some(d) = entry.dispatches.get_mut(&dispatch_id) {
-            d.worktree = opt_str(data, "worktree");
+            let worktree = opt_str(data, "worktree");
+            if d.worktree != worktree {
+                d.native_session = None;
+            }
+            d.worktree = worktree;
             d.branch = opt_str(data, "branch");
             d.start_ref = opt_str(data, "startRef");
         }
@@ -1758,10 +1908,11 @@ impl State {
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
         let dispatch_id = opt_str(data, "dispatchId");
-        if let (Some(class), Some(did)) = (parse_opt::<FailureClass>(data, "failureClass"), dispatch_id.as_ref()) {
-            if let Some(d) = entry.dispatches.get_mut(did) {
+        if let Some(d) = dispatch_id.as_ref().and_then(|id| entry.dispatches.get_mut(id)) {
+            if let Some(class) = parse_opt(data, "failureClass") {
                 d.failure_class = Some(class);
             }
+            d.retry_same_entry = data["retrySameEntry"].as_bool().unwrap_or(false);
         }
         let body = serde_json::json!({
             "command": str_field(data, "command"),
@@ -1816,6 +1967,12 @@ impl State {
         if let Some(detached) = data["detached"].as_bool() {
             entry.run.detached = detached;
         }
+        if let Some(enabled) = data["correctiveRetry"].as_bool() {
+            entry.run.corrective_retry = enabled;
+        }
+        if let Some(cap) = parse_opt(data, "workerSummaryCap") {
+            entry.run.worker_summary_cap = cap;
+        }
         if let Some(n) = data["maxOperationalAttempts"].as_u64() {
             entry.run.limits.max_operational_attempts = n as u32;
         }
@@ -1833,6 +1990,14 @@ impl State {
         };
         let now = u64_field(data, "now");
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if matches!(kind, WaitKind::Quota | WaitKind::Availability) {
+            if let Some(dispatch) = entry.dispatches.values_mut()
+                .filter(|d| d.task_id == task_id).max_by_key(|d| d.attempt)
+                .filter(|d| d.failure_class.is_some_and(|class| class.counter() == FailureCounter::Operational))
+            {
+                dispatch.operational_wait = true;
+            }
+        }
         let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
         let resume_at = data["resumeAt"].as_i64();
         task.status = TaskStatus::Waiting;
@@ -1985,6 +2150,21 @@ impl State {
         entry.idle_state = if msg_type == "run_finished" { IdleState::Finished } else { IdleState::Idle };
         entry.idle_fingerprint = Some(data["fingerprint"].as_str().map(str::to_owned).unwrap_or_else(|| idle_fingerprint(&msg_type, data["body"].as_str().unwrap_or(""))));
         entry.msg_seq = entry.msg_seq.max(msg_seq);
+        let mut body = opt_str(data, "body");
+        if msg_type == "run_idle" {
+            if let Some(mut report) = body.as_deref().and_then(|body| serde_json::from_str::<Value>(body).ok()) {
+                if let Some(failed) = report.pointer_mut("/tasks/failed").and_then(Value::as_array_mut) {
+                    for task in failed {
+                        let detail = task["id"].as_str().and_then(|id| entry.latest_dispatch_for_task(id))
+                            .and_then(|dispatch| entry.failed_worker_handoff(dispatch));
+                        if let Some(detail) = detail {
+                            task["detail"] = detail.into();
+                        }
+                    }
+                    body = Some(report.to_string());
+                }
+            }
+        }
         entry.messages.push(Message {
             seq: msg_seq,
             from: "brain".into(),
@@ -1993,7 +2173,7 @@ impl State {
             task_id: None,
             dispatch_id: None,
             reply_to: None,
-            body: opt_str(data, "body"),
+            body,
             at: u64_field(data, "now"),
             acked: false,
         });
@@ -2171,14 +2351,36 @@ mod tests {
             run_id: "r1".into(), seq: 1, from: did.clone(), to: vec!["coordinator".into()],
             msg_type: "worker_done".into(), task_id: None, dispatch_id: Some(did.clone()),
             reply_to: None, body: Some("# Full report\nEvidence".into()), outcome: Some("succeeded".into()),
-            files_modified: vec![], summary: Some("Done".into()), now: ts(),
+            files_modified: vec!["src/lib.rs".into()], summary: Some("Done".into()), now: ts(),
         };
         let (kind, event) = match state.apply(&cmd) { ApplyResult::Ok(k, d) => (k, d), _ => panic!("send failed") };
         let event: Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         state.replay(&kind, &event).unwrap();
         let entry = &state.runs["r1"];
+        assert_eq!(entry.run.worker_summary_cap, 1500);
         assert_eq!(entry.dispatches[&did].report.as_deref(), Some("# Full report\nEvidence"));
-        assert_eq!(entry.messages.last().unwrap().body.as_deref(), Some("# Full report\nEvidence"));
+        assert_eq!(entry.messages.last().unwrap().body.as_deref(), Some(
+            "Outcome: succeeded\nDone\nChanged files: src/lib.rs\nFull report: panorama-cli orch worker-show --run-id r1 --dispatch-id r1.t1.1"
+        ));
+    }
+
+    #[test]
+    fn legacy_worker_body_becomes_a_full_report_and_a_unicode_excerpt() {
+        let mut state = State::default();
+        mk_run(&mut state, "r1");
+        mk_task(&mut state, "r1", "t1", vec![]);
+        let did = mk_dispatch(&mut state, "r1", "t1", 1);
+        let report = "a\u{00e9}\u{1f680}z\n";
+        state.replay("run-update", &serde_json::json!({"runId": "r1", "workerSummaryCap": 3})).unwrap();
+        state.replay("send", &serde_json::json!({
+            "runId": "r1", "seq": 1, "from": did, "to": "coordinator", "type": "worker_done",
+            "body": report, "outcome": "succeeded",
+        })).unwrap();
+        let entry = &state.runs["r1"];
+        assert_eq!(entry.dispatches[&did].report.as_deref(), Some(report));
+        assert!(entry.messages[0].body.as_deref().unwrap().contains(
+            "\na\u{00e9}\u{1f680}\n[Truncated; original length: 5 characters]"
+        ));
     }
 
     fn mk_gate(state: &mut State, run_id: &str, gate_id: &str, task_id: &str, msg_seq: u32) {
@@ -2689,6 +2891,7 @@ mod tests {
             summary: None, report: None, started_at: ts(), ended_at: None, last_heartbeat: None,
             verifications: vec![], cost_usd: None, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
+            native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
         };
         s.runs.get_mut("r1").unwrap().dispatches.insert("r1.t1.2".into(), d2);
 

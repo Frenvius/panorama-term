@@ -86,6 +86,11 @@ fn wait_request(kind: WaitKind, resume_at: Option<i64>, reason: String, candidat
     WaitRequest { kind, resume_at, reason, candidate, same_session: false }
 }
 
+pub(crate) fn corrective_source<'a>(entry: &'a RunEntry, task_id: &str) -> Option<&'a Dispatch> {
+    entry.latest_dispatch_for_task(task_id)
+        .filter(|d| entry.run.corrective_retry && d.retry_same_entry)
+}
+
 pub(crate) fn plan_dispatch(input: PlanInput, states: &CandidateStates) -> Result<DispatchPlan, String> {
     let task = input.entry.tasks.get(input.task_id)
         .ok_or_else(|| "not_found:task not found".to_string())?;
@@ -95,14 +100,23 @@ pub(crate) fn plan_dispatch(input: PlanInput, states: &CandidateStates) -> Resul
         return Err("bad_request:profile required (no escalation list and no task profile)".into());
     }
     let explicit = input.explicit_profile.is_some() || input.explicit_model.is_some();
-    let requested = pinned.clone().or_else(|| {
+    let resumed = input.resumed || (task.status == TaskStatus::Pending
+        && input.entry.latest_dispatch_for_task(input.task_id).is_some_and(|d| d.operational_wait));
+    let correction = (!explicit).then(|| corrective_source(input.entry, input.task_id)).flatten();
+    let correction_key = correction.and_then(|d| {
+        let key = d.chain_index.and_then(|index| chain.get(index as usize))
+            .or(pinned.as_ref())
+            .or_else(|| chain.iter().find(|key| Some(key.agent.as_str()) == d.profile.as_deref() && key.model == d.model))?;
+        (Some(key.agent.as_str()) == d.profile.as_deref() && key.model == d.model).then_some(key)
+    });
+    let requested = correction_key.cloned().or_else(|| pinned.clone()).or_else(|| {
         let start = (task.quality_floor as usize).min(chain.len().saturating_sub(1));
         chain.get(start).cloned()
     });
     let outcome = routing::route(RouteInput {
         chain: &chain,
         floor: task.quality_floor,
-        pinned: pinned.as_ref(),
+        pinned: correction_key.or(pinned.as_ref()),
         states,
         now: input.now,
         short_wait_ms: routing::DEFAULT_SHORT_WAIT_MS,
@@ -111,8 +125,8 @@ pub(crate) fn plan_dispatch(input: PlanInput, states: &CandidateStates) -> Resul
         RouteOutcome::Dispatch { candidate, chain_index, reason, skipped } => DispatchPlan::Dispatch(PlannedDispatch {
             profile: candidate.agent.clone(),
             model: candidate.model.clone(),
-            chain_index,
-            trigger: trigger_for(task, explicit, input.resumed),
+            chain_index: correction.filter(|_| correction_key.is_some()).and_then(|d| d.chain_index).or(chain_index),
+            trigger: trigger_for(task, explicit, resumed),
             decision: RoutingDecision { requested, effective: candidate, reason, skipped },
             by: input.by,
         }),

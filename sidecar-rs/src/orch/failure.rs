@@ -781,7 +781,7 @@ fn resolve_clock(phrase: &ClockPhrase, zone: &Zone, now_ms: i64) -> Option<i64> 
     Some(at_day(date_days(year + 1, month, day)?))
 }
 
-fn date_days(year: i64, month: u32, day: u32) -> Option<i64> {
+pub(super) fn date_days(year: i64, month: u32, day: u32) -> Option<i64> {
     let days = days_from_civil(year, month, day);
     (civil_from_days(days) == (year, month, day)).then_some(days)
 }

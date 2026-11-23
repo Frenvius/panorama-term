@@ -201,11 +201,11 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         let flag = &arg[2..];
 
         let allowed = match command {
-            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach",
+            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach corrective-retry worker-summary-cap",
             "run-show" => "run-id full brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
-            "run-update" => "run-id title autonomy max-operational-attempts detach",
+            "run-update" => "run-id title autonomy max-operational-attempts detach corrective-retry worker-summary-cap",
             "candidate-list" | "metrics" => "",
             "candidate-clear" => "agent model account",
             "usage-report" => "agent account-id windows",
@@ -267,8 +267,11 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         }
 
         if i + 1 >= args.len() {
-            if flag == "detach" {
-                return Err("--detach requires on or off".into());
+            if matches!(flag, "detach" | "corrective-retry") {
+                return Err(format!("--{flag} requires on or off"));
+            }
+            if flag == "worker-summary-cap" {
+                return Err("--worker-summary-cap requires a positive integer".into());
             }
             i += 1;
             continue;
@@ -284,11 +287,11 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
             continue;
         }
 
-        let json_val = if flag == "detach" {
+        let json_val = if matches!(flag, "detach" | "corrective-retry") {
             match raw.as_str() {
                 "on" => true.into(),
                 "off" => false.into(),
-                _ => return Err("--detach requires on or off".into()),
+                _ => return Err(format!("--{flag} requires on or off")),
             }
         } else {
             coerce_value(field, raw)
@@ -383,7 +386,7 @@ fn coerce_value(field: &str, raw: &str) -> serde_json::Value {
 }
 
 fn is_numeric_field(field: &str) -> bool {
-    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "replyTo" | "lines" | "tail")
+    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "workerSummaryCap" | "replyTo" | "lines" | "tail")
 }
 
 fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
@@ -431,6 +434,25 @@ mod tests {
     fn parse(args: &[&str], command: &str) -> serde_json::Map<String, serde_json::Value> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         parse_flags(&owned, command).unwrap().0
+    }
+
+    #[test]
+    fn run_commands_accept_corrective_retry_on_and_off() {
+        for command in ["run-create", "run-update"] {
+            assert_eq!(parse(&["--corrective-retry", "on"], command)["correctiveRetry"], true);
+            assert_eq!(parse(&["--corrective-retry", "off"], command)["correctiveRetry"], false);
+            assert!(parse_flags(&["--corrective-retry".into()], command).is_err());
+        }
+        let body = parse(&["--corrective-retry", "off"], "run-create");
+        assert_eq!(crate::orch::run_create_fields(&body.into()).unwrap()["correctiveRetry"], false);
+    }
+
+    #[test]
+    fn run_commands_parse_worker_summary_cap() {
+        for command in ["run-create", "run-update"] {
+            assert_eq!(parse(&["--worker-summary-cap", "42"], command)["workerSummaryCap"], 42);
+            assert!(parse_flags(&["--worker-summary-cap".into()], command).is_err());
+        }
     }
 
     #[test]

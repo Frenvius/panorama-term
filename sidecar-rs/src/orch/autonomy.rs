@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use crate::orch::model::*;
-use crate::orch::reducer::{Cmd, RunEntry};
+use crate::orch::reducer::{Cmd, RunEntry, WakeReason};
 use crate::orch::wiring;
 use super::{
     commit, handle_integrate, handle_retry, handle_worker_start, send_coordinator_notice, state,
@@ -284,6 +284,9 @@ fn failed_detail(entry: &RunEntry, task: &Task) -> Option<String> {
                 format!("Verification failed: {}", v.command)
             });
         }
+        if let Some(handoff) = entry.failed_worker_handoff(dispatch) {
+            return Some(handoff);
+        }
         if let Some(line) = dispatch.summary.as_deref()
             .and_then(|s| s.lines().find(|line| !line.trim().is_empty()))
         {
@@ -391,7 +394,7 @@ pub(super) struct CoordinatorProbe {
 pub(super) enum CoordinatorStep {
     Nothing,
     SetWait { reset_at: Option<i64>, reason: String },
-    Resume { resume_id: String, tile_id: String, notice: String },
+    Resume { resume_id: String, tile_id: String, notice: String, unread: usize, detached: bool },
 }
 
 fn status_word(status: &TaskStatus) -> String {
@@ -403,7 +406,7 @@ fn clock_label(at_ms: i64, offset_min: i32) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
-pub(super) fn coordinator_notice(entry: &RunEntry, wait: &CoordinatorWait, offset_min: i32) -> String {
+fn coordinator_notice(entry: &RunEntry, wait: &CoordinatorWait, offset_min: i32) -> (String, usize) {
     let mut changed: Vec<&Task> = entry.tasks.values().filter(|t| t.updated_at as i64 >= wait.since).collect();
     changed.sort_by_key(|t| (t.id.len(), t.id.clone()));
     let mut lines: Vec<String> = changed.iter().take(NOTICE_TASK_LIMIT)
@@ -416,13 +419,14 @@ pub(super) fn coordinator_notice(entry: &RunEntry, wait: &CoordinatorWait, offse
         lines.push("no task changes".into());
     }
     let unread = entry.messages.iter().filter(|m| !m.acked && m.to == "coordinator").count();
-    format!(
+    let notice = format!(
         "[panorama] Coordinator resume for run {}. Since {}: {}. {} unread messages: run check.",
         entry.run.id,
         clock_label(wait.since, offset_min),
         lines.join("; "),
         unread,
-    )
+    );
+    (notice, unread)
 }
 
 pub(super) fn coordinator_step(entry: &RunEntry, now: i64, probe: &CoordinatorProbe) -> CoordinatorStep {
@@ -431,11 +435,12 @@ pub(super) fn coordinator_step(entry: &RunEntry, now: i64, probe: &CoordinatorPr
     };
     if let Some(wait) = &entry.run.coordinator_wait {
         return match wait.reset_at {
-            Some(at) if now >= at + COORDINATOR_RESUME_GRACE_MS => CoordinatorStep::Resume {
-                resume_id: wait.resume_id.clone(),
-                tile_id,
-                notice: coordinator_notice(entry, wait, wiring::local_offset_min()),
-            },
+            Some(at) if now >= at + COORDINATOR_RESUME_GRACE_MS => {
+                let (notice, unread) = coordinator_notice(entry, wait, wiring::local_offset_min());
+                CoordinatorStep::Resume {
+                    resume_id: wait.resume_id.clone(), tile_id, notice, unread, detached: entry.run.detached,
+                }
+            }
             _ => CoordinatorStep::Nothing,
         };
     }
@@ -682,14 +687,17 @@ pub(super) async fn apply_coordinator_step(run_id: &str, now: i64, probe: &Coord
             let run_c = run_id.to_string();
             commit(move |_| Ok(Cmd::RunSetCoordinatorWait { run_id: run_c, reset_at, reason, now: unix_ms() }), run_id.to_string()).await;
         }
-        CoordinatorStep::Resume { resume_id, tile_id, notice } => {
+        CoordinatorStep::Resume { resume_id, tile_id, notice, unread, detached } => {
             let run_c = run_id.to_string();
             let cleared = commit(move |_| Ok(Cmd::RunClearCoordinatorWait { run_id: run_c, resume_id, now: unix_ms() }), run_id.to_string()).await;
             if !matches!(cleared, CommitResult::Ok(_)) {
                 return;
             }
-            if let Err(e) = type_into_tile(&tile_id, &notice) {
-                skipped(run_id, "coordinator", "resume-notice", &e);
+            match type_into_tile(&tile_id, &notice) {
+                Ok(()) => super::record_coordinator_wake(
+                    run_id, WakeReason::CoordinatorResume, unread, detached,
+                ),
+                Err(e) => skipped(run_id, "coordinator", "resume-notice", &e),
             }
         }
     }
@@ -1035,7 +1043,7 @@ mod tests {
         let wait = CoordinatorWait { reset_at: Some(1), since: 3_600_000, reason: String::new(), resume_id: "x".into() };
         assert_eq!(
             coordinator_notice(&s.runs["r1"], &wait, 0),
-            "[panorama] Coordinator resume for run r1. Since 01:00: t1 completed. 1 unread messages: run check."
+            ("[panorama] Coordinator resume for run r1. Since 01:00: t1 completed. 1 unread messages: run check.".into(), 1),
         );
     }
 
@@ -1100,7 +1108,11 @@ mod tests {
         assert!(text.starts_with(&format!("[panorama] Coordinator resume for run {run_id}. Since ")), "{text}");
         assert!(text.ends_with("unread messages: run check."), "{text}");
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        assert!(guard.runs[&run_id].run.coordinator_wait.is_none());
+        let entry = &guard.runs[&run_id];
+        assert!(entry.run.coordinator_wait.is_none());
+        assert_eq!(entry.coordinator_wakes.len(), 1);
+        assert_eq!(serde_json::to_value(&entry.coordinator_wakes[0].reason).unwrap(), "coordinator_resume");
+        assert!(!entry.coordinator_wakes[0].detached);
     }
 
     fn live_tile(tile: &str) {

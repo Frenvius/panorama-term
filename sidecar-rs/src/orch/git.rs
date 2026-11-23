@@ -72,14 +72,22 @@ fn normalize_path(path: &str) -> String {
 }
 
 pub(crate) fn is_registered_worktree(repo: &str, path: &str) -> bool {
-    let Ok(raw) = git(repo, &["worktree", "list", "--porcelain"]) else {
-        return true;
-    };
+    registered_worktree(repo, path).unwrap_or(true)
+}
+
+fn registered_worktree(repo: &str, path: &str) -> Result<bool, String> {
+    let raw = git(repo, &["worktree", "list", "--porcelain"])?;
     let wanted = normalize_path(path);
-    String::from_utf8_lossy(&raw)
+    Ok(String::from_utf8_lossy(&raw)
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
-        .any(|p| normalize_path(p) == wanted)
+        .any(|p| normalize_path(p) == wanted))
+}
+
+pub(crate) fn can_adopt_worktree(repo: &str, path: &str, branch: &str) -> bool {
+    std::path::Path::new(path).join(".git").is_file()
+        && registered_worktree(repo, path) == Ok(true)
+        && crate::git_branch(path).as_deref() == Some(branch)
 }
 
 pub(crate) fn status_porcelain(path: &str) -> Result<String, String> {

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use crate::orch::model::{Dispatch, DispatchStatus, FailureClass, Task};
 use crate::orch::reducer::RunEntry;
+use super::usage::RunUsage;
 
 const LOW_SAMPLE_BELOW: usize = 10;
 
@@ -84,9 +85,16 @@ fn role_of(task: Option<&Task>) -> String {
         .unwrap_or_else(|| "implement".to_string())
 }
 
-pub fn compute<'a>(runs: impl Iterator<Item = &'a RunEntry>) -> Value {
+pub(super) struct MetricsSnapshot {
+    rows: BTreeMap<(String, String, String), Row>,
+    usage: Vec<RunUsage>,
+}
+
+pub(super) fn snapshot<'a>(runs: impl Iterator<Item = &'a RunEntry>) -> MetricsSnapshot {
     let mut rows: BTreeMap<(String, String, String), Row> = BTreeMap::new();
+    let mut usage = Vec::new();
     for entry in runs {
+        usage.push(RunUsage::snapshot(entry));
         for d in entry.dispatches.values() {
             let key = (
                 d.profile.clone().unwrap_or_default(),
@@ -96,7 +104,11 @@ pub fn compute<'a>(runs: impl Iterator<Item = &'a RunEntry>) -> Value {
             record(rows.entry(key).or_default(), d);
         }
     }
-    let out: Vec<Value> = rows.into_iter().map(|((agent, model, role), mut row)| {
+    MetricsSnapshot { rows, usage }
+}
+
+pub(super) fn compute(snapshot: MetricsSnapshot) -> Value {
+    let out: Vec<Value> = snapshot.rows.into_iter().map(|((agent, model, role), mut row)| {
         let median_ms = median(&mut row.durations_ms);
         json!({
             "agent": agent,
@@ -112,7 +124,9 @@ pub fn compute<'a>(runs: impl Iterator<Item = &'a RunEntry>) -> Value {
             "lowSample": row.dispatches < LOW_SAMPLE_BELOW,
         })
     }).collect();
-    json!({ "rows": out })
+    let mut runs: Vec<_> = snapshot.usage.into_iter().map(RunUsage::read).collect();
+    runs.sort_unstable_by(|a, b| a["runId"].as_str().cmp(&b["runId"].as_str()));
+    json!({ "rows": out, "runs": runs })
 }
 
 #[cfg(test)]
@@ -125,7 +139,8 @@ mod tests {
             id: "r1".into(), title: "t".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
             status: RunStatus::Active, limits: Limits::default(),
-            autonomy: Autonomy::default(), detached: false, coordinator_wait: None, created_at: 0, updated_at: 0,
+            autonomy: Autonomy::default(), detached: false, corrective_retry: true,
+            worker_summary_cap: default_worker_summary_cap(), coordinator_wait: None, created_at: 0, updated_at: 0,
         };
         let mut e = RunEntry::new(run);
         e.tasks.insert("t1".into(), Task { owner_reason: None,
@@ -151,6 +166,7 @@ mod tests {
             verifications: vec![], cost_usd: cost, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None,
             failure_class: class, by: None, start_ref: None,
+            native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
         }
     }
 
@@ -163,7 +179,7 @@ mod tests {
             disp("d", None, Some(FailureClass::RateLimited), 2000, None),
             disp("e", None, Some(FailureClass::QuotaExhausted), 2000, None),
         ], Some(Role::Review));
-        let v = compute([&e].into_iter());
+        let v = compute(snapshot([&e].into_iter()));
         let rows = v["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
@@ -178,13 +194,17 @@ mod tests {
         assert_eq!(r["medianDurationMs"], 2000);
         assert_eq!(r["costUsd"], 0.75);
         assert_eq!(r["lowSample"], true);
+        let run = &v["runs"][0];
+        assert_eq!(run["runId"], "r1");
+        assert_eq!(run["coordinator"]["tokens"]["input"], json!({"value": null, "provenance": "unavailable"}));
+        assert_eq!(run["workersByProfile"]["claude"]["input"], json!({"value": null, "provenance": "unavailable"}));
     }
 
     #[test]
     fn ten_dispatches_is_not_low_sample_and_no_cost_is_null() {
         let ds: Vec<Dispatch> = (0..10).map(|i| disp(&format!("d{i}"), Some("succeeded"), None, 10, None)).collect();
         let e = entry_with(ds, None);
-        let v = compute([&e].into_iter());
+        let v = compute(snapshot([&e].into_iter()));
         let r = &v["rows"][0];
         assert_eq!(r["role"], "implement");
         assert_eq!(r["lowSample"], false);
@@ -193,7 +213,8 @@ mod tests {
 
     #[test]
     fn empty_state_has_no_rows() {
-        let v = compute(std::iter::empty());
+        let v = compute(snapshot(std::iter::empty()));
         assert_eq!(v["rows"].as_array().unwrap().len(), 0);
+        assert_eq!(v["runs"], json!([]));
     }
 }

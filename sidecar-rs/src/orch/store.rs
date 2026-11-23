@@ -153,6 +153,38 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_wake_is_folded_and_replayed_with_its_reason() {
+        use crate::orch::reducer::{ApplyResult, Cmd, CoordinatorWake, WakeReason};
+
+        let dir = tmp_dir("coordinator-wake");
+        ensure_run_dir(&dir, "r1").unwrap();
+        let path = run_events_path(&dir, "r1");
+        append_event(&path, &run_create_record(1)).unwrap();
+        let mut live = State::default();
+        load_into(&mut live, &path, "r1");
+        let wake = CoordinatorWake {
+            reason: WakeReason::Messages(vec!["worker_done".into(), "verification_failed".into()]),
+            message_count: 3, detached: false, at: 1_000_500,
+        };
+        let ApplyResult::Ok(kind, data) = live.apply(&Cmd::RunCoordinatorWake { run_id: "r1".into(), wake }) else {
+            panic!("expected coordinator wake event");
+        };
+        append_event(&path, &EventRecord { seq: 2, at: 1_000_500, kind: kind.clone(), data: data.clone() }).unwrap();
+        live.replay(&kind, &data).unwrap();
+
+        let mut replayed = State::default();
+        load_into(&mut replayed, &path, "r1");
+        for state in [live, replayed] {
+            let usage = crate::orch::usage::RunUsage::snapshot(&state.runs["r1"]).read();
+            assert_eq!(usage["coordinator"]["wakes"], serde_json::json!({
+                "count": 1, "provenance": "reported", "source": "event_log",
+                "events": [{"reason": ["worker_done", "verification_failed"], "messageCount": 3, "detached": false, "at": 1_000_500}],
+            }));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn corrupt_line_is_skipped() {
         let dir = tmp_dir("corrupt");
         ensure_run_dir(&dir, "r1").unwrap();
