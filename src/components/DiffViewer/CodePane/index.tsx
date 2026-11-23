@@ -11,7 +11,7 @@ import type {
 import React from 'react';
 
 import { highlight } from '~/usecase/service/highlight';
-import { lineKinds, LINE_HEIGHT, SKIP_HEIGHT } from '~/usecase/util/diff';
+import { lineKinds, firstAfter, LINE_HEIGHT, SKIP_HEIGHT } from '~/usecase/util/diff';
 
 import styles from './styles.module.scss';
 
@@ -38,19 +38,6 @@ const visualLength = (line: string): number => {
   let n = 0;
   for (const ch of line) n += ch === '\t' ? TAB_SIZE - (n % TAB_SIZE) : 1;
   return n;
-};
-
-const firstAfter = (tops: number[], y: number): number => {
-  let lo = 0;
-  let hi = tops.length - 1;
-
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (tops[mid] < y) lo = mid + 1;
-    else hi = mid;
-  }
-
-  return Math.max(0, lo - 1);
 };
 
 const paintToken = (
@@ -194,7 +181,8 @@ const CodePane = ({ code, lang, side, chunks, current, rows, ranges, overrides, 
 
       const top = el.scrollTop - LINE_HEIGHT * OVERSCAN;
       const bottom = el.scrollTop + el.clientHeight + LINE_HEIGHT * OVERSCAN;
-      setSpan({ from: firstAfter(tops, top), to: firstAfter(tops, bottom) + 1 });
+      const topAt = (i: number) => tops[i];
+      setSpan({ from: firstAfter(topAt, tops.length, top), to: firstAfter(topAt, tops.length, bottom) + 1 });
     };
 
     const schedule = () => {
