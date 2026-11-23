@@ -295,6 +295,25 @@ fn idle_digest(entry: &RunEntry, report: &autonomy::IdleReport) -> String {
 }
 
 fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> bool {
+    let mut answered = false;
+    loop {
+        let Some(entry) = guard.runs.get(run_id) else { return answered };
+        if !entry.run.detached { break; }
+        let question = entry.messages.iter().find(|q| {
+            q.msg_type == "question" && !matches!(q.from.as_str(), "coordinator" | "user" | "brain")
+                && !entry.messages.iter().any(|a| a.msg_type == "answer" && a.to == q.from && a.seq > q.seq)
+        });
+        let Some(question) = question else { break };
+        let sender = question.from.clone();
+        let cmd = Cmd::Send {
+            run_id: run_id.into(), seq: entry.next_msg_seq(), from: "brain".into(), to: vec![sender.clone()],
+            msg_type: "answer".into(), task_id: entry.dispatches.get(&sender).map(|d| d.task_id.clone()),
+            dispatch_id: Some(sender), reply_to: Some(question.seq), body: Some(DEFAULT_QUESTION_ANSWER.into()),
+            outcome: None, files_modified: vec![], summary: None, now: unix_ms(),
+        };
+        if append_and_replay(guard, run_id, &cmd, base).is_err() { break; }
+        answered = true;
+    }
     let Some(entry) = guard.runs.get(run_id) else { return false };
     let now = unix_ms();
     let report = autonomy::idle_reason(entry, now as i64);
@@ -309,7 +328,7 @@ fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> 
             let body = idle_digest(entry, r);
             entry.idle_fingerprint.as_deref() == Some(&reducer::idle_fingerprint(msg_type, &body))
         }).unwrap_or(true);
-        if unchanged { return false; }
+        if unchanged { return answered; }
     }
     let cmd = match desired {
         IdleState::Active => Cmd::RunActive { run_id: run_id.to_string(), now },
@@ -328,7 +347,7 @@ fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> 
             now,
         },
     };
-    append_and_replay(guard, run_id, &cmd, base).is_ok()
+    append_and_replay(guard, run_id, &cmd, base).is_ok() || answered
 }
 
 fn wake_tile_for_messages(entry: &RunEntry, previous_messages: usize, now: i64) -> Option<String> {
@@ -577,6 +596,8 @@ pub fn init() {
             let path = entry.path().join("events.jsonl");
             load_into(&mut guard, &path, &run_id);
         }
+        let run_ids: Vec<_> = guard.runs.keys().cloned().collect();
+        for run_id in run_ids { sync_idle_locked(&mut guard, &run_id, &base); }
         for entry in guard.runs.values().filter(|entry| !entry.run.status.is_terminal()) {
             restart_verifications(entry).for_each(drop);
         }
@@ -1779,25 +1800,7 @@ async fn handle_send(body: &[u8]) -> String {
     };
 
     match result {
-        CommitResult::Ok(data) => {
-            if msg_type == "question" && !matches!(from.as_str(), "coordinator" | "user" | "brain") {
-                let run = run_id.clone();
-                let sender = from.clone();
-                let question_seq = data["seq"].as_u64().map(|n| n as u32);
-                let answer = commit(move |state| {
-                    let entry = state.runs.get(&run).ok_or_else(|| "not_found:run not found".to_string())?;
-                    if !entry.run.detached { return Err("attached run".into()); }
-                    Ok(Cmd::Send {
-                        run_id: run, seq: entry.next_msg_seq(), from: "brain".into(), to: vec![sender.clone()],
-                        msg_type: "answer".into(), task_id: entry.dispatches.get(&sender).map(|d| d.task_id.clone()),
-                        dispatch_id: Some(sender), reply_to: question_seq, body: Some(DEFAULT_QUESTION_ANSWER.into()),
-                        outcome: None, files_modified: vec![], summary: None, now: unix_ms(),
-                    })
-                }, run_id.clone()).await;
-                if let CommitResult::Err(e) = answer {
-                    if e != "attached run" { return err_from_str(&e); }
-                }
-            }
+        CommitResult::Ok(_) => {
             if let (Some(f), Some(did)) = (&failure, dispatch_id_for_hook.as_deref()) {
                 send_follow_up(after_recorded_failure(&run_id, did, f, false).await).await;
             }
@@ -5638,6 +5641,40 @@ mod tests {
         assert_eq!(answer.to, dispatch);
         assert_eq!(answer.reply_to, Some(question.seq));
         assert_eq!(answer.body.as_deref(), Some(DEFAULT_QUESTION_ANSWER));
+    }
+
+    #[test]
+    fn idle_recovers_only_unanswered_detached_questions() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        for (suffix, detached, preanswered) in [("pending", true, false), ("answered", true, true), ("attached", false, false)] {
+            let run_id = format!("question-recovery-{suffix}-{}", unix_ms());
+            replay_task_attempt(&run_id, &base, &[], false);
+            let dispatch = format!("{run_id}.t1.1");
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get_mut(&run_id).unwrap().run.detached = detached;
+            let question = Cmd::Send {
+                run_id: run_id.clone(), seq: guard.runs[&run_id].next_msg_seq(), from: dispatch.clone(),
+                to: vec!["coordinator".into()], msg_type: "question".into(), task_id: None,
+                dispatch_id: None, reply_to: None, body: Some("Which approach?".into()),
+                outcome: None, files_modified: vec![], summary: None, now: unix_ms(),
+            };
+            assert!(append_and_replay(&mut guard, &run_id, &question, &base).is_ok());
+            if preanswered {
+                let answer = Cmd::Send {
+                    run_id: run_id.clone(), seq: guard.runs[&run_id].next_msg_seq(), from: "coordinator".into(),
+                    to: vec![dispatch.clone()], msg_type: "answer".into(), task_id: None, dispatch_id: None,
+                    reply_to: None, body: Some("Proceed".into()), outcome: None, files_modified: vec![],
+                    summary: None, now: unix_ms(),
+                };
+                assert!(append_and_replay(&mut guard, &run_id, &answer, &base).is_ok());
+            }
+            sync_idle_locked(&mut guard, &run_id, &base);
+            sync_idle_locked(&mut guard, &run_id, &base);
+            let answers: Vec<_> = guard.runs[&run_id].messages.iter().filter(|m| m.msg_type == "answer" && m.to == dispatch).collect();
+            assert_eq!(answers.len(), usize::from(detached || preanswered));
+            if detached && !preanswered { assert_eq!(answers[0].body.as_deref(), Some(DEFAULT_QUESTION_ANSWER)); }
+        }
     }
 
     #[test]
