@@ -113,7 +113,7 @@ pub fn conflict_brief(branch: &str, files: &[String], integrated_titles: &[Strin
 }
 
 fn report_instruction(cli_path: &str) -> String {
-    format!("Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" --report-file <temp-file> [--file path ...]\n```\n\n")
+    format!("Pass two outputs. Use --summary for a short handoff with Status, Result (one or two sentences), Verification (what ran and its outcome), and Blocker if any. Put each field on its own line. For a failed outcome, start with Blocker: and give the failure reason. Use --report-file for the full report and repeat --file for each changed file.\n\nReport exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" --report-file <temp-file> [--file path ...]\n```\n\n")
 }
 
 fn corrective_message(previous: &Dispatch, cli_path: &str) -> String {
@@ -130,7 +130,7 @@ fn corrective_message(previous: &Dispatch, cli_path: &str) -> String {
     } else {
         message.push_str("The operational wait has ended. Finish the task and run its checks.\n");
     }
-    message.push_str("\nUse the current PANORAMA_RUN_ID and PANORAMA_DISPATCH_ID. Write a report with the changes and checks, with a one-line summary. Leave changes in the worktree and do not commit.\n\n");
+    message.push_str("\nUse the current PANORAMA_RUN_ID and PANORAMA_DISPATCH_ID. Write a full report with the changes and checks. Leave changes in the worktree and do not commit.\n\n");
     message.push_str(&report_instruction(cli_path));
     message
 }
@@ -198,7 +198,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
     content.push_str("## Contract\n\n");
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
     content.push_str("Run each command below as written, on its own: no `cd`/`Set-Location` before it, nothing appended after it. Only that exact form is pre-approved; anything else stops you on a permission prompt nobody may be watching.\n\n");
-    content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Keep the summary to one line. Pass the report inline or write it to a temporary file outside the worktree and use --report-file.\n\n");
+    content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Write the full report to a temporary file outside the worktree.\n\n");
     content.push_str(&report_instruction(cli_path));
     content.push_str(&format!(
         "Blocking question:\n```\n{cli_path} orch send --type question --body \"...\"\n{cli_path} orch check --wait --timeout-ms 600000\n```\n\n"
@@ -806,6 +806,9 @@ mod tests {
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains(cli), "cli path in brief");
         assert!(content.contains("worker_done"), "worker_done in brief");
+        assert!(content.contains("For a failed outcome, start with Blocker:"));
+        assert!(content.contains("Use --report-file for the full report"));
+        assert!(content.contains("all findings with file:line evidence"));
         assert!(content.contains("file:line evidence"));
         assert!(content.contains("temporary file outside the worktree"));
         assert!(content.contains("PANORAMA_RUN_ID"), "env var reference in brief");

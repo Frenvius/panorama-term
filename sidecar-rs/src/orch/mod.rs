@@ -786,6 +786,13 @@ fn parse_run_bool(v: &Value, field: &str) -> Result<Option<bool>, String> {
     }
 }
 
+fn parse_worker_summary_cap(v: &Value) -> Result<Option<u32>, String> {
+    let cap = &v["workerSummaryCap"];
+    if cap.is_null() { return Ok(None); }
+    cap.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0).map(Some)
+        .ok_or_else(|| err_resp("bad_request", "workerSummaryCap must be a positive 32-bit integer"))
+}
+
 fn run_create_fields(v: &Value) -> Result<Value, String> {
     let detached = parse_run_bool(v, "detached")?;
     let autonomy = parse_autonomy_field(v)?.or_else(|| {
@@ -796,6 +803,9 @@ fn run_create_fields(v: &Value) -> Result<Value, String> {
     let mut fields = run_extra_fields(autonomy, None, detached);
     if let Some(enabled) = parse_run_bool(v, "correctiveRetry")? {
         fields["correctiveRetry"] = enabled.into();
+    }
+    if let Some(cap) = parse_worker_summary_cap(v)? {
+        fields["workerSummaryCap"] = cap.into();
     }
     Ok(fields)
 }
@@ -983,7 +993,13 @@ fn handle_run_show(body: &[u8]) -> String {
         }).collect();
         let dispatch_rows: Vec<DispatchRow> = entry.dispatches.values().map(|d| {
             let mut val = serde_json::to_value(d).unwrap_or_default();
-            if !full { val.as_object_mut().map(|obj| obj.remove("report")); }
+            if full {
+                if let Some(late) = entry.late_reports.get(&d.id) {
+                    val["lateReports"] = serde_json::json!(late);
+                }
+            } else {
+                val.as_object_mut().map(|obj| obj.remove("report"));
+            }
             DispatchRow {
                 val,
                 tile_id: d.tile_id.clone(),
@@ -1057,7 +1073,7 @@ fn handle_run_show(body: &[u8]) -> String {
             .map(|g| serde_json::json!({"id": g["id"], "taskId": g["taskId"], "question": g["question"]}))
             .collect();
         return ok_resp(serde_json::json!({
-            "run": {"id": run_val["id"], "title": run_val["title"], "status": run_val["status"], "detached": run_val["detached"], "correctiveRetry": run_val["correctiveRetry"]},
+            "run": {"id": run_val["id"], "title": run_val["title"], "status": run_val["status"], "detached": run_val["detached"], "correctiveRetry": run_val["correctiveRetry"], "workerSummaryCap": run_val["workerSummaryCap"]},
             "tasks": tasks_brief,
             "dispatches": dispatches_brief,
             "gates": gates_brief,
@@ -1222,8 +1238,9 @@ async fn handle_run_update(body: &[u8]) -> String {
         return err_resp("bad_request", "maxOperationalAttempts must be an integer >= 1");
     }
     let corrective = match parse_run_bool(&v, "correctiveRetry") { Ok(c) => c, Err(e) => return e };
-    if title.is_empty() && autonomy.is_none() && max_operational.is_none() && detached.is_none() && corrective.is_none() {
-        return err_resp("bad_request", "title, autonomy, maxOperationalAttempts, detached or correctiveRetry required");
+    let summary_cap = match parse_worker_summary_cap(&v) { Ok(cap) => cap, Err(e) => return e };
+    if title.is_empty() && autonomy.is_none() && max_operational.is_none() && detached.is_none() && corrective.is_none() && summary_cap.is_none() {
+        return err_resp("bad_request", "title, autonomy, maxOperationalAttempts, detached, correctiveRetry or workerSummaryCap required");
     }
     let now = unix_ms();
     let run_id_c = run_id.clone();
@@ -1237,6 +1254,9 @@ async fn handle_run_update(body: &[u8]) -> String {
         let mut fields = run_extra_fields(autonomy, max_operational, detached);
         if let Some(enabled) = corrective {
             fields["correctiveRetry"] = enabled.into();
+        }
+        if let Some(cap) = summary_cap {
+            fields["workerSummaryCap"] = cap.into();
         }
         Ok(cmd.with_fields(fields))
     }, run_id).await;
@@ -1646,7 +1666,8 @@ async fn handle_send(body: &[u8]) -> String {
         dispatch_id.clone()
     };
     let reply_to = v["replyTo"].as_u64().map(|n| n as u32);
-    let body_str = if msg_type == "worker_done" { v["report"].as_str().or_else(|| v["body"].as_str()) } else { v["body"].as_str() }.map(str::to_string);
+    let worker_report = || v["report"].as_str().or_else(|| v["body"].as_str()).map(str::to_string);
+    let body_str = if msg_type == "worker_done" { worker_report() } else { v["body"].as_str().map(str::to_string) };
     let outcome = v["outcome"].as_str().map(str::to_string);
     let summary = v["summary"].as_str().map(str::to_string);
     if msg_type == "worker_done" {
@@ -1727,7 +1748,7 @@ async fn handle_send(body: &[u8]) -> String {
                     let run_id_lr = run_id.clone();
                     let outcome_lr = v["outcome"].as_str().unwrap_or("").to_string();
                     let summary_lr = v["summary"].as_str().unwrap_or("").to_string();
-                    let report_lr = v["report"].as_str().unwrap_or("").to_string();
+                    let report_lr = worker_report();
                     let files_lr = files_modified.clone();
                     tokio::spawn(async move {
                         let now_lr = unix_ms();
@@ -4294,7 +4315,10 @@ fn handle_worker_show(body: &[u8]) -> String {
     } else {
         None
     };
-    let dispatch_val = serde_json::to_value(dispatch).unwrap_or(serde_json::json!({}));
+    let mut dispatch_val = serde_json::to_value(dispatch).unwrap_or(serde_json::json!({}));
+    if let Some(late) = entry.late_reports.get(dispatch_id) {
+        dispatch_val["lateReports"] = serde_json::json!(late);
+    }
     let mut resp = serde_json::json!({ "dispatch": dispatch_val, "live": live });
     if let Some(state) = agent_state {
         resp["agentState"] = state;
@@ -5337,6 +5361,107 @@ mod tests {
         assert!(safe < LIMIT);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn worker_handoff_is_compact_in_checks_and_full_report_survives_replay() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        let parse = |response: String| {
+            let value: Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(value["ok"], true, "{response}");
+            value
+        };
+        let created = parse(handle_run_create(
+            serde_json::json!({"repo": base, "workerSummaryCap": 48}).to_string().as_bytes()
+        ).await);
+        assert_eq!(created["run"]["workerSummaryCap"], 48);
+        let run_id = created["run"]["id"].as_str().unwrap().to_owned();
+        let dispatch_id = format!("{run_id}.t1.1");
+        parse(handle_run_update(
+            serde_json::json!({"runId": run_id, "workerSummaryCap": 32}).to_string().as_bytes()
+        ).await);
+        let run_cmd = |cmd| {
+            assert!(matches!(commit_sync_raw(|_| Ok(cmd), &run_id, &base), CommitResult::Ok(_)));
+        };
+        run_cmd(Cmd::TaskCreate {
+            run_id: run_id.clone(), id: "t1".into(), title: "Task".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: None, escalation: vec![], verify: vec![],
+            role: None, review: false, owner: None, now: 1,
+        });
+        run_cmd(Cmd::Dispatch {
+            run_id: run_id.clone(), id: dispatch_id.clone(), task_id: "t1".into(), attempt: 1,
+            retry_of: None, profile: None, model: None, tile_id: None, merge_branch: None, owner: None, now: 2,
+        });
+        let blocker = format!("Blocker: disk is read-only {}", "\u{1f680}".repeat(40));
+        let summary = format!("Result: {}\n{blocker}", "Long result. ".repeat(10));
+        let report = "# Full worker report\r\nEvidence at src/main.rs:42\r\n";
+        parse(handle_send(serde_json::json!({
+            "runId": run_id, "from": dispatch_id, "to": "coordinator", "type": "worker_done",
+            "outcome": "failed", "summary": summary, "report": report, "filesModified": ["src/main.rs"],
+        }).to_string().as_bytes()).await);
+
+        let excerpt: String = blocker.chars().take(32).collect();
+        let length = summary.chars().count();
+        let expected = format!(
+            "Outcome: failed\n{excerpt}\n[Truncated; original length: {length} characters]\nChanged files: src/main.rs\nFull report: panorama-cli orch worker-show --run-id {run_id} --dispatch-id {dispatch_id}"
+        );
+        for decisions in [false, true] {
+            let checked = parse(handle_check(serde_json::json!({
+                "runId": run_id, "peek": true, "decisions": decisions, "types": ["worker_done"],
+            }).to_string().as_bytes()).await);
+            assert_eq!(checked["messages"][0]["body"], expected);
+        }
+
+        parse(handle_run_update(
+            serde_json::json!({"runId": run_id, "detached": true}).to_string().as_bytes()
+        ).await);
+        let checked = parse(handle_check(serde_json::json!({
+            "runId": run_id, "peek": true, "decisions": true,
+        }).to_string().as_bytes()).await);
+        assert_eq!(checked["messages"][0]["type"], "run_idle");
+        let idle: Value = serde_json::from_str(checked["messages"][0]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(idle["tasks"]["failed"][0]["detail"], expected);
+
+        let late_report = "Late evidence\r\n".repeat(10);
+        let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
+        run_cmd(Cmd::Send {
+            run_id: run_id.clone(), seq, from: "brain".into(), to: vec!["coordinator".into()],
+            msg_type: "late_report".into(), task_id: None, dispatch_id: Some(dispatch_id.clone()),
+            reply_to: None, outcome: None, summary: None, files_modified: vec![], now: 3,
+            body: Some(serde_json::json!({
+                "outcome": "succeeded", "dispatchId": dispatch_id, "report": late_report,
+            }).to_string()),
+        });
+        let checked = parse(handle_check(serde_json::json!({
+            "runId": run_id, "peek": true, "decisions": true, "types": ["late_report"],
+        }).to_string().as_bytes()).await);
+        let notice = checked["messages"][0]["body"].as_str().unwrap();
+        assert!(notice.contains("Outcome: succeeded\nLate evidence"));
+        assert!(notice.contains("[Truncated; original length: 150 characters]"));
+        assert!(!notice.contains(&late_report));
+
+        let mut replayed = State::default();
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        let entry = replayed.runs.remove(&run_id).unwrap();
+        assert_eq!(entry.run.worker_summary_cap, 32);
+        let handoff = entry.messages.iter().find(|m| m.msg_type == "worker_done").unwrap();
+        assert_eq!(handoff.body.as_deref(), Some(expected.as_str()));
+        state().lock().unwrap_or_else(|e| e.into_inner()).runs.insert(run_id.clone(), entry);
+        let show = |full| parse(handle_run_show(
+            serde_json::json!({"runId": run_id, "full": full}).to_string().as_bytes()
+        ));
+        let full = show(true);
+        assert_eq!(full["dispatches"][0]["report"], report);
+        assert_eq!(full["dispatches"][0]["lateReports"][0]["report"], late_report);
+        let standard = show(false);
+        assert!(standard["dispatches"][0].get("report").is_none());
+        assert!(standard["dispatches"][0].get("lateReports").is_none());
+        let worker = parse(handle_worker_show(
+            serde_json::json!({"runId": run_id, "dispatchId": dispatch_id}).to_string().as_bytes()
+        ));
+        assert_eq!(worker["dispatch"]["report"], report);
+        assert_eq!(worker["dispatch"]["lateReports"][0]["report"], late_report);
+    }
+
     fn setup_run_in_state(run_id: &str) {
         let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let cmd = Cmd::RunCreate {
@@ -5954,7 +6079,7 @@ mod tests {
             status: RunStatus::Active,
             limits: Limits::default(),
             autonomy: Autonomy::default(),
-            detached: false, corrective_retry: true,
+            detached: false, corrective_retry: true, worker_summary_cap: default_worker_summary_cap(),
             coordinator_wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
@@ -6701,7 +6826,8 @@ mod tests {
             id: "r1".into(), title: "test".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None,
             coordinator_tile: None, status: RunStatus::Active,
-            limits: Limits::default(), autonomy: Autonomy::default(), detached: false, corrective_retry: true, coordinator_wait: None,
+            limits: Limits::default(), autonomy: Autonomy::default(), detached: false, corrective_retry: true,
+            worker_summary_cap: default_worker_summary_cap(), coordinator_wait: None,
             created_at: 0, updated_at: 0,
         };
         let mut entry = RunEntry::new(run);

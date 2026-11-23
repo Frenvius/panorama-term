@@ -139,7 +139,8 @@ mod tests {
             id: "r1".into(), title: "t".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
             status: RunStatus::Active, limits: Limits::default(),
-            autonomy: Autonomy::default(), detached: false, corrective_retry: true, coordinator_wait: None, created_at: 0, updated_at: 0,
+            autonomy: Autonomy::default(), detached: false, corrective_retry: true,
+            worker_summary_cap: default_worker_summary_cap(), coordinator_wait: None, created_at: 0, updated_at: 0,
         };
         let mut e = RunEntry::new(run);
         e.tasks.insert("t1".into(), Task { owner_reason: None,

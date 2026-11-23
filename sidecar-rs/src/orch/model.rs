@@ -235,6 +235,8 @@ pub struct Run {
     pub detached: bool,
     #[serde(default = "default_corrective_retry")]
     pub corrective_retry: bool,
+    #[serde(default = "default_worker_summary_cap")]
+    pub worker_summary_cap: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_wait: Option<CoordinatorWait>,
     pub created_at: u64,
@@ -242,6 +244,8 @@ pub struct Run {
 }
 
 fn default_corrective_retry() -> bool { true }
+
+pub(super) fn default_worker_summary_cap() -> u32 { 1500 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
