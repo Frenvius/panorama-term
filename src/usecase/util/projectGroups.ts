@@ -28,6 +28,12 @@ export const dominantProject = (tiles: Tile[], projects: string[]): string | nul
 };
 
 export const buildProjectGroups = ({ frames, tiles, projects }: BuildProjectGroupsArgs): ProjectGroup[] => {
+  const seen = new Set<string>();
+  tiles = tiles.filter((tile) => {
+    if (seen.has(tile.id)) return false;
+    seen.add(tile.id);
+    return true;
+  });
   const frameGroups: ProjectGroup[] = [];
   const frameGroupPathIndex = new Map<string, ProjectGroup>();
   const framedProjects = new Set<string>();
@@ -174,4 +180,14 @@ export const groupPathResolver = (groups: ProjectGroup[]): ((tile: Tile) => stri
 export const tileOwnerResolver = (args: BuildProjectGroupsArgs): ((tile: Tile) => string | null) => {
   const fromGroups = groupPathResolver(buildProjectGroups(args));
   return (tile) => fromGroups(tile) ?? tileProject(tile, args.projects);
+};
+
+export const orderProjectChildren = <T extends { id: string }>(children: T[], saved: string[]): T[] => {
+  const byId = new Map(children.map((child) => [child.id, child]));
+  const ordered: T[] = [];
+  for (const id of saved) {
+    const child = byId.get(id);
+    if (child) { ordered.push(child); byId.delete(id); }
+  }
+  return [...ordered, ...byId.values()];
 };

@@ -111,6 +111,22 @@ describe('buildProjectGroups - frame groups', () => {
 });
 
 describe('buildProjectGroups - outside routing', () => {
+  test('deduplicates tile ids before assigning frame, outside, path and loose groups', () => {
+    const frame = makeFrame('f1', 0, 0, 200, 200, { path: '/proj/a' });
+    const tiles = [
+      makeTile('inside', { x: 10, y: 10, cwd: '/proj/b' }),
+      makeTile('outside', { x: 500, y: 500, cwd: '/proj/a' }),
+      makeTile('path', { x: 500, y: 500, cwd: '/proj/b' }),
+      makeTile('loose', { x: 500, y: 500 })
+    ];
+    const groups = buildProjectGroups({ frames: [frame], tiles: tiles.flatMap((tile) => [tile, { ...tile }]), projects: ['/proj/a', '/proj/b'] });
+    expect(groups.map((group) => [group.kind, group.tiles.map((tile) => tile.id), group.outside.map((tile) => tile.id), group.drifted])).toEqual([
+      ['frame', ['inside'], ['outside'], ['inside']],
+      ['path', ['path'], [], []],
+      ['loose', ['loose'], [], []]
+    ]);
+  });
+
   test('non-frame tile matching frame group path goes to frame outside, not a path group', () => {
     const frame = makeFrame('f1', 0, 0, 200, 200);
     const projects = ['/proj/a'];
