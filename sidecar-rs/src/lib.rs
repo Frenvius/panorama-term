@@ -108,8 +108,12 @@ impl HostHandle {
     }
 
     fn write(&self, key: &str, bytes: &[u8]) {
+        let _ = self.try_write(key, bytes);
+    }
+
+    fn try_write(&self, key: &str, bytes: &[u8]) -> Result<(), std::sync::mpsc::SendError<Vec<u8>>> {
         let payload = host::encode_input_payload(key, bytes);
-        let _ = self.tx.send(host::encode(host::KIND_INPUT, &payload));
+        self.tx.send(host::encode(host::KIND_INPUT, &payload))
     }
 
     fn resize(&self, key: &str, cols: u16, rows: u16) {
@@ -1464,8 +1468,14 @@ fn sanitize_key(key: &str) -> String {
 
 fn binding_path(tile_id: &str) -> Option<std::path::PathBuf> {
     let dir = panorama_dir()?.join("agent-bindings");
-    std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.json", sanitize_key(tile_id))))
+}
+
+fn write_binding_rec(path: &Path, rec: &serde_json::Value) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_atomic(path, rec.to_string().as_bytes())
 }
 
 fn tile_for_session(session_id: &str) -> Option<String> {
@@ -1512,7 +1522,7 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     obj.insert("agentSessionId".into(), session_id.into());
     obj.insert("cwd".into(), v.get("cwd").cloned().unwrap_or(serde_json::Value::Null));
     obj.insert("tileId".into(), tile_id.into());
-    let _ = write_atomic(path, rec.to_string().as_bytes());
+    let _ = write_binding_rec(&path, &rec);
 }
 
 fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
@@ -1526,7 +1536,7 @@ fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
     obj.insert("tileId".into(), tile_id.into());
     obj.insert("agent".into(), agent.into());
     obj.insert("cwd".into(), cwd.into());
-    let _ = write_atomic(path, rec.to_string().as_bytes());
+    let _ = write_binding_rec(&path, &rec);
 }
 
 fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
@@ -1546,7 +1556,7 @@ fn stamp_binding_activity(tile_id: &str) {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     rec.as_object_mut().unwrap().insert("lastActivity".into(), now.into());
-    let _ = write_atomic(path, rec.to_string().as_bytes());
+    let _ = write_binding_rec(&path, &rec);
 }
 
 fn clear_binding_session(tile_id: &str) {
@@ -1558,7 +1568,7 @@ fn clear_binding_session(tile_id: &str) {
     };
     let obj = rec.as_object_mut().unwrap();
     if obj.remove("agentSessionId").is_some() {
-        let _ = write_atomic(path, rec.to_string().as_bytes());
+        let _ = write_binding_rec(&path, &rec);
     }
 }
 
@@ -4755,11 +4765,12 @@ pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
         .as_ref()
         .and_then(|s| s.parser.lock().ok().map(|p| p.screen().bracketed_paste()))
         .unwrap_or(false);
-    if bracketed {
-        host_handle().write(tile_id, format!("\x1b[200~{msg}\x1b[201~").as_bytes());
+    let typed = if bracketed {
+        host_handle().try_write(tile_id, format!("\x1b[200~{msg}\x1b[201~").as_bytes())
     } else {
-        host_handle().write(tile_id, msg.as_bytes());
-    }
+        host_handle().try_write(tile_id, msg.as_bytes())
+    };
+    typed.map_err(|_| "terminal host disconnected".to_string())?;
     if let Some(s) = &session {
         s.scrollback.store(0, Ordering::Relaxed);
         s.dirty.fetch_add(1, Ordering::Relaxed);

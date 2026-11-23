@@ -486,12 +486,16 @@ fn nudge_decision(idle: bool, unacked: usize, elapsed: Option<Duration>, replayi
     }
 }
 
-pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, detached: bool) {
-    static PENDING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+pub(super) fn maybe_nudge_tile(tile_id: &str, run_id: &str, reason: super::WakeReason, n: usize, detached: bool) {
     let session = sessions().lock().unwrap().get(tile_id).cloned();
     let idle = !is_tile_waiting(tile_id) && session.as_ref().and_then(|s| cached_agent_state(s))
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["lastStatus"].as_str().map(|s| s == "idle")).unwrap_or(false);
+    nudge_coordinator(tile_id, run_id, reason, n, detached, idle);
+}
+
+fn nudge_coordinator(tile_id: &str, run_id: &str, reason: super::WakeReason, n: usize, detached: bool, idle: bool) {
+    static PENDING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     let mut times = nudge_times().lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     match nudge_decision(idle, n, times.get(tile_id).map(|t| now.duration_since(*t)), false) {
@@ -520,7 +524,9 @@ pub fn maybe_nudge_tile(tile_id: &str, run_id: &str, n: usize, detached: bool) {
     } else {
         format!("[panorama] {n} new orchestration message(s) in run {run_id}. Read them with: {cli_path} orch check --run-id {run_id}")
     };
-    let _ = send_to_tile(tile_id, &msg);
+    if send_to_tile(tile_id, &msg).is_ok() {
+        super::record_coordinator_wake(run_id, reason, n, detached);
+    }
 }
 
 pub fn maybe_nudge_worker(tile_id: &str, cli_path: &str) {
@@ -564,6 +570,29 @@ mod tests {
         assert_eq!(nudge_decision(false, 1, None, false), NudgeDecision::Skip);
         assert_eq!(nudge_decision(true, 0, None, false), NudgeDecision::Skip);
         assert_eq!(nudge_decision(true, 1, None, true), NudgeDecision::Skip);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_deferred_coordinator_nudge_does_not_record_a_wake() {
+        use crate::orch::{state, unix_ms, WakeReason};
+
+        crate::orch::tests::f12_test_home();
+        let run_id = format!("r-deferred-wake-{}", unix_ms());
+        let tile = format!("tile-{run_id}");
+        let mut entry = crate::orch::tests::mk_run_entry(&run_id);
+        entry.run.coordinator_tile = Some(tile.clone());
+        state().lock().unwrap().runs.insert(run_id.clone(), entry);
+        nudge_times().lock().unwrap().insert(tile.clone(), Instant::now());
+
+        nudge_coordinator(&tile, &run_id, WakeReason::Messages(vec!["worker_done".into()]), 1, false, true);
+
+        let entry = state().lock().unwrap().runs.remove(&run_id).unwrap();
+        nudge_times().lock().unwrap().remove(&tile);
+        assert!(entry.coordinator_wakes.is_empty());
+        assert!(!crate::orch::run_events_path(&crate::panorama_dir().unwrap(), &run_id).exists());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(NUDGE_COOLDOWN_S)).await;
+        tokio::task::yield_now().await;
     }
 
     #[test]
