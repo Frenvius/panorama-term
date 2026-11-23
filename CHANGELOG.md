@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.10]
+
+### Added
+- Orchestration plan and detach mode: the coordinator plans, creates all tasks and steps away, while the brain retries, starts dependent tasks and integrates on its own, waking the coordinator only when a decision is needed.
+
+### Fixed
+- Orchestration merges fall back to a default git identity when none is configured.
+- Slimmer orchestration task cards, and the board no longer overflows.
+
 ## [0.4.9]
 
 ### Added
