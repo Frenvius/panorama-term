@@ -59,6 +59,23 @@ pub(crate) struct AutoActionFailure {
     status: TaskStatus,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeReason {
+    CoordinatorResume,
+    #[serde(untagged)]
+    Messages(Vec<String>),
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatorWake {
+    pub reason: WakeReason,
+    pub message_count: usize,
+    pub detached: bool,
+    pub at: u64,
+}
+
 pub struct RunEntry {
     pub run: Run,
     pub tasks: HashMap<String, Task>,
@@ -74,6 +91,7 @@ pub struct RunEntry {
     pub event_seq: u32,
     pub coordinator_cost_baseline: Option<f64>,
     pub coordinator_cost_final: Option<f64>,
+    pub(super) coordinator_wakes: Vec<CoordinatorWake>,
 }
 
 impl RunEntry {
@@ -93,6 +111,7 @@ impl RunEntry {
             event_seq: 0,
             coordinator_cost_baseline: None,
             coordinator_cost_final: None,
+            coordinator_wakes: Vec::new(),
         }
     }
 
@@ -374,6 +393,10 @@ pub enum Cmd {
         resume_id: String,
         now: u64,
     },
+    RunCoordinatorWake {
+        run_id: String,
+        wake: CoordinatorWake,
+    },
     RunIdle {
         run_id: String,
         msg_seq: u32,
@@ -583,6 +606,15 @@ impl State {
                 }
                 ApplyResult::Ok("run-coordinator-resume".into(), serde_json::json!({
                     "runId": run_id, "resumeId": resume_id, "now": now
+                }))
+            }
+
+            Cmd::RunCoordinatorWake { run_id, wake } => {
+                if !self.runs.contains_key(run_id) {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                }
+                ApplyResult::Ok("run-coordinator-wake".into(), serde_json::json!({
+                    "runId": run_id, "wake": wake, "now": wake.at,
                 }))
             }
 
@@ -1139,6 +1171,13 @@ impl State {
             "dispatch-revive" => self.replay_dispatch_revive(data),
             "run-coordinator-wait" => self.replay_run_coordinator_wait(data),
             "run-coordinator-resume" => self.replay_run_coordinator_resume(data),
+            "run-coordinator-wake" => {
+                if let Some(entry) = self.runs.get_mut(&str_field(data, "runId")) {
+                    let wake = serde_json::from_value(data["wake"].clone()).map_err(|e| e.to_string())?;
+                    entry.coordinator_wakes.push(wake);
+                }
+                Ok(())
+            }
             "run-idle" => self.replay_run_idle(data),
             "run-active" => self.replay_run_active(data),
             other => Err(format!("unknown event kind: {other}")),

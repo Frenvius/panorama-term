@@ -3,6 +3,7 @@ mod autonomy;
 mod candidates;
 mod carry;
 mod metrics;
+mod usage;
 mod routing;
 mod wiring;
 pub(crate) mod agy;
@@ -25,7 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use serde_json::Value;
 use crate::orch::model::*;
-use crate::orch::reducer::{ApplyResult, Cmd, IdleState, RunEntry, State, WaitRequest};
+use crate::orch::reducer::{ApplyResult, Cmd, CoordinatorWake, IdleState, RunEntry, State, WaitRequest, WakeReason};
 use crate::orch::store::{EventRecord, append_event, ensure_run_dir, load_into, remove_run_dir, run_events_path};
 use crate::orch::profiles::{load_profiles, find_profile, resolve_env};
 use crate::orch::worker::{BriefInput, WorkerLaunch, write_brief, spawn_worker, capture_worker_screen, maybe_nudge_tile, maybe_nudge_worker, is_tile_waiting};
@@ -583,7 +584,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "candidate-list" => handle_candidate_list(),
         "candidate-clear" => handle_candidate_clear(body),
         "usage-report" => handle_usage_report(body),
-        "metrics" => handle_metrics(),
+        "metrics" => handle_metrics().await,
         "settings-get" => handle_settings_get(),
         "settings-set" => handle_settings_set(body),
         "provider-save" => handle_provider_save(body),
@@ -602,13 +603,34 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
 
 pub(crate) fn recheck_coordinator(run_id: &str, tile_id: &str) {
     let now = unix_ms() as i64;
-    let (count, detached) = {
+    let (reason, count, detached) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-        guard.runs.get(run_id).filter(|e| !e.run.status.is_terminal()
-            && e.run.coordinator_tile.as_deref() == Some(tile_id))
-            .map_or((0, false), |e| (coordinator_unacked(e, now), e.run.detached))
+        let Some(entry) = guard.runs.get(run_id).filter(|e| !e.run.status.is_terminal()
+            && e.run.coordinator_tile.as_deref() == Some(tile_id)) else { return };
+        let mut seen = HashSet::new();
+        let mut types = Vec::new();
+        let mut count = 0;
+        for message in coordinator_unacked(entry, now) {
+            count += 1;
+            if seen.insert(message.msg_type.as_str()) {
+                types.push(message.msg_type.clone());
+            }
+        }
+        (WakeReason::Messages(types), count, entry.run.detached)
     };
-    maybe_nudge_tile(tile_id, run_id, count, detached);
+    if count != 0 {
+        maybe_nudge_tile(tile_id, run_id, reason, count, detached);
+    }
+}
+
+fn record_coordinator_wake(run_id: &str, reason: WakeReason, message_count: usize, detached: bool) {
+    let wake = CoordinatorWake { reason, message_count, detached, at: unix_ms() };
+    let Some(base) = crate::panorama_dir() else { return };
+    let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let cmd = Cmd::RunCoordinatorWake { run_id: run_id.to_string(), wake };
+    if let Err(CommitResult::Err(e)) = append_and_replay(&mut guard, run_id, &cmd, &base) {
+        eprintln!("[orch] record coordinator wake: {e}");
+    }
 }
 
 fn is_current_idle_msg(msg: &Message, entry: &RunEntry, now: i64, expected_reason: &str) -> bool {
@@ -635,10 +657,9 @@ fn needs_decision(msg: &Message, entry: &RunEntry, now: i64) -> bool {
     }
 }
 
-fn coordinator_unacked(entry: &RunEntry, now: i64) -> usize {
+fn coordinator_unacked(entry: &RunEntry, now: i64) -> impl Iterator<Item = &Message> {
     entry.messages.iter()
-        .filter(|m| !m.acked && m.to == "coordinator" && needs_decision(m, entry, now))
-        .count()
+        .filter(move |m| !m.acked && m.to == "coordinator" && needs_decision(m, entry, now))
 }
 
 pub fn on_agent_idle(tile_id: &str) {
@@ -649,12 +670,10 @@ pub fn on_agent_idle(tile_id: &str) {
         if entry.run.status.is_terminal() { continue; }
         if let Some(ref coord_tile) = entry.run.coordinator_tile {
             if coord_tile == tile_id {
-                let unacked = coordinator_unacked(entry, now);
-                if unacked > 0 {
+                if coordinator_unacked(entry, now).next().is_some() {
                     let run_id = run_id.clone();
-                    let detached = entry.run.detached;
                     drop(guard);
-                    maybe_nudge_tile(tile_id, &run_id, unacked, detached);
+                    recheck_coordinator(&run_id, tile_id);
                     return;
                 }
             }
@@ -1281,9 +1300,15 @@ fn handle_usage_report(body: &[u8]) -> String {
     ok_resp(serde_json::json!({}))
 }
 
-fn handle_metrics() -> String {
-    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-    ok_resp(metrics::compute(guard.runs.values()))
+async fn handle_metrics() -> String {
+    let snapshot = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        metrics::snapshot(guard.runs.values())
+    };
+    match tokio::task::spawn_blocking(move || metrics::compute(snapshot)).await {
+        Ok(metrics) => ok_resp(metrics),
+        Err(e) => err_resp("io", &e.to_string()),
+    }
 }
 
 async fn handle_run_set_coordinator(body: &[u8]) -> String {
@@ -2592,7 +2617,7 @@ async fn handle_retry(body: &[u8]) -> String {
     handle_worker_start(inner_body.to_string().as_bytes()).await
 }
 
-fn build_report(entry: &crate::orch::reducer::RunEntry, integration_tip: Option<String>, format: &str) -> Value {
+fn build_report(entry: &RunEntry, integration_tip: Option<String>) -> Value {
     use crate::orch::git::integration_branch;
 
     let mut tasks_by_status: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -2678,7 +2703,7 @@ fn build_report(entry: &crate::orch::reducer::RunEntry, integration_tip: Option<
         None
     };
 
-    let report_data = serde_json::json!({
+    serde_json::json!({
         "run": {
             "id": entry.run.id,
             "title": entry.run.title,
@@ -2697,14 +2722,7 @@ fn build_report(entry: &crate::orch::reducer::RunEntry, integration_tip: Option<
             "unknownCostCount": unknown_cost_count,
             "costPerCompletedTask": cost_per_completed,
         }
-    });
-
-    if format == "markdown" {
-        let md = render_report_markdown(&report_data);
-        serde_json::json!({"text": md})
-    } else {
-        report_data
-    }
+    })
 }
 
 fn verification_verdict(v: &Value) -> &'static str {
@@ -2717,7 +2735,7 @@ fn verification_verdict(v: &Value) -> &'static str {
     "fail"
 }
 
-fn render_report_markdown(data: &Value) -> String {
+fn render_report_markdown(data: &Value, usage: &Value) -> String {
     let mut out = String::new();
     let run = &data["run"];
     out.push_str(&format!("# Run: {}\n\n", run["title"].as_str().unwrap_or("")));
@@ -2730,6 +2748,7 @@ fn render_report_markdown(data: &Value) -> String {
             run["integrationBranch"].as_str().unwrap_or("")
         ));
     }
+    out.push_str(&usage::markdown(usage));
     out.push_str("## Tasks\n\n");
     if let Some(tasks) = data["tasks"].as_array() {
         for t in tasks {
@@ -2803,15 +2822,16 @@ async fn handle_report(body: &[u8]) -> String {
         git::rev_parse(&repo, &int_branch).ok()
     }).await.unwrap_or(None);
 
-    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-    let entry = match guard.runs.get(&run_id) {
-        Some(e) => e,
-        None => return err_resp("not_found", "run not found"),
+    let (report, usage) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = guard.runs.get(&run_id) else { return err_resp("not_found", "run not found") };
+        (build_report(entry, int_tip), (format == "markdown").then(|| usage::RunUsage::snapshot(entry)))
     };
-    let report = build_report(entry, int_tip, &format);
-    drop(guard);
-
-    ok_resp(report)
+    let Some(usage) = usage else { return ok_resp(report) };
+    match tokio::task::spawn_blocking(move || render_report_markdown(&report, &usage.read())).await {
+        Ok(text) => ok_resp(serde_json::json!({"text": text})),
+        Err(e) => err_resp("io", &e.to_string()),
+    }
 }
 
 async fn undo_integration_merge(int_path: String) {
@@ -5320,9 +5340,9 @@ mod tests {
                 body: None, at: 0, acked,
             });
         }
-        assert_eq!(coordinator_unacked(&entry, now), 2);
+        assert_eq!(coordinator_unacked(&entry, now).count(), 2);
         entry.run.detached = true;
-        assert_eq!(coordinator_unacked(&entry, now), 1);
+        assert_eq!(coordinator_unacked(&entry, now).count(), 1);
     }
 
     #[test]
@@ -5810,22 +5830,7 @@ mod tests {
             created_at: 1_000_000,
             updated_at: 1_000_000,
         };
-        RunEntry {
-            run,
-            tasks: std::collections::HashMap::new(),
-            dispatches: std::collections::HashMap::new(),
-            messages: vec![],
-            gates: std::collections::HashMap::new(),
-            task_count: 0,
-            idle_state: IdleState::Active,
-            idle_fingerprint: None,
-            auto_action_failures: HashMap::new(),
-            gate_count: 0,
-            msg_seq: 0,
-            event_seq: 0,
-            coordinator_cost_baseline: None,
-            coordinator_cost_final: None,
-        }
+        RunEntry::new(run)
     }
 
     pub(super) fn mk_task_entry(id: &str, status: TaskStatus, attempts: u32) -> Task {
@@ -6175,7 +6180,7 @@ mod tests {
         entry.dispatches.insert("r1.t1.2".to_string(),
             mk_dispatch_entry("r1.t1.2", "t1", 2, Some("r1.t1.1"), None, Some("unknown"), 30_000));
 
-        let report = build_report(&entry, None, "json");
+        let report = build_report(&entry, None);
         let totals = &report["totals"];
         assert_eq!(totals["unknownCostCount"].as_u64(), Some(1));
         assert!((totals["totalExactCostUsd"].as_f64().unwrap() - 0.05).abs() < 1e-9);
@@ -6194,7 +6199,7 @@ mod tests {
         entry.dispatches.insert("r1.t2.1".to_string(),
             mk_dispatch_entry("r1.t2.1", "t2", 1, None, Some(0.20), Some("exact"), 10_000));
 
-        let report = build_report(&entry, None, "json");
+        let report = build_report(&entry, None);
         let totals = &report["totals"];
         let per_task = totals["costPerCompletedTask"].as_f64().unwrap();
         assert!((per_task - 0.15).abs() < 1e-9);
@@ -6211,7 +6216,7 @@ mod tests {
         entry.dispatches.insert("r1.t1.2".to_string(),
             mk_dispatch_entry("r1.t1.2", "t1", 2, Some("r1.t1.1"), Some(0.07), Some("exact"), 10_000));
 
-        let report = build_report(&entry, None, "json");
+        let report = build_report(&entry, None);
         let totals = &report["totals"];
         assert_eq!(totals["retries"].as_u64(), Some(1));
         assert_eq!(totals["dispatches"].as_u64(), Some(2));
@@ -6225,7 +6230,7 @@ mod tests {
         t1.result = Some("src/foo.ts, src/bar.ts".to_string());
         entry.tasks.insert("t1".to_string(), t1);
 
-        let report = build_report(&entry, None, "json");
+        let report = build_report(&entry, None);
         let tasks = report["tasks"].as_array().unwrap();
         let task = tasks.iter().find(|t| t["id"].as_str() == Some("t1")).unwrap();
         let files = task["conflictFiles"].as_array().unwrap();
@@ -6240,7 +6245,7 @@ mod tests {
         let t1 = mk_task_entry("t1", TaskStatus::Completed, 1);
         entry.tasks.insert("t1".to_string(), t1);
 
-        let report = build_report(&entry, None, "json");
+        let report = build_report(&entry, None);
         let tasks = report["tasks"].as_array().unwrap();
         let task = tasks.iter().find(|t| t["id"].as_str() == Some("t1")).unwrap();
         let files = task["conflictFiles"].as_array().unwrap();
@@ -6254,8 +6259,10 @@ mod tests {
         t1.result = Some("src/a.ts, src/b.ts".to_string());
         entry.tasks.insert("t1".to_string(), t1);
 
-        let report = build_report(&entry, None, "markdown");
-        let md = report["text"].as_str().unwrap();
+        let report = build_report(&entry, None);
+        let md = render_report_markdown(&report, &usage::RunUsage::snapshot(&entry).read());
+        assert!(md.contains("## Usage\n\n- Coordinator wakes: 0 (event log)"));
+        assert!(md.contains("Coordinator tokens: input unavailable"));
         assert!(md.contains("Conflict files:"), "markdown missing conflict files section");
         assert!(md.contains("src/a.ts"), "markdown missing conflict file name");
     }
