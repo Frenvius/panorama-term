@@ -1,4 +1,10 @@
 mod model;
+mod autonomy;
+mod candidates;
+mod carry;
+mod metrics;
+mod routing;
+mod wiring;
 pub(crate) mod agy;
 pub(crate) mod cli_env;
 mod model_catalog;
@@ -14,11 +20,12 @@ pub mod settings;
 pub mod worker;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use serde_json::Value;
 use crate::orch::model::*;
-use crate::orch::reducer::{ApplyResult, Cmd, State};
+use crate::orch::reducer::{ApplyResult, Cmd, State, WaitRequest};
 use crate::orch::store::{EventRecord, append_event, ensure_run_dir, load_into, remove_run_dir, run_events_path};
 use crate::orch::profiles::{load_profiles, find_profile, resolve_env};
 use crate::orch::worker::{BriefInput, WorkerLaunch, write_brief, spawn_worker, capture_worker_screen, maybe_nudge_tile, maybe_nudge_worker, is_tile_waiting};
@@ -28,6 +35,13 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static NOTIFIES: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> = OnceLock::new();
 static COORDINATORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static STARTING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static CANDIDATES: OnceLock<Mutex<candidates::CandidateStates>> = OnceLock::new();
+static CANDIDATE_VERSION: AtomicU64 = AtomicU64::new(0);
+static CANDIDATE_PERSISTED: Mutex<u64> = Mutex::new(0);
+
+fn candidate_states() -> &'static Mutex<candidates::CandidateStates> {
+    CANDIDATES.get_or_init(|| Mutex::new(candidates::CandidateStates::default()))
+}
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
@@ -276,6 +290,7 @@ pub fn init() {
 
     let loaded = load_coordinators(&base);
     *coordinators().lock().unwrap_or_else(|e| e.into_inner()) = loaded;
+    restore_candidates(&base, candidate_states());
 
     let runs_dir = base.join("orch").join("runs");
     if runs_dir.exists() {
@@ -322,6 +337,10 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "verify" => handle_verify(body).await,
         "retry" => handle_retry(body).await,
         "report" => handle_report(body).await,
+        "candidate-list" => handle_candidate_list(),
+        "candidate-clear" => handle_candidate_clear(body),
+        "usage-report" => handle_usage_report(body),
+        "metrics" => handle_metrics(),
         "settings-get" => handle_settings_get(),
         "settings-set" => handle_settings_set(body),
         "provider-save" => handle_provider_save(body),
@@ -427,6 +446,43 @@ pub fn on_agent_waiting(tile_id: &str) {
     }
 }
 
+fn parse_autonomy_field(v: &Value) -> Result<Option<Autonomy>, String> {
+    let Some(raw) = v.get("autonomy").filter(|a| !a.is_null()) else {
+        return Ok(None);
+    };
+    if raw.is_object() {
+        return serde_json::from_value(raw.clone())
+            .map(Some)
+            .map_err(|_| err_resp("bad_request", "autonomy object is invalid"));
+    }
+    let Some(list) = raw.as_str() else {
+        return Err(err_resp("bad_request", "autonomy must be a comma separated string"));
+    };
+    let mut autonomy = Autonomy::default();
+    for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        match name {
+            "operational" => autonomy.operational = true,
+            "execution" => autonomy.execution = true,
+            "integration" => autonomy.integration = true,
+            other => return Err(err_resp("bad_request", &format!(
+                "unknown autonomy '{other}'; use operational, execution, integration"
+            ))),
+        }
+    }
+    Ok(Some(autonomy))
+}
+
+fn run_extra_fields(autonomy: Option<Autonomy>, max_operational_attempts: Option<u64>) -> Value {
+    let mut fields = serde_json::Map::new();
+    if let Some(a) = autonomy {
+        fields.insert("autonomy".into(), serde_json::to_value(a).unwrap_or_default());
+    }
+    if let Some(n) = max_operational_attempts {
+        fields.insert("maxOperationalAttempts".into(), n.into());
+    }
+    Value::Object(fields)
+}
+
 fn parse_limits(v: &Value) -> Result<Limits, String> {
     let get_u64 = |flat: &str| -> Option<u64> {
         v.get("limits")
@@ -439,6 +495,7 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
     let dt = get_u64("dispatchTimeoutMin").unwrap_or(60);
     let vt = get_u64("verifyTimeoutMin").unwrap_or(15);
     let sq = get_u64("stallQuietMin").unwrap_or(5);
+    let moa = get_u64("maxOperationalAttempts").unwrap_or(6);
     if mw < 1 { return Err(err_resp("bad_request", "maxWorkers must be >= 1")); }
     if ma < 1 { return Err(err_resp("bad_request", "maxAttempts must be >= 1")); }
     if dt < 1 { return Err(err_resp("bad_request", "dispatchTimeoutMin must be >= 1")); }
@@ -448,6 +505,7 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
         dispatch_timeout_min: dt as u32,
         verify_timeout_min: vt as u32,
         stall_quiet_min: sq as u32,
+        max_operational_attempts: moa as u32,
     })
 }
 
@@ -459,6 +517,7 @@ async fn handle_run_create(body: &[u8]) -> String {
         return err_resp("bad_request", "repo is not an existing directory");
     }
     let limits = match parse_limits(&v) { Ok(l) => l, Err(e) => return e };
+    let autonomy = match parse_autonomy_field(&v) { Ok(a) => a, Err(e) => return e };
     let id = gen_run_id();
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let base_ref = v["baseRef"].as_str().map(str::to_string);
@@ -474,7 +533,8 @@ async fn handle_run_create(body: &[u8]) -> String {
     let id_c = id.clone();
     let now = unix_ms();
     let result = commit(move |_| {
-        Ok(Cmd::RunCreate { id: id_c, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now })
+        let cmd = Cmd::RunCreate { id: id_c, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
+        Ok(cmd.with_fields(run_extra_fields(autonomy, None)))
     }, id.clone()).await;
     match result {
         CommitResult::Ok(_) => {
@@ -651,6 +711,8 @@ fn handle_run_show(body: &[u8]) -> String {
                 "live": d["live"],
                 "agentStatus": d.get("agentStatus"),
                 "starting": d["starting"],
+                "trigger": d.get("trigger"),
+                "failureClass": d.get("failureClass"),
                 "summary": d["summary"].as_str().and_then(|s| s.lines().next()).unwrap_or("")
             })
         }).collect();
@@ -661,6 +723,9 @@ fn handle_run_show(body: &[u8]) -> String {
                 "status": t["status"],
                 "owner": t["owner"],
                 "attempts": t["attempts"],
+                "qualityAttempts": t["qualityAttempts"],
+                "operationalAttempts": t["operationalAttempts"],
+                "wait": t.get("wait"),
                 "ready": t["ready"]
             })
         }).collect();
@@ -801,17 +866,122 @@ async fn handle_run_update(body: &[u8]) -> String {
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
     let title = v["title"].as_str().unwrap_or("").to_string();
-    if title.is_empty() { return err_resp("bad_request", "title required"); }
+    let autonomy = match parse_autonomy_field(&v) { Ok(a) => a, Err(e) => return e };
+    let max_operational = v.get("maxOperationalAttempts").filter(|n| !n.is_null()).and_then(|n| n.as_u64());
+    if v.get("maxOperationalAttempts").map(|n| !n.is_null()).unwrap_or(false) && max_operational.map(|n| n < 1).unwrap_or(true) {
+        return err_resp("bad_request", "maxOperationalAttempts must be an integer >= 1");
+    }
+    if title.is_empty() && autonomy.is_none() && max_operational.is_none() {
+        return err_resp("bad_request", "title, autonomy or maxOperationalAttempts required");
+    }
     let now = unix_ms();
     let run_id_c = run_id.clone();
-    let result = commit(move |_| {
-        Ok(Cmd::RunUpdate { run_id: run_id_c, title, now })
+    let result = commit(move |state| {
+        let title = if title.is_empty() {
+            state.runs.get(&run_id_c).map(|e| e.run.title.clone()).unwrap_or_default()
+        } else {
+            title
+        };
+        let cmd = Cmd::RunUpdate { run_id: run_id_c, title, now };
+        Ok(cmd.with_fields(run_extra_fields(autonomy, max_operational)))
     }, run_id).await;
     match result {
         CommitResult::Ok(_) => ok_resp(serde_json::json!({})),
         CommitResult::Stale => err_resp("stale", "run update stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
+}
+
+struct CandidateSnapshot {
+    version: u64,
+    states: candidates::CandidateStates,
+}
+
+fn snapshot_candidates(states: &candidates::CandidateStates) -> CandidateSnapshot {
+    CandidateSnapshot {
+        version: CANDIDATE_VERSION.fetch_add(1, Ordering::SeqCst) + 1,
+        states: states.clone(),
+    }
+}
+
+fn restore_candidates(base: &std::path::Path, target: &Mutex<candidates::CandidateStates>) {
+    *target.lock().unwrap_or_else(|e| e.into_inner()) = candidates::load(base);
+}
+
+fn persist_candidates(snapshot: &CandidateSnapshot) -> Result<(), String> {
+    let Some(base) = crate::panorama_dir() else {
+        return Err(err_resp("io", "no panorama dir"));
+    };
+    persist_candidates_at(&base, snapshot, &CANDIDATE_PERSISTED)
+}
+
+fn persist_candidates_at(base: &std::path::Path, snapshot: &CandidateSnapshot, persisted: &Mutex<u64>) -> Result<(), String> {
+    let mut last = persisted.lock().unwrap_or_else(|e| e.into_inner());
+    if snapshot.version <= *last {
+        return Ok(());
+    }
+    candidates::save(base, &snapshot.states).map_err(|e| err_resp("io", &e))?;
+    *last = snapshot.version;
+    Ok(())
+}
+
+fn handle_candidate_list() -> String {
+    let now = unix_ms() as i64;
+    let guard = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+    ok_resp(serde_json::json!({"candidates": guard.entries(now)}))
+}
+
+fn handle_candidate_clear(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let agent = v["agent"].as_str().unwrap_or("").to_string();
+    if agent.is_empty() { return err_resp("bad_request", "agent required"); }
+    let filter = candidates::CandidateKey {
+        agent,
+        model: v["model"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        account: v["account"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+    };
+    let (removed, snapshot) = {
+        let mut guard = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+        let removed = guard.clear(&filter);
+        (removed, (removed > 0).then(|| snapshot_candidates(&guard)))
+    };
+    if let Some(snapshot) = snapshot {
+        if let Err(e) = persist_candidates(&snapshot) { return e; }
+    }
+    ok_resp(serde_json::json!({"cleared": removed}))
+}
+
+fn handle_usage_report(body: &[u8]) -> String {
+    let mut v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    if let Some(raw) = v.get("windows").and_then(|w| w.as_str()).map(str::to_string) {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(parsed) => v["windows"] = parsed,
+            Err(_) => return err_resp("bad_request", "windows must be a JSON array"),
+        }
+    }
+    let report: candidates::UsageReport = match serde_json::from_value(v) {
+        Ok(r) => r,
+        Err(e) => return err_resp("bad_request", &format!("invalid usage report: {e}")),
+    };
+    if report.agent.is_empty() || report.account_id.is_empty() {
+        return err_resp("bad_request", "agent and accountId required");
+    }
+    let now = unix_ms() as i64;
+    let snapshot = {
+        let mut guard = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+        let before = guard.entries(now);
+        guard.apply_usage_report(&report, now);
+        (guard.entries(now) != before).then(|| snapshot_candidates(&guard))
+    };
+    if let Some(snapshot) = snapshot {
+        if let Err(e) = persist_candidates(&snapshot) { return e; }
+    }
+    ok_resp(serde_json::json!({}))
+}
+
+fn handle_metrics() -> String {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    ok_resp(metrics::compute(guard.runs.values()))
 }
 
 async fn handle_run_set_coordinator(body: &[u8]) -> String {
@@ -865,6 +1035,7 @@ async fn handle_task_create(body: &[u8]) -> String {
     let owner: Option<String> = v["owner"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
     let by = v["by"].as_str().unwrap_or("coordinator").to_string();
     let now = unix_ms();
+    let pinned = profile.is_some();
 
     let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
     let mut escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
@@ -912,11 +1083,12 @@ async fn handle_task_create(body: &[u8]) -> String {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let task_id = entry.next_task_id();
-        Ok(Cmd::TaskCreate {
+        let cmd = Cmd::TaskCreate {
             run_id: run_id_c, id: task_id,
             title: title_c, spec, acceptance, deps, profile, escalation, verify, role: role_c,
             review, owner: owner_c, now,
-        })
+        };
+        Ok(cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned})))
     }, run_id.clone()).await;
 
     match result {
@@ -1110,6 +1282,13 @@ async fn handle_send(body: &[u8]) -> String {
             commit_worker_leftovers(&run_id, did).await;
         }
     }
+    let failure = match (msg_type.as_str(), outcome.as_deref(), dispatch_id.as_deref()) {
+        ("worker_done", Some("failed"), Some(did)) => {
+            classify_dispatch(&run_id, did, "worker_failed_report", &dispatch_screen_tail(&run_id, did))
+        }
+        _ => None,
+    };
+    let failure_c = failure.clone();
     let now = unix_ms();
     let run_id_c = run_id.clone();
     let msg_type_c = msg_type.clone();
@@ -1132,15 +1311,23 @@ async fn handle_send(body: &[u8]) -> String {
             return Err("bad_request:to required".into());
         };
         let seq = entry.next_msg_seq();
-        Ok(Cmd::Send {
+        Ok(with_legacy_failure_class(Cmd::Send {
             run_id: run_id_c, seq, from: from_c, to,
             msg_type: msg_type_c, task_id, dispatch_id, reply_to,
             body: body_str, outcome, files_modified: files_modified_c, summary, now,
-        })
+        }, failure_c.as_ref()))
     }, run_id.clone()).await;
 
     match result {
         CommitResult::Ok(_) => {
+            if let (Some(f), Some(did)) = (&failure, dispatch_id_for_hook.as_deref()) {
+                send_follow_up(record_failure(&run_id, did, f, false).await).await;
+            }
+            if msg_type == "worker_done" && v["outcome"].as_str() == Some("succeeded") {
+                if let Some(did) = dispatch_id_for_hook.as_deref() {
+                    clear_candidate_on_success(&run_id, did);
+                }
+            }
             if msg_type == "worker_done" {
                 if let Some(did) = dispatch_id_for_hook {
                     let run_id_wd = run_id.clone();
@@ -1489,13 +1676,18 @@ async fn run_verification(run_id: String, task_id: String, dispatch_id: String, 
             let dispatch_id_c = dispatch_id.clone();
             let cmd_c = cmd.clone();
             let now2 = unix_ms();
+            let failure = classify_dispatch(&run_id, &dispatch_id, "verification_failed", &[]);
+            let failure_c = failure.clone();
             commit(move |_| {
-                Ok(Cmd::TaskVerificationFailed {
+                Ok(with_legacy_failure_class(Cmd::TaskVerificationFailed {
                     run_id: run_id_c, task_id: task_id_c, dispatch_id: dispatch_id_c,
                     command: cmd_c, exit_code: exit_c, timed_out: timed_c,
                     tail: tail_str, msg_seq: seq, now: now2,
-                })
+                }, failure_c.as_ref()))
             }, run_id.clone()).await;
+            if let Some(f) = &failure {
+                send_follow_up(record_failure(&run_id, &dispatch_id, f, false).await).await;
+            }
             return;
         }
     }
@@ -1584,6 +1776,18 @@ struct DispatchWatch {
     sent: std::collections::HashSet<String>,
 }
 
+impl DispatchWatch {
+    fn observe_screen(&mut self, screen: &str, now_secs: u64) {
+        if screen == self.last_screen {
+            return;
+        }
+        self.last_screen = screen.to_string();
+        self.screen_last_changed_secs = now_secs;
+        self.consecutive_shell_ticks = 0;
+        self.sent.remove("quiet");
+    }
+}
+
 fn supervision_watch() -> &'static Mutex<std::collections::HashMap<String, DispatchWatch>> {
     static MAP: std::sync::OnceLock<Mutex<std::collections::HashMap<String, DispatchWatch>>> =
         std::sync::OnceLock::new();
@@ -1595,6 +1799,7 @@ async fn supervision_loop() {
     loop {
         interval.tick().await;
         supervision_tick().await;
+        autonomy::tick_all().await;
     }
 }
 
@@ -1646,11 +1851,7 @@ async fn supervision_tick() {
                 entry.ever_live = true;
             }
             let screen = worker::capture_worker_screen(&tile_id, 40);
-            if screen != entry.last_screen {
-                entry.last_screen = screen.clone();
-                entry.screen_last_changed_secs = now_secs;
-                entry.consecutive_shell_ticks = 0;
-            }
+            entry.observe_screen(&screen, now_secs);
             let quiet = now_secs.saturating_sub(entry.screen_last_changed_secs);
             if is_session_live {
                 let is_shell = session.as_ref()
@@ -1715,14 +1916,20 @@ async fn supervision_tick() {
                     let run_id_c = run_id.clone();
                     let dispatch_id_c = dispatch_id.clone();
                     let summary_c = summary.clone();
+                    let failure = classify_dispatch(&run_id, &dispatch_id, &reason, &tail_lines(&screen_text));
+                    let failure_c = failure.clone();
                     commit(move |_| {
-                        Ok(Cmd::DispatchUpdate {
+                        Ok(with_legacy_failure_class(Cmd::DispatchUpdate {
                             run_id: run_id_c, dispatch_id: dispatch_id_c,
                             status: DispatchStatus::Failed,
                             summary: Some(summary_c),
                             now,
-                        })
+                        }, failure_c.as_ref()))
                     }, run_id.clone()).await;
+                    let follow_up = match &failure {
+                        Some(f) => record_failure(&run_id, &dispatch_id, f, false).await,
+                        None => None,
+                    };
 
                     let seq = {
                         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1753,8 +1960,12 @@ async fn supervision_tick() {
                             now: now2,
                         })
                     }, run_id.clone()).await;
+                    send_follow_up(follow_up).await;
                 }
                 Finding::Timeout | Finding::Quiet => {
+                    if fail_live_dispatch_on_quota(&run_id, &dispatch_id, &screen_text).await {
+                        break;
+                    }
                     let tail = screen_text.lines().rev().take(20).collect::<Vec<_>>()
                         .into_iter().rev().collect::<Vec<_>>().join("\n");
                     let body_str = serde_json::json!({"reason": reason, "tail": tail}).to_string();
@@ -1861,6 +2072,50 @@ async fn handle_retry(body: &[u8]) -> String {
     }
 
     let by_retry = v["by"].as_str().unwrap_or("coordinator");
+
+    let routed_limit = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = match guard.runs.get(&run_id) {
+            Some(e) => e,
+            None => return err_resp("not_found", "run not found"),
+        };
+        match entry.tasks.get(&task_id) {
+            Some(t) if t.routing == 1 && t.status == TaskStatus::Failed => {
+                if by_retry != "user" && t.owner.as_deref() == Some("user") {
+                    return err_resp("owned_by_user", "this task is owned by the user; only the user can retry it");
+                }
+                Some((wiring::retry_limit(entry, t), entry.latest_dispatch_for_task(&task_id).map(|d| d.id.clone())))
+            }
+            _ => None,
+        }
+    };
+    if let Some((limit, retry_of)) = routed_limit {
+        match limit {
+            wiring::RetryLimit::QualityExhausted => {
+                return err_resp("quality_attempts_exhausted", "quality attempts exhausted for this task");
+            }
+            wiring::RetryLimit::OperationalExhausted => {
+                return enter_waiting(EnterWaitingInput {
+                    run_id, task_id, dispatch_id: None, wait: wiring::operational_cap_wait(),
+                }).await;
+            }
+            wiring::RetryLimit::Open => {}
+        }
+        let mut inner_body = serde_json::json!({"runId": run_id, "taskId": task_id, "by": by_retry});
+        for key in ["profile", "model"] {
+            if let Some(explicit) = v[key].as_str() {
+                inner_body[key] = explicit.into();
+            }
+        }
+        if let Some(stop_live) = v["stopLive"].as_bool() {
+            inner_body["stopLive"] = stop_live.into();
+        }
+        if let Some(ro) = retry_of {
+            inner_body["retryOf"] = ro.into();
+        }
+        return handle_worker_start(inner_body.to_string().as_bytes()).await;
+    }
+
 
     let (err, attempt, retry_of, escalation, task_profile, latest_profile, latest_model) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2524,7 +2779,7 @@ async fn handle_worker_start(body: &[u8]) -> String {
     let retry_of: Option<String> = v["retryOf"].as_str().map(str::to_string);
     let by = v["by"].as_str().unwrap_or("coordinator").to_string();
 
-    let (profile_id, model) = {
+    let route = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -2537,22 +2792,38 @@ async fn handle_worker_start(body: &[u8]) -> String {
         if by != "user" && task.owner.as_deref() == Some("user") {
             return err_resp("owned_by_user", "this task is owned by the user; only the user can dispatch it");
         }
-        let attempt = task.attempts + 1;
-        let latest_profile = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.profile.clone());
-        let latest_model = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.model.clone());
-        let (p, m) = pick_escalation(EscalationInput {
-            escalation: &task.escalation,
-            attempt,
-            explicit_profile: explicit_profile.as_deref(),
-            explicit_model: explicit_model.as_deref(),
-            task_profile: task.profile.as_deref(),
-            latest_profile: latest_profile.as_deref(),
-            latest_model: latest_model.as_deref(),
-        });
-        if p.is_empty() {
-            return err_resp("bad_request", "profile required (no escalation list and no task profile)");
+        if task.routing == 1 {
+            let states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+            match wiring::plan_dispatch(plan_input(entry, &task_id, &v, &by), &states) {
+                Err(e) => return err_from_str(&e),
+                Ok(wiring::DispatchPlan::Wait(wait)) => StartRoute::Wait(wait),
+                Ok(wiring::DispatchPlan::Dispatch(p)) => StartRoute::Routed(p),
+            }
+        } else {
+            let attempt = task.attempts + 1;
+            let latest_profile = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.profile.clone());
+            let latest_model = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.model.clone());
+            let (p, m) = pick_escalation(EscalationInput {
+                escalation: &task.escalation,
+                attempt,
+                explicit_profile: explicit_profile.as_deref(),
+                explicit_model: explicit_model.as_deref(),
+                task_profile: task.profile.as_deref(),
+                latest_profile: latest_profile.as_deref(),
+                latest_model: latest_model.as_deref(),
+            });
+            if p.is_empty() {
+                return err_resp("bad_request", "profile required (no escalation list and no task profile)");
+            }
+            StartRoute::Legacy(p, m)
         }
-        (p, m)
+    };
+    let (profile_id, model, routed) = match route {
+        StartRoute::Wait(wait) => {
+            return enter_waiting(EnterWaitingInput { run_id, task_id, dispatch_id: None, wait }).await;
+        }
+        StartRoute::Routed(p) => (p.profile.clone(), p.model.clone(), Some(p)),
+        StartRoute::Legacy(p, m) => (p, m, None),
     };
     let worktree_mode = v["worktree"].as_str().unwrap_or("auto").to_string();
     let stop_live = v["stopLive"].as_bool().unwrap_or(false);
@@ -2620,6 +2891,10 @@ async fn handle_worker_start(body: &[u8]) -> String {
     let model_c = model.clone();
     let retry_of_c = retry_of.clone();
     let owner_c = owner_for_dispatch.clone();
+    let account = routed.as_ref().and_then(|_| account_for_profile(&profile));
+    let routed_c = routed.clone();
+    let v_c = v.clone();
+    let by_c = by.clone();
 
     let result = commit(move |g| {
         let entry = g.runs.get(&run_id_c)
@@ -2628,7 +2903,13 @@ async fn handle_worker_start(body: &[u8]) -> String {
             .ok_or_else(|| "not_found:task not found".to_string())?;
         let attempt = task.attempts + 1;
         let dispatch_id = format!("{run_id_c}.{task_id_c}.{attempt}");
-        Ok(Cmd::Dispatch {
+        let fields = match &routed_c {
+            Some(expected) => Some(routed_dispatch_fields(RoutedFieldsInput {
+                entry, task_id: &task_id_c, request: &v_c, by: &by_c, expected, account,
+            })?),
+            None => None,
+        };
+        let cmd = Cmd::Dispatch {
             run_id: run_id_c.clone(),
             id: dispatch_id,
             task_id: task_id_c.clone(),
@@ -2639,6 +2920,10 @@ async fn handle_worker_start(body: &[u8]) -> String {
             tile_id: Some(tile_id_c.clone()),
             owner: owner_c,
             now,
+        };
+        Ok(match fields {
+            Some(f) => cmd.with_fields(f),
+            None => cmd,
         })
     }, run_id.clone()).await;
 
@@ -2700,8 +2985,6 @@ async fn handle_worker_start(body: &[u8]) -> String {
         (task, dispatch, deps_results, cwd, entry.run.base_sha.clone(), entry.run.setup.clone(), has_deps, entry.run.repo.clone(), title)
     };
 
-    starting().lock().unwrap_or_else(|e| e.into_inner()).insert(dispatch_id.clone());
-
     let sd_input = StartDispatchInput {
         run_id: run_id.clone(),
         task_id: task_id.clone(),
@@ -2722,9 +3005,12 @@ async fn handle_worker_start(body: &[u8]) -> String {
         dispatch_clone,
         deps_results,
     };
-    tokio::spawn(async move {
-        start_dispatch(sd_input).await;
-    });
+    if !cfg!(test) {
+        starting().lock().unwrap_or_else(|e| e.into_inner()).insert(dispatch_id.clone());
+        tokio::spawn(async move {
+            start_dispatch(sd_input).await;
+        });
+    }
 
     let dispatch_json = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2734,6 +3020,252 @@ async fn handle_worker_start(body: &[u8]) -> String {
             .unwrap_or(serde_json::json!({"id": dispatch_id}))
     };
     ok_resp(serde_json::json!({"dispatch": dispatch_json, "starting": true}))
+}
+
+enum StartRoute {
+    Legacy(String, Option<String>),
+    Routed(wiring::PlannedDispatch),
+    Wait(WaitRequest),
+}
+
+fn plan_input<'a>(entry: &'a reducer::RunEntry, task_id: &'a str, request: &'a Value, by: &str) -> wiring::PlanInput<'a> {
+    wiring::PlanInput {
+        entry,
+        task_id,
+        explicit_profile: request["profile"].as_str(),
+        explicit_model: request["model"].as_str(),
+        by: wiring::dispatch_by(by),
+        resumed: request["resume"].as_bool().unwrap_or(false),
+        now: unix_ms() as i64,
+    }
+}
+
+struct RoutedFieldsInput<'a> {
+    entry: &'a reducer::RunEntry,
+    task_id: &'a str,
+    request: &'a Value,
+    by: &'a str,
+    expected: &'a wiring::PlannedDispatch,
+    account: Option<String>,
+}
+
+fn routed_dispatch_fields(input: RoutedFieldsInput) -> Result<Value, String> {
+    let RoutedFieldsInput { entry, task_id, request, by, expected, account } = input;
+    let states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+    match wiring::plan_dispatch(plan_input(entry, task_id, request, by), &states)? {
+        wiring::DispatchPlan::Dispatch(p) if p.profile == expected.profile && p.model == expected.model => {
+            Ok(wiring::dispatch_fields(&p, account))
+        }
+        _ => Err("conflict:routing changed while dispatching; retry".into()),
+    }
+}
+
+fn account_for_profile(profile: &crate::orch::profiles::Profile) -> Option<String> {
+    if profile.provider {
+        return None;
+    }
+    crate::accounts::default_account_id(&profile.exe)
+}
+
+struct EnterWaitingInput {
+    run_id: String,
+    task_id: String,
+    dispatch_id: Option<String>,
+    wait: WaitRequest,
+}
+
+async fn send_coordinator_notice(run_id: String, task_id: String, dispatch_id: Option<String>, msg_type: &'static str, body: String) {
+    let run_id_c = run_id.clone();
+    commit(move |g| {
+        let entry = g.runs.get(&run_id_c)
+            .ok_or_else(|| "not_found:run not found".to_string())?;
+        wiring::notice_cmd(entry, wiring::NoticeInput {
+            run_id: &run_id_c,
+            task_id: &task_id,
+            dispatch_id: dispatch_id.as_deref(),
+            msg_type,
+            body,
+            now: unix_ms(),
+        }).ok_or_else(|| "conflict:duplicate notice".to_string())
+    }, run_id).await;
+}
+
+async fn commit_wait(run_id: &str, task_id: &str, wait: WaitRequest) -> Result<String, String> {
+    let body = wiring::task_waiting_body(&wait);
+    let (run_c, task_c) = (run_id.to_string(), task_id.to_string());
+    let now = unix_ms();
+    match commit(move |_| Ok(Cmd::TaskWait { run_id: run_c, task_id: task_c, wait, now }), run_id.to_string()).await {
+        CommitResult::Ok(_) => Ok(body),
+        CommitResult::Stale => Err("stale:task wait stale".into()),
+        CommitResult::Err(e) => Err(e),
+    }
+}
+
+async fn commit_wait_and_notify(input: EnterWaitingInput) -> Result<(), String> {
+    let EnterWaitingInput { run_id, task_id, dispatch_id, wait } = input;
+    let body = commit_wait(&run_id, &task_id, wait).await?;
+    let notice_dispatch = dispatch_id.or_else(|| {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id)
+            .and_then(|e| e.latest_dispatch_for_task(&task_id))
+            .map(|d| d.id.clone())
+    });
+    send_coordinator_notice(run_id, task_id, notice_dispatch, "task_waiting", body).await;
+    Ok(())
+}
+
+async fn enter_waiting(input: EnterWaitingInput) -> String {
+    let summary = serde_json::json!({
+        "kind": input.wait.kind,
+        "resumeAt": input.wait.resume_at,
+        "reason": input.wait.reason,
+        "candidate": input.wait.candidate,
+    });
+    match commit_wait_and_notify(input).await {
+        Ok(()) => ok_resp(serde_json::json!({"waiting": summary})),
+        Err(e) => err_from_str(&e),
+    }
+}
+
+#[derive(Clone)]
+struct DispatchFailure {
+    classification: failure::Classification,
+    routing: u32,
+}
+
+struct FollowUp {
+    run_id: String,
+    task_id: String,
+    dispatch_id: String,
+    notices: Vec<(&'static str, String)>,
+}
+
+fn classify_dispatch(run_id: &str, dispatch_id: &str, reason_code: &str, tail: &[String]) -> Option<DispatchFailure> {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard.runs.get(run_id)?;
+    let dispatch = entry.dispatches.get(dispatch_id)?;
+    let routing = entry.tasks.get(&dispatch.task_id)?.routing;
+    let classification = wiring::classify_failure(dispatch.profile.as_deref(), reason_code, tail, unix_ms() as i64);
+    Some(DispatchFailure { classification, routing })
+}
+
+fn with_legacy_failure_class(cmd: Cmd, failure: Option<&DispatchFailure>) -> Cmd {
+    match failure.filter(|f| f.routing == 0) {
+        Some(f) => cmd.with_fields(serde_json::json!({"failureClass": f.classification.class})),
+        None => cmd,
+    }
+}
+
+fn dispatch_screen_tail(run_id: &str, dispatch_id: &str) -> Vec<String> {
+    let tile = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(run_id)
+            .and_then(|e| e.dispatches.get(dispatch_id))
+            .and_then(|d| d.tile_id.clone())
+    };
+    tile.map(|t| tail_lines(&worker::capture_worker_screen(&t, 40))).unwrap_or_default()
+}
+
+fn tail_lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+async fn record_failure(run_id: &str, dispatch_id: &str, failure: &DispatchFailure, live: bool) -> Option<FollowUp> {
+    if failure.routing != 1 {
+        return None;
+    }
+    let class = failure.classification.class;
+    let (task_id, chain_index, dispatch) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let d = guard.runs.get(run_id)?.dispatches.get(dispatch_id)?;
+        if d.failure_class.is_some() {
+            return None;
+        }
+        (d.task_id.clone(), d.chain_index, d.clone())
+    };
+    let (run_c, task_c, dispatch_c) = (run_id.to_string(), task_id.clone(), dispatch_id.to_string());
+    let now = unix_ms();
+    let recorded = commit(move |_| {
+        Ok(Cmd::TaskRecordFailure { run_id: run_c, task_id: task_c, dispatch_id: dispatch_c, class, chain_index, now })
+    }, run_id.to_string()).await;
+    if !matches!(recorded, CommitResult::Ok(_)) {
+        return None;
+    }
+    let (after, snapshot) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+        let marked = wiring::mark_candidate(&mut states, &dispatch, &failure.classification, now as i64);
+        let snapshot = marked.then(|| snapshot_candidates(&states));
+        let entry = guard.runs.get(run_id)?;
+        let after = wiring::after_failure(wiring::AfterFailureInput {
+            entry, states: &states, dispatch_id, live, now: now as i64,
+        });
+        (after, snapshot)
+    };
+    if let Some(snapshot) = snapshot {
+        if let Err(e) = persist_candidates(&snapshot) {
+            eprintln!("[orch] candidate states not persisted: {e}");
+        }
+    }
+    let mut notices: Vec<(&'static str, String)> = Vec::new();
+    if let Some(wait) = after.wait {
+        if let Ok(body) = commit_wait(run_id, &task_id, wait).await {
+            notices.push(("task_waiting", body));
+        }
+    } else if let Some(suggested) = after.suggested.filter(|_| class.counter() == FailureCounter::Operational) {
+        notices.push(("operational_failure", wiring::operational_failure_body(class, dispatch_id, &suggested)));
+    }
+    Some(FollowUp { run_id: run_id.to_string(), task_id, dispatch_id: dispatch_id.to_string(), notices })
+}
+
+async fn send_follow_up(follow_up: Option<FollowUp>) {
+    let Some(FollowUp { run_id, task_id, dispatch_id, notices }) = follow_up else { return };
+    for (msg_type, body) in notices {
+        send_coordinator_notice(run_id.clone(), task_id.clone(), Some(dispatch_id.clone()), msg_type, body).await;
+    }
+}
+
+async fn fail_live_dispatch_on_quota(run_id: &str, dispatch_id: &str, screen: &str) -> bool {
+    let tail = tail_lines(screen);
+    let Some(failure) = classify_dispatch(run_id, dispatch_id, "", &tail) else { return false };
+    if failure.routing != 1 || !wiring::is_live_quota_class(failure.classification.class) {
+        return false;
+    }
+    let (run_c, dispatch_c) = (run_id.to_string(), dispatch_id.to_string());
+    let summary = format!("worker blocked: {}", failure.classification.source);
+    let now = unix_ms();
+    let updated = commit(move |_| {
+        Ok(Cmd::DispatchUpdate {
+            run_id: run_c, dispatch_id: dispatch_c, status: DispatchStatus::Failed, summary: Some(summary), now,
+        })
+    }, run_id.to_string()).await;
+    if !matches!(updated, CommitResult::Ok(_)) {
+        return false;
+    }
+    send_follow_up(record_failure(run_id, dispatch_id, &failure, true).await).await;
+    true
+}
+
+fn clear_candidate_on_success(run_id: &str, dispatch_id: &str) {
+    let key = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(dispatch) = guard.runs.get(run_id).and_then(|e| e.dispatches.get(dispatch_id)) else { return };
+        let Some(task) = guard.runs.get(run_id).and_then(|e| e.tasks.get(&dispatch.task_id)) else { return };
+        if task.routing != 1 {
+            return;
+        }
+        wiring::dispatch_key(dispatch)
+    };
+    let Some(key) = key else { return };
+    let snapshot = {
+        let mut states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+        (states.clear_on_success(&key) > 0).then(|| snapshot_candidates(&states))
+    };
+    if let Some(snapshot) = snapshot {
+        if let Err(e) = persist_candidates(&snapshot) {
+            eprintln!("[orch] candidate states not persisted: {e}");
+        }
+    }
 }
 
 struct StartDispatchInput {
@@ -2772,14 +3304,23 @@ async fn fail_dispatch_and_message_coordinator(input: FailDispatchInput) {
     let run_id2 = run_id.clone();
     let dispatch_id2 = dispatch_id.clone();
     let summary2 = summary.clone();
+    let parsed_body: Value = serde_json::from_str(&body).unwrap_or_default();
+    let reason_code = parsed_body["reason"].as_str().unwrap_or("").to_string();
+    let tail = tail_lines(parsed_body["tail"].as_str().unwrap_or(""));
+    let failure = classify_dispatch(&run_id, &dispatch_id, &reason_code, &tail);
+    let failure_c = failure.clone();
     commit(move |_| {
-        Ok(Cmd::DispatchUpdate {
+        Ok(with_legacy_failure_class(Cmd::DispatchUpdate {
             run_id: run_id2, dispatch_id: dispatch_id2,
             status: DispatchStatus::Failed,
             summary: Some(summary2),
             now,
-        })
+        }, failure_c.as_ref()))
     }, run_id.clone()).await;
+    let follow_up = match &failure {
+        Some(f) => record_failure(&run_id, &dispatch_id, f, false).await,
+        None => None,
+    };
 
     let seq = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -2812,6 +3353,61 @@ async fn fail_dispatch_and_message_coordinator(input: FailDispatchInput) {
             now: now2,
         })
     }, run_id).await;
+    send_follow_up(follow_up).await;
+}
+
+struct Carry {
+    start_ref: String,
+    handoff: String,
+}
+
+async fn stop_worker_with<L, K>(tile_id: &str, is_live: L, kill: K) -> bool
+where
+    L: Fn(&str) -> bool,
+    K: Fn(&str),
+{
+    for _ in 0..10 {
+        if !is_live(tile_id) { return true; }
+        kill(tile_id);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    !is_live(tile_id)
+}
+
+async fn ensure_worker_stopped(tile_id: &str) -> bool {
+    stop_worker_with(
+        tile_id,
+        |t| crate::lookup_live(t).is_some(),
+        |t| if let Some(session) = crate::lookup_live(t) { crate::kill_session(&session) },
+    ).await
+}
+
+async fn prepare_carry(run_id: &str, dispatch_id: &str, fallback_start_ref: String) -> Result<Option<Carry>, String> {
+    prepare_carry_with(run_id, dispatch_id, fallback_start_ref, |tile| async move { ensure_worker_stopped(&tile).await }).await
+}
+
+async fn prepare_carry_with<F, Fut>(run_id: &str, dispatch_id: &str, fallback_start_ref: String, stop: F) -> Result<Option<Carry>, String>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let previous = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = guard.runs.get(run_id) else { return Ok(None) };
+        let Some(next) = entry.dispatches.get(dispatch_id) else { return Ok(None) };
+        carry::previous_for_carry(entry, next)
+    };
+    let Some(previous) = previous else { return Ok(None) };
+    if let Some(tile) = previous.tile_id.clone() {
+        if !stop(tile).await {
+            return Err("previous worker still live".into());
+        }
+    }
+    let previous_c = previous.clone();
+    let checkpoint = tokio::task::spawn_blocking(move || {
+        carry::checkpoint_previous(carry::CheckpointInput { previous: &previous_c, fallback_start_ref: &fallback_start_ref })
+    }).await.map_err(|e| format!("checkpoint panic: {e}"))??;
+    Ok(checkpoint.map(|cp| Carry { handoff: carry::handoff_block(&previous, &cp), start_ref: cp.head }))
 }
 
 async fn start_dispatch(input: StartDispatchInput) {
@@ -2854,6 +3450,7 @@ async fn start_dispatch(input: StartDispatchInput) {
     }
 
     let use_worktree = worktree_mode != "none" && run_base_sha.is_some();
+    let mut handoff_text: Option<String> = None;
     let cwd = if use_worktree {
         let base_sha_val = run_base_sha.clone().unwrap_or_default();
         let int_branch = git::integration_branch(&run_id);
@@ -2866,6 +3463,22 @@ async fn start_dispatch(input: StartDispatchInput) {
                 base_sha_val
             }
         }).await.unwrap_or_else(|_| run_base_sha.clone().unwrap_or_default());
+
+        let carried = match prepare_carry(&run_id, &dispatch_id, base_for_wt.clone()).await {
+            Ok(c) => c,
+            Err(e) => {
+                bail_fail!(
+                    format!("checkpoint carry failed: {e}"),
+                    "worker_failed".into(),
+                    serde_json::json!({"reason":"worktree_failed","detail":e}).to_string()
+                );
+            }
+        };
+        let (base_for_wt, start_ref, handoff) = match carried {
+            Some(c) => (c.start_ref.clone(), Some(c.start_ref), Some(c.handoff)),
+            None => (base_for_wt, None, None),
+        };
+        handoff_text = handoff;
 
         if !is_running() { remove_starting(); return; }
 
@@ -2903,12 +3516,16 @@ async fn start_dispatch(input: StartDispatchInput) {
         let wt_branch_c2 = wt_branch.clone();
         let now_wt = unix_ms();
         commit(move |_| {
-            Ok(Cmd::DispatchSetWorktree {
+            let cmd = Cmd::DispatchSetWorktree {
                 run_id: run_id_wt,
                 dispatch_id: dispatch_id_wt,
                 worktree: wt_path_c2,
                 branch: wt_branch_c2,
                 now: now_wt,
+            };
+            Ok(match &start_ref {
+                Some(r) => cmd.with_fields(serde_json::json!({"startRef": r})),
+                None => cmd,
             })
         }, run_id.clone()).await;
 
@@ -2973,6 +3590,7 @@ async fn start_dispatch(input: StartDispatchInput) {
         deps_results: &deps_results,
         cli_path: &cli_path,
         cwd: &cwd,
+        handoff: handoff_text.as_deref(),
     }) {
         Ok(p) => p,
         Err(e) => {
@@ -3938,6 +4556,7 @@ fn chain_display(chain: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
     use crate::orch::model::Limits;
 
     #[test]
@@ -4048,7 +4667,7 @@ mod tests {
         }
     }
 
-    fn mk_run_entry(run_id: &str) -> crate::orch::reducer::RunEntry {
+    pub(super) fn mk_run_entry(run_id: &str) -> crate::orch::reducer::RunEntry {
         use crate::orch::reducer::RunEntry;
         let run = Run {
             id: run_id.to_string(),
@@ -4060,6 +4679,8 @@ mod tests {
             coordinator_tile: None,
             status: RunStatus::Active,
             limits: Limits::default(),
+            autonomy: Autonomy::default(),
+            coordinator_wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
         };
@@ -4078,7 +4699,7 @@ mod tests {
         }
     }
 
-    fn mk_task_entry(id: &str, status: TaskStatus, attempts: u32) -> Task {
+    pub(super) fn mk_task_entry(id: &str, status: TaskStatus, attempts: u32) -> Task {
         Task {
             id: id.to_string(),
             title: format!("Task {id}"),
@@ -4095,12 +4716,13 @@ mod tests {
             result: None,
             integrated_sha: None,
             attempts,
+            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
         }
     }
 
-    fn mk_dispatch_entry(id: &str, task_id: &str, attempt: u32, retry_of: Option<&str>, cost_usd: Option<f64>, cost_source: Option<&str>, duration_ms: u64) -> Dispatch {
+    pub(super) fn mk_dispatch_entry(id: &str, task_id: &str, attempt: u32, retry_of: Option<&str>, cost_usd: Option<f64>, cost_source: Option<&str>, duration_ms: u64) -> Dispatch {
         Dispatch {
             id: id.to_string(),
             task_id: task_id.to_string(),
@@ -4122,6 +4744,7 @@ mod tests {
             verifications: vec![],
             cost_usd,
             cost_source: cost_source.map(str::to_string),
+            account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
         }
     }
 
@@ -4321,6 +4944,62 @@ mod tests {
         facts.screen_quiet_secs = 5 * 60 + 1;
         let findings = assess(&facts, &sent_with(&["quiet"]));
         assert!(!findings.contains(&Finding::Quiet));
+    }
+
+    fn watch_at(now_secs: u64) -> DispatchWatch {
+        DispatchWatch {
+            consecutive_shell_ticks: 0,
+            ever_live: true,
+            last_screen: String::new(),
+            screen_last_changed_secs: now_secs,
+            sent: std::collections::HashSet::new(),
+        }
+    }
+
+    fn quiet_facts(watch: &DispatchWatch, now_secs: u64) -> TickFacts {
+        let mut facts = base_facts();
+        facts.agent_status = None;
+        facts.screen_quiet_secs = now_secs.saturating_sub(watch.screen_last_changed_secs);
+        facts
+    }
+
+    #[test]
+    fn screen_change_rearms_quiet_so_a_new_episode_is_assessed_again() {
+        let quiet_secs = 5 * 60 + 1;
+        let mut watch = watch_at(0);
+        watch.observe_screen("working", 0);
+        let first = assess(&quiet_facts(&watch, quiet_secs), &watch.sent);
+        assert!(first.contains(&Finding::Quiet));
+        watch.sent.insert("quiet".into());
+
+        watch.observe_screen("working", quiet_secs + 20);
+        assert!(!assess(&quiet_facts(&watch, quiet_secs + 20), &watch.sent).contains(&Finding::Quiet));
+
+        watch.observe_screen("usage limit reached", quiet_secs + 40);
+        assert!(!watch.sent.contains("quiet"));
+        assert!(assess(&quiet_facts(&watch, quiet_secs + 40), &watch.sent).is_empty());
+        let later = 2 * quiet_secs + 40;
+        assert!(assess(&quiet_facts(&watch, later), &watch.sent).contains(&Finding::Quiet));
+    }
+
+    #[test]
+    fn screen_change_keeps_other_sent_reasons() {
+        let mut watch = watch_at(0);
+        watch.sent.insert("quiet".into());
+        watch.sent.insert("timeout".into());
+        watch.observe_screen("new text", 10);
+        assert!(!watch.sent.contains("quiet"));
+        assert!(watch.sent.contains("timeout"));
+    }
+
+    #[test]
+    fn unchanged_screen_keeps_quiet_sent() {
+        let mut watch = watch_at(0);
+        watch.observe_screen("same", 0);
+        watch.sent.insert("quiet".into());
+        watch.observe_screen("same", 400);
+        assert!(watch.sent.contains("quiet"));
+        assert!(!assess(&quiet_facts(&watch, 400), &watch.sent).contains(&Finding::Quiet));
     }
 
     #[test]
@@ -4752,7 +5431,8 @@ mod tests {
             id: "r1".into(), title: "test".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None,
             coordinator_tile: None, status: RunStatus::Active,
-            limits: Limits::default(), created_at: 0, updated_at: 0,
+            limits: Limits::default(), autonomy: Autonomy::default(), coordinator_wait: None,
+            created_at: 0, updated_at: 0,
         };
         let mut entry = RunEntry::new(run);
         let t1 = Task {
@@ -4760,7 +5440,7 @@ mod tests {
             deps: vec![], profile: None, escalation: vec![], verify: vec![],
             role: Some(Role::Explore), review: false, owner: None,
             status: TaskStatus::Completed, result: None, integrated_sha: None,
-            attempts: 1, created_at: 0, updated_at: 0,
+            attempts: 1, routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None, created_at: 0, updated_at: 0,
         };
         let mut t2 = t1.clone();
         t2.id = "t2".into();
@@ -4774,6 +5454,7 @@ mod tests {
             outcome: None, head_sha: None, files_modified: vec![], summary: None,
             started_at: 0, ended_at: None, last_heartbeat: None, verifications: vec![],
             cost_usd: Some(0.1), cost_source: Some("exact".into()),
+            account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
         };
         let mut d2 = d1.clone();
         d2.id = "d2".into();
@@ -4801,4 +5482,518 @@ mod tests {
         assert_eq!(sonnet["dispatches"].as_u64(), Some(1));
         assert_eq!(sonnet["reported"].as_u64(), Some(0));
     }
+
+    #[test]
+    fn autonomy_flag_parses_comma_list_and_empty_clears() {
+        let v = serde_json::json!({"autonomy": "operational, integration"});
+        let a = parse_autonomy_field(&v).unwrap().unwrap();
+        assert_eq!(a, Autonomy { operational: true, execution: false, integration: true });
+        let cleared = parse_autonomy_field(&serde_json::json!({"autonomy": ""})).unwrap().unwrap();
+        assert_eq!(cleared, Autonomy::default());
+        assert!(parse_autonomy_field(&serde_json::json!({})).unwrap().is_none());
+        assert!(parse_autonomy_field(&serde_json::json!({"autonomy": "nope"})).is_err());
+    }
+
+    #[test]
+    fn parse_limits_defaults_and_reads_max_operational_attempts() {
+        let l = parse_limits(&serde_json::json!({})).unwrap();
+        assert_eq!(l.max_operational_attempts, 6);
+        let l = parse_limits(&serde_json::json!({"maxOperationalAttempts": 3})).unwrap();
+        assert_eq!(l.max_operational_attempts, 3);
+    }
+
+    const F12_NOW: i64 = 1_000_000_000;
+    const F12_HOUR: i64 = 3_600_000;
+
+    struct F12Task<'a> {
+        escalation: &'a [&'a str],
+        profile: Option<&'a str>,
+        pinned: bool,
+        routing: u32,
+    }
+
+    pub(super) fn f12_commit(s: &mut State, cmd: Cmd) -> (String, Value) {
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) | ApplyResult::Stale(k, d) => {
+                s.replay(&k, &d).expect("replay");
+                (k, d)
+            }
+            ApplyResult::Err(e) => panic!("command rejected: {}", e.message()),
+        }
+    }
+
+    fn f12_state(task: F12Task) -> State {
+        let mut s = State::default();
+        f12_commit(&mut s, Cmd::RunCreate {
+            id: "r1".into(), title: "t".into(), repo: "/tmp".into(), base_ref: None, base_sha: None,
+            setup: None, coordinator_tile: None, limits: Limits::default(), now: 1_000_000,
+        });
+        f12_commit(&mut s, Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: task.profile.map(str::to_string),
+            escalation: task.escalation.iter().map(|e| e.to_string()).collect(),
+            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+        }.with_fields(serde_json::json!({"routing": task.routing, "pinned": task.pinned})));
+        s
+    }
+
+    fn f12_plan(s: &State, states: &candidates::CandidateStates, explicit_profile: Option<&str>) -> wiring::DispatchPlan {
+        wiring::plan_dispatch(wiring::PlanInput {
+            entry: &s.runs["r1"], task_id: "t1", explicit_profile, explicit_model: None,
+            by: DispatchBy::Coordinator, resumed: false, now: F12_NOW,
+        }, states).expect("plan")
+    }
+
+    fn f12_dispatch(s: &mut State, states: &candidates::CandidateStates) -> (String, wiring::PlannedDispatch) {
+        let wiring::DispatchPlan::Dispatch(planned) = f12_plan(s, states, None) else { panic!("expected dispatch") };
+        let attempt = s.runs["r1"].tasks["t1"].attempts + 1;
+        let id = format!("r1.t1.{attempt}");
+        f12_commit(s, Cmd::Dispatch {
+            run_id: "r1".into(), id: id.clone(), task_id: "t1".into(), attempt, retry_of: None,
+            profile: Some(planned.profile.clone()), model: planned.model.clone(), tile_id: None, owner: None, now: 1_000_000,
+        }.with_fields(wiring::dispatch_fields(&planned, Some("system".into()))));
+        (id, planned)
+    }
+
+    fn f12_classification(class: FailureClass, reset_at: Option<i64>) -> failure::Classification {
+        failure::Classification {
+            class, scope: failure::Scope::Model, reset_at,
+            source: "test".into(), confidence: failure::Confidence::Reliable,
+        }
+    }
+
+    fn f12_fail(s: &mut State, states: &mut candidates::CandidateStates, dispatch_id: &str, found: failure::Classification) -> wiring::AfterFailure {
+        f12_commit(s, Cmd::DispatchUpdate {
+            run_id: "r1".into(), dispatch_id: dispatch_id.into(), status: DispatchStatus::Failed, summary: None, now: 1_000_000,
+        });
+        let chain_index = s.runs["r1"].dispatches[dispatch_id].chain_index;
+        f12_commit(s, Cmd::TaskRecordFailure {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: dispatch_id.into(),
+            class: found.class, chain_index, now: 1_000_000,
+        });
+        wiring::mark_candidate(states, &s.runs["r1"].dispatches[dispatch_id], &found, F12_NOW);
+        wiring::after_failure(wiring::AfterFailureInput {
+            entry: &s.runs["r1"], states, dispatch_id, live: false, now: F12_NOW,
+        })
+    }
+
+    fn f12_expect_dispatch(plan: wiring::DispatchPlan) -> wiring::PlannedDispatch {
+        match plan {
+            wiring::DispatchPlan::Dispatch(p) => p,
+            wiring::DispatchPlan::Wait(w) => panic!("expected dispatch, got wait: {}", w.reason),
+        }
+    }
+
+    fn f12_expect_wait(plan: wiring::DispatchPlan) -> WaitRequest {
+        match plan {
+            wiring::DispatchPlan::Wait(w) => w,
+            wiring::DispatchPlan::Dispatch(p) => panic!("expected wait, got dispatch of {}", p.profile),
+        }
+    }
+
+    const F12_CHAIN: &[&str] = &["claude:opus", "codex:gpt", "kimi"];
+
+    #[test]
+    fn f12_operational_failure_falls_back_without_spending_quality() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, first) = f12_dispatch(&mut s, &states);
+        assert_eq!((first.profile.as_str(), first.trigger, first.chain_index), ("claude", Trigger::Initial, Some(0)));
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::QuotaExhausted, None));
+        assert_eq!(after.suggested.map(|c| c.agent), Some("codex".to_string()));
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!((t.quality_attempts, t.quality_floor, t.operational_attempts), (0, 0, 1));
+        let next = f12_expect_dispatch(f12_plan(&s, &states, None));
+        assert_eq!((next.profile.as_str(), next.model.as_deref()), ("codex", Some("gpt")));
+        assert_eq!((next.trigger, next.chain_index), (Trigger::Fallback, Some(1)));
+        assert_eq!(next.decision.requested.map(|c| c.agent), Some("claude".to_string()));
+        assert!(next.decision.reason.starts_with("fallback:"));
+    }
+
+    #[test]
+    fn f12_quality_failure_moves_floor_and_escalates() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::QualityFailed, None));
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!((t.quality_attempts, t.quality_floor, t.operational_attempts), (1, 1, 0));
+        let next = f12_expect_dispatch(f12_plan(&s, &states, None));
+        assert_eq!((next.profile.as_str(), next.trigger, next.chain_index), ("codex", Trigger::Escalation, Some(1)));
+    }
+
+    #[test]
+    fn f12_pinned_retry_with_blocked_candidate_waits_instead_of_substituting() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: Some("claude:opus"), pinned: true, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, first) = f12_dispatch(&mut s, &states);
+        assert_eq!((first.profile.as_str(), first.chain_index), ("claude", None));
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::QuotaExhausted, Some(F12_NOW + 5 * F12_HOUR)));
+        let wait = after.wait.expect("pinned task waits");
+        assert_eq!(wait.kind, WaitKind::Quota);
+        assert_eq!(wait.resume_at, Some(F12_NOW + 5 * F12_HOUR));
+        assert_eq!(wait.candidate.map(|c| c.agent), Some("claude".to_string()));
+        let again = f12_expect_wait(f12_plan(&s, &states, None));
+        assert!(again.reason.starts_with("pinned:"));
+    }
+
+    #[test]
+    fn f12_all_candidates_blocked_waits_until_earliest_known_reset() {
+        let mut s = f12_state(F12Task { escalation: &["claude:opus", "codex:gpt"], profile: None, pinned: false, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::QuotaExhausted, Some(F12_NOW + 8 * F12_HOUR)));
+        let (d2, _) = f12_dispatch(&mut s, &states);
+        let after = f12_fail(&mut s, &mut states, &d2, f12_classification(FailureClass::QuotaExhausted, Some(F12_NOW + 3 * F12_HOUR)));
+        let wait = after.wait.expect("all blocked waits");
+        assert_eq!((wait.kind, wait.resume_at), (WaitKind::Quota, Some(F12_NOW + 3 * F12_HOUR)));
+        assert!(!wait.same_session);
+        f12_commit(&mut s, Cmd::TaskWait { run_id: "r1".into(), task_id: "t1".into(), wait, now: 2_000_000 });
+        let task = &s.runs["r1"].tasks["t1"];
+        assert_eq!(task.status, TaskStatus::Waiting);
+        assert_eq!(task.wait.as_ref().and_then(|w| w.resume_at), Some(F12_NOW + 3 * F12_HOUR));
+    }
+
+    #[test]
+    fn f12_operational_cap_waits_for_intervention() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        s.runs.get_mut("r1").unwrap().run.limits.max_operational_attempts = 1;
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::ExecutionFailed, None));
+        let wait = after.wait.expect("cap reached");
+        assert_eq!((wait.kind, wait.reason.as_str()), (WaitKind::Intervention, "operational attempts exhausted"));
+        let entry = &s.runs["r1"];
+        assert!(matches!(wiring::retry_limit(entry, &entry.tasks["t1"]), wiring::RetryLimit::OperationalExhausted));
+    }
+
+    #[test]
+    fn f12_quality_cap_rejects_retry_and_keeps_task_failed() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        s.runs.get_mut("r1").unwrap().run.limits.max_attempts = 1;
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::QualityFailed, None));
+        assert!(after.wait.is_none() && after.suggested.is_none());
+        let entry = &s.runs["r1"];
+        assert!(matches!(wiring::retry_limit(entry, &entry.tasks["t1"]), wiring::RetryLimit::QualityExhausted));
+        assert_eq!(entry.tasks["t1"].status, TaskStatus::Failed);
+    }
+
+    #[test]
+    fn f12_setup_failure_waits_for_intervention_without_counting() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::SetupFailed, None));
+        assert_eq!(after.wait.map(|w| w.kind), Some(WaitKind::Intervention));
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!((t.quality_attempts, t.operational_attempts), (0, 0));
+    }
+
+    #[test]
+    fn f12_legacy_task_keeps_attempt_indexed_escalation() {
+        let s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 0 });
+        let task = &s.runs["r1"].tasks["t1"];
+        assert_eq!(task.routing, 0);
+        for (attempt, expected) in [(1, "claude"), (2, "codex"), (3, "kimi"), (4, "kimi")] {
+            let (profile, _) = pick_escalation(EscalationInput {
+                escalation: &task.escalation, attempt, explicit_profile: None, explicit_model: None,
+                task_profile: None, latest_profile: None, latest_model: None,
+            });
+            assert_eq!(profile, expected);
+        }
+        let after = wiring::after_failure(wiring::AfterFailureInput {
+            entry: &s.runs["r1"], states: &candidates::CandidateStates::default(), dispatch_id: "none", live: false, now: F12_NOW,
+        });
+        assert!(after.wait.is_none() && after.suggested.is_none());
+    }
+
+    #[test]
+    fn f12_legacy_failure_stores_only_failure_class() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 0 });
+        f12_commit(&mut s, Cmd::Dispatch {
+            run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
+            profile: Some("claude".into()), model: None, tile_id: None, owner: None, now: 1_000_000,
+        });
+        let failure = DispatchFailure { classification: f12_classification(FailureClass::QuotaExhausted, None), routing: 0 };
+        let cmd = with_legacy_failure_class(Cmd::DispatchUpdate {
+            run_id: "r1".into(), dispatch_id: "r1.t1.1".into(), status: DispatchStatus::Failed, summary: None, now: 1_000_000,
+        }, Some(&failure));
+        f12_commit(&mut s, cmd);
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(s.runs["r1"].dispatches["r1.t1.1"].failure_class, Some(FailureClass::QuotaExhausted));
+        assert_eq!((t.quality_attempts, t.operational_attempts, t.last_failure, t.status.clone()), (0, 0, None, TaskStatus::Failed));
+    }
+
+    #[test]
+    fn f12_notices_are_deterministic_and_not_repeated() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        let mut states = candidates::CandidateStates::default();
+        let (d1, _) = f12_dispatch(&mut s, &states);
+        let after = f12_fail(&mut s, &mut states, &d1, f12_classification(FailureClass::RateLimited, None));
+        let suggested = after.suggested.expect("fallback available");
+        let body = wiring::operational_failure_body(FailureClass::RateLimited, &d1, &suggested);
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            (parsed["class"].as_str(), parsed["suggested"]["agent"].as_str(), parsed["hint"].as_str()),
+            (Some("rate_limited"), Some("codex"), Some("run retry"))
+        );
+        let notice = |s: &State| wiring::notice_cmd(&s.runs["r1"], wiring::NoticeInput {
+            run_id: "r1", task_id: "t1", dispatch_id: Some(&d1), msg_type: "operational_failure", body: body.clone(), now: 2_000_000,
+        });
+        let first = notice(&s).expect("first notice");
+        f12_commit(&mut s, first);
+        assert!(notice(&s).is_none());
+    }
+
+    #[test]
+    fn f12_waiting_tasks_and_decisions_survive_replay() {
+        let mut s = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        let mut log: Vec<(String, Value)> = Vec::new();
+        let states = candidates::CandidateStates::default();
+        let wiring::DispatchPlan::Dispatch(planned) = f12_plan(&s, &states, None) else { panic!("dispatch") };
+        let cmds = vec![
+            Cmd::Dispatch {
+                run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
+                profile: Some(planned.profile.clone()), model: planned.model.clone(), tile_id: None, owner: None, now: 1_000_000,
+            }.with_fields(wiring::dispatch_fields(&planned, Some("system".into()))),
+            Cmd::DispatchUpdate {
+                run_id: "r1".into(), dispatch_id: "r1.t1.1".into(), status: DispatchStatus::Failed, summary: None, now: 1_000_001,
+            },
+            Cmd::TaskRecordFailure {
+                run_id: "r1".into(), task_id: "t1".into(), dispatch_id: "r1.t1.1".into(),
+                class: FailureClass::QuotaExhausted, chain_index: Some(0), now: 1_000_002,
+            },
+            Cmd::TaskWait { run_id: "r1".into(), task_id: "t1".into(), wait: wiring::operational_cap_wait(), now: 1_000_003 },
+        ];
+        for cmd in cmds {
+            log.push(f12_commit(&mut s, cmd));
+        }
+
+        let mut fresh = f12_state(F12Task { escalation: F12_CHAIN, profile: None, pinned: false, routing: 1 });
+        for (kind, data) in &log {
+            fresh.replay(kind, data).expect("replay");
+        }
+        let task = &fresh.runs["r1"].tasks["t1"];
+        assert_eq!(task.status, TaskStatus::Waiting);
+        assert_eq!(task.wait.as_ref().map(|w| w.kind), Some(WaitKind::Intervention));
+        assert_eq!(task.wait, s.runs["r1"].tasks["t1"].wait);
+        let d = &fresh.runs["r1"].dispatches["r1.t1.1"];
+        assert_eq!((d.trigger, d.chain_index, d.by, d.account.as_deref()), (Some(Trigger::Initial), Some(0), Some(DispatchBy::Coordinator), Some("system")));
+        assert_eq!(d.decision.as_ref().map(|x| x.reason.as_str()), Some("preferred model available"));
+        assert_eq!(d.failure_class, Some(FailureClass::QuotaExhausted));
+    }
+
+    pub(super) fn f12_test_home() {
+        static HOME: std::sync::Once = std::sync::Once::new();
+        HOME.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("panorama-f12-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("temp home");
+            std::env::set_var("PANORAMA_CONFIG_DIR", dir);
+        });
+    }
+
+    fn f12_global_run(run_id: &str, profile: &str, model: Option<&str>) {
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = State::default();
+        f12_commit(&mut s, Cmd::RunCreate {
+            id: run_id.into(), title: "t".into(), repo: "/tmp".into(), base_ref: None, base_sha: None,
+            setup: None, coordinator_tile: None, limits: Limits::default(), now: 1_000_000,
+        });
+        f12_commit(&mut s, Cmd::TaskCreate {
+            run_id: run_id.into(), id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec![format!("{profile}:{}", model.unwrap_or("m"))],
+            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
+        f12_commit(&mut s, Cmd::Dispatch {
+            run_id: run_id.into(), id: format!("{run_id}.t1.1"), task_id: "t1".into(), attempt: 1, retry_of: None,
+            profile: Some(profile.into()), model: model.map(str::to_string), tile_id: None, owner: None, now: 1_000_000,
+        });
+        guard.runs.extend(s.runs);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f12_live_quota_tail_fails_dispatch_without_worker_stalled() {
+        f12_test_home();
+        let run_id = format!("r-f12-live-{}", unix_ms());
+        f12_global_run(&run_id, "claude", None);
+        let dispatch_id = format!("{run_id}.t1.1");
+        let screen = "working...\nYou've hit your session limit \u{b7} resets 3am (America/Sao_Paulo)\n";
+
+        assert!(fail_live_dispatch_on_quota(&run_id, &dispatch_id, screen).await);
+
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = &guard.runs[&run_id];
+        let d = &entry.dispatches[&dispatch_id];
+        assert_eq!((d.status.clone(), d.failure_class), (DispatchStatus::Failed, Some(FailureClass::QuotaExhausted)));
+        assert!(entry.messages.iter().all(|m| m.msg_type != "worker_stalled"));
+        let t = &entry.tasks["t1"];
+        assert_eq!((t.operational_attempts, t.quality_attempts, t.last_failure), (1, 0, Some(FailureClass::QuotaExhausted)));
+        drop(guard);
+        candidate_states().lock().unwrap_or_else(|e| e.into_inner())
+            .clear(&candidates::CandidateKey::from_chain_entry("claude"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f12_live_screen_without_quota_text_is_left_alone() {
+        f12_test_home();
+        let run_id = format!("r-f12-quiet-{}", unix_ms());
+        f12_global_run(&run_id, "claude", None);
+        let dispatch_id = format!("{run_id}.t1.1");
+        assert!(!fail_live_dispatch_on_quota(&run_id, &dispatch_id, "compiling...\ndone\n").await);
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.runs[&run_id].dispatches[&dispatch_id].status, DispatchStatus::Running);
+    }
+
+    #[test]
+    fn f12_success_clears_the_candidate() {
+        f12_test_home();
+        let run_id = format!("r-f12-ok-{}", unix_ms());
+        f12_global_run(&run_id, "codex", Some("f12-success-model"));
+        let key = candidates::CandidateKey::from_chain_entry("codex:f12-success-model");
+        {
+            let mut states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+            assert!(states.mark(candidates::MarkInput {
+                key: &key, class: FailureClass::RateLimited, reset_at: Some(unix_ms() as i64 + F12_HOUR),
+                source: "test", confidence: candidates::Confidence::Reliable, now: unix_ms() as i64,
+            }));
+            assert!(!states.lookup(&key, unix_ms() as i64).state.is_eligible());
+        }
+        clear_candidate_on_success(&run_id, &format!("{run_id}.t1.1"));
+        let states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(states.lookup(&key, unix_ms() as i64).state.is_eligible());
+    }
+
+    fn f12_chain_dispatch(run_id: &str, tile: Option<&str>) -> String {
+        let next_id = format!("{run_id}.t1.2");
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.runs.get_mut(run_id).expect("run");
+        let prev = entry.dispatches.get_mut(&format!("{run_id}.t1.1")).expect("previous dispatch");
+        prev.status = DispatchStatus::Failed;
+        prev.tile_id = tile.map(str::to_string);
+        prev.worktree = Some("/nonexistent/f12-worktree".into());
+        prev.branch = Some("orch/f12/t1-1".into());
+        let mut next = prev.clone();
+        next.id = next_id.clone();
+        next.attempt = 2;
+        next.status = DispatchStatus::Running;
+        next.tile_id = None;
+        next.worktree = None;
+        next.branch = None;
+        next.trigger = Some(Trigger::Fallback);
+        entry.dispatches.insert(next_id.clone(), next);
+        next_id
+    }
+
+    #[tokio::test]
+    async fn f12_carry_refuses_while_previous_worker_is_still_live() {
+        f12_test_home();
+        let run_id = format!("r-f12-carry-live-{}", unix_ms());
+        f12_global_run(&run_id, "claude", None);
+        let next_id = f12_chain_dispatch(&run_id, Some("tile-still-live"));
+        let kills = AtomicU32::new(0);
+
+        let result = prepare_carry_with(&run_id, &next_id, "base".into(), |tile| {
+            let kills = &kills;
+            async move { stop_worker_with(&tile, |_| true, |_| { kills.fetch_add(1, Ordering::SeqCst); }).await }
+        }).await;
+
+        assert_eq!(result.err().as_deref(), Some("previous worker still live"));
+        assert_eq!(kills.load(Ordering::SeqCst), 10);
+    }
+
+    #[tokio::test]
+    async fn f12_carry_stops_previous_worker_before_proceeding() {
+        f12_test_home();
+        let run_id = format!("r-f12-carry-stop-{}", unix_ms());
+        f12_global_run(&run_id, "claude", None);
+        let next_id = f12_chain_dispatch(&run_id, Some("tile-dies-on-kill"));
+        let live = AtomicBool::new(true);
+        let kills = AtomicU32::new(0);
+
+        let result = prepare_carry_with(&run_id, &next_id, "base".into(), |tile| {
+            let (live, kills) = (&live, &kills);
+            async move {
+                stop_worker_with(
+                    &tile,
+                    |_| live.load(Ordering::SeqCst),
+                    |_| { kills.fetch_add(1, Ordering::SeqCst); live.store(false, Ordering::SeqCst); },
+                ).await
+            }
+        }).await;
+
+        assert!(result.is_ok());
+        assert_eq!(kills.load(Ordering::SeqCst), 1);
+        assert!(!live.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn f12_stop_worker_skips_kill_when_already_gone() {
+        let kills = AtomicU32::new(0);
+        let stopped = stop_worker_with("tile", |_| false, |_| { kills.fetch_add(1, Ordering::SeqCst); }).await;
+        assert!(stopped);
+        assert_eq!(kills.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn f12_candidates_file_is_reloaded_by_the_init_loader() {
+        let dir = std::env::temp_dir().join(format!("panorama-f12-reload-{}-{}", std::process::id(), unix_ms()));
+        let key = candidates::CandidateKey::from_chain_entry("codex:f12-reload-model");
+        let now = unix_ms() as i64;
+        let mut saved = candidates::CandidateStates::default();
+        assert!(saved.mark(candidates::MarkInput {
+            key: &key, class: FailureClass::RateLimited, reset_at: Some(now + F12_HOUR),
+            source: "test", confidence: candidates::Confidence::Reliable, now,
+        }));
+        candidates::save(&dir, &saved).expect("save candidates.json");
+
+        let target = Mutex::new(candidates::CandidateStates::default());
+        restore_candidates(&dir, &target);
+
+        let loaded = target.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!loaded.lookup(&key, now).state.is_eligible());
+        assert_eq!(loaded.entries(now), saved.entries(now));
+        assert!(loaded.lookup(&key, now + F12_HOUR + 1).state.is_eligible());
+    }
+
+    #[test]
+    fn f12_older_candidate_snapshot_never_overwrites_a_newer_one() {
+        let dir = std::env::temp_dir().join(format!("panorama-f12-persist-{}-{}", std::process::id(), unix_ms()));
+        let now = unix_ms() as i64;
+        let mut states = candidates::CandidateStates::default();
+        let older = snapshot_candidates(&states);
+        states.mark(candidates::MarkInput {
+            key: &candidates::CandidateKey::from_chain_entry("codex:f12-order-model"),
+            class: FailureClass::RateLimited, reset_at: Some(now + F12_HOUR),
+            source: "test", confidence: candidates::Confidence::Reliable, now,
+        });
+        let newer = snapshot_candidates(&states);
+        assert!(newer.version > older.version);
+
+        let persisted = Mutex::new(0);
+        persist_candidates_at(&dir, &newer, &persisted).expect("newer");
+        persist_candidates_at(&dir, &older, &persisted).expect("older is skipped");
+
+        assert_eq!(candidates::load(&dir).entries(now), newer.states.entries(now));
+        assert_eq!(candidates::load(&dir).entries(now).len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f12_second_record_failure_for_a_dispatch_counts_once() {
+        f12_test_home();
+        let run_id = format!("r-f12-twice-{}", unix_ms());
+        f12_global_run(&run_id, "claude", None);
+        let dispatch_id = format!("{run_id}.t1.1");
+        let failure = classify_dispatch(&run_id, &dispatch_id, "session_gone", &[]).expect("classified");
+
+        assert!(record_failure(&run_id, &dispatch_id, &failure, false).await.is_some());
+        assert!(record_failure(&run_id, &dispatch_id, &failure, false).await.is_none());
+
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let t = &guard.runs[&run_id].tasks["t1"];
+        assert_eq!((t.operational_attempts, t.quality_attempts), (1, 0));
+    }
 }
+
+mod failure;

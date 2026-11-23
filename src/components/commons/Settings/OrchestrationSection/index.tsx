@@ -5,6 +5,7 @@ import React from 'react';
 import { Plus, RefreshCw } from 'lucide-react';
 
 import { ROLES, ROLE_META } from '~/usecase/util/orch';
+import { useOrchModelStatus } from '~/usecase/hooks/useOrchModelStatus';
 import { orchSettingsActions, useOrchSettings } from '~/usecase/hooks/useOrchSettings';
 import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
@@ -14,6 +15,8 @@ import Button from '~/components/commons/Settings/Button';
 import Segmented from '~/components/commons/Settings/Segmented';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import ProviderForm from './ProviderForm';
+import ModelStatus from './ModelStatus';
+import ModelHistory from './ModelHistory';
 import RoleChainEditor from './RoleChainEditor';
 import styles from './styles.module.scss';
 
@@ -33,6 +36,7 @@ const OrchestrationSection = () => {
   const { settings, presets, agents, loading, refreshingModels } = useOrchSettings();
   const [editingProvider, setEditingProvider] = React.useState<OrchProvider | null | 'new'>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
+  const { candidates, metrics, clear: clearCandidateState } = useOrchModelStatus();
 
   const saveRoleChain = (role: Role, chain: string[]) => {
     const roles = { [role]: chain } as Partial<RoleChains>;
@@ -156,7 +160,12 @@ const OrchestrationSection = () => {
             </div>
           );
         })}
+        <div className={styles.chainCaption}>
+          Order is preference. Operational failures fall back down the list without spending attempts; quality failures move past the failed model.
+        </div>
       </Group>
+      <ModelStatus candidates={candidates} onClear={clearCandidateState} />
+      <ModelHistory rows={metrics} />
       <Group
         label="Providers"
         action={

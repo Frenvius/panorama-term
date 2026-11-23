@@ -1,4 +1,4 @@
-import type { Task, Dispatch, RunStatus } from '~/domain/interfaces/orch.interface';
+import type { Task, Limits, Dispatch, RunStatus } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
 import { X, Play, Check, Undo2, Square, Pencil, RotateCcw, GitCompare, ExternalLink } from 'lucide-react';
@@ -7,6 +7,7 @@ import EditForm from './EditForm';
 import styles from './styles.module.scss';
 import ReopenForm from './ReopenForm';
 import CardButton from './CardButton';
+import RoutingInfo from './RoutingInfo';
 import { latestDispatch } from '../columns';
 import { cancelTask, updateTask, startWorker, workerStop, OrchError } from '~/adapter/orch/orch.client';
 import { totalCost, formatDuration } from '~/usecase/util/orch';
@@ -17,6 +18,7 @@ export interface TaskCardProps {
   runId: string;
   runRepo: string;
   runTitle: string;
+  limits: Limits;
   runStatus: RunStatus;
   dispatches: Dispatch[];
   runBaseSha?: string;
@@ -31,7 +33,7 @@ const FLAGGED_STATUS: Partial<Record<Task['status'], string>> = {
   cancelled: 'cancelled'
 };
 
-const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBaseSha }: TaskCardProps) => {
+const TaskCard = ({ task, limits, dispatches, runId, runRepo, runTitle, runStatus, runBaseSha }: TaskCardProps) => {
   const dispatch = latestDispatch(task, dispatches);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [inlineView, setInlineView] = React.useState<InlineView>(null);
@@ -216,6 +218,13 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
         </>
       )}
 
+      {task.status === 'waiting' && (
+        <>
+          {showBtn}
+          {cancelBtn}
+        </>
+      )}
+
       {task.status === 'verifying' && (
         <>
           {showBtn}
@@ -275,6 +284,8 @@ const TaskCard = ({ task, dispatches, runId, runRepo, runTitle, runStatus, runBa
       {(task.status === 'failed' || task.status === 'blocked') && failureReason && (
         <div className={styles.failureReason} title={dispatch?.summary}>{failureReason}</div>
       )}
+
+      <RoutingInfo task={task} limits={limits} dispatches={dispatches} latest={dispatch} />
 
       {task.status === 'failed' && live && inlineView === null && (
         <div className={styles.infoMsg}>failed, but the agent is still running</div>

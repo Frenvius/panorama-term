@@ -14,6 +14,7 @@ export const COLUMNS: ColumnId[] = ['todo', 'running', 'review', 'done'];
 export const taskColumn = (task: Task): ColumnId => {
   if (task.status === 'pending') return 'todo';
   if (task.status === 'dispatched' || task.status === 'verifying') return 'running';
+  if (task.status === 'waiting') return task.wait?.kind === 'intervention' ? 'review' : 'running';
   if (task.status === 'review' || task.status === 'failed' || task.status === 'blocked') return 'review';
   return 'done';
 };

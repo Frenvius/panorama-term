@@ -292,11 +292,188 @@ pub enum Cmd {
         task_id: String,
         now: u64,
     },
+    TaskWait {
+        run_id: String,
+        task_id: String,
+        wait: WaitRequest,
+        now: u64,
+    },
+    TaskResume {
+        run_id: String,
+        task_id: String,
+        resume_id: String,
+        now: u64,
+    },
+    TaskRecordFailure {
+        run_id: String,
+        task_id: String,
+        dispatch_id: String,
+        class: FailureClass,
+        chain_index: Option<u32>,
+        now: u64,
+    },
+    DispatchRevive {
+        run_id: String,
+        dispatch_id: String,
+        now: u64,
+    },
+    RunSetCoordinatorWait {
+        run_id: String,
+        reset_at: Option<i64>,
+        reason: String,
+        now: u64,
+    },
+    RunClearCoordinatorWait {
+        run_id: String,
+        resume_id: String,
+        now: u64,
+    },
+    Extra {
+        cmd: Box<Cmd>,
+        fields: serde_json::Map<String, Value>,
+    },
+}
+
+pub struct WaitRequest {
+    pub kind: WaitKind,
+    pub resume_at: Option<i64>,
+    pub reason: String,
+    pub candidate: Option<crate::orch::candidates::CandidateKey>,
+    pub same_session: bool,
+}
+
+impl Cmd {
+    pub fn with_fields(self, fields: Value) -> Cmd {
+        let Value::Object(fields) = fields else { return self };
+        Cmd::Extra { cmd: Box::new(self), fields }
+    }
 }
 
 impl State {
     pub fn apply(&self, cmd: &Cmd) -> ApplyResult {
         match cmd {
+            Cmd::Extra { cmd, fields } => match self.apply(cmd) {
+                ApplyResult::Ok(kind, data) => ApplyResult::Ok(kind, merge_fields(data, fields)),
+                ApplyResult::Stale(kind, data) => ApplyResult::Stale(kind, merge_fields(data, fields)),
+                err => err,
+            },
+
+            Cmd::TaskWait { run_id, task_id, wait, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.run.status.is_terminal() {
+                    return ApplyResult::Err(OrchError::Conflict("run is terminal".into()));
+                }
+                let Some(task) = entry.tasks.get(task_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("task not found".into()));
+                };
+                if !matches!(task.status, TaskStatus::Pending | TaskStatus::Failed) {
+                    return ApplyResult::Err(OrchError::Conflict(
+                        "task must be pending or failed to wait".into()
+                    ));
+                }
+                ApplyResult::Ok("task-wait".into(), serde_json::json!({
+                    "runId": run_id, "taskId": task_id, "kind": wait.kind,
+                    "resumeAt": wait.resume_at, "reason": wait.reason,
+                    "candidate": wait.candidate, "sameSession": wait.same_session,
+                    "resumeId": resume_id(task_id, task.attempts, wait.resume_at),
+                    "now": now
+                }))
+            }
+
+            Cmd::TaskResume { run_id, task_id, resume_id, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                let Some(task) = entry.tasks.get(task_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("task not found".into()));
+                };
+                let Some(wait) = task.wait.as_ref().filter(|_| task.status == TaskStatus::Waiting) else {
+                    return ApplyResult::Err(OrchError::Conflict("task is not waiting".into()));
+                };
+                if wait.resume_id != *resume_id {
+                    return ApplyResult::Err(OrchError::Conflict("resumeId mismatch".into()));
+                }
+                ApplyResult::Ok("task-resume".into(), serde_json::json!({
+                    "runId": run_id, "taskId": task_id, "resumeId": resume_id, "now": now
+                }))
+            }
+
+            Cmd::TaskRecordFailure { run_id, task_id, dispatch_id, class, chain_index, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if !entry.tasks.contains_key(task_id.as_str()) {
+                    return ApplyResult::Err(OrchError::NotFound("task not found".into()));
+                }
+                let Some(dispatch) = entry.dispatches.get(dispatch_id.as_str()).filter(|d| d.task_id == *task_id) else {
+                    return ApplyResult::Err(OrchError::NotFound("dispatch not found for this task".into()));
+                };
+                if dispatch.failure_class.is_some() {
+                    return ApplyResult::Err(OrchError::Conflict("failure already recorded".into()));
+                }
+                ApplyResult::Ok("task-record-failure".into(), serde_json::json!({
+                    "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
+                    "class": class, "chainIndex": chain_index, "now": now
+                }))
+            }
+
+            Cmd::DispatchRevive { run_id, dispatch_id, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.run.status != RunStatus::Active {
+                    return ApplyResult::Err(OrchError::Conflict("run not active".into()));
+                }
+                let Some(d) = entry.dispatches.get(dispatch_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("dispatch not found".into()));
+                };
+                if d.status != DispatchStatus::Failed || d.outcome.is_some() {
+                    return ApplyResult::Err(OrchError::Conflict("dispatch is not a failed live attempt".into()));
+                }
+                let is_latest = entry.latest_dispatch_for_task(&d.task_id).is_some_and(|l| l.id == d.id);
+                let task_pending = entry.tasks.get(d.task_id.as_str()).is_some_and(|t| t.status == TaskStatus::Pending);
+                if !is_latest || !task_pending {
+                    return ApplyResult::Err(OrchError::Conflict("dispatch cannot be revived".into()));
+                }
+                if entry.running_dispatch_count() >= entry.run.limits.max_workers as usize {
+                    return ApplyResult::Err(OrchError::Limit("max workers running".into()));
+                }
+                ApplyResult::Ok("dispatch-revive".into(), serde_json::json!({
+                    "runId": run_id, "dispatchId": dispatch_id, "now": now
+                }))
+            }
+
+            Cmd::RunSetCoordinatorWait { run_id, reset_at, reason, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.run.status.is_terminal() {
+                    return ApplyResult::Err(OrchError::Conflict("run is terminal".into()));
+                }
+                if entry.run.coordinator_wait.is_some() {
+                    return ApplyResult::Err(OrchError::Conflict("coordinator already waiting".into()));
+                }
+                ApplyResult::Ok("run-coordinator-wait".into(), serde_json::json!({
+                    "runId": run_id, "resetAt": reset_at, "reason": reason,
+                    "resumeId": coordinator_resume_id(run_id, *reset_at), "now": now
+                }))
+            }
+
+            Cmd::RunClearCoordinatorWait { run_id, resume_id, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                let matches_wait = entry.run.coordinator_wait.as_ref().is_some_and(|w| w.resume_id == *resume_id);
+                if !matches_wait {
+                    return ApplyResult::Err(OrchError::Conflict("coordinator wait not set or resumeId mismatch".into()));
+                }
+                ApplyResult::Ok("run-coordinator-resume".into(), serde_json::json!({
+                    "runId": run_id, "resumeId": resume_id, "now": now
+                }))
+            }
+
             Cmd::RunUpdate { run_id, title, now } => {
                 if !self.runs.contains_key(run_id.as_str()) {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
@@ -412,6 +589,8 @@ impl State {
                         | (TaskStatus::Review, TaskStatus::Completed)
                         | (TaskStatus::Review, TaskStatus::Pending)
                         | (TaskStatus::Review, TaskStatus::Cancelled)
+                        | (TaskStatus::Waiting, TaskStatus::Pending)
+                        | (TaskStatus::Waiting, TaskStatus::Cancelled)
                     );
                     if !ok {
                         return ApplyResult::Err(OrchError::Conflict(format!(
@@ -457,7 +636,14 @@ impl State {
                 if !can_dispatch {
                     return ApplyResult::Err(OrchError::Conflict("task not ready for dispatch".into()));
                 }
-                if task.attempts >= entry.run.limits.max_attempts {
+                if task.routing == 1 {
+                    if task.quality_attempts >= entry.run.limits.max_attempts {
+                        return ApplyResult::Err(OrchError::Limit("max attempts reached".into()));
+                    }
+                    if task.operational_attempts >= entry.run.limits.max_operational_attempts {
+                        return ApplyResult::Err(OrchError::Limit("max operational attempts reached".into()));
+                    }
+                } else if task.attempts >= entry.run.limits.max_attempts {
                     return ApplyResult::Err(OrchError::Limit("max attempts reached".into()));
                 }
                 if entry.running_dispatch_count() >= entry.run.limits.max_workers as usize {
@@ -818,6 +1004,12 @@ impl State {
             "task-re-verify" => self.replay_task_re_verify(data),
             "run-coordinator-cost" => self.replay_run_coordinator_cost(data),
             "run-coordinator-baseline" => self.replay_run_coordinator_baseline(data),
+            "task-wait" => self.replay_task_wait(data),
+            "task-resume" => self.replay_task_resume(data),
+            "task-record-failure" => self.replay_task_record_failure(data),
+            "dispatch-revive" => self.replay_dispatch_revive(data),
+            "run-coordinator-wait" => self.replay_run_coordinator_wait(data),
+            "run-coordinator-resume" => self.replay_run_coordinator_resume(data),
             other => Err(format!("unknown event kind: {other}")),
         }
     }
@@ -837,6 +1029,8 @@ impl State {
             coordinator_tile: opt_str(data, "coordinatorTile"),
             status: RunStatus::Active,
             limits,
+            autonomy: parse_autonomy(data.get("autonomy")).unwrap_or_default(),
+            coordinator_wait: None,
             created_at: now,
             updated_at: now,
         };
@@ -890,6 +1084,13 @@ impl State {
             result: None,
             integrated_sha: None,
             attempts: 0,
+            routing: data["routing"].as_u64().unwrap_or(0) as u32,
+            quality_floor: 0,
+            quality_attempts: 0,
+            operational_attempts: 0,
+            pinned: data["pinned"].as_bool().unwrap_or(false),
+            last_failure: None,
+            wait: None,
             created_at: now,
             updated_at: now,
         };
@@ -921,13 +1122,19 @@ impl State {
 
         let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
         if let Some(s) = new_status {
+            if s != TaskStatus::Waiting {
+                task.wait = None;
+            }
             task.status = s;
         }
         if let Some(v) = opt_val_str(data, "result") { task.result = Some(v); }
         if let Some(v) = opt_val_str(data, "spec") { task.spec = v; }
         if let Some(v) = opt_val_str(data, "acceptance") { task.acceptance = Some(v); }
         if let Some(arr) = opt_val_arr(data, "verify") { task.verify = arr; }
-        if let Some(v) = opt_val_str(data, "profile") { task.profile = Some(v); }
+        if let Some(v) = opt_val_str(data, "profile") {
+            task.profile = Some(v);
+            task.pinned = true;
+        }
         if let Some(arr) = opt_val_arr(data, "escalation") { task.escalation = arr; }
         if let Some(v) = data.get("review").filter(|v| !v.is_null()).and_then(|v| v.as_bool()) {
             task.review = v;
@@ -966,6 +1173,13 @@ impl State {
             verifications: vec![],
             cost_usd: None,
             cost_source: None,
+            account: opt_str(data, "account"),
+            chain_index: data["chainIndex"].as_u64().map(|v| v as u32),
+            trigger: parse_opt(data, "trigger"),
+            decision: parse_opt(data, "decision"),
+            failure_class: None,
+            by: parse_opt(data, "by"),
+            start_ref: None,
         };
         if let Some(owner) = opt_str(data, "owner") {
             if let Some(task) = entry.tasks.get_mut(&task_id) {
@@ -976,6 +1190,7 @@ impl State {
         if let Some(task) = entry.tasks.get_mut(&task_id) {
             task.status = TaskStatus::Dispatched;
             task.attempts = attempt;
+            task.wait = None;
             task.updated_at = now;
         }
         Ok(())
@@ -1012,6 +1227,9 @@ impl State {
                 dispatch.ended_at = Some(now);
                 dispatch.files_modified = str_arr(data, "filesModified");
                 dispatch.summary = opt_str(data, "summary");
+                if let Some(class) = parse_opt(data, "failureClass") {
+                    dispatch.failure_class = Some(class);
+                }
             }
             let task_id = entry.dispatches.get(&from).map(|d| d.task_id.clone());
             if let Some(task_id) = task_id {
@@ -1150,6 +1368,7 @@ impl State {
         if let Some(d) = entry.dispatches.get_mut(&dispatch_id) {
             d.worktree = opt_str(data, "worktree");
             d.branch = opt_str(data, "branch");
+            d.start_ref = opt_str(data, "startRef");
         }
         Ok(())
     }
@@ -1260,6 +1479,9 @@ impl State {
             if let Some(summary) = opt_str(data, "summary") {
                 d.summary = Some(summary);
             }
+            if let Some(class) = parse_opt(data, "failureClass") {
+                d.failure_class = Some(class);
+            }
             if let Some(task) = entry.tasks.get_mut(&task_id) {
                 if !task.status.is_terminal() {
                     task.status = TaskStatus::Failed;
@@ -1353,6 +1575,11 @@ impl State {
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
         let dispatch_id = opt_str(data, "dispatchId");
+        if let (Some(class), Some(did)) = (parse_opt::<FailureClass>(data, "failureClass"), dispatch_id.as_ref()) {
+            if let Some(d) = entry.dispatches.get_mut(did) {
+                d.failure_class = Some(class);
+            }
+        }
         let body = serde_json::json!({
             "command": str_field(data, "command"),
             "exitCode": data["exitCode"],
@@ -1400,6 +1627,129 @@ impl State {
         if let Some(title) = opt_str(data, "title") {
             entry.run.title = title;
         }
+        if let Some(autonomy) = parse_autonomy(data.get("autonomy")) {
+            entry.run.autonomy = autonomy;
+        }
+        if let Some(n) = data["maxOperationalAttempts"].as_u64() {
+            entry.run.limits.max_operational_attempts = n as u32;
+        }
+        entry.run.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_task_wait(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        let task_id = str_field(data, "taskId");
+        if run_id.is_empty() { return Err("task-wait: empty runId".into()); }
+        if task_id.is_empty() { return Err("task-wait: empty taskId".into()); }
+        let Some(kind) = parse_opt::<WaitKind>(data, "kind") else {
+            return Err("task-wait: invalid kind".into());
+        };
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
+        let resume_at = data["resumeAt"].as_i64();
+        task.status = TaskStatus::Waiting;
+        task.wait = Some(TaskWait {
+            kind,
+            resume_at,
+            reason: str_field(data, "reason"),
+            candidate: parse_opt(data, "candidate"),
+            same_session: data["sameSession"].as_bool().unwrap_or(false),
+            resume_id: opt_str(data, "resumeId")
+                .unwrap_or_else(|| resume_id(&task_id, task.attempts, resume_at)),
+            since: now as i64,
+        });
+        task.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_task_resume(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        let task_id = str_field(data, "taskId");
+        if run_id.is_empty() { return Err("task-resume: empty runId".into()); }
+        if task_id.is_empty() { return Err("task-resume: empty taskId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
+        if task.status != TaskStatus::Waiting { return Ok(()) }
+        task.status = TaskStatus::Pending;
+        task.wait = None;
+        task.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_task_record_failure(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        let task_id = str_field(data, "taskId");
+        if run_id.is_empty() { return Err("task-record-failure: empty runId".into()); }
+        if task_id.is_empty() { return Err("task-record-failure: empty taskId".into()); }
+        let Some(class) = parse_opt::<FailureClass>(data, "class") else {
+            return Err("task-record-failure: invalid class".into());
+        };
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if let Some(d) = entry.dispatches.get_mut(&str_field(data, "dispatchId")) {
+            d.failure_class = Some(class);
+        }
+        let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
+        match class.counter() {
+            FailureCounter::Operational => {
+                task.operational_attempts = task.operational_attempts.saturating_add(1);
+            }
+            FailureCounter::Quality => {
+                task.quality_attempts = task.quality_attempts.saturating_add(1);
+                let chain_index = data["chainIndex"].as_u64().map(|v| v as u32);
+                task.quality_floor = crate::orch::routing::floor_after_quality_failure(task.quality_floor, chain_index);
+            }
+            FailureCounter::None => {}
+        }
+        task.last_failure = Some(class);
+        task.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_dispatch_revive(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        let dispatch_id = str_field(data, "dispatchId");
+        if run_id.is_empty() { return Err("dispatch-revive: empty runId".into()); }
+        if dispatch_id.is_empty() { return Err("dispatch-revive: empty dispatchId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        let Some(d) = entry.dispatches.get_mut(&dispatch_id) else { return Ok(()) };
+        d.status = DispatchStatus::Running;
+        d.ended_at = None;
+        d.failure_class = None;
+        let task_id = d.task_id.clone();
+        if let Some(task) = entry.tasks.get_mut(&task_id) {
+            task.status = TaskStatus::Dispatched;
+            task.updated_at = now;
+        }
+        Ok(())
+    }
+
+    fn replay_run_coordinator_wait(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-coordinator-wait: empty runId".into()); }
+        let now = u64_field(data, "now");
+        let reset_at = data["resetAt"].as_i64();
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        entry.run.coordinator_wait = Some(CoordinatorWait {
+            reset_at,
+            since: now as i64,
+            reason: str_field(data, "reason"),
+            resume_id: opt_str(data, "resumeId").unwrap_or_else(|| coordinator_resume_id(&run_id, reset_at)),
+        });
+        entry.run.updated_at = now;
+        Ok(())
+    }
+
+    fn replay_run_coordinator_resume(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-coordinator-resume: empty runId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        entry.run.coordinator_wait = None;
         entry.run.updated_at = now;
         Ok(())
     }
@@ -1431,6 +1781,25 @@ impl State {
         entry.coordinator_cost_baseline = data["costUsd"].as_f64();
         Ok(())
     }
+}
+
+fn merge_fields(mut data: Value, fields: &serde_json::Map<String, Value>) -> Value {
+    if let Some(obj) = data.as_object_mut() {
+        for (k, v) in fields {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    data
+}
+
+fn parse_opt<T: serde::de::DeserializeOwned>(data: &Value, key: &str) -> Option<T> {
+    data.get(key)
+        .filter(|v| !v.is_null())
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+fn parse_autonomy(v: Option<&Value>) -> Option<Autonomy> {
+    v.filter(|v| !v.is_null()).and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 fn str_field(data: &Value, key: &str) -> String {
@@ -2070,6 +2439,7 @@ mod tests {
             status: DispatchStatus::Running, outcome: None, head_sha: None, files_modified: vec![],
             summary: None, started_at: ts(), ended_at: None, last_heartbeat: None,
             verifications: vec![], cost_usd: None, cost_source: None,
+            account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
         };
         s.runs.get_mut("r1").unwrap().dispatches.insert("r1.t1.2".into(), d2);
 
@@ -2951,5 +3321,547 @@ mod tests {
             _ => panic!("run-coordinator-baseline failed"),
         }
         assert_eq!(s.runs["r1"].coordinator_cost_baseline, Some(1.0));
+    }
+
+    fn commit_cmd(s: &mut State, cmd: Cmd) -> Result<(String, Value), OrchError> {
+        match s.apply(&cmd) {
+            ApplyResult::Ok(k, d) | ApplyResult::Stale(k, d) => {
+                s.replay(&k, &d).expect("replay");
+                Ok((k, d))
+            }
+            ApplyResult::Err(e) => Err(e),
+        }
+    }
+
+    fn mk_routed_task(s: &mut State, run_id: &str, task_id: &str) {
+        let cmd = Cmd::TaskCreate {
+            run_id: run_id.into(), id: task_id.into(), title: "t".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: None, escalation: vec![], verify: vec![],
+            role: None, review: false, owner: None, now: ts(),
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": false}));
+        commit_cmd(s, cmd).expect("routed task-create");
+    }
+
+    fn dispatch_cmd(run_id: &str, task_id: &str, attempt: u32) -> Cmd {
+        Cmd::Dispatch {
+            run_id: run_id.into(), id: format!("{run_id}.{task_id}.{attempt}"), task_id: task_id.into(),
+            attempt, retry_of: None, profile: None, model: None, tile_id: None, owner: None, now: ts(),
+        }
+    }
+
+    fn fail_dispatch(s: &mut State, run_id: &str, dispatch_id: &str) {
+        let cmd = Cmd::DispatchUpdate {
+            run_id: run_id.into(), dispatch_id: dispatch_id.into(),
+            status: DispatchStatus::Failed, summary: None, now: ts(),
+        };
+        commit_cmd(s, cmd).expect("dispatch-update");
+    }
+
+    fn record_failure(s: &mut State, dispatch_id: &str, class: FailureClass, chain_index: Option<u32>) {
+        let cmd = Cmd::TaskRecordFailure {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: dispatch_id.into(),
+            class, chain_index, now: ts(),
+        };
+        commit_cmd(s, cmd).expect("task-record-failure");
+    }
+
+    fn record_on_new_dispatch(s: &mut State, attempt: u32, class: FailureClass, chain_index: Option<u32>) {
+        let id = mk_dispatch(s, "r1", "t1", attempt);
+        fail_dispatch(s, "r1", &id);
+        record_failure(s, &id, class, chain_index);
+    }
+
+    fn wait_request(resume_at: Option<i64>) -> WaitRequest {
+        WaitRequest {
+            kind: WaitKind::Quota, resume_at, reason: "quota".into(),
+            candidate: Some(crate::orch::candidates::CandidateKey::from_chain_entry("claude:opus")),
+            same_session: false,
+        }
+    }
+
+    fn wait_cmd(resume_at: Option<i64>) -> Cmd {
+        Cmd::TaskWait { run_id: "r1".into(), task_id: "t1".into(), wait: wait_request(resume_at), now: ts() }
+    }
+
+    fn resume_cmd(resume_id: &str) -> Cmd {
+        Cmd::TaskResume { run_id: "r1".into(), task_id: "t1".into(), resume_id: resume_id.into(), now: ts() }
+    }
+
+    fn routed_failed_task() -> State {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_routed_task(&mut s, "r1", "t1");
+        let d = mk_dispatch(&mut s, "r1", "t1", 1);
+        fail_dispatch(&mut s, "r1", &d);
+        s
+    }
+
+    #[test]
+    fn f12_old_log_without_new_fields_replays_as_legacy() {
+        let mut s = State::default();
+        let events = [
+            ("run-create", serde_json::json!({"id":"r1","title":"t","repo":"/x","limits":{"maxWorkers":2,"maxAttempts":2,"dispatchTimeoutMin":60},"now":1})),
+            ("task-create", serde_json::json!({"runId":"r1","id":"t1","title":"t","spec":"s","deps":[],"escalation":[],"verify":[],"review":false,"now":1})),
+            ("dispatch", serde_json::json!({"runId":"r1","id":"r1.t1.1","taskId":"t1","attempt":1,"now":2})),
+            ("dispatch-update", serde_json::json!({"runId":"r1","dispatchId":"r1.t1.1","status":"failed","now":3})),
+        ];
+        for (k, d) in &events {
+            s.replay(k, d).expect("replay");
+        }
+        let e = &s.runs["r1"];
+        let t = &e.tasks["t1"];
+        assert_eq!(t.routing, 0);
+        assert!(!t.pinned);
+        assert_eq!((t.quality_floor, t.quality_attempts, t.operational_attempts), (0, 0, 0));
+        assert!(t.wait.is_none() && t.last_failure.is_none());
+        assert_eq!(e.run.autonomy, Autonomy::default());
+        assert_eq!(e.run.limits.max_operational_attempts, 6);
+        let d = &e.dispatches["r1.t1.1"];
+        assert!(d.chain_index.is_none() && d.trigger.is_none() && d.decision.is_none());
+        assert!(d.failure_class.is_none() && d.by.is_none() && d.account.is_none());
+    }
+
+    #[test]
+    fn f12_legacy_limit_check_unchanged_for_routing_zero() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        s.runs.get_mut("r1").unwrap().run.limits.max_attempts = 2;
+        mk_task(&mut s, "r1", "t1", vec![]);
+        let d1 = mk_dispatch(&mut s, "r1", "t1", 1);
+        fail_dispatch(&mut s, "r1", &d1);
+        let d2 = mk_dispatch(&mut s, "r1", "t1", 2);
+        fail_dispatch(&mut s, "r1", &d2);
+        let err = commit_cmd(&mut s, dispatch_cmd("r1", "t1", 3)).unwrap_err();
+        assert_eq!(err.code(), "limit");
+        assert_eq!(err.message(), "max attempts reached");
+    }
+
+    #[test]
+    fn f12_routed_task_create_stores_routing_and_pinned() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        let cmd = Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("claude".into()), escalation: vec![],
+            verify: vec![], role: None, review: false, owner: None, now: ts(),
+        }.with_fields(serde_json::json!({"routing": 1, "pinned": true}));
+        commit_cmd(&mut s, cmd).unwrap();
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(t.routing, 1);
+        assert!(t.pinned);
+        let json = serde_json::to_value(t).unwrap();
+        assert_eq!(json["routing"], 1);
+        assert_eq!(json["qualityFloor"], 0);
+        assert_eq!(json["pinned"], true);
+    }
+
+    #[test]
+    fn f12_task_update_profile_marks_pinned() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_routed_task(&mut s, "r1", "t1");
+        let cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(), status: None, result: None, spec: None,
+            acceptance: None, verify: None, profile: Some("codex".into()), escalation: None,
+            review: None, now: ts(),
+        };
+        commit_cmd(&mut s, cmd).unwrap();
+        assert!(s.runs["r1"].tasks["t1"].pinned);
+    }
+
+    #[test]
+    fn f12_routed_limit_uses_quality_attempts_not_dispatch_count() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        s.runs.get_mut("r1").unwrap().run.limits.max_attempts = 2;
+        mk_routed_task(&mut s, "r1", "t1");
+        for attempt in 1..=4u32 {
+            let d = mk_dispatch(&mut s, "r1", "t1", attempt);
+            fail_dispatch(&mut s, "r1", &d);
+            record_failure(&mut s, &d, FailureClass::RateLimited, Some(0));
+        }
+        assert_eq!(s.runs["r1"].tasks["t1"].attempts, 4);
+        let d5 = mk_dispatch(&mut s, "r1", "t1", 5);
+        fail_dispatch(&mut s, "r1", &d5);
+        record_failure(&mut s, &d5, FailureClass::QualityFailed, Some(0));
+        let d6 = mk_dispatch(&mut s, "r1", "t1", 6);
+        fail_dispatch(&mut s, "r1", &d6);
+        record_failure(&mut s, &d6, FailureClass::QualityFailed, Some(1));
+        let err = commit_cmd(&mut s, dispatch_cmd("r1", "t1", 7)).unwrap_err();
+        assert_eq!(err.code(), "limit");
+        assert_eq!(err.message(), "max attempts reached");
+    }
+
+    #[test]
+    fn f12_routed_limit_uses_operational_attempts() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        s.runs.get_mut("r1").unwrap().run.limits.max_operational_attempts = 2;
+        mk_routed_task(&mut s, "r1", "t1");
+        for attempt in 1..=2u32 {
+            let d = mk_dispatch(&mut s, "r1", "t1", attempt);
+            fail_dispatch(&mut s, "r1", &d);
+            record_failure(&mut s, &d, FailureClass::LaunchFailed, None);
+        }
+        let err = commit_cmd(&mut s, dispatch_cmd("r1", "t1", 3)).unwrap_err();
+        assert_eq!(err.code(), "limit");
+        assert_eq!(err.message(), "max operational attempts reached");
+    }
+
+    #[test]
+    fn f12_dispatch_event_stores_decision_fields_and_replays() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_routed_task(&mut s, "r1", "t1");
+        let decision = serde_json::json!({
+            "requested": {"agent": "claude", "model": "opus"},
+            "effective": {"agent": "codex"},
+            "reason": "fallback: claude:opus rate_limited",
+            "skipped": [{"candidate": {"agent": "claude", "model": "opus"}, "state": "rate_limited", "reason": "claude:opus rate_limited"}]
+        });
+        let cmd = dispatch_cmd("r1", "t1", 1).with_fields(serde_json::json!({
+            "chainIndex": 1, "trigger": "fallback", "decision": decision, "account": "acc1", "by": "brain"
+        }));
+        let (_, data) = commit_cmd(&mut s, cmd).unwrap();
+        assert_eq!(data["chainIndex"], 1);
+        let d = &s.runs["r1"].dispatches["r1.t1.1"];
+        assert_eq!(d.chain_index, Some(1));
+        assert_eq!(d.trigger, Some(Trigger::Fallback));
+        assert_eq!(d.by, Some(DispatchBy::Brain));
+        assert_eq!(d.account.as_deref(), Some("acc1"));
+        let dec = d.decision.as_ref().unwrap();
+        assert_eq!(dec.effective.agent, "codex");
+        assert_eq!(dec.skipped.len(), 1);
+        assert_eq!(dec.skipped[0].state, crate::orch::candidates::CandidateStatus::RateLimited);
+    }
+
+    #[test]
+    fn f12_failure_class_rides_on_dispatch_update_worker_done_and_verification_failed() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_routed_task(&mut s, "r1", "t1");
+        let d1 = mk_dispatch(&mut s, "r1", "t1", 1);
+        let cmd = Cmd::DispatchUpdate {
+            run_id: "r1".into(), dispatch_id: d1.clone(), status: DispatchStatus::Failed, summary: None, now: ts(),
+        }.with_fields(serde_json::json!({"failureClass": "launch_failed"}));
+        commit_cmd(&mut s, cmd).unwrap();
+        assert_eq!(s.runs["r1"].dispatches[&d1].failure_class, Some(FailureClass::LaunchFailed));
+
+        let d2 = mk_dispatch(&mut s, "r1", "t1", 2);
+        let cmd = Cmd::Send {
+            run_id: "r1".into(), seq: 1, from: d2.clone(), to: vec!["coordinator".into()],
+            msg_type: "worker_done".into(), task_id: None, dispatch_id: None, reply_to: None, body: None,
+            outcome: Some("failed".into()), files_modified: vec![], summary: None, now: ts(),
+        }.with_fields(serde_json::json!({"failureClass": "quality_failed"}));
+        commit_cmd(&mut s, cmd).unwrap();
+        assert_eq!(s.runs["r1"].dispatches[&d2].failure_class, Some(FailureClass::QualityFailed));
+
+        let mut s2 = State::default();
+        mk_run(&mut s2, "r1");
+        mk_task_with_verify(&mut s2, "r1", "t1", false);
+        let d = mk_dispatch(&mut s2, "r1", "t1", 1);
+        set_task_verifying(&mut s2, "r1", "t1");
+        let cmd = Cmd::TaskVerificationFailed {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: d.clone(), command: "c".into(),
+            exit_code: Some(1), timed_out: false, tail: "x".into(), msg_seq: 1, now: ts(),
+        }.with_fields(serde_json::json!({"failureClass": "quality_failed"}));
+        commit_cmd(&mut s2, cmd).unwrap();
+        assert_eq!(s2.runs["r1"].dispatches[&d].failure_class, Some(FailureClass::QualityFailed));
+    }
+
+    #[test]
+    fn f12_extra_fields_do_not_mask_rejections() {
+        let mut s = State::default();
+        let cmd = dispatch_cmd("nope", "t1", 1).with_fields(serde_json::json!({"trigger": "initial"}));
+        assert_eq!(commit_cmd(&mut s, cmd).unwrap_err().code(), "not_found");
+    }
+
+    #[test]
+    fn f12_task_wait_sets_waiting_with_deterministic_resume_id() {
+        let mut s = routed_failed_task();
+        let (_, data) = commit_cmd(&mut s, wait_cmd(Some(5000))).unwrap();
+        assert_eq!(data["resumeId"], "t1:1:5000");
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(t.status, TaskStatus::Waiting);
+        let w = t.wait.as_ref().unwrap();
+        assert_eq!(w.kind, WaitKind::Quota);
+        assert_eq!(w.resume_at, Some(5000));
+        assert_eq!(w.resume_id, "t1:1:5000");
+        assert_eq!(w.candidate.as_ref().unwrap().model.as_deref(), Some("opus"));
+        assert!(!w.same_session);
+    }
+
+    #[test]
+    fn f12_task_wait_without_resume_time_uses_none_in_id() {
+        let mut s = routed_failed_task();
+        commit_cmd(&mut s, wait_cmd(None)).unwrap();
+        assert_eq!(s.runs["r1"].tasks["t1"].wait.as_ref().unwrap().resume_id, "t1:1:none");
+    }
+
+    #[test]
+    fn f12_task_wait_rejected_for_running_or_terminal_tasks() {
+        let mut s = State::default();
+        mk_run(&mut s, "r1");
+        mk_routed_task(&mut s, "r1", "t1");
+        mk_dispatch(&mut s, "r1", "t1", 1);
+        assert_eq!(commit_cmd(&mut s, wait_cmd(None)).unwrap_err().code(), "conflict");
+    }
+
+    #[test]
+    fn f12_task_resume_is_idempotent_per_resume_id() {
+        let mut s = routed_failed_task();
+        commit_cmd(&mut s, wait_cmd(Some(5000))).unwrap();
+        commit_cmd(&mut s, resume_cmd("t1:1:5000")).unwrap();
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(t.status, TaskStatus::Pending);
+        assert!(t.wait.is_none());
+        let again = commit_cmd(&mut s, resume_cmd("t1:1:5000")).unwrap_err();
+        assert_eq!(again.code(), "conflict");
+    }
+
+    #[test]
+    fn f12_task_resume_rejects_stale_resume_id() {
+        let mut s = routed_failed_task();
+        commit_cmd(&mut s, wait_cmd(Some(5000))).unwrap();
+        assert_eq!(commit_cmd(&mut s, resume_cmd("t1:1:4000")).unwrap_err().code(), "conflict");
+        assert_eq!(s.runs["r1"].tasks["t1"].status, TaskStatus::Waiting);
+        commit_cmd(&mut s, resume_cmd("t1:1:5000")).unwrap();
+    }
+
+    #[test]
+    fn f12_resumed_task_can_dispatch_and_dispatch_clears_wait() {
+        let mut s = routed_failed_task();
+        commit_cmd(&mut s, wait_cmd(Some(5000))).unwrap();
+        commit_cmd(&mut s, resume_cmd("t1:1:5000")).unwrap();
+        commit_cmd(&mut s, dispatch_cmd("r1", "t1", 2)).unwrap();
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(t.status, TaskStatus::Dispatched);
+        assert_eq!(t.attempts, 2);
+    }
+
+    #[test]
+    fn f12_waiting_task_can_be_cancelled_and_clears_wait() {
+        let mut s = routed_failed_task();
+        commit_cmd(&mut s, wait_cmd(None)).unwrap();
+        let cmd = Cmd::TaskUpdate {
+            run_id: "r1".into(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled), result: None,
+            spec: None, acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+        };
+        commit_cmd(&mut s, cmd).unwrap();
+        let t = &s.runs["r1"].tasks["t1"];
+        assert_eq!(t.status, TaskStatus::Cancelled);
+        assert!(t.wait.is_none());
+    }
+
+    #[test]
+    fn f12_wait_and_resume_replay_from_event_log() {
+        let mut live = routed_failed_task();
+        let mut log: Vec<(String, Value)> = vec![];
+        for cmd in [wait_cmd(Some(5000)), resume_cmd("t1:1:5000"), wait_cmd(Some(7000))] {
+            if let Ok(ev) = commit_cmd(&mut live, cmd) {
+                log.push(ev);
+            }
+        }
+        let mut fresh = State::default();
+        mk_run(&mut fresh, "r1");
+        mk_routed_task(&mut fresh, "r1", "t1");
+        let d = mk_dispatch(&mut fresh, "r1", "t1", 1);
+        fail_dispatch(&mut fresh, "r1", &d);
+        for (k, d) in &log {
+            fresh.replay(k, d).unwrap();
+        }
+        assert_eq!(fresh.runs["r1"].tasks["t1"].status, live.runs["r1"].tasks["t1"].status);
+        assert_eq!(fresh.runs["r1"].tasks["t1"].wait, live.runs["r1"].tasks["t1"].wait);
+        assert_eq!(live.runs["r1"].tasks["t1"].status, TaskStatus::Waiting);
+    }
+
+    fn counters(s: &State) -> (u32, u32, u32, Option<FailureClass>) {
+        let t = &s.runs["r1"].tasks["t1"];
+        (t.quality_attempts, t.operational_attempts, t.quality_floor, t.last_failure)
+    }
+
+    #[test]
+    fn f12_record_failure_counter_table_for_every_class() {
+        let operational = [
+            FailureClass::QuotaExhausted, FailureClass::RateLimited, FailureClass::AuthFailed,
+            FailureClass::ModelUnavailable, FailureClass::LaunchFailed, FailureClass::ExecutionFailed,
+        ];
+        for class in operational {
+            let mut s = routed_failed_task();
+            record_failure(&mut s, "r1.t1.1", class, Some(0));
+            assert_eq!(counters(&s), (0, 1, 0, Some(class)), "{class:?}");
+        }
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::SetupFailed, Some(0));
+        assert_eq!(counters(&s), (0, 0, 0, Some(FailureClass::SetupFailed)));
+        for class in [FailureClass::QualityFailed, FailureClass::Unknown] {
+            let mut s = routed_failed_task();
+            record_failure(&mut s, "r1.t1.1", class, Some(0));
+            assert_eq!(counters(&s), (1, 0, 1, Some(class)), "{class:?}");
+        }
+    }
+
+    #[test]
+    fn f12_record_failure_sets_class_on_dispatch() {
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::AuthFailed, None);
+        assert_eq!(s.runs["r1"].dispatches["r1.t1.1"].failure_class, Some(FailureClass::AuthFailed));
+    }
+
+    #[test]
+    fn f12_quality_floor_never_decreases() {
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::QualityFailed, Some(2));
+        assert_eq!(counters(&s).2, 3);
+        record_on_new_dispatch(&mut s, 2, FailureClass::QualityFailed, Some(0));
+        assert_eq!(counters(&s).2, 3);
+        record_on_new_dispatch(&mut s, 3, FailureClass::QualityFailed, None);
+        assert_eq!(counters(&s), (3, 0, 3, Some(FailureClass::QualityFailed)));
+    }
+
+    #[test]
+    fn f12_operational_failure_leaves_floor_and_quality_attempts_unchanged() {
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::QualityFailed, Some(0));
+        let before = counters(&s);
+        for (attempt, class) in [(2, FailureClass::QuotaExhausted), (3, FailureClass::LaunchFailed), (4, FailureClass::ExecutionFailed)] {
+            record_on_new_dispatch(&mut s, attempt, class, Some(5));
+        }
+        let after = counters(&s);
+        assert_eq!((after.0, after.2), (before.0, before.2));
+        assert_eq!(after.1, 3);
+        assert_eq!(after.3, Some(FailureClass::ExecutionFailed));
+    }
+
+    #[test]
+    fn f12_quality_failure_survives_later_fallback_failures() {
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::QualityFailed, Some(0));
+        record_on_new_dispatch(&mut s, 2, FailureClass::RateLimited, Some(1));
+        record_on_new_dispatch(&mut s, 3, FailureClass::QualityFailed, Some(2));
+        let (q, o, floor, _) = counters(&s);
+        assert_eq!((q, o, floor), (2, 1, 3));
+    }
+
+    #[test]
+    fn f12_record_failure_validates_task_and_dispatch() {
+        let mut s = routed_failed_task();
+        let bad_dispatch = Cmd::TaskRecordFailure {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: "r1.t9.1".into(),
+            class: FailureClass::Unknown, chain_index: None, now: ts(),
+        };
+        assert_eq!(commit_cmd(&mut s, bad_dispatch).unwrap_err().code(), "not_found");
+        let bad_task = Cmd::TaskRecordFailure {
+            run_id: "r1".into(), task_id: "t9".into(), dispatch_id: "r1.t1.1".into(),
+            class: FailureClass::Unknown, chain_index: None, now: ts(),
+        };
+        assert_eq!(commit_cmd(&mut s, bad_task).unwrap_err().code(), "not_found");
+    }
+
+    #[test]
+    fn f12_second_record_failure_for_same_dispatch_is_rejected_and_counts_once() {
+        let mut s = routed_failed_task();
+        record_failure(&mut s, "r1.t1.1", FailureClass::RateLimited, Some(0));
+        let again = Cmd::TaskRecordFailure {
+            run_id: "r1".into(), task_id: "t1".into(), dispatch_id: "r1.t1.1".into(),
+            class: FailureClass::ExecutionFailed, chain_index: Some(0), now: ts(),
+        };
+        assert_eq!(commit_cmd(&mut s, again).unwrap_err().code(), "conflict");
+        assert_eq!(counters(&s), (0, 1, 0, Some(FailureClass::RateLimited)));
+    }
+
+    #[test]
+    fn f12_record_failure_replays_to_same_counters() {
+        let mut live = routed_failed_task();
+        let mut log = vec![];
+        for (attempt, (class, idx)) in [(FailureClass::QualityFailed, Some(0)), (FailureClass::RateLimited, Some(1)), (FailureClass::Unknown, Some(2))].into_iter().enumerate() {
+            let id = if attempt == 0 {
+                "r1.t1.1".to_string()
+            } else {
+                let id = mk_dispatch(&mut live, "r1", "t1", attempt as u32 + 1);
+                fail_dispatch(&mut live, "r1", &id);
+                id
+            };
+            let cmd = Cmd::TaskRecordFailure {
+                run_id: "r1".into(), task_id: "t1".into(), dispatch_id: id,
+                class, chain_index: idx, now: ts(),
+            };
+            log.push(commit_cmd(&mut live, cmd).unwrap());
+        }
+        let mut fresh = State::default();
+        mk_run(&mut fresh, "r1");
+        mk_routed_task(&mut fresh, "r1", "t1");
+        for attempt in 1..=3 {
+            let d = mk_dispatch(&mut fresh, "r1", "t1", attempt);
+            fail_dispatch(&mut fresh, "r1", &d);
+        }
+        for (k, d) in &log {
+            fresh.replay(k, d).unwrap();
+        }
+        assert_eq!(counters(&fresh), counters(&live));
+        assert_eq!(counters(&live), (2, 1, 3, Some(FailureClass::Unknown)));
+    }
+
+    #[test]
+    fn f12_run_create_and_update_store_autonomy_and_max_operational() {
+        let mut s = State::default();
+        let create = Cmd::RunCreate {
+            id: "r1".into(), title: "t".into(), repo: "/x".into(), base_ref: None, base_sha: None,
+            setup: None, coordinator_tile: None, limits: Limits::default(), now: ts(),
+        }.with_fields(serde_json::json!({"autonomy": {"operational": true, "execution": false, "integration": false}}));
+        commit_cmd(&mut s, create).unwrap();
+        assert!(s.runs["r1"].run.autonomy.operational);
+        assert!(!s.runs["r1"].run.autonomy.execution);
+
+        let update = Cmd::RunUpdate { run_id: "r1".into(), title: "t".into(), now: ts() }
+            .with_fields(serde_json::json!({
+                "autonomy": {"operational": false, "execution": true, "integration": true},
+                "maxOperationalAttempts": 9
+            }));
+        commit_cmd(&mut s, update).unwrap();
+        let run = &s.runs["r1"].run;
+        assert_eq!(run.autonomy, Autonomy { operational: false, execution: true, integration: true });
+        assert_eq!(run.limits.max_operational_attempts, 9);
+
+        let clear = Cmd::RunUpdate { run_id: "r1".into(), title: "t".into(), now: ts() }
+            .with_fields(serde_json::json!({"autonomy": {}}));
+        commit_cmd(&mut s, clear).unwrap();
+        assert_eq!(s.runs["r1"].run.autonomy, Autonomy::default());
+        assert_eq!(s.runs["r1"].run.limits.max_operational_attempts, 9);
+    }
+
+    #[test]
+    fn f12_two_dispatches_racing_for_last_slot_record_exactly_one() {
+        use std::sync::{Arc, Mutex};
+
+        for _ in 0..20 {
+            let state = Arc::new(Mutex::new(State::default()));
+            {
+                let mut g = state.lock().unwrap();
+                mk_run(&mut g, "r1");
+                g.runs.get_mut("r1").unwrap().run.limits.max_workers = 1;
+                mk_routed_task(&mut g, "r1", "t1");
+                mk_routed_task(&mut g, "r1", "t2");
+            }
+            let handles: Vec<_> = ["t1", "t2"].into_iter().map(|task_id| {
+                let state = state.clone();
+                std::thread::spawn(move || {
+                    let mut g = state.lock().unwrap();
+                    commit_cmd(&mut g, dispatch_cmd("r1", task_id, 1)).is_ok()
+                })
+            }).collect();
+            let accepted = handles.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
+            assert_eq!(accepted, 1);
+            assert_eq!(state.lock().unwrap().runs["r1"].running_dispatch_count(), 1);
+        }
+    }
+
+    #[test]
+    fn f12_failure_class_serde_values_are_snake_case() {
+        let v = serde_json::to_value([FailureClass::QuotaExhausted, FailureClass::SetupFailed]).unwrap();
+        assert_eq!(v, serde_json::json!(["quota_exhausted", "setup_failed"]));
+        assert_eq!(serde_json::to_value(TaskStatus::Waiting).unwrap(), "waiting");
+        assert_eq!(serde_json::to_value(Trigger::Escalation).unwrap(), "escalation");
+        assert_eq!(serde_json::to_value(WaitKind::Intervention).unwrap(), "intervention");
     }
 }

@@ -186,6 +186,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
                     runId={runId}
                     runRepo={run.repo}
                     runTitle={run.title}
+                    limits={run.limits}
                     runStatus={run.status}
                     dispatches={dispatches}
                     runBaseSha={run.baseSha}
@@ -198,6 +199,7 @@ const OrchBoard = ({ runId, tileId, cwd, onPatchOrchTile }: OrchBoardProps) => {
                       runId={runId}
                       runRepo={run.repo}
                       runTitle={run.title}
+                      limits={run.limits}
                       runStatus={run.status}
                       dispatches={dispatches}
                       runBaseSha={run.baseSha}

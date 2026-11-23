@@ -40,6 +40,7 @@ pub struct BriefInput<'a> {
     pub deps_results: &'a [(String, Option<String>)],
     pub cli_path: &'a str,
     pub cwd: &'a str,
+    pub handoff: Option<&'a str>,
 }
 
 pub struct WorkerLaunch<'a> {
@@ -84,7 +85,7 @@ pub fn write_worker_settings(brief_path: &Path, verify_commands: &[String]) -> R
 }
 
 pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
-    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd } = input;
+    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, handoff } = input;
     let dispatch_dir = base
         .join("orch")
         .join("runs")
@@ -119,6 +120,11 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
             }
         }
         content.push('\n');
+    }
+
+    if let Some(block) = handoff {
+        content.push_str(block);
+        content.push_str("\n\n");
     }
 
     content.push_str(&format!("## Working directory\n\n`{cwd}`\n\n"));
@@ -500,6 +506,7 @@ mod tests {
             result: None,
             integrated_sha: None,
             attempts: 1,
+            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
         }
@@ -527,6 +534,7 @@ mod tests {
             verifications: vec![],
             cost_usd: None,
             cost_source: None,
+            account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
         }
     }
 
@@ -536,7 +544,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let cli = "/usr/local/bin/panorama-cli";
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work" }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains(cli), "cli path in brief");
         assert!(content.contains("worker_done"), "worker_done in brief");
@@ -551,7 +559,7 @@ mod tests {
         let dir = tmp_dir("accept");
         let task = dummy_task();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp" }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("hello.txt exists"), "acceptance in brief");
         assert!(content.contains("test -f hello.txt"), "verify cmd in brief");
@@ -564,7 +572,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let deps = vec![("t0".to_string(), Some("output: done".to_string()))];
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp" }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", handoff: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("output: done"), "dep result in brief");
         std::fs::remove_dir_all(&dir).ok();

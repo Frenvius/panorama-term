@@ -79,7 +79,10 @@ fn codex_profile() -> Profile {
         brief_delivery: BriefDelivery::ArgvPointer,
         probe_permissions: true,
         pin_env_via_config: true,
-        startup_answers: vec![StartupAnswer { contains: "Hooks need review".into(), send: "2\r".into() }],
+        startup_answers: vec![
+            StartupAnswer { contains: "Hooks need review".into(), send: "2\r".into() },
+            StartupAnswer { contains: "1. Trust and continue".into(), send: "\r".into() },
+        ],
         ..cli_profile("codex", &["-c", "check_for_update_on_startup=false"], "-m")
     }
 }
@@ -554,6 +557,14 @@ mod tests {
         assert!(codex.pin_env_via_config);
         let answer = codex.startup_answers.iter().find(|a| a.contains == "Hooks need review").unwrap();
         assert_eq!(answer.send, "2\r");
+    }
+
+    #[test]
+    fn codex_answers_trust_folder_dialog_with_enter() {
+        let codex = built_ins().into_iter().find(|p| p.id == "codex").unwrap();
+        let screen = "Trust this folder? Codex can read, edit, and run files here.\n> 1. Trust and continue\n  2. Back to Agent Command Center\nenter continue - esc back";
+        let answer = codex.startup_answers.iter().find(|a| screen.contains(&a.contains)).unwrap();
+        assert_eq!(answer.send, "\r");
     }
 
     #[test]

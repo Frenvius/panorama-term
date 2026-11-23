@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::orch::candidates::{CandidateKey, CandidateStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +35,7 @@ impl std::fmt::Display for Role {
 
 fn default_verify_timeout_min() -> u32 { 15 }
 fn default_stall_quiet_min() -> u32 { 5 }
+fn default_max_operational_attempts() -> u32 { 6 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +47,8 @@ pub struct Limits {
     pub verify_timeout_min: u32,
     #[serde(default = "default_stall_quiet_min")]
     pub stall_quiet_min: u32,
+    #[serde(default = "default_max_operational_attempts")]
+    pub max_operational_attempts: u32,
 }
 
 impl Default for Limits {
@@ -55,6 +59,7 @@ impl Default for Limits {
             dispatch_timeout_min: 60,
             verify_timeout_min: 15,
             stall_quiet_min: 5,
+            max_operational_attempts: 6,
         }
     }
 }
@@ -74,6 +79,140 @@ impl RunStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Autonomy {
+    #[serde(default)]
+    pub operational: bool,
+    #[serde(default)]
+    pub execution: bool,
+    #[serde(default)]
+    pub integration: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatorWait {
+    #[serde(default)]
+    pub reset_at: Option<i64>,
+    pub since: i64,
+    #[serde(default)]
+    pub reason: String,
+    pub resume_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    QuotaExhausted,
+    RateLimited,
+    AuthFailed,
+    ModelUnavailable,
+    LaunchFailed,
+    ExecutionFailed,
+    SetupFailed,
+    QualityFailed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureCounter {
+    Operational,
+    Quality,
+    None,
+}
+
+impl FailureClass {
+    pub fn counter(self) -> FailureCounter {
+        match self {
+            FailureClass::QuotaExhausted
+            | FailureClass::RateLimited
+            | FailureClass::AuthFailed
+            | FailureClass::ModelUnavailable
+            | FailureClass::LaunchFailed
+            | FailureClass::ExecutionFailed => FailureCounter::Operational,
+            FailureClass::SetupFailed => FailureCounter::None,
+            FailureClass::QualityFailed | FailureClass::Unknown => FailureCounter::Quality,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    Initial,
+    Fallback,
+    Escalation,
+    Resume,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchBy {
+    Coordinator,
+    Brain,
+    User,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitKind {
+    Quota,
+    Availability,
+    Intervention,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWait {
+    pub kind: WaitKind,
+    #[serde(default)]
+    pub resume_at: Option<i64>,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub candidate: Option<CandidateKey>,
+    #[serde(default)]
+    pub same_session: bool,
+    pub resume_id: String,
+    pub since: i64,
+}
+
+pub fn resume_id(task_id: &str, attempts: u32, resume_at: Option<i64>) -> String {
+    match resume_at {
+        Some(at) => format!("{task_id}:{attempts}:{at}"),
+        None => format!("{task_id}:{attempts}:none"),
+    }
+}
+
+pub fn coordinator_resume_id(run_id: &str, reset_at: Option<i64>) -> String {
+    match reset_at {
+        Some(at) => format!("{run_id}:coordinator:{at}"),
+        None => format!("{run_id}:coordinator:none"),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedCandidate {
+    pub candidate: CandidateKey,
+    pub state: CandidateStatus,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingDecision {
+    #[serde(default)]
+    pub requested: Option<CandidateKey>,
+    pub effective: CandidateKey,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub skipped: Vec<SkippedCandidate>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
@@ -90,6 +229,10 @@ pub struct Run {
     pub coordinator_tile: Option<String>,
     pub status: RunStatus,
     pub limits: Limits,
+    #[serde(default)]
+    pub autonomy: Autonomy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_wait: Option<CoordinatorWait>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -105,6 +248,7 @@ pub enum TaskStatus {
     Failed,
     Blocked,
     Cancelled,
+    Waiting,
 }
 
 impl TaskStatus {
@@ -137,6 +281,20 @@ pub struct Task {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub integrated_sha: Option<String>,
     pub attempts: u32,
+    #[serde(default)]
+    pub routing: u32,
+    #[serde(default)]
+    pub quality_floor: u32,
+    #[serde(default)]
+    pub quality_attempts: u32,
+    #[serde(default)]
+    pub operational_attempts: u32,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<FailureClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<TaskWait>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -201,6 +359,20 @@ pub struct Dispatch {
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Trigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<RoutingDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<FailureClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<DispatchBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_ref: Option<String>,
 }
 
 impl Dispatch {

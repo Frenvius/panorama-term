@@ -367,6 +367,15 @@ pub fn tile_env(tile_id: &str) -> Vec<(String, String)> {
     service().map(|s| s.tile_env(tile_id)).unwrap_or_default()
 }
 
+pub fn default_account_id(agent: &str) -> Option<String> {
+    let (claude, codex) = service().ok()?.effective_ids("");
+    match agent {
+        "claude" => Some(claude),
+        "codex" => Some(codex),
+        _ => None,
+    }
+}
+
 pub fn claude_dir_for_tile(tile_id: &str) -> Option<PathBuf> {
     service().ok()?.claude_dir_for_tile(tile_id)
 }

@@ -1,4 +1,4 @@
-import type { AiProgress, AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan } from '~/domain/interfaces/orch.interface';
+import type { AiProgress, AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan, Autonomy, CandidateEntry, CandidateKey, MetricsRow, UsageReport } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -107,6 +107,21 @@ export const createRun = (opts: CreateRunOpts): Promise<{ ok: boolean; run: { id
 
 export const updateRun = (runId: string, title: string): Promise<void> =>
   post('run-update', { runId, title }).then(() => undefined);
+
+export const setRunAutonomy = (runId: string, autonomy: Autonomy): Promise<void> => {
+  const names = (Object.keys(autonomy) as (keyof Autonomy)[]).filter((k) => autonomy[k]);
+  return post('run-update', { runId, autonomy: names.join(',') }).then(() => undefined);
+};
+
+export const listCandidates = (): Promise<{ ok: boolean; candidates: CandidateEntry[] }> => post('candidate-list', {});
+
+export const clearCandidate = (key: CandidateKey): Promise<void> =>
+  post('candidate-clear', key).then(() => undefined);
+
+export const reportUsage = (report: UsageReport): Promise<void> =>
+  post('usage-report', report).then(() => undefined);
+
+export const getMetrics = (): Promise<{ ok: boolean; rows: MetricsRow[] }> => post('metrics', {});
 
 export const setRunStatus = (runId: string, status: string): Promise<void> =>
   post('run-set-status', { runId, status }).then(() => undefined);

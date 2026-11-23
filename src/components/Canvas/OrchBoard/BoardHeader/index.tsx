@@ -1,12 +1,14 @@
-import type { Dispatch, Run, RunSummary, CostEntry } from '~/domain/interfaces/orch.interface';
+import type { Run, Dispatch, Autonomy, RunSummary, CostEntry } from '~/domain/interfaces/orch.interface';
 
 import React from 'react';
 import { X, Play, Plus, Pause, Trash2, ChevronDown } from 'lucide-react';
 
 import styles from './styles.module.scss';
+import AutonomyToggles from './AutonomyToggles';
+import { formatClock } from '~/usecase/util/orchRouting';
 import { formatDuration, totalCost } from '~/usecase/util/orch';
 import { forgetProjectBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
-import { deleteRun, setRunCoordinator, setRunStatus, updateRun } from '~/adapter/orch/orch.client';
+import { deleteRun, setRunCoordinator, setRunStatus, setRunAutonomy, updateRun } from '~/adapter/orch/orch.client';
 
 interface BoardHeaderProps {
   run: Run;
@@ -151,7 +153,17 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
       .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
   };
 
-  const handleRenameChange = (e: React.ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value);
+  const handleAutonomyChange = (next: Autonomy) => {
+    setHeaderError(null);
+    return setRunAutonomy(run.id, next)
+      .then(onChanged)
+      .catch((err) => {
+        setHeaderError(err instanceof Error ? err.message : String(err));
+        throw err;
+      });
+  };
+
+  const handleRenameChange =(e: React.ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value);
   const handleSwitcherToggle = () => setSwitcherOpen((v) => !v);
   const handleCostClick = () => setBreakdownOpen((v) => !v);
 
@@ -262,6 +274,8 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
           )}
         </div>
 
+        <AutonomyToggles autonomy={run.autonomy} onChange={handleAutonomyChange} />
+
         {!confirming && (
           <div className={styles.headerActions}>
             {!renaming && (
@@ -309,6 +323,14 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
           </div>
         )}
       </div>
+
+      {run.coordinatorWait && (
+        <div className={styles.coordinatorBanner}>
+          {run.coordinatorWait.resetAt != null
+            ? `Coordinator blocked until ${formatClock(run.coordinatorWait.resetAt)}`
+            : 'Coordinator blocked'}
+        </div>
+      )}
 
       {headerError && <div className={styles.headerError}>{headerError}</div>}
     </>

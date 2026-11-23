@@ -117,6 +117,12 @@ pub(crate) fn diff_name_only(path: &str, base_ref: &str) -> Result<Vec<String>, 
         .collect())
 }
 
+pub(crate) fn diff_stat(path: &str, from: &str, to: &str) -> Result<String, String> {
+    let range = format!("{from}..{to}");
+    let raw = git(path, &["diff", "--stat", &range])?;
+    Ok(String::from_utf8_lossy(&raw).trim_end().to_string())
+}
+
 pub(crate) enum MergeOutcome {
     Success(String),
     Conflict(Vec<String>),

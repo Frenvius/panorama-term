@@ -105,7 +105,7 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "run-create" => &["repo"],
         "run-show" => &["runId"],
         "run-set-status" => &["runId", "status"],
-        "run-update" => &["runId", "title"],
+        "run-update" => &["runId"],
         "run-set-coordinator" => &["runId"],
         "task-create" => &["runId", "title", "spec"],
         "task-update" => &["runId", "taskId"],
@@ -128,6 +128,9 @@ fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::V
         "retry" => &["runId", "taskId"],
         "report" => &["runId"],
         "dispatch-adopt" => &["runId", "dispatchId"],
+        "candidate-list" | "metrics" => &[],
+        "candidate-clear" => &["agent"],
+        "usage-report" => &["agent", "accountId"],
         _ => return Err(format!("unknown command: {command}")),
     };
     for field in required {
@@ -289,7 +292,7 @@ fn coerce_value(field: &str, raw: &str) -> serde_json::Value {
 }
 
 fn is_numeric_field(field: &str) -> bool {
-    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "replyTo" | "lines")
+    matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "replyTo" | "lines")
 }
 
 fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
@@ -337,6 +340,31 @@ mod tests {
     fn parse(args: &[&str], command: &str) -> serde_json::Map<String, serde_json::Value> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         parse_flags(&owned, command).0
+    }
+
+    #[test]
+    fn run_update_autonomy_and_max_operational_flags() {
+        let body = parse(&["--autonomy", "operational,execution", "--max-operational-attempts", "8"], "run-update");
+        assert_eq!(body["autonomy"].as_str(), Some("operational,execution"));
+        assert_eq!(body["maxOperationalAttempts"].as_u64(), Some(8));
+        let mut with_run = body.clone();
+        with_run.insert("runId".into(), "r1".into());
+        assert!(validate_required("run-update", &with_run).is_ok());
+    }
+
+    #[test]
+    fn candidate_clear_and_usage_report_flags() {
+        let body = parse(&["--agent", "claude", "--model", "opus", "--account", "a1"], "candidate-clear");
+        assert_eq!(body["agent"].as_str(), Some("claude"));
+        assert_eq!(body["model"].as_str(), Some("opus"));
+        assert_eq!(body["account"].as_str(), Some("a1"));
+        assert!(validate_required("candidate-clear", &body).is_ok());
+        assert!(validate_required("candidate-clear", &serde_json::Map::new()).is_err());
+        let report = parse(&["--agent", "codex", "--account-id", "a", "--windows", "[]"], "usage-report");
+        assert_eq!(report["accountId"].as_str(), Some("a"));
+        assert!(validate_required("usage-report", &report).is_ok());
+        assert!(validate_required("candidate-list", &serde_json::Map::new()).is_ok());
+        assert!(validate_required("metrics", &serde_json::Map::new()).is_ok());
     }
 
     #[test]

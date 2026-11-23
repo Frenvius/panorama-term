@@ -8,7 +8,8 @@ allowed-tools: Bash({cli} orch:*), PowerShell({cli} orch:*)
 
 You are the coordinator. You plan, start workers, read their results, and decide what happens next.
 The Panorama brain records every step in an event log, runs verification, and commits and merges
-the work. It never starts a worker on its own: every dispatch is your decision.
+the work. Unless the run has autonomy switched on (section 7), it never starts a worker on its own:
+every dispatch is your decision.
 
 Do not implement the tasks yourself. Small glue fixes are fine when a worker is clearly the wrong
 tool, but tell the user.
@@ -61,7 +62,8 @@ Good tasks:
 
 Optional: `--base-ref <ref>`, `--setup "<command run in each new worktree>"` (e.g. `bun install`),
 `--max-workers 4`, `--max-attempts 3`, `--dispatch-timeout-min 60`, `--verify-timeout-min 15`,
-`--stall-quiet-min 5`. Note the returned `run.id`.
+`--stall-quiet-min 5`, `--max-operational-attempts 6`, `--autonomy <list>` (section 7). Note the
+returned `run.id`.
 
 The CLI records this terminal as the coordinator tile (from `PANORAMA_TILE_ID`), so the brain can
 type a short notice into it when messages arrive while you are idle.
@@ -76,8 +78,10 @@ type a short notice into it when messages arrive while you are idle.
 - Use `--escalation`/`--profile` only to override the role chain for a specific task.
 - `--spec-file <path>` reads a long spec from a file.
 - `--verify` and `--dep` repeat. `--escalation` repeats when overriding the role chain.
-- An escalation entry is `profile` or `profile:model`. Attempt N uses entry N, and the last entry
-  repeats.
+- An escalation entry is `profile` or `profile:model`. The list is a preference order, not an
+  attempt ladder: operational failures (quota, rate limit, auth, crash, launch) fall back to the next
+  eligible entry without spending attempts; quality failures (the worker gave up, verification failed)
+  move past the entry that failed and spend an attempt. A rejected entry never comes back.
 - `--review` keeps the task in `verifying` after its checks pass, until you approve it (step 4).
 
 Task ids are `t1`, `t2`, and so on.
@@ -132,6 +136,10 @@ arrives. Run `check` then.
 | `worker_stalled` | No screen change for `stallQuietMin`, or past the timeout. The body has the screen tail | `worker-read`. Unstick it with `worker-send`, or `worker-stop` then `retry` |
 | `worker_failed` | JSON body with `reason`: `session_gone`, `agent_exited` (with screen `tail`), `worktree_failed`, `brief_failed`, `spawn_failed` | `retry`. If the agent turns out to still be working, its `worker_done` is still accepted |
 | `setup_failed` | The run's `--setup` command failed. JSON body with `detail` and output `tail` | Fix the setup or the repo, then `retry` |
+| `task_waiting` | No eligible candidate right now, or the run needs you. JSON body: `kind` (`quota`, `availability`, `intervention`), `resumeAt`, `reason`, `candidate`. The task is `waiting` | `quota`/`availability`: nothing to do, it resumes at `resumeAt` (autonomy) or you get `resume_ready`. `intervention`: read `reason`, fix the cause (setup, auth, chain), then resume it |
+| `operational_failure` | A worker stopped for a reason that is not its fault. JSON body: `class`, `dispatchId`, `suggested` (the next candidate), `hint` | `retry`. It costs no quality attempt |
+| `resume_ready` | A waiting task is due. JSON body: `resumeId`, `kind`, `resumeAt` | `task-update --status pending`, then `worker-start`. Sent once per resume |
+| `auto_action` | The brain acted on its own under the run's autonomy. JSON body: `action` (`retry`, `start`, `continue`, `integrate`), `taskId`, `dispatchId`, `reason` | Read it so your picture of the run stays correct. Do not repeat the action |
 | `late_report` | A `worker_done` arrived from an attempt already superseded by a newer one. Not applied | Compare with the newer attempt. Integrate the old one with `integrate --dispatch-id` if it is the better result |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
 | `integration_conflict` | The merge conflicted and was aborted. The task is `blocked` | Lists the files. Re-scope the task against the new base and retry, or ask the user |
@@ -170,13 +178,27 @@ Retry and other task changes:
 {cli} orch verify      --run-id <run> --task-id t2
 ```
 
-- `retry` only works on a `failed` task. It starts the next attempt with the next escalation entry.
-  `--profile`/`--model` override that entry.
+- `retry` only works on a `failed` task. The router picks the candidate from the list; it may wait
+  instead (`task_waiting`). `--profile`/`--model` pin that one attempt and are never substituted.
 - `task-update` also takes `--acceptance`, `--verify`, `--escalation`, `--profile`, `--status` and
   `--result`.
 - `verify` runs the checks again on the latest attempt.
 
-When `maxAttempts` is reached, stop retrying. Tell the user what failed and why.
+When `maxAttempts` quality attempts are spent, stop retrying. Tell the user what failed and why.
+When `maxOperationalAttempts` is spent the task waits for you (`intervention`).
+
+Waiting and model status:
+
+```
+{cli} orch candidate-list
+{cli} orch candidate-clear --agent <agent> [--model <model>] [--account <id>]
+```
+
+- A `waiting` task is not failed. `quota` and `availability` waits end by themselves at `resumeAt`.
+  To resume one yourself: `task-update --status pending`, then `worker-start`.
+- `candidate-list` shows which agent/model is blocked (rate limited, quota exhausted, auth failed),
+  until when, and the source. `candidate-clear` removes a block you know is stale, for example after
+  the user topped up credit or logged in again. Do not clear a block to force a retry.
 
 ## 5. Integrate
 
@@ -217,6 +239,33 @@ attempt, live tile and agent status only), `task-list --run-id <run>`,
 `gate-create --run-id <run> --task-id <t> --question "..." --option a --option b`,
 `gate-resolve --run-id <run> --gate-id <g> --resolution a`, and
 `run-set-status --status paused|active|cancelled`.
+
+## 7. Autonomy
+
+Off by default. The user turns it on per run, and you may set it only when they ask:
+
+```
+{cli} orch run-update --run-id <run> --autonomy operational,execution,integration
+```
+
+A comma list; empty clears it. Each level lets the brain act without waiting for you, through the
+same commands you use, and send you an `auto_action` message for each action:
+
+- `operational` - retries a task that failed operationally (it never spends quality attempts), and
+  resumes a `waiting` task when its `resumeAt` passes. If the worker's session is still alive it
+  types `continue` into it instead of starting a new attempt. Without this level you get
+  `resume_ready` instead.
+- `execution` - retries quality failures while attempts remain, and starts a `pending` task once
+  every dependency is `completed` and integrated, up to `maxWorkers`. User-owned tasks and tasks
+  with an open gate are skipped. `--review` tasks still stop at review.
+- `integration` - integrates a `completed` task that is not `--review` into the integration branch.
+  A conflict leaves that task `blocked`. It never pushes and never touches the user's branch.
+
+Autonomy never creates tasks, changes limits, picks an agent outside the task's list, or merges
+anywhere else. With it on, do not repeat what an `auto_action` already did.
+
+If this terminal hits its own usage limit, the brain records it and, after the reset time, types one
+`[panorama] Coordinator resume for run ...` line into it. Run `check` then.
 
 ## Rules
 
