@@ -189,7 +189,9 @@ fn transition_notifications(before: Option<&(RunStatus, HashMap<String, TaskStat
         if old == Some(&task.status) { continue; }
         if task.status == TaskStatus::Review {
             events.push(event("review", Some(task), None));
-        } else if task.status == TaskStatus::Failed && task.attempts >= after.run.limits.max_attempts {
+        } else if task.status == TaskStatus::Failed && task.attempts >= after.run.limits.max_attempts
+            && data["summary"] != autonomy::STALL_REASON
+        {
             events.push(event("exhausted", Some(task), None));
         }
     }
@@ -646,6 +648,23 @@ fn needs_decision(msg: &Message, entry: &RunEntry, now: i64) -> bool {
         return true;
     }
     match msg.msg_type.as_str() {
+        "integration_conflict" if msg.from == "brain" => msg.task_id.as_ref().and_then(|id| entry.tasks.get(id))
+            .is_none_or(|task| !entry.run.autonomy.integration
+                || (entry.integration_conflicts.contains(&task.id) && !autonomy::can_resolve_conflict(entry, task))),
+        "worker_stalled" if msg.from == "brain" => msg.dispatch_id.as_ref().and_then(|id| entry.dispatches.get(id))
+            .is_none_or(|dispatch| {
+                if !entry.run.autonomy.operational {
+                    return true;
+                }
+                let continued = autonomy::stall_continuation(entry, &dispatch.id)
+                    .is_some_and(|c| c.seq > msg.seq);
+                let stopped = dispatch.status == DispatchStatus::Stopped
+                    && dispatch.summary.as_deref() == Some(autonomy::STALL_REASON);
+                !continued && !stopped && !entry.tasks.get(&dispatch.task_id).is_some_and(|task| {
+                    autonomy::can_handle_stall(entry, task, dispatch)
+                        && dispatch.tile_id.as_deref().is_some_and(|tile| crate::lookup_live(tile).is_some())
+                })
+            }),
         "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" | "late_report" => true,
         "question" => !matches!(msg.from.as_str(), "coordinator" | "user" | "brain"),
         "status" => msg.body.as_deref()
@@ -2281,6 +2300,16 @@ async fn supervision_tick() {
     };
 
     for (run_id, dispatch_id, tile_id, started_secs, limits) in running_dispatches {
+        let (auto_stall, stall_pending, continued_secs) = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let Some(entry) = guard.runs.get(&run_id) else { continue };
+            let Some(dispatch) = entry.dispatches.get(&dispatch_id) else { continue };
+            let auto = entry.tasks.get(&dispatch.task_id)
+                .is_some_and(|task| autonomy::can_handle_stall(entry, task, dispatch));
+            let continuation = if auto { autonomy::stall_continuation(entry, &dispatch_id) } else { None };
+            (auto, auto && autonomy::stall_pending(entry, &dispatch_id, continuation),
+                continuation.map_or(0, |m| m.at / 1000))
+        };
         let session = crate::sessions().lock().unwrap().get(&tile_id).cloned();
         let is_session_live = session.is_some();
 
@@ -2300,12 +2329,12 @@ async fn supervision_tick() {
                 screen_last_changed_secs: now_secs,
                 sent: std::collections::HashSet::new(),
             });
-            if is_session_live {
+            if is_session_live || continued_secs != 0 {
                 entry.ever_live = true;
             }
             let screen = worker::capture_worker_screen(&tile_id, 40);
             entry.observe_screen(&screen, now_secs);
-            let quiet = now_secs.saturating_sub(entry.screen_last_changed_secs);
+            let quiet = now_secs.saturating_sub(entry.screen_last_changed_secs.max(continued_secs));
             if is_session_live {
                 let is_shell = session.as_ref()
                     .filter(|s| crate::session_pid(s) > 0)
@@ -2323,8 +2352,6 @@ async fn supervision_tick() {
             (entry.consecutive_shell_ticks, entry.ever_live, quiet, screen)
         };
 
-        let running_secs = now_secs.saturating_sub(started_secs);
-
         let sent = {
             let watch = supervision_watch().lock().unwrap_or_else(|e| e.into_inner());
             watch.get(&dispatch_id).map(|e| e.sent.clone()).unwrap_or_default()
@@ -2336,7 +2363,7 @@ async fn supervision_tick() {
             consecutive_shell_ticks,
             screen_quiet_secs,
             agent_status: agent_status.clone(),
-            running_secs,
+            running_secs: now_secs.saturating_sub(started_secs.max(continued_secs)),
             is_waiting,
             limits_dispatch_timeout_min: limits.dispatch_timeout_min,
             limits_stall_quiet_min: limits.stall_quiet_min,
@@ -2421,6 +2448,9 @@ async fn supervision_tick() {
                     if fail_live_dispatch_on_quota(&run_id, &dispatch_id, &screen_text).await {
                         break;
                     }
+                    if stall_pending {
+                        break;
+                    }
                     let tail = screen_text.lines().rev().take(20).collect::<Vec<_>>()
                         .into_iter().rev().collect::<Vec<_>>().join("\n");
                     let body_str = serde_json::json!({"reason": reason, "tail": tail}).to_string();
@@ -2449,6 +2479,9 @@ async fn supervision_tick() {
                             now,
                         })
                     }, run_id.clone()).await;
+                    if auto_stall {
+                        break;
+                    }
                 }
             }
         }
@@ -2520,6 +2553,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
         return err_resp("bad_request", "runId and taskId required");
     }
 
+    let by = if v["by"] == "brain" { "brain" } else { "coordinator" };
     let merge_branch = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
@@ -2531,7 +2565,9 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
             None => return err_resp("not_found", "task not found"),
         };
         let has_open_gate = entry.gates.values().any(|g| g.task_id == task_id && g.resolution.is_none());
-        if task.status != TaskStatus::Blocked || has_open_gate {
+        if task.status != TaskStatus::Blocked || has_open_gate
+            || (by == "brain" && !autonomy::can_resolve_conflict(entry, task))
+        {
             return err_resp("conflict", "task must be blocked by an integration conflict to resolve it");
         }
         let source = entry.dispatches.values()
@@ -2549,7 +2585,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
     let mut inner = serde_json::json!({
         "runId": run_id,
         "taskId": task_id,
-        "by": "coordinator",
+        "by": by,
     });
     for key in ["profile", "model"] {
         if let Some(s) = v[key].as_str() {
@@ -2642,6 +2678,9 @@ async fn handle_retry(body: &[u8]) -> String {
     }
     if let Some(ro) = retry_of {
         inner_body["retryOf"] = ro.into();
+    }
+    if by_retry == "brain" && v["stopLive"] == true {
+        inner_body["stopLive"] = true.into();
     }
     handle_worker_start(inner_body.to_string().as_bytes()).await
 }
@@ -3015,11 +3054,10 @@ async fn handle_integrate(body: &[u8]) -> String {
                     now,
                 })
             }, run_id.clone()).await;
-            let r = match result {
-                CommitResult::Ok(_) | CommitResult::Stale => serde_json::json!({"conflict": true, "files": files}),
-                CommitResult::Err(_) => serde_json::json!({"conflict": true, "files": files}),
-            };
-            ok_resp(r)
+            match result {
+                CommitResult::Err(e) if v["by"] == "brain" => err_from_str(&e),
+                _ => ok_resp(serde_json::json!({"conflict": true, "files": files})),
+            }
         }
         Err(e) => err_resp("conflict", &e),
     }
@@ -3294,7 +3332,7 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
             }
         } else {
             let corrections = entry.dispatches.values().filter(|d| d.task_id == task_id && d.corrective_retry).count() as u32;
-            let attempt = task.attempts.saturating_sub(corrections) + 1;
+            let attempt = task.attempts.saturating_sub(corrections + task.operational_attempts) + 1;
             let latest_profile = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.profile.clone());
             let latest_model = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.model.clone());
             let correction = wiring::corrective_source(entry, &task_id)
@@ -3320,6 +3358,9 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
     };
     let (profile_id, model, routed) = match route {
         StartRoute::Wait(wait) => {
+            if by == "brain" && merge_branch.is_some() {
+                return err_resp("conflict", &wait.reason);
+            }
             return enter_waiting(EnterWaitingInput { run_id, task_id, dispatch_id: None, wait }).await;
         }
         StartRoute::Routed(p) => (p.profile.clone(), p.model.clone(), Some(p)),
@@ -3405,6 +3446,9 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let task = entry.tasks.get(&task_id_c)
             .ok_or_else(|| "not_found:task not found".to_string())?;
+        if by_c == "brain" && merge_branch_c.is_some() && !autonomy::can_resolve_conflict(entry, task) {
+            return Err("conflict:task no longer eligible for automatic conflict resolution".into());
+        }
         let attempt = task.attempts + 1;
         let dispatch_id = format!("{run_id_c}.{task_id_c}.{attempt}");
         let mut fields = match &routed_c {
@@ -4453,13 +4497,17 @@ async fn stop_running_dispatch(run_id: String, dispatch_id: String, tile_id: Str
         CommitResult::Ok(_) | CommitResult::Stale => {}
         CommitResult::Err(e) => return Err(e),
     }
+    stop_worker_session(&run_id, &dispatch_id, &tile_id);
+    Ok(())
+}
+
+fn stop_worker_session(run_id: &str, dispatch_id: &str, tile_id: &str) {
     if !tile_id.is_empty() {
-        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
-        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
+        if let Err(e) = save_worker_transcript(run_id, dispatch_id, tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
+        if let Some(s) = crate::sessions().lock().unwrap().get(tile_id).cloned() {
             crate::kill_session(&s);
         }
     }
-    Ok(())
 }
 
 async fn handle_worker_stop(body: &[u8]) -> String {
@@ -4495,12 +4543,7 @@ async fn handle_worker_stop(body: &[u8]) -> String {
             return err_from_str(&e);
         }
     }
-    if !tile_id.is_empty() {
-        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
-        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
-            crate::kill_session(&s);
-        }
-    }
+    stop_worker_session(&run_id, &dispatch_id, &tile_id);
     ok_resp(serde_json::json!({}))
 }
 
