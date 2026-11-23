@@ -42,6 +42,7 @@ pub struct BriefInput<'a> {
     pub cwd: &'a str,
     pub merge_note: Option<&'a str>,
     pub handoff: Option<&'a str>,
+    pub correction: Option<&'a Dispatch>,
 }
 
 pub struct WorkerLaunch<'a> {
@@ -53,6 +54,7 @@ pub struct WorkerLaunch<'a> {
     pub extra_env: Vec<(String, String)>,
     pub brief_path: &'a Path,
     pub settings_path: Option<String>,
+    pub resume_id: Option<&'a str>,
 }
 
 const ALLOWED_WORKER_COMMANDS: &[&str] = &[
@@ -110,8 +112,31 @@ pub fn conflict_brief(branch: &str, files: &[String], integrated_titles: &[Strin
     note
 }
 
+fn report_instruction(cli_path: &str) -> String {
+    format!("Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" --report-file <temp-file> [--file path ...]\n```\n\n")
+}
+
+fn corrective_message(previous: &Dispatch, cli_path: &str) -> String {
+    let mut message = String::from("Continue the task in this worktree. ");
+    if let Some(failed) = previous.verifications.iter().rev().find(|v| v.timed_out || v.exit_code != Some(0)) {
+        let outcome = if failed.timed_out { "timed out".to_string() } else {
+            failed.exit_code.map_or_else(|| "could not run".into(), |code| format!("exited with code {code}"))
+        };
+        message.push_str(&format!("Verification {} {outcome}. Fix the failure and rerun the check.\n\n", failed.command));
+        for line in failed.tail.iter().rev().take(12).rev() {
+            message.extend(line.chars().take(400).filter(|c| !c.is_control()));
+            message.push('\n');
+        }
+    } else {
+        message.push_str("The operational wait has ended. Finish the task and run its checks.\n");
+    }
+    message.push_str("\nUse the current PANORAMA_RUN_ID and PANORAMA_DISPATCH_ID. Write a report with the changes and checks, with a one-line summary. Leave changes in the worktree and do not commit.\n\n");
+    message.push_str(&report_instruction(cli_path));
+    message
+}
+
 pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
-    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, merge_note, handoff } = input;
+    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, merge_note, handoff, correction } = input;
     let dispatch_dir = base
         .join("orch")
         .join("runs")
@@ -122,6 +147,11 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
         .map_err(|e| format!("create dispatch dir: {e}"))?;
 
     let brief_path = dispatch_dir.join("brief.md");
+    if let Some(previous) = correction {
+        std::fs::write(&brief_path, corrective_message(previous, cli_path))
+            .map_err(|e| format!("write correction: {e}"))?;
+        return Ok(brief_path);
+    }
 
     let mut content = String::from("Read CLAUDE.md and AGENTS.md at the worktree root if they exist, and follow their conventions.\nIf those instructions conflict with the task spec below, the task spec wins.\n\n");
     content.push_str(&format!("# Task: {}\n\n", task.title));
@@ -169,9 +199,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
     content.push_str("Run each command below as written, on its own: no `cd`/`Set-Location` before it, nothing appended after it. Only that exact form is pre-approved; anything else stops you on a permission prompt nobody may be watching.\n\n");
     content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Keep the summary to one line. Pass the report inline or write it to a temporary file outside the worktree and use --report-file.\n\n");
-    content.push_str(&format!(
-        "Report exactly once when finished:\n```\n{cli_path} orch send --type worker_done --outcome succeeded|failed --summary \"...\" --report-file <temp-file> [--file path ...]\n```\n\n"
-    ));
+    content.push_str(&report_instruction(cli_path));
     content.push_str(&format!(
         "Blocking question:\n```\n{cli_path} orch send --type question --body \"...\"\n{cli_path} orch check --wait --timeout-ms 600000\n```\n\n"
     ));
@@ -187,13 +215,43 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
     Ok(brief_path)
 }
 
+pub(super) fn pin_native_home(exe: &str, tile_id: &str, env: &mut Vec<(String, String)>) -> Option<String> {
+    let key = match exe {
+        "claude" => "CLAUDE_CONFIG_DIR",
+        "codex" => "CODEX_HOME",
+        _ => return None,
+    };
+    let matches_key = |name: &str| name == key || (cfg!(windows) && name.eq_ignore_ascii_case(key));
+    let selected = env.iter().rev().find(|(name, _)| matches_key(name)).map(|(_, path)| path.clone())
+        .or_else(|| crate::accounts::tile_env(tile_id).into_iter().find(|(name, _)| matches_key(name)).map(|(_, path)| path))
+        .or_else(|| std::env::var(key).ok());
+    let home = match selected {
+        Some(path) => PathBuf::from(path),
+        None if exe == "claude" => crate::claude_home()?,
+        None => crate::codex_home()?,
+    };
+    if !home.is_absolute() {
+        return None;
+    }
+    let home = home.to_str()?.to_string();
+    env.retain(|(name, _)| !matches_key(name));
+    env.push((key.into(), home.clone()));
+    Some(home)
+}
+
+pub(super) fn valid_session_id(id: &str) -> bool {
+    id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
-    let WorkerLaunch { tile_id, cwd, group, profile, model, extra_env, brief_path, settings_path } = launch;
     let cli = crate::panorama_cli_path();
-    let mut pinned_env = extra_env.clone();
+    let mut pinned_env = launch.extra_env.clone();
     pinned_env.push(("PANORAMA_CLI".into(), cli.clone()));
     pinned_env.push(("PANORAMA_SIDECAR_PORT".into(), crate::port().to_string()));
-    pinned_env.push(("PANORAMA_TILE_ID".into(), tile_id.to_string()));
+    pinned_env.push(("PANORAMA_TILE_ID".into(), launch.tile_id.into()));
+    let command = worker_command(&launch, &cli, &pinned_env);
+    let WorkerLaunch { tile_id, cwd, group, profile, extra_env, brief_path, resume_id, .. } = launch;
     let params = Params {
         tile_id: tile_id.to_string(),
         cols: WORKER_COLS,
@@ -226,37 +284,51 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
         crate::orch::agy::ensure_trusted_workspace(cwd);
     }
 
-    let mut tokens: Vec<String> = build_command_line(profile, model)
+    send_to_tile(tile_id, &command)?;
+
+    if resume_id.is_none() && profile.brief_delivery == BriefDelivery::ArgvPointer {
+        return watch_argv_startup(tile_id, profile).await;
+    }
+    wait_for_agent_ready(tile_id, profile, resume_id).await?;
+    let brief = std::fs::read_to_string(brief_path).map_err(|e| format!("read brief: {e}"))?;
+    send_to_tile(tile_id, &brief)
+}
+
+fn worker_command(launch: &WorkerLaunch<'_>, cli: &str, pinned_env: &[(String, String)]) -> String {
+    let WorkerLaunch { profile, model, settings_path, resume_id, brief_path, .. } = launch;
+    let mut tokens: Vec<String> = build_command_line(profile, *model)
         .into_iter()
-        .map(|t| t.replace(CLI_PLACEHOLDER, &cli))
+        .map(|t| t.replace(CLI_PLACEHOLDER, cli))
         .collect();
     if profile.probe_permissions {
         let flags = codex_permission_args(&codex_help());
         tokens.splice(1..1, flags);
     }
-    if let Some(sp) = settings_path.filter(|_| profile.exe == "claude") {
+    if let Some(sp) = settings_path.as_ref().filter(|_| profile.exe == "claude") {
         tokens.push("--settings".to_string());
-        tokens.push(sp);
+        tokens.push(sp.clone());
+    }
+    if resume_id.is_some() && profile.exe == "codex" {
+        tokens.insert(1, "resume".into());
     }
     let mut command = tokens_to_command(&tokens);
     if profile.pin_env_via_config {
-        for arg in pinned_env_args(&pinned_env, cfg!(windows)) {
+        for arg in pinned_env_args(pinned_env, cfg!(windows)) {
             command.push(' ');
             command.push_str(&arg);
         }
     }
-    if profile.brief_delivery == BriefDelivery::ArgvPointer {
+    if let Some(id) = resume_id {
+        if profile.exe == "claude" {
+            command.push_str(" --resume");
+        }
+        command.push(' ');
+        command.push_str(id);
+    } else if profile.brief_delivery == BriefDelivery::ArgvPointer {
         command.push(' ');
         command.push_str(&quote_arg(&brief_pointer_prompt(brief_path), cfg!(windows)));
     }
-    send_to_tile(tile_id, &command)?;
-
-    if profile.brief_delivery == BriefDelivery::ArgvPointer {
-        return watch_argv_startup(tile_id, profile).await;
-    }
-    wait_for_agent_ready(tile_id, profile).await?;
-    let brief = std::fs::read_to_string(brief_path).map_err(|e| format!("read brief: {e}"))?;
-    send_to_tile(tile_id, &brief)
+    command
 }
 
 const CODEX_HELP_TIMEOUT_S: u64 = 8;
@@ -374,7 +446,7 @@ async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), Stri
     Ok(())
 }
 
-async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), String> {
+async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resume_id: Option<&str>) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(AGENT_READY_IDLE_TIMEOUT_S);
     let launch_time = Instant::now();
     let mut last_activity = Instant::now();
@@ -403,7 +475,11 @@ async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), St
             continue;
         }
 
-        if let Some(s) = lookup_live(tile_id) {
+        let bound = resume_id.is_none_or(|id| {
+            crate::read_binding_rec(tile_id).is_some_and(|binding|
+                binding["agent"] == profile.exe && binding["agentSessionId"] == id)
+        });
+        if let Some(s) = lookup_live(tile_id).filter(|_| bound) {
             if let Some(state_str) = cached_agent_state(&s) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&state_str) {
                     if v.get("lastStatus").and_then(|s| s.as_str()) == Some("idle") {
@@ -418,7 +494,7 @@ async fn wait_for_agent_ready(tile_id: &str, profile: &Profile) -> Result<(), St
         if exited_during_startup(shell_polls, since_launch) {
             return Err(exited_error(tile_id));
         }
-        if profile.ready_signal == ReadySignal::Quiet
+        if bound && profile.ready_signal == ReadySignal::Quiet
             && since_launch >= Duration::from_secs(AGENT_QUIET_WAIT_S)
             && quiet_duration >= Duration::from_secs(AGENT_QUIET_DURATION_S)
             && ready_text_visible(tile_id, profile)
@@ -674,6 +750,49 @@ mod tests {
             cost_usd: None,
             cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
+            native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+        }
+    }
+
+    #[test]
+    fn native_resume_uses_the_provider_command_and_pastes_the_correction() {
+        let dir = tmp_dir("resume-command");
+        let mut profiles = crate::orch::profiles::load_profiles(&dir);
+        let path = dir.join("brief.md");
+        for profile in profiles.iter_mut().filter(|p| matches!(p.exe.as_str(), "claude" | "codex")) {
+            profile.probe_permissions = false;
+            let mut launch = WorkerLaunch {
+                tile_id: "tile", cwd: dir.to_str().unwrap(), group: None, profile,
+                model: Some("test-model"), extra_env: vec![], brief_path: &path,
+                settings_path: None, resume_id: Some("native-id"),
+            };
+            let env = vec![("PANORAMA_DISPATCH_ID".into(), "r1.t1.2".into())];
+            let command = worker_command(&launch, "/cli", &env);
+            if profile.exe == "codex" {
+                assert!(command.starts_with("codex resume "), "{command}");
+                assert!(command.contains("PANORAMA_DISPATCH_ID"), "{command}");
+                assert!(command.ends_with(" native-id"), "{command}");
+            } else {
+                assert!(command.ends_with(" --resume native-id"), "{command}");
+            }
+            assert!(!command.contains("Read the file"), "{command}");
+            launch.resume_id = None;
+            let fresh = worker_command(&launch, "/cli", &env);
+            assert!(!fresh.contains("native-id"), "{fresh}");
+            assert_eq!(fresh.contains("Read the file"), profile.exe == "codex");
+        }
+    }
+
+    #[test]
+    fn correction_contains_failed_check_and_report_command() {
+        let mut previous = dummy_dispatch();
+        previous.verifications.push(crate::orch::model::VerificationResult {
+            command: "cargo test".into(), exit_code: Some(3), timed_out: false,
+            tail: vec!["failed assertion".into()], head_sha: None, at: 5,
+        });
+        let message = corrective_message(&previous, "/cli");
+        for detail in ["cargo test", "code 3", "failed assertion", "/cli orch send --type worker_done", "PANORAMA_DISPATCH_ID"] {
+            assert!(message.contains(detail), "{message}");
         }
     }
 
@@ -683,7 +802,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let cli = "/usr/local/bin/panorama-cli";
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", merge_note: None, handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", merge_note: None, handoff: None, correction: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains(cli), "cli path in brief");
         assert!(content.contains("worker_done"), "worker_done in brief");
@@ -701,7 +820,7 @@ mod tests {
         let mut task = dummy_task();
         task.spec = "First line.\n\n  Preserve spacing and `markdown`.\n".into();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.starts_with("Read CLAUDE.md and AGENTS.md at the worktree root if they exist, and follow their conventions.\nIf those instructions conflict with the task spec below, the task spec wins.\n\n"));
         assert!(content.contains(&format!("## Spec\n\n{}\n\n", task.spec)));
@@ -713,7 +832,7 @@ mod tests {
         let dir = tmp_dir("accept");
         let task = dummy_task();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("hello.txt exists"), "acceptance in brief");
         assert!(content.contains("test -f hello.txt"), "verify cmd in brief");
@@ -726,7 +845,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let deps = vec![("t0".to_string(), Some("output: done".to_string()))];
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("output: done"), "dep result in brief");
         std::fs::remove_dir_all(&dir).ok();

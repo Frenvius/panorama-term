@@ -92,6 +92,7 @@ pub struct RunEntry {
     pub coordinator_cost_baseline: Option<f64>,
     pub coordinator_cost_final: Option<f64>,
     pub(super) coordinator_wakes: Vec<CoordinatorWake>,
+    pub(super) worktree_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl RunEntry {
@@ -112,6 +113,7 @@ impl RunEntry {
             coordinator_cost_baseline: None,
             coordinator_cost_final: None,
             coordinator_wakes: Vec::new(),
+            worktree_lock: Default::default(),
         }
     }
 
@@ -276,6 +278,12 @@ pub enum Cmd {
         dispatch_id: String,
         status: DispatchStatus,
         summary: Option<String>,
+        now: u64,
+    },
+    DispatchBindSession {
+        run_id: String,
+        dispatch_id: String,
+        session: NativeSession,
         now: u64,
     },
     DispatchSetWorktree {
@@ -964,6 +972,16 @@ impl State {
                 }
             }
 
+            Cmd::DispatchBindSession { run_id, dispatch_id, session, now } => {
+                let dispatch = self.runs.get(run_id).and_then(|e| e.dispatches.get(dispatch_id));
+                if !dispatch.is_some_and(|d| d.native_session.is_none()) {
+                    return ApplyResult::Err(OrchError::Conflict("dispatch already bound or missing".into()));
+                }
+                ApplyResult::Ok("dispatch-bind-session".into(), serde_json::json!({
+                    "runId": run_id, "dispatchId": dispatch_id, "session": session, "now": now
+                }))
+            }
+
             Cmd::DispatchSetWorktree { run_id, dispatch_id, worktree, branch, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
@@ -1095,10 +1113,12 @@ impl State {
                         "task must be verifying".into()
                     ));
                 }
+                let retry_same_entry = entry.run.corrective_retry
+                    && entry.dispatches.get(dispatch_id).is_some_and(|d| !d.corrective_retry && d.merge_branch.is_none());
                 ApplyResult::Ok("task-verification-failed".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
                     "command": command, "exitCode": exit_code, "timedOut": timed_out,
-                    "tail": tail, "msgSeq": msg_seq, "now": now
+                    "tail": tail, "msgSeq": msg_seq, "now": now, "retrySameEntry": retry_same_entry
                 }))
             }
 
@@ -1155,6 +1175,14 @@ impl State {
             "gate-resolve" => self.replay_gate_resolve(data),
             "dispatch-update" => self.replay_dispatch_update(data),
             "dispatch-set-worktree" => self.replay_dispatch_set_worktree(data),
+            "dispatch-bind-session" => {
+                if let Some(dispatch) = self.runs.get_mut(&str_field(data, "runId"))
+                    .and_then(|e| e.dispatches.get_mut(&str_field(data, "dispatchId")))
+                {
+                    dispatch.native_session = parse_opt(data, "session");
+                }
+                Ok(())
+            }
             "dispatch-record-head" => self.replay_dispatch_record_head(data),
             "task-integrate" => self.replay_task_integrate(data),
             "task-conflict" => self.replay_task_conflict(data),
@@ -1234,6 +1262,7 @@ impl State {
             limits,
             autonomy: parse_autonomy(data.get("autonomy")).unwrap_or_default(),
             detached: data["detached"].as_bool().unwrap_or(false),
+            corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(true),
             coordinator_wait: None,
             created_at: now,
             updated_at: now,
@@ -1392,6 +1421,11 @@ impl State {
             failure_class: None,
             by: parse_opt(data, "by"),
             start_ref: None,
+            native_home: opt_str(data, "nativeHome"),
+            native_session: None,
+            corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(false),
+            retry_same_entry: false,
+            operational_wait: false,
         };
         if let Some(owner) = opt_str(data, "owner") {
             if let Some(task) = entry.tasks.get_mut(&task_id) {
@@ -1580,7 +1614,11 @@ impl State {
         if dispatch_id.is_empty() { return Err("dispatch-set-worktree: empty dispatchId".into()); }
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         if let Some(d) = entry.dispatches.get_mut(&dispatch_id) {
-            d.worktree = opt_str(data, "worktree");
+            let worktree = opt_str(data, "worktree");
+            if d.worktree != worktree {
+                d.native_session = None;
+            }
+            d.worktree = worktree;
             d.branch = opt_str(data, "branch");
             d.start_ref = opt_str(data, "startRef");
         }
@@ -1797,10 +1835,11 @@ impl State {
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
         let dispatch_id = opt_str(data, "dispatchId");
-        if let (Some(class), Some(did)) = (parse_opt::<FailureClass>(data, "failureClass"), dispatch_id.as_ref()) {
-            if let Some(d) = entry.dispatches.get_mut(did) {
+        if let Some(d) = dispatch_id.as_ref().and_then(|id| entry.dispatches.get_mut(id)) {
+            if let Some(class) = parse_opt(data, "failureClass") {
                 d.failure_class = Some(class);
             }
+            d.retry_same_entry = data["retrySameEntry"].as_bool().unwrap_or(false);
         }
         let body = serde_json::json!({
             "command": str_field(data, "command"),
@@ -1855,6 +1894,9 @@ impl State {
         if let Some(detached) = data["detached"].as_bool() {
             entry.run.detached = detached;
         }
+        if let Some(enabled) = data["correctiveRetry"].as_bool() {
+            entry.run.corrective_retry = enabled;
+        }
         if let Some(n) = data["maxOperationalAttempts"].as_u64() {
             entry.run.limits.max_operational_attempts = n as u32;
         }
@@ -1872,6 +1914,14 @@ impl State {
         };
         let now = u64_field(data, "now");
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if matches!(kind, WaitKind::Quota | WaitKind::Availability) {
+            if let Some(dispatch) = entry.dispatches.values_mut()
+                .filter(|d| d.task_id == task_id).max_by_key(|d| d.attempt)
+                .filter(|d| d.failure_class.is_some_and(|class| class.counter() == FailureCounter::Operational))
+            {
+                dispatch.operational_wait = true;
+            }
+        }
         let Some(task) = entry.tasks.get_mut(&task_id) else { return Ok(()) };
         let resume_at = data["resumeAt"].as_i64();
         task.status = TaskStatus::Waiting;
@@ -2728,6 +2778,7 @@ mod tests {
             summary: None, report: None, started_at: ts(), ended_at: None, last_heartbeat: None,
             verifications: vec![], cost_usd: None, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
+            native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
         };
         s.runs.get_mut("r1").unwrap().dispatches.insert("r1.t1.2".into(), d2);
 

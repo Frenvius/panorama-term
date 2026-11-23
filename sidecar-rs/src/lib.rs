@@ -225,6 +225,7 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                     let target = sessions().lock().unwrap().get(key).cloned();
                                     if let Some(s) = target.filter(|s| u64::from(s.pid) == pid) {
                                         mark_killed(&s);
+                                        s.kill_pending.store(false, Ordering::Release);
                                     }
                                 }
                             }
@@ -374,6 +375,7 @@ fn reconnect_sessions() {
             main_dirty: AtomicBool::new(true),
             main_history: Mutex::new(Vec::new()),
             exited: AtomicBool::new(!alive),
+            kill_pending: AtomicBool::new(false),
             visible: AtomicBool::new(true),
             clients: Mutex::new(Vec::new()),
             size_ownership: Mutex::new(SizeOwnership::default()),
@@ -1303,6 +1305,7 @@ pub(crate) struct Session {
     main_dirty: AtomicBool,
     main_history: Mutex<Vec<u8>>,
     exited: AtomicBool,
+    kill_pending: AtomicBool,
     visible: AtomicBool,
     clients: Mutex<Vec<(u64, bool, bool)>>,
     size_ownership: Mutex<SizeOwnership>,
@@ -1506,6 +1509,9 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     ) else {
         return;
     };
+    if session_id.is_empty() {
+        return;
+    }
     let Some(path) = binding_path(tile_id) else {
         return;
     };
@@ -1520,9 +1526,12 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     }
     obj.insert("agent".into(), agent.into());
     obj.insert("agentSessionId".into(), session_id.into());
-    obj.insert("cwd".into(), v.get("cwd").cloned().unwrap_or(serde_json::Value::Null));
+    if let Some(cwd) = v["cwd"].as_str() {
+        obj.insert("cwd".into(), cwd.into());
+    }
     obj.insert("tileId".into(), tile_id.into());
     let _ = write_binding_rec(&path, &rec);
+    orch::on_native_session_bound(tile_id, agent, session_id, v["cwd"].as_str());
 }
 
 fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
@@ -1599,7 +1608,11 @@ fn cwd_slug(cwd: &str) -> String {
 }
 
 fn find_transcript(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
-    let projects = claude_home()?.join("projects");
+    find_claude_transcript(&claude_home()?, session_id, cwd)
+}
+
+fn find_claude_transcript(home: &Path, session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
+    let projects = home.join("projects");
     if let Some(cwd) = cwd {
         let direct = projects.join(cwd_slug(cwd)).join(format!("{session_id}.jsonl"));
         if direct.exists() {
@@ -1653,10 +1666,22 @@ pub(crate) fn find_codex_transcript(session_id: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let sessions = codex_home()?.join("sessions");
+    find_codex_rollout(&codex_home()?, session_id)
+}
+
+fn find_codex_rollout(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let sessions = home.join("sessions");
     let suffix = format!("-{session_id}.jsonl");
     let exact = format!("{session_id}.jsonl");
     find_rollout_in(&sessions, &suffix, &exact, 4)
+}
+
+fn native_worker_transcript(home: &Path, agent: &str, id: &str, cwd: &str) -> Option<PathBuf> {
+    match agent {
+        "claude" => find_claude_transcript(home, id, Some(cwd)).filter(|path| path.is_file()),
+        "codex" => find_codex_rollout(home, id).filter(|path| path.is_file()),
+        _ => None,
+    }
 }
 
 pub(crate) fn find_agent_transcript(agent: &str, session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
@@ -2182,8 +2207,8 @@ fn handle_agent_status(body: &[u8]) {
         if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()).filter(|_| from_mod) {
             *s.mod_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
         }
-        if from_codex || from_agy {
-            let agent = if from_codex { "codex" } else { "antigravity" };
+        if from_mod || from_codex || from_agy {
+            let agent = if from_mod { "claude" } else if from_codex { "codex" } else { "antigravity" };
             if let Some(id) = v.get("sessionId").and_then(|i| i.as_str()) {
                 bind_agent_session(&tile_id, &serde_json::json!({"agent":agent,"sessionId":id,"cwd":v.get("cwd")}).to_string());
             }
@@ -3887,6 +3912,7 @@ fn spawn_session(
         main_dirty: AtomicBool::new(true),
         main_history: Mutex::new(Vec::new()),
         exited: AtomicBool::new(false),
+        kill_pending: AtomicBool::new(false),
         visible: AtomicBool::new(true),
         clients: Mutex::new(Vec::new()),
         size_ownership: Mutex::new(SizeOwnership::default()),
@@ -4318,6 +4344,9 @@ fn mark_killed(s: &Arc<Session>) {
 
 pub(crate) fn kill_session(s: &Arc<Session>) {
     let Some(run) = &s.run else {
+        if !s.exited.load(Ordering::Relaxed) {
+            s.kill_pending.store(true, Ordering::Release);
+        }
         mark_killed(s);
         host_handle().kill(&s.tile_id);
         return;
@@ -6236,6 +6265,7 @@ mod tests {
             parser: Mutex::new(vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default())),
             dirty: AtomicU64::new(0), parsed_total: AtomicU64::new(0), flushed_total: AtomicU64::new(0),
             main_dirty: AtomicBool::new(false), main_history: Mutex::new(Vec::new()), exited: AtomicBool::new(false),
+            kill_pending: AtomicBool::new(false),
             visible: AtomicBool::new(false), clients: Mutex::new(Vec::new()),
             size_ownership: Mutex::new(SizeOwnership::default()), cols: AtomicU16::new(80), rows: AtomicU16::new(24),
             scrollback: AtomicUsize::new(0), grow_pad: AtomicUsize::new(0), cwd: Mutex::new(None), agent_cwd: Mutex::new(None), cwd_dirty: AtomicU64::new(0),

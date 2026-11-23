@@ -139,7 +139,7 @@ mod tests {
             id: "r1".into(), title: "t".into(), repo: "/tmp".into(),
             base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
             status: RunStatus::Active, limits: Limits::default(),
-            autonomy: Autonomy::default(), detached: false, coordinator_wait: None, created_at: 0, updated_at: 0,
+            autonomy: Autonomy::default(), detached: false, corrective_retry: true, coordinator_wait: None, created_at: 0, updated_at: 0,
         };
         let mut e = RunEntry::new(run);
         e.tasks.insert("t1".into(), Task { owner_reason: None,
@@ -165,6 +165,7 @@ mod tests {
             verifications: vec![], cost_usd: cost, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None,
             failure_class: class, by: None, start_ref: None,
+            native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
         }
     }
 
