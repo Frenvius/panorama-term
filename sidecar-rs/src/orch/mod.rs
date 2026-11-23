@@ -4252,7 +4252,7 @@ async fn start_dispatch(input: StartDispatchInput) {
         };
 
         let settings_path = if profile.exe == "claude" {
-            match crate::orch::worker::write_worker_settings(&brief_path, &task_clone.verify) {
+            match crate::orch::worker::write_worker_settings(&brief_path) {
                 Ok(p) => Some(p.to_string_lossy().into_owned()),
                 Err(e) => {
                     eprintln!("[orch] {dispatch_id}: worker permission settings skipped: {e}");
