@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.11]
+
+### Added
+- Orchestration `plan-apply`: one command creates a run from a plan file, with all its tasks, and starts it.
+- Detached runs handle integration conflicts and stalled workers on their own, answer worker questions with a default, and wake the coordinator only for real decisions, with a compact final digest.
+- Orchestration usage metrics for coordinators and workers, and compact worker handoffs to the coordinator.
+
+### Changed
+- Claude workers no longer ask permission for ordinary work inside their worktree; pushing, branch changes, history rewrites and publishing stay blocked.
+- Slimmer orchestrate skill: the always-loaded part is a fifth of its old size, details moved to a reference file.
+- Corrective retries resume the worker's own session when possible.
+
+### Performance
+- Pasted temp images older than 24 hours are cleaned up.
+- The Docker tab no longer stacks polls, skips unchanged updates and renders only visible rows.
+- Diff viewer gutter finds visible rows with a binary search.
+
 ## [0.4.10]
 
 ### Added
