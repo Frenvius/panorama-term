@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.12]
+
+### Fixed
+- The Global tab scope setting now applies to the panel tabs in Project mode, showing tabs from every project; the titlebar tabs stay per workspace.
+- Git fetch, pull and push time out instead of hanging, and an updated OpenSSH is preferred when available.
+
 ## [0.4.11]
 
 ### Added
