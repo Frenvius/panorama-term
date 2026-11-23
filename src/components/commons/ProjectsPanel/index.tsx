@@ -3,6 +3,7 @@ import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
+import type { ListReorder } from './useListReorder';
 import type { ProjectsPanelProps, ProjectsPanelSignals, ProjectsPanelActions } from './types';
 
 import React from 'react';
@@ -31,12 +32,13 @@ import {
 } from 'lucide-react';
 
 import styles from './styles.module.scss';
-import { useGroupReorder } from './useGroupReorder';
+import { useListReorder } from './useListReorder';
+import { useChildReorder } from './useChildReorder';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
-import { projectBoards } from '~/usecase/util/boardProject';
+import { frameBoards, liveBoards } from '~/usecase/util/boardProject';
 import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
@@ -151,6 +153,7 @@ const TileRow = ({
     <div
       onClick={handleActivate}
       className={styles.tileRow}
+      data-reorder-id={tile.id}
       onDoubleClick={handleStartRename}
       onContextMenu={handleContextMenu}
       data-active={isActive || undefined}
@@ -260,6 +263,12 @@ const GroupRow = ({
     return group.outside.filter((t) => tileLabel(t).toLowerCase().includes(query));
   }, [group.outside, group.title, query]);
 
+  const { ordered, handlers } = useChildReorder({
+    groupKey: group.path?.toLowerCase() ?? group.key,
+    children: [...visibleTiles, ...visibleOutside],
+    enabled: group.kind !== 'loose' && !query
+  });
+
   const hasVisibleTiles = visibleTiles.length > 0 || visibleOutside.length > 0;
 
   if (query && !hasVisibleTiles && !group.title.toLowerCase().includes(query) && !(group.path?.toLowerCase().includes(query) ?? false)) {
@@ -333,7 +342,7 @@ const GroupRow = ({
             onClick={handleToggle}
             aria-label={expanded ? 'Collapse group' : 'Expand group'}
           >
-            {expanded ? <ChevronDown size={13} strokeWidth={2.25} /> : <ChevronRight size={13} strokeWidth={2.25} />}
+            {expanded ? <ChevronDown size={12} strokeWidth={2.25} /> : <ChevronRight size={12} strokeWidth={2.25} />}
           </button>
           {group.kind === 'frame' && renamingFrame ? (
             <input
@@ -405,28 +414,14 @@ const GroupRow = ({
       </div>
 
       {expanded && (
-        <div className={styles.tileList}>
-          {visibleTiles.map((tile) => (
+        <div className={styles.tileList} {...handlers}>
+          {ordered.map((tile) => (
             <TileRow
               key={tile.id}
               tile={tile}
               isActive={activeTileId === tile.id}
               isDrifted={group.drifted.includes(tile.id)}
-              isOutside={false}
-              frameId={group.frameId}
-              groupKey={group.key}
-              signals={signals}
-              actions={actions}
-              onContextMenu={onTileContextMenu}
-            />
-          ))}
-          {visibleOutside.map((tile) => (
-            <TileRow
-              key={tile.id}
-              tile={tile}
-              isActive={activeTileId === tile.id}
-              isDrifted={false}
-              isOutside={true}
+              isOutside={group.outside.some((outside) => outside.id === tile.id)}
               frameId={group.frameId}
               groupKey={group.key}
               signals={signals}
@@ -548,7 +543,13 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
     if (from.kind === 'path' && from.path && to.path) actions.onReorderProject(from.path, to.path, place);
   };
 
-  const { drop, bodyHandlers } = useGroupReorder({ enabled: reorderable, groups, onReorder: reorderGroup });
+  const handleGroupReorder = ({ ids, from, to }: ListReorder) => {
+    const source = groups.find((g) => g.key === ids[from]);
+    const target = groups.find((g) => g.key === ids[to]);
+    if (source && target) reorderGroup(source, target, to > from ? 'after' : 'before');
+  };
+
+  const bodyHandlers = useListReorder({ enabled: reorderable, handleSelector: '[data-group-key]', onReorder: handleGroupReorder });
 
   const openGroupContextMenu = (e: React.MouseEvent, group: ProjectGroup) => {
     e.preventDefault();
@@ -592,7 +593,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
     }
 
     if (group.path) {
-      const groupRuns = actions.allRuns ? projectBoards(actions.allRuns, group.path) : [];
+      const groupRuns = actions.allRuns ? frameBoards(actions.allRuns, group.path, group.kind === 'frame' ? group.tiles.map((tile) => tile.id) : []) : [];
       items.push('separator');
       if (group.kind !== 'frame') {
         items.push({
@@ -620,7 +621,8 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           submenu: boardSubmenu(
             groupRuns,
             (runId) => actions.onOpenBoard?.(runId, group),
-            () => actions.onNewBoard?.(group)
+            () => actions.onNewBoard?.(group),
+            group.path
           )
         });
       }
@@ -671,7 +673,9 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
 
   const handleNewTerminalHeader = () => actions.onNewTerminal(null);
 
-  const isEmpty = groups.length === 0;
+  const orphanRuns = liveBoards(actions.orphanRuns ?? [], now).filter((s) => !needle || `${s.run.title} ${s.run.repo}`.toLowerCase().includes(needle));
+  const otherBoardsOpen = Boolean(needle) || collapsed.has('other-boards:expanded');
+  const isEmpty = groups.length === 0 && orphanRuns.length === 0;
 
   return (
     <>
@@ -800,6 +804,30 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
       </div>
 
       <div className={styles.body} {...bodyHandlers}>
+        {orphanRuns.length > 0 && (
+          <div className={styles.groupBlock}>
+            <div className={styles.groupRow} onClick={() => toggleCollapsed('other-boards:expanded')}>
+              <div className={styles.groupMain}>
+                <button type="button" className={styles.caretBtn} aria-label={otherBoardsOpen ? 'Collapse Other boards' : 'Expand Other boards'} aria-expanded={otherBoardsOpen}>
+                  {otherBoardsOpen ? <ChevronDown size={12} strokeWidth={2.25} /> : <ChevronRight size={12} strokeWidth={2.25} />}
+                </button>
+                <span className={styles.groupTitle}>Other boards</span>
+              </div>
+              <span className={styles.tileCountBadge}>{orphanRuns.length}</span>
+            </div>
+            {otherBoardsOpen && <div className={styles.tileList}>
+              {orphanRuns.map((s) => (
+                <div key={s.run.id} className={styles.tileRow} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } }} onClick={() => actions.onOpenBoard?.(s.run.id, { key: 'other-boards', kind: 'loose', title: 'Other boards', path: s.run.repo, frameId: null, tiles: [], outside: [], drifted: [] })}>
+                  <div className={styles.tileMain}>
+                    <span className={styles.tileIcon}><SquareKanban size={13} strokeWidth={1.75} /></span>
+                    <span className={styles.tileTitle}>{s.run.title}</span>
+                    <span className={styles.flatGroupLabel}>{projectName(s.run.repo)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>}
+          </div>
+        )}
         {isEmpty ? (
           <div className={styles.emptyState}>
             <span className={styles.emptyText}>No projects or tiles yet</span>
@@ -830,7 +858,12 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           </div>
         ) : sort === 'projects' ? (
           groups.map((group) => (
-            <div key={group.key} className={styles.groupSlot} data-drop={drop?.group.key === group.key ? drop.place : undefined}>
+            <div
+              key={group.key}
+              className={styles.groupSlot}
+              data-reorder-id={group.kind === 'loose' ? undefined : group.key}
+              data-reorder-zone={group.kind}
+            >
               <GroupRow
                 group={group}
                 query={needle}

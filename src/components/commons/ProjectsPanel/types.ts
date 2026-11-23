@@ -31,6 +31,7 @@ export interface ProjectsPanelActions {
   onOpenBoard?: (runId: string, group: ProjectGroup) => void;
   onNewBoard?: (group: ProjectGroup) => void;
   allRuns?: RunSummary[];
+  orphanRuns?: RunSummary[];
 }
 
 export interface ProjectsPanelProps {

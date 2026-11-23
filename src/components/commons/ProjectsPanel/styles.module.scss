@@ -265,34 +265,14 @@
 
 .groupSlot {
   position: relative;
-
-  &[data-drop='before']::before,
-  &[data-drop='after']::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    left: 0;
-    height: 2px;
-    border-radius: 1px;
-    background: var(--accent);
-    pointer-events: none;
-  }
-
-  &[data-drop='before']::before {
-    top: 0;
-  }
-
-  &[data-drop='after']::after {
-    bottom: 0;
-  }
 }
 
 .groupRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 4px;
+  padding: 4px 8px;
   border: 1px solid transparent;
   cursor: pointer;
   border-radius: 6px;
@@ -323,12 +303,12 @@
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .caretBtn {
   display: flex;
-  width: 16px;
+  width: 12px;
   height: 16px;
   flex: none;
   align-items: center;
@@ -733,4 +713,64 @@
   color: var(--text-dim);
   font-size: 12px;
   text-align: center;
+}
+
+@mixin reorder-list($item) {
+  &[data-dragging] {
+    user-select: none;
+
+    > #{$item} {
+      will-change: transform;
+      transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    > #{$item}[data-dragged] {
+      position: relative;
+      z-index: 1;
+      border-radius: 6px;
+      box-shadow: 0 8px 16px rgb(0 0 0 / 25%);
+      background: var(--surface-3);
+      transition: none;
+    }
+
+    &[data-settling] > #{$item}[data-dragged] {
+      transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &[data-dragging] > #{$item} {
+      transition: none !important;
+    }
+  }
+}
+
+.tileList {
+  @include reorder-list('.tileRow');
+
+  &[data-reorderable] > .tileRow {
+    cursor: grab;
+    touch-action: none;
+  }
+
+  &[data-dragging] > .tileRow[data-dragged] {
+    cursor: grabbing;
+  }
+}
+
+.body {
+  @include reorder-list('.groupSlot');
+
+  &[data-reorderable] .groupRow[data-group-key] {
+    cursor: grab;
+    touch-action: none;
+
+    button {
+      cursor: pointer;
+    }
+  }
+
+  &[data-dragging] .groupSlot[data-dragged] .groupRow {
+    cursor: grabbing;
+  }
 }
