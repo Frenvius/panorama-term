@@ -3,6 +3,7 @@ mod autonomy;
 mod candidates;
 mod carry;
 mod metrics;
+mod plan;
 mod usage;
 mod routing;
 mod wiring;
@@ -189,7 +190,9 @@ fn transition_notifications(before: Option<&(RunStatus, HashMap<String, TaskStat
         if old == Some(&task.status) { continue; }
         if task.status == TaskStatus::Review {
             events.push(event("review", Some(task), None));
-        } else if task.status == TaskStatus::Failed && task.attempts >= after.run.limits.max_attempts {
+        } else if task.status == TaskStatus::Failed && task.attempts >= after.run.limits.max_attempts
+            && data["summary"] != autonomy::STALL_REASON
+        {
             events.push(event("exhausted", Some(task), None));
         }
     }
@@ -247,16 +250,70 @@ fn append_and_replay(
     }
 }
 
-fn finished_message_body(run_id: &str, report: &autonomy::IdleReport) -> String {
-    serde_json::json!({
-        "completed": report.counts.completed,
-        "integrated": report.counts.integrated,
-        "cancelled": report.counts.cancelled,
-        "integrationBranch": crate::orch::git::integration_branch(run_id),
-    }).to_string()
+const DEFAULT_QUESTION_ANSWER: &str = "No coordinator is available right now. Decide using the spec and your best judgment, note the decision and the reason in your report, and continue.";
+
+fn idle_digest(entry: &RunEntry, report: &autonomy::IdleReport) -> String {
+    let run_id = &entry.run.id;
+    let refs = format!("orch report --run-id {run_id} --format markdown; orch run-show --run-id {run_id} --full");
+    let mut tasks: Vec<_> = entry.tasks.values().collect();
+    tasks.sort_by_key(|t| (t.id.len(), t.id.clone()));
+    let budget = 3000usize.saturating_sub(refs.chars().count() + 1);
+    let per_task = budget.saturating_sub(100) / tasks.len().max(1);
+    let mut lines = Vec::new();
+    for task in tasks {
+        let dispatch = entry.latest_dispatch_for_task(&task.id);
+        let verification = match dispatch {
+            Some(d) if d.verifications.iter().any(|v| v.timed_out || v.exit_code != Some(0)) => "failed",
+            Some(d) if !d.verifications.is_empty() => "passed",
+            _ => "none",
+        };
+        let summary = dispatch.and_then(|d| entry.messages.iter().rev().find(|m| m.msg_type == "worker_done" && m.from == d.id && m.to == "coordinator"))
+            .and_then(|m| m.body.as_deref()).and_then(|b| b.lines().nth(1)).unwrap_or("-");
+        let fixed = format!("{} (): {:?}, {} attempts, verification , ", task.id, task.status, task.attempts);
+        let available = per_task.saturating_sub(fixed.chars().count() + verification.len());
+        let title: String = task.title.replace(['\r', '\n'], " ").chars().take(available / 3).collect();
+        let summary: String = summary.chars().take(available.saturating_sub(title.chars().count())).collect();
+        lines.push(format!("{} ({}): {:?}, {} attempts, verification {}, {}", task.id, title, task.status, task.attempts, verification, summary));
+    }
+    let groups = &report.tasks;
+    for task in groups.failed.iter().chain(&groups.blocked).chain(&groups.waiting_intervention).chain(&groups.waiting_no_resume).chain(&groups.resume_due).chain(&groups.auto_action_failed).chain(&groups.open_gate) {
+        let line = format!("{}: {}{}", task.detail.as_deref().unwrap_or("no reason recorded").lines().find(|line| !line.starts_with("Outcome:")).unwrap_or("no reason recorded"), task.id, if groups.resume_due.iter().any(|t| t.id == task.id) { " (resume due)" } else { "" });
+        if lines.iter().map(|s| s.chars().count() + 1).sum::<usize>() + line.chars().count().min(160) + 1 <= budget {
+            lines.push(line.chars().take(160).collect());
+        }
+    }
+    for msg in entry.messages.iter().filter(|m| m.msg_type == "answer" && m.from == "brain" && m.body.as_deref() == Some(DEFAULT_QUESTION_ANSWER)) {
+        if let Some(question) = entry.messages.iter().find(|q| Some(q.seq) == msg.reply_to && q.msg_type == "question") {
+            let line = format!("Default answer to {}: {}", question.from, question.body.as_deref().unwrap_or("").lines().next().unwrap_or(""));
+            if lines.iter().map(|s| s.chars().count() + 1).sum::<usize>() + line.chars().count().min(160) + 1 <= budget {
+                lines.push(line.chars().take(160).collect());
+            }
+        }
+    }
+    lines.push(refs);
+    lines.join("\n").chars().take(3000).collect()
 }
 
 fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> bool {
+    let mut answered = false;
+    loop {
+        let Some(entry) = guard.runs.get(run_id) else { return answered };
+        if !entry.run.detached { break; }
+        let question = entry.messages.iter().find(|q| {
+            q.msg_type == "question" && !matches!(q.from.as_str(), "coordinator" | "user" | "brain")
+                && !entry.messages.iter().any(|a| a.msg_type == "answer" && a.to == q.from && a.seq > q.seq)
+        });
+        let Some(question) = question else { break };
+        let sender = question.from.clone();
+        let cmd = Cmd::Send {
+            run_id: run_id.into(), seq: entry.next_msg_seq(), from: "brain".into(), to: vec![sender.clone()],
+            msg_type: "answer".into(), task_id: entry.dispatches.get(&sender).map(|d| d.task_id.clone()),
+            dispatch_id: Some(sender), reply_to: Some(question.seq), body: Some(DEFAULT_QUESTION_ANSWER.into()),
+            outcome: None, files_modified: vec![], summary: None, now: unix_ms(),
+        };
+        if append_and_replay(guard, run_id, &cmd, base).is_err() { break; }
+        answered = true;
+    }
     let Some(entry) = guard.runs.get(run_id) else { return false };
     let now = unix_ms();
     let report = autonomy::idle_reason(entry, now as i64);
@@ -268,14 +325,10 @@ fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> 
     if desired == entry.idle_state {
         let unchanged = report.as_ref().map(|r| {
             let msg_type = if desired == IdleState::Finished { "run_finished" } else { "run_idle" };
-            let body = if desired == IdleState::Finished {
-                finished_message_body(run_id, r)
-            } else {
-                serde_json::to_string(r).unwrap_or_default()
-            };
+            let body = idle_digest(entry, r);
             entry.idle_fingerprint.as_deref() == Some(&reducer::idle_fingerprint(msg_type, &body))
         }).unwrap_or(true);
-        if unchanged { return false; }
+        if unchanged { return answered; }
     }
     let cmd = match desired {
         IdleState::Active => Cmd::RunActive { run_id: run_id.to_string(), now },
@@ -283,18 +336,18 @@ fn sync_idle_locked(guard: &mut State, run_id: &str, base: &std::path::Path) -> 
             run_id: run_id.to_string(),
             msg_seq: entry.next_msg_seq(),
             msg_type: "run_idle".into(),
-            body: serde_json::to_string(report.as_ref().unwrap()).unwrap_or_else(|_| "{}".into()),
+            body: idle_digest(entry, report.as_ref().unwrap()),
             now,
         },
         IdleState::Finished => Cmd::RunIdle {
             run_id: run_id.to_string(),
             msg_seq: entry.next_msg_seq(),
             msg_type: "run_finished".into(),
-            body: finished_message_body(run_id, report.as_ref().unwrap()),
+            body: idle_digest(entry, report.as_ref().unwrap()),
             now,
         },
     };
-    append_and_replay(guard, run_id, &cmd, base).is_ok()
+    append_and_replay(guard, run_id, &cmd, base).is_ok() || answered
 }
 
 fn wake_tile_for_messages(entry: &RunEntry, previous_messages: usize, now: i64) -> Option<String> {
@@ -543,6 +596,8 @@ pub fn init() {
             let path = entry.path().join("events.jsonl");
             load_into(&mut guard, &path, &run_id);
         }
+        let run_ids: Vec<_> = guard.runs.keys().cloned().collect();
+        for run_id in run_ids { sync_idle_locked(&mut guard, &run_id, &base); }
         for entry in guard.runs.values().filter(|entry| !entry.run.status.is_terminal()) {
             restart_verifications(entry).for_each(drop);
         }
@@ -553,6 +608,7 @@ pub fn init() {
 pub async fn handle(command: &str, body: &[u8]) -> String {
     match command {
         "run-create" => handle_run_create(body).await,
+        "plan-apply" => plan::handle(body).await,
         "run-update" => handle_run_update(body).await,
         "run-list" => handle_run_list(),
         "run-show" => handle_run_show(body),
@@ -646,10 +702,24 @@ fn needs_decision(msg: &Message, entry: &RunEntry, now: i64) -> bool {
         return true;
     }
     match msg.msg_type.as_str() {
-        "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" | "late_report" => true,
-        "question" => !matches!(msg.from.as_str(), "coordinator" | "user" | "brain"),
-        "status" => msg.body.as_deref()
-            .is_some_and(|body| body.to_ascii_lowercase().contains("waiting for permission")),
+        "integration_conflict" if msg.from == "brain" => msg.task_id.as_ref().and_then(|id| entry.tasks.get(id))
+            .is_none_or(|task| !entry.run.autonomy.integration
+                || (entry.integration_conflicts.contains(&task.id) && !autonomy::can_resolve_conflict(entry, task))),
+        "worker_stalled" if msg.from == "brain" => msg.dispatch_id.as_ref().and_then(|id| entry.dispatches.get(id))
+            .is_none_or(|dispatch| {
+                if !entry.run.autonomy.operational {
+                    return true;
+                }
+                let continued = autonomy::stall_continuation(entry, &dispatch.id)
+                    .is_some_and(|c| c.seq > msg.seq);
+                let stopped = dispatch.status == DispatchStatus::Stopped
+                    && dispatch.summary.as_deref() == Some(autonomy::STALL_REASON);
+                !continued && !stopped && !entry.tasks.get(&dispatch.task_id).is_some_and(|task| {
+                    autonomy::can_handle_stall(entry, task, dispatch)
+                        && dispatch.tile_id.as_deref().is_some_and(|tile| crate::lookup_live(tile).is_some())
+                })
+            }),
+        "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" => true,
         "note" => msg.from == "user",
         "run_idle" => is_current_idle_msg(msg, entry, now, "idle"),
         "run_finished" => is_current_idle_msg(msg, entry, now, "finished"),
@@ -836,16 +906,14 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
     })
 }
 
-async fn handle_run_create(body: &[u8]) -> String {
-    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+async fn run_create_cmd(v: &Value, id: String) -> Result<Cmd, String> {
     let repo = v["repo"].as_str().unwrap_or("").to_string();
-    if repo.is_empty() { return err_resp("bad_request", "repo required"); }
+    if repo.is_empty() { return Err(err_resp("bad_request", "repo required")); }
     if !std::path::Path::new(&repo).is_dir() {
-        return err_resp("bad_request", "repo is not an existing directory");
+        return Err(err_resp("bad_request", "repo is not an existing directory"));
     }
-    let limits = match parse_limits(&v) { Ok(l) => l, Err(e) => return e };
-    let fields = match run_create_fields(&v) { Ok(fields) => fields, Err(e) => return e };
-    let id = gen_run_id();
+    let limits = parse_limits(v)?;
+    let fields = run_create_fields(v)?;
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let base_ref = v["baseRef"].as_str().map(str::to_string);
     let setup = v["setup"].as_str().map(str::to_string);
@@ -857,31 +925,36 @@ async fn handle_run_create(body: &[u8]) -> String {
         crate::orch::git::rev_parse(&repo_c, &rev).ok()
     }).await.unwrap_or(None);
 
-    let id_c = id.clone();
     let now = unix_ms();
-    let result = commit(move |_| {
-        let cmd = Cmd::RunCreate { id: id_c, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
-        Ok(cmd.with_fields(fields))
-    }, id.clone()).await;
-    match result {
-        CommitResult::Ok(_) => {
-            let (run_val, coord_tile) = {
-                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-                let entry = guard.runs.get(&id);
-                let run = entry.map(|e| serde_json::to_value(&e.run).unwrap_or_default());
-                let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
-                (run, tile)
-            };
-            if let Some(ref tile) = coord_tile {
-                let cost_usd = crate::tile_cost_usd(tile);
-                let run_id_b = id.clone();
-                let now_b = unix_ms();
-                let _ = commit(move |_| {
-                    Ok(Cmd::RunRecordCoordinatorBaseline { run_id: run_id_b, cost_usd, now: now_b })
-                }, id.clone()).await;
-            }
-            ok_resp(serde_json::json!({"run": run_val}))
-        }
+    let cmd = Cmd::RunCreate { id, title, repo, base_ref, base_sha, setup, coordinator_tile, limits, now };
+    Ok(cmd.with_fields(fields))
+}
+
+async fn created_run(id: &str) -> Value {
+    let (run, tile) = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.runs.get(id);
+        let run = entry.map(|e| serde_json::to_value(&e.run).unwrap_or_default()).unwrap_or_default();
+        let tile = entry.and_then(|e| e.run.coordinator_tile.clone());
+        (run, tile)
+    };
+    if let Some(tile) = tile {
+        let cost_usd = crate::tile_cost_usd(&tile);
+        let run_id = id.to_owned();
+        let now = unix_ms();
+        let _ = commit(move |_| {
+            Ok(Cmd::RunRecordCoordinatorBaseline { run_id, cost_usd, now })
+        }, id.to_owned()).await;
+    }
+    run
+}
+
+async fn handle_run_create(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let id = gen_run_id();
+    let cmd = match run_create_cmd(&v, id.clone()).await { Ok(cmd) => cmd, Err(e) => return e };
+    match commit(move |_| Ok(cmd), id.clone()).await {
+        CommitResult::Ok(_) => ok_resp(serde_json::json!({"run": created_run(&id).await})),
         CommitResult::Stale => err_resp("stale", "run create stale"),
         CommitResult::Err(e) => err_from_str(&e),
     }
@@ -1404,39 +1477,36 @@ async fn handle_run_set_coordinator(body: &[u8]) -> String {
     }
 }
 
-async fn handle_task_create(body: &[u8]) -> String {
-    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
-    let run_id = v["runId"].as_str().unwrap_or("").to_string();
-    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+fn task_create_cmd(
+    v: &Value, run_id: String, deps: Vec<String>,
+) -> Result<impl FnOnce(String) -> Cmd, String> {
     let title = v["title"].as_str().unwrap_or("untitled").to_string();
     let spec = v["spec"].as_str().unwrap_or("").to_string();
     let acceptance = v["acceptance"].as_str().map(str::to_string);
     let profile = v["profile"].as_str().map(str::to_string);
     let review = v["review"].as_bool().unwrap_or(false);
     let owner: Option<String> = v["owner"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
-    let by = v["by"].as_str().unwrap_or("coordinator").to_string();
     let now = unix_ms();
     let pinned = profile.is_some();
 
-    let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
-    let mut escalation = match strict_str_arr(&v, "escalation") { Ok(a) => a, Err(e) => return e };
-    let verify = match strict_str_arr(&v, "verify") { Ok(a) => a, Err(e) => return e };
+    let mut escalation = strict_str_arr(v, "escalation")?;
+    let verify = strict_str_arr(v, "verify")?;
 
     let role: Option<model::Role> = match v.get("role").filter(|r| !r.is_null()) {
         None => None,
         Some(r) => match serde_json::from_value::<model::Role>(r.clone()) {
             Ok(role) => Some(role),
-            Err(_) => return err_resp("bad_role", &format!(
+            Err(_) => return Err(err_resp("bad_role", &format!(
                 "role must be one of: {}; got: {}",
                 model::Role::all().join(", "),
                 r.as_str().unwrap_or("(invalid)")
-            )),
+            ))),
         },
     };
 
     if escalation.is_empty() && profile.is_none() {
         let Some(base) = crate::panorama_dir() else {
-            return err_resp("io", "no panorama dir");
+            return Err(err_resp("io", "no panorama dir"));
         };
         let s = settings::load(&base);
         let effective_role = role.as_ref().map(|r| r.as_str()).unwrap_or("implement");
@@ -1449,27 +1519,38 @@ async fn handle_task_create(body: &[u8]) -> String {
             _ => &s.roles.implement,
         };
         if chain.is_empty() {
-            return err_resp("empty_role_chain", &format!(
+            return Err(err_resp("empty_role_chain", &format!(
                 "role chain for '{effective_role}' is empty; set it in Settings > Orchestration or pass --escalation"
-            ));
+            )));
         }
         escalation = chain.clone();
     }
 
-    let owner_c = owner.clone();
+    Ok(move |id| {
+        let cmd = Cmd::TaskCreate {
+            run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role,
+            review, owner, now,
+        };
+        cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned}))
+    })
+}
+
+async fn handle_task_create(body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    let run_id = v["runId"].as_str().unwrap_or("").to_string();
+    if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
+    let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
+    let make_cmd = match task_create_cmd(&v, run_id.clone(), deps) {
+        Ok(make_cmd) => make_cmd,
+        Err(e) => return e,
+    };
+    let by = v["by"].as_str().unwrap_or("coordinator");
+    let title = v["title"].as_str().unwrap_or("untitled");
     let run_id_c = run_id.clone();
-    let title_c = title.clone();
-    let role_c = role.clone();
     let result = commit(move |state| {
         let entry = state.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
-        let task_id = entry.next_task_id();
-        let cmd = Cmd::TaskCreate {
-            run_id: run_id_c, id: task_id,
-            title: title_c, spec, acceptance, deps, profile, escalation, verify, role: role_c,
-            review, owner: owner_c, now,
-        };
-        Ok(cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned})))
+        Ok(make_cmd(entry.next_task_id()))
     }, run_id.clone()).await;
 
     match result {
@@ -2281,6 +2362,16 @@ async fn supervision_tick() {
     };
 
     for (run_id, dispatch_id, tile_id, started_secs, limits) in running_dispatches {
+        let (auto_stall, stall_pending, continued_secs) = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let Some(entry) = guard.runs.get(&run_id) else { continue };
+            let Some(dispatch) = entry.dispatches.get(&dispatch_id) else { continue };
+            let auto = entry.tasks.get(&dispatch.task_id)
+                .is_some_and(|task| autonomy::can_handle_stall(entry, task, dispatch));
+            let continuation = if auto { autonomy::stall_continuation(entry, &dispatch_id) } else { None };
+            (auto, auto && autonomy::stall_pending(entry, &dispatch_id, continuation),
+                continuation.map_or(0, |m| m.at / 1000))
+        };
         let session = crate::sessions().lock().unwrap().get(&tile_id).cloned();
         let is_session_live = session.is_some();
 
@@ -2300,12 +2391,12 @@ async fn supervision_tick() {
                 screen_last_changed_secs: now_secs,
                 sent: std::collections::HashSet::new(),
             });
-            if is_session_live {
+            if is_session_live || continued_secs != 0 {
                 entry.ever_live = true;
             }
             let screen = worker::capture_worker_screen(&tile_id, 40);
             entry.observe_screen(&screen, now_secs);
-            let quiet = now_secs.saturating_sub(entry.screen_last_changed_secs);
+            let quiet = now_secs.saturating_sub(entry.screen_last_changed_secs.max(continued_secs));
             if is_session_live {
                 let is_shell = session.as_ref()
                     .filter(|s| crate::session_pid(s) > 0)
@@ -2323,8 +2414,6 @@ async fn supervision_tick() {
             (entry.consecutive_shell_ticks, entry.ever_live, quiet, screen)
         };
 
-        let running_secs = now_secs.saturating_sub(started_secs);
-
         let sent = {
             let watch = supervision_watch().lock().unwrap_or_else(|e| e.into_inner());
             watch.get(&dispatch_id).map(|e| e.sent.clone()).unwrap_or_default()
@@ -2336,7 +2425,7 @@ async fn supervision_tick() {
             consecutive_shell_ticks,
             screen_quiet_secs,
             agent_status: agent_status.clone(),
-            running_secs,
+            running_secs: now_secs.saturating_sub(started_secs.max(continued_secs)),
             is_waiting,
             limits_dispatch_timeout_min: limits.dispatch_timeout_min,
             limits_stall_quiet_min: limits.stall_quiet_min,
@@ -2421,6 +2510,9 @@ async fn supervision_tick() {
                     if fail_live_dispatch_on_quota(&run_id, &dispatch_id, &screen_text).await {
                         break;
                     }
+                    if stall_pending {
+                        break;
+                    }
                     let tail = screen_text.lines().rev().take(20).collect::<Vec<_>>()
                         .into_iter().rev().collect::<Vec<_>>().join("\n");
                     let body_str = serde_json::json!({"reason": reason, "tail": tail}).to_string();
@@ -2449,6 +2541,9 @@ async fn supervision_tick() {
                             now,
                         })
                     }, run_id.clone()).await;
+                    if auto_stall {
+                        break;
+                    }
                 }
             }
         }
@@ -2520,6 +2615,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
         return err_resp("bad_request", "runId and taskId required");
     }
 
+    let by = if v["by"] == "brain" { "brain" } else { "coordinator" };
     let merge_branch = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
@@ -2531,7 +2627,9 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
             None => return err_resp("not_found", "task not found"),
         };
         let has_open_gate = entry.gates.values().any(|g| g.task_id == task_id && g.resolution.is_none());
-        if task.status != TaskStatus::Blocked || has_open_gate {
+        if task.status != TaskStatus::Blocked || has_open_gate
+            || (by == "brain" && !autonomy::can_resolve_conflict(entry, task))
+        {
             return err_resp("conflict", "task must be blocked by an integration conflict to resolve it");
         }
         let source = entry.dispatches.values()
@@ -2549,7 +2647,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
     let mut inner = serde_json::json!({
         "runId": run_id,
         "taskId": task_id,
-        "by": "coordinator",
+        "by": by,
     });
     for key in ["profile", "model"] {
         if let Some(s) = v[key].as_str() {
@@ -2642,6 +2740,9 @@ async fn handle_retry(body: &[u8]) -> String {
     }
     if let Some(ro) = retry_of {
         inner_body["retryOf"] = ro.into();
+    }
+    if by_retry == "brain" && v["stopLive"] == true {
+        inner_body["stopLive"] = true.into();
     }
     handle_worker_start(inner_body.to_string().as_bytes()).await
 }
@@ -3015,11 +3116,10 @@ async fn handle_integrate(body: &[u8]) -> String {
                     now,
                 })
             }, run_id.clone()).await;
-            let r = match result {
-                CommitResult::Ok(_) | CommitResult::Stale => serde_json::json!({"conflict": true, "files": files}),
-                CommitResult::Err(_) => serde_json::json!({"conflict": true, "files": files}),
-            };
-            ok_resp(r)
+            match result {
+                CommitResult::Err(e) if v["by"] == "brain" => err_from_str(&e),
+                _ => ok_resp(serde_json::json!({"conflict": true, "files": files})),
+            }
         }
         Err(e) => err_resp("conflict", &e),
     }
@@ -3294,7 +3394,7 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
             }
         } else {
             let corrections = entry.dispatches.values().filter(|d| d.task_id == task_id && d.corrective_retry).count() as u32;
-            let attempt = task.attempts.saturating_sub(corrections) + 1;
+            let attempt = task.attempts.saturating_sub(corrections + task.operational_attempts) + 1;
             let latest_profile = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.profile.clone());
             let latest_model = entry.latest_dispatch_for_task(&task_id).and_then(|d| d.model.clone());
             let correction = wiring::corrective_source(entry, &task_id)
@@ -3320,6 +3420,9 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
     };
     let (profile_id, model, routed) = match route {
         StartRoute::Wait(wait) => {
+            if by == "brain" && merge_branch.is_some() {
+                return err_resp("conflict", &wait.reason);
+            }
             return enter_waiting(EnterWaitingInput { run_id, task_id, dispatch_id: None, wait }).await;
         }
         StartRoute::Routed(p) => (p.profile.clone(), p.model.clone(), Some(p)),
@@ -3405,6 +3508,9 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
             .ok_or_else(|| "not_found:run not found".to_string())?;
         let task = entry.tasks.get(&task_id_c)
             .ok_or_else(|| "not_found:task not found".to_string())?;
+        if by_c == "brain" && merge_branch_c.is_some() && !autonomy::can_resolve_conflict(entry, task) {
+            return Err("conflict:task no longer eligible for automatic conflict resolution".into());
+        }
         let attempt = task.attempts + 1;
         let dispatch_id = format!("{run_id_c}.{task_id_c}.{attempt}");
         let mut fields = match &routed_c {
@@ -4252,7 +4358,7 @@ async fn start_dispatch(input: StartDispatchInput) {
         };
 
         let settings_path = if profile.exe == "claude" {
-            match crate::orch::worker::write_worker_settings(&brief_path, &task_clone.verify) {
+            match crate::orch::worker::write_worker_settings(&brief_path) {
                 Ok(p) => Some(p.to_string_lossy().into_owned()),
                 Err(e) => {
                     eprintln!("[orch] {dispatch_id}: worker permission settings skipped: {e}");
@@ -4453,13 +4559,17 @@ async fn stop_running_dispatch(run_id: String, dispatch_id: String, tile_id: Str
         CommitResult::Ok(_) | CommitResult::Stale => {}
         CommitResult::Err(e) => return Err(e),
     }
+    stop_worker_session(&run_id, &dispatch_id, &tile_id);
+    Ok(())
+}
+
+fn stop_worker_session(run_id: &str, dispatch_id: &str, tile_id: &str) {
     if !tile_id.is_empty() {
-        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
-        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
+        if let Err(e) = save_worker_transcript(run_id, dispatch_id, tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
+        if let Some(s) = crate::sessions().lock().unwrap().get(tile_id).cloned() {
             crate::kill_session(&s);
         }
     }
-    Ok(())
 }
 
 async fn handle_worker_stop(body: &[u8]) -> String {
@@ -4495,12 +4605,7 @@ async fn handle_worker_stop(body: &[u8]) -> String {
             return err_from_str(&e);
         }
     }
-    if !tile_id.is_empty() {
-        if let Err(e) = save_worker_transcript(&run_id, &dispatch_id, &tile_id) { eprintln!("[orch] transcript run {run_id} dispatch {dispatch_id}: {e}"); }
-        if let Some(s) = crate::sessions().lock().unwrap().get(&tile_id).cloned() {
-            crate::kill_session(&s);
-        }
-    }
+    stop_worker_session(&run_id, &dispatch_id, &tile_id);
     ok_resp(serde_json::json!({}))
 }
 
@@ -5418,8 +5523,8 @@ mod tests {
             "runId": run_id, "peek": true, "decisions": true,
         }).to_string().as_bytes()).await);
         assert_eq!(checked["messages"][0]["type"], "run_idle");
-        let idle: Value = serde_json::from_str(checked["messages"][0]["body"].as_str().unwrap()).unwrap();
-        assert_eq!(idle["tasks"]["failed"][0]["detail"], expected);
+        let idle = checked["messages"][0]["body"].as_str().unwrap();
+        assert!(idle.contains("Blocker: disk is read-only"));
 
         let late_report = "Late evidence\r\n".repeat(10);
         let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
@@ -5432,7 +5537,7 @@ mod tests {
             }).to_string()),
         });
         let checked = parse(handle_check(serde_json::json!({
-            "runId": run_id, "peek": true, "decisions": true, "types": ["late_report"],
+            "runId": run_id, "peek": true, "decisions": false, "types": ["late_report"],
         }).to_string().as_bytes()).await);
         let notice = checked["messages"][0]["body"].as_str().unwrap();
         assert!(notice.contains("Outcome: succeeded\nLate evidence"));
@@ -5501,6 +5606,78 @@ mod tests {
     }
 
     #[test]
+    fn detached_finished_digest_is_bounded_and_lists_tasks() {
+        let mut entry = mk_run_entry("r1");
+        entry.run.detached = true;
+        for n in 1..=12 {
+            let id = format!("t{n}");
+            let mut task = mk_task_entry(&id, TaskStatus::Completed, 1);
+            task.integrated_sha = Some("sha".into());
+            task.title = "Long title 🚀".repeat(30);
+            entry.tasks.insert(id, task);
+        }
+        let report = autonomy::idle_reason(&entry, unix_ms() as i64).unwrap();
+        let digest = idle_digest(&entry, &report);
+        assert!(digest.chars().count() <= 3000);
+        for n in 1..=12 { assert!(digest.contains(&format!("t{n} ("))); }
+        assert!(digest.contains("orch report --run-id r1 --format markdown"));
+        assert!(digest.contains("orch run-show --run-id r1 --full"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn detached_worker_question_gets_default_answer() {
+        f12_test_home();
+        let run_id = format!("question-{}", unix_ms());
+        let base = crate::panorama_dir().unwrap();
+        replay_task_attempt(&run_id, &base, &[], false);
+        let dispatch = format!("{run_id}.t1.1");
+        let response = handle_send(serde_json::json!({"runId":run_id, "from":dispatch, "to":"coordinator", "type":"question", "body":"Which approach?"}).to_string().as_bytes()).await;
+        assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["ok"], true, "{response}");
+        let guard = state().lock().unwrap();
+        let entry = &guard.runs[&run_id];
+        let question = entry.messages.iter().find(|m| m.msg_type == "question").unwrap();
+        assert!(!needs_decision(question, entry, unix_ms() as i64));
+        let answer = entry.messages.iter().find(|m| m.msg_type == "answer").unwrap();
+        assert_eq!(answer.to, dispatch);
+        assert_eq!(answer.reply_to, Some(question.seq));
+        assert_eq!(answer.body.as_deref(), Some(DEFAULT_QUESTION_ANSWER));
+    }
+
+    #[test]
+    fn idle_recovers_only_unanswered_detached_questions() {
+        f12_test_home();
+        let base = crate::panorama_dir().unwrap();
+        for (suffix, detached, preanswered) in [("pending", true, false), ("answered", true, true), ("attached", false, false)] {
+            let run_id = format!("question-recovery-{suffix}-{}", unix_ms());
+            replay_task_attempt(&run_id, &base, &[], false);
+            let dispatch = format!("{run_id}.t1.1");
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get_mut(&run_id).unwrap().run.detached = detached;
+            let question = Cmd::Send {
+                run_id: run_id.clone(), seq: guard.runs[&run_id].next_msg_seq(), from: dispatch.clone(),
+                to: vec!["coordinator".into()], msg_type: "question".into(), task_id: None,
+                dispatch_id: None, reply_to: None, body: Some("Which approach?".into()),
+                outcome: None, files_modified: vec![], summary: None, now: unix_ms(),
+            };
+            assert!(append_and_replay(&mut guard, &run_id, &question, &base).is_ok());
+            if preanswered {
+                let answer = Cmd::Send {
+                    run_id: run_id.clone(), seq: guard.runs[&run_id].next_msg_seq(), from: "coordinator".into(),
+                    to: vec![dispatch.clone()], msg_type: "answer".into(), task_id: None, dispatch_id: None,
+                    reply_to: None, body: Some("Proceed".into()), outcome: None, files_modified: vec![],
+                    summary: None, now: unix_ms(),
+                };
+                assert!(append_and_replay(&mut guard, &run_id, &answer, &base).is_ok());
+            }
+            sync_idle_locked(&mut guard, &run_id, &base);
+            sync_idle_locked(&mut guard, &run_id, &base);
+            let answers: Vec<_> = guard.runs[&run_id].messages.iter().filter(|m| m.msg_type == "answer" && m.to == dispatch).collect();
+            assert_eq!(answers.len(), usize::from(detached || preanswered));
+            if detached && !preanswered { assert_eq!(answers[0].body.as_deref(), Some(DEFAULT_QUESTION_ANSWER)); }
+        }
+    }
+
+    #[test]
     fn needs_decision_classifies_detached_messages() {
         let now = 5_000_000_000i64;
         let mut entry = mk_run_entry("r1");
@@ -5512,18 +5689,18 @@ mod tests {
         };
         for (kind, from, body, expected) in [
             ("integration_conflict", "brain", "", true),
-            ("question", "r1.t1.1", "Can I continue?", true),
+            ("question", "r1.t1.1", "Can I continue?", false),
             ("question", "coordinator", "", false),
             ("question", "brain", "", false),
             ("question", "user", "", false),
-            ("status", "r1.t1.1", "Worker waiting for permission", true),
+            ("status", "r1.t1.1", "Worker waiting for permission", false),
             ("status", "r1.t1.1", "worker waiting on a command", false),
             ("worker_stalled", "brain", "", true),
             ("setup_failed", "brain", "", true),
             ("gate", "brain", "g1", true),
             ("note", "user", "", true),
             ("note", "coordinator", "", false),
-            ("late_report", "brain", "", true),
+            ("late_report", "brain", "", false),
             ("worker_done", "r1.t1.1", r#"{"outcome":"failed"}"#, false),
             ("worker_done", "r1.t1.1", r#"{"outcome":"succeeded"}"#, false),
             ("verification_passed", "brain", "", false),
@@ -5766,10 +5943,7 @@ mod tests {
             let idle_msgs: Vec<&Message> = guard.runs[&run_id].messages.iter()
                 .filter(|m| m.msg_type == "run_idle").collect();
             assert_eq!(idle_msgs.len(), 1);
-            let report: autonomy::IdleReport = serde_json::from_str(idle_msgs[0].body.as_deref().unwrap()).unwrap();
-            assert_eq!(report.reason, "idle");
-            assert_eq!(report.tasks.pending.len(), 1);
-            assert_eq!(report.tasks.pending[0].id, "t1");
+            assert!(idle_msgs[0].body.as_deref().unwrap().contains("t1 (Ready): Pending"));
         }
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -5954,7 +6128,7 @@ mod tests {
             for (msg_type, to) in [
                 ("progress", "coordinator"),
                 ("verification_passed", "coordinator"),
-                ("question", "coordinator"),
+                ("gate", "coordinator"),
                 ("integration_conflict", "coordinator"),
                 ("progress", "r1.t1.1"),
             ] {
@@ -5966,13 +6140,13 @@ mod tests {
                 });
             }
         }
-        let body = serde_json::json!({"runId": run_id, "decisions": true, "types": ["question"]});
+        let body = serde_json::json!({"runId": run_id, "decisions": true, "types": ["gate"]});
         let response = handle_check(body.to_string().as_bytes()).await;
         let value: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(value["ok"], true, "{response}");
         assert_eq!(value["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(value["messages"][0]["type"], "question");
-        assert_eq!(value["messages"][0]["body"], "question full body");
+        assert_eq!(value["messages"][0]["type"], "gate");
+        assert_eq!(value["messages"][0]["body"], "gate full body");
         assert_eq!(value["routine"], serde_json::json!({
             "count": 2,
             "byType": {"progress": 1, "verification_passed": 1},
@@ -7600,9 +7774,9 @@ mod tests {
             assert!(autonomy::plan(autonomy::TickInput { entry, now: unix_ms() as i64, is_live: &|_| false }).is_empty());
             let messages: Vec<_> = entry.messages.iter().filter(|m| m.msg_type == "run_idle").collect();
             assert_eq!(messages.len(), 1);
-            let report: autonomy::IdleReport = serde_json::from_str(messages[0].body.as_deref().unwrap()).unwrap();
-            assert_eq!(report.tasks.auto_action_failed[0].id, "t1");
-            assert!(report.tasks.auto_action_failed[0].detail.as_ref().unwrap().contains("integration worktree create failed"));
+            let digest = messages[0].body.as_deref().unwrap();
+            assert!(digest.contains("t1 (test)"));
+            assert!(digest.contains("integration worktree create failed"));
         }
 
         let mut replayed = State::default();

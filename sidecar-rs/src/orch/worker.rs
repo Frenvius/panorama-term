@@ -57,31 +57,26 @@ pub struct WorkerLaunch<'a> {
     pub resume_id: Option<&'a str>,
 }
 
-const ALLOWED_WORKER_COMMANDS: &[&str] = &[
-    "cargo test:*",
-    "bun test:*",
-    "bun x tsc:*",
-    "codex exec --help",
-    "claude --help",
+const DENIED_WORKER_COMMANDS: &[&str] = &[
+    "git push", "git reset --hard", "git rebase", "git branch -D", "git branch -d",
+    "git branch --delete", "git branch -f", "git branch --force", "git checkout main", "git checkout master", "git switch",
+    "git worktree", "git clean", "git remote", "git config", "gh", "npm publish",
+    "cargo publish", "bun publish",
 ];
 
-pub fn build_worker_settings(verify_commands: &[String]) -> serde_json::Value {
-    let mut allow: Vec<String> = vec!["Read(~/.claude/skills/**)".into()];
-    let commands = ALLOWED_WORKER_COMMANDS.iter().map(|c| c.to_string()).chain(verify_commands.iter().cloned());
-    for cmd in commands {
-        for tool in ["Bash", "PowerShell"] {
-            let rule = format!("{tool}({cmd})");
-            if !allow.contains(&rule) {
-                allow.push(rule);
-            }
-        }
-    }
-    serde_json::json!({ "permissions": { "allow": allow } })
+pub fn build_worker_settings() -> serde_json::Value {
+    let deny: Vec<String> = DENIED_WORKER_COMMANDS.iter()
+        .flat_map(|cmd| ["Bash", "PowerShell"].map(|tool| format!("{tool}({cmd}:*)")))
+        .collect();
+    serde_json::json!({ "permissions": {
+        "allow": ["Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep", "TodoWrite"],
+        "deny": deny,
+    } })
 }
 
-pub fn write_worker_settings(brief_path: &Path, verify_commands: &[String]) -> Result<PathBuf, String> {
+pub fn write_worker_settings(brief_path: &Path) -> Result<PathBuf, String> {
     let path = brief_path.with_file_name("claude-settings.json");
-    let json = build_worker_settings(verify_commands);
+    let json = build_worker_settings();
     let text = serde_json::to_string_pretty(&json).map_err(|e| format!("serialize worker settings: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("write worker settings: {e}"))?;
     Ok(path)
@@ -197,7 +192,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
     content.push_str("## Contract\n\n");
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
-    content.push_str("Run each command below as written, on its own: no `cd`/`Set-Location` before it, nothing appended after it. Only that exact form is pre-approved; anything else stops you on a permission prompt nobody may be watching.\n\n");
+    content.push_str("Ordinary commands inside the worktree are approved. Pushing, branch or worktree changes, rewriting history, and publishing are blocked. Do not work around a blocked command; mention it in the worker_done summary instead.\n\n");
     content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Write the full report to a temporary file outside the worktree.\n\n");
     content.push_str(&report_instruction(cli_path));
     content.push_str(&format!(
@@ -681,15 +676,19 @@ mod tests {
     }
 
     #[test]
-    fn worker_settings_allow_rules() {
-        let verify = vec!["bun x tsc --noEmit".to_string(), "cargo test:*".to_string()];
-        let json = build_worker_settings(&verify);
+    fn worker_settings_allow_and_deny_rules() {
+        let json = build_worker_settings();
         let allow: Vec<&str> = json["permissions"]["allow"].as_array().unwrap()
             .iter().filter_map(|v| v.as_str()).collect();
-        assert!(allow.contains(&"Read(~/.claude/skills/**)"));
-        assert!(allow.contains(&"Bash(bun x tsc --noEmit)"));
-        assert!(allow.contains(&"PowerShell(cargo test:*)"));
-        assert_eq!(allow.iter().filter(|r| **r == "Bash(cargo test:*)").count(), 1);
+        for tool in ["Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep", "TodoWrite"] {
+            assert!(allow.contains(&tool), "{tool}");
+        }
+        let deny = json["permissions"]["deny"].as_array().unwrap();
+        for cmd in ["git push", "git reset --hard", "git rebase", "git branch -D", "git branch -d", "git branch --delete", "git branch -f", "git branch --force", "git checkout main", "git checkout master", "git switch", "git worktree", "git clean", "git remote", "git config", "gh", "npm publish", "cargo publish", "bun publish"] {
+            for tool in ["Bash", "PowerShell"] {
+                assert!(deny.contains(&serde_json::json!(format!("{tool}({cmd}:*)"))), "{tool} {cmd}");
+            }
+        }
     }
 
     fn tmp_dir(suffix: &str) -> PathBuf {
@@ -812,6 +811,9 @@ mod tests {
         assert!(content.contains("file:line evidence"));
         assert!(content.contains("temporary file outside the worktree"));
         assert!(content.contains("PANORAMA_RUN_ID"), "env var reference in brief");
+        for text in ["Ordinary commands inside the worktree are approved", "Pushing", "branch or worktree changes", "rewriting history", "publishing", "Do not work around a blocked command", "worker_done summary"] {
+            assert!(content.contains(text), "{text}");
+        }
         assert!(content.contains("Create hello.txt"), "task title in brief");
         assert!(content.contains("/tmp/work"), "cwd in brief");
         std::fs::remove_dir_all(&dir).ok();

@@ -3,7 +3,7 @@ use crate::orch::model::*;
 use crate::orch::reducer::{Cmd, RunEntry, WakeReason};
 use crate::orch::wiring;
 use super::{
-    commit, handle_integrate, handle_retry, handle_worker_start, send_coordinator_notice, state,
+    commit, handle_conflict_resolve, handle_integrate, handle_retry, handle_worker_start, send_coordinator_notice, state,
     supervision_watch, tail_lines, unix_ms, CommitResult,
 };
 
@@ -11,8 +11,9 @@ const COORDINATOR_RESUME_GRACE_MS: i64 = 60_000;
 const NOTICE_TASK_LIMIT: usize = 10;
 const SCREEN_TAIL_LINES: usize = 40;
 const CONTINUE_TEXT: &str = "continue";
+pub(super) const STALL_REASON: &str = "worker stalled";
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Revive {
     pub dispatch_id: String,
     pub tile_id: String,
@@ -25,6 +26,9 @@ pub(super) enum Action {
     Resume { task_id: String, resume_id: String, revive: Option<Revive> },
     ResumeReady { task_id: String, dispatch_id: Option<String>, body: String },
     Integrate { task_id: String },
+    ConflictResolve { task_id: String },
+    ContinueStalled { task_id: String, worker: Revive },
+    StopStalled { task_id: String, worker: Revive },
 }
 
 pub(super) struct TickInput<'a> {
@@ -69,6 +73,10 @@ pub(super) fn plan(input: TickInput) -> Vec<Action> {
             TaskStatus::Failed => plan_failed(&ctx, &mut slots),
             TaskStatus::Pending => plan_pending(&ctx, &mut slots),
             TaskStatus::Completed => plan_integrate(&ctx),
+            TaskStatus::Blocked if can_resolve_conflict(entry, task) && take_slot(&mut slots) => {
+                Some(Action::ConflictResolve { task_id: task.id.clone() })
+            }
+            TaskStatus::Dispatched => plan_stalled(&ctx),
             _ => None,
         };
         actions.extend(planned);
@@ -148,7 +156,10 @@ fn plan_waiting(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
 
 fn plan_failed(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
     let (entry, task) = (ctx.entry, ctx.task);
-    if task.routing != 1 || !failure_recorded(ctx) {
+    let stalled = entry.latest_dispatch_for_task(&task.id).is_some_and(|d| {
+        d.status == DispatchStatus::Stopped && d.summary.as_deref() == Some(STALL_REASON)
+    });
+    if (task.routing != 1 && !stalled) || !failure_recorded(ctx) {
         return None;
     }
     let autonomy = entry.run.autonomy;
@@ -158,7 +169,8 @@ fn plan_failed(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
         && task.operational_attempts < limits.max_operational_attempts
     {
         take_slot(slots);
-        return Some(Action::Retry { task_id: task.id.clone(), stop_live: true, reason: "operational failure, router picks the next candidate" });
+        let reason = if stalled { STALL_REASON } else { "operational failure, router picks the next candidate" };
+        return Some(Action::Retry { task_id: task.id.clone(), stop_live: true, reason });
     }
     if autonomy.execution
         && has_counter(task, FailureCounter::Quality)
@@ -204,6 +216,59 @@ fn plan_integrate(ctx: &TaskCtx) -> Option<Action> {
             && d.branch.is_some()
     });
     has_branch.then(|| Action::Integrate { task_id: task.id.clone() })
+}
+
+pub(super) fn can_resolve_conflict(entry: &RunEntry, task: &Task) -> bool {
+    entry.run.status == RunStatus::Active
+        && entry.run.autonomy.integration
+        && task.status == TaskStatus::Blocked
+        && task.owner.as_deref() != Some("user")
+        && !has_open_gate(entry, task)
+        && entry.integration_conflicts.contains(&task.id)
+        && !(entry.run.detached && entry.auto_action_failures.contains_key(&task.id))
+        && entry.dispatches.values().filter(|d| d.task_id == task.id && d.merge_branch.is_some()).count() < 2
+}
+
+pub(super) fn can_handle_stall(entry: &RunEntry, task: &Task, dispatch: &Dispatch) -> bool {
+    entry.run.status == RunStatus::Active
+        && entry.run.autonomy.operational
+        && task.status == TaskStatus::Dispatched
+        && task.owner.as_deref() != Some("user")
+        && !(entry.run.detached && entry.auto_action_failures.contains_key(&task.id))
+        && dispatch.status == DispatchStatus::Running
+}
+
+pub(super) fn stall_continuation<'a>(entry: &'a RunEntry, dispatch_id: &str) -> Option<&'a Message> {
+    entry.messages.iter().rev().find(|m| {
+        m.from == "brain" && m.msg_type == "auto_action" && m.dispatch_id.as_deref() == Some(dispatch_id)
+            && m.body.as_deref().and_then(|body| serde_json::from_str::<Value>(body).ok())
+                .is_some_and(|body| body["action"] == "continue" && body["reason"] == STALL_REASON)
+    })
+}
+
+pub(super) fn stall_pending(entry: &RunEntry, dispatch_id: &str, continuation: Option<&Message>) -> bool {
+    entry.messages.iter().rev().take_while(|m| continuation.is_none_or(|c| m.seq > c.seq))
+        .any(|m| m.from == "brain" && m.msg_type == "worker_stalled" && m.dispatch_id.as_deref() == Some(dispatch_id))
+}
+
+fn plan_stalled(ctx: &TaskCtx) -> Option<Action> {
+    let (entry, task) = (ctx.entry, ctx.task);
+    let dispatch = entry.latest_dispatch_for_task(&task.id)?;
+    if !can_handle_stall(entry, task, dispatch) {
+        return None;
+    }
+    let continuation = stall_continuation(entry, &dispatch.id);
+    if !stall_pending(entry, &dispatch.id, continuation) {
+        return None;
+    }
+    let tile_id = dispatch.tile_id.clone()?;
+    let worker = Revive { dispatch_id: dispatch.id.clone(), tile_id };
+    let task_id = task.id.clone();
+    if continuation.is_some() {
+        Some(Action::StopStalled { task_id, worker })
+    } else {
+        (ctx.is_live)(&worker.tile_id).then_some(Action::ContinueStalled { task_id, worker })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -556,18 +621,19 @@ fn response_error(response: &Value, raw: &str) -> String {
     response["error"]["message"].as_str().unwrap_or(raw).to_string()
 }
 
-async fn finish_dispatching(run_id: &str, task_id: &str, what: (&'static str, &str), result: (&str, Option<(TaskStatus, u64)>)) {
+async fn finish_dispatching(run_id: &str, task_id: &str, what: (&'static str, &str), result: (&str, Option<(TaskStatus, u64)>)) -> bool {
     let (resp, target) = result;
     let v = serde_json::from_str::<Value>(resp).unwrap_or_default();
     if v["ok"].as_bool() != Some(true) {
         record_action_failure(run_id, task_id, (what.0, response_error(&v, resp)), target).await;
-        return;
+        return false;
     }
     if v.get("waiting").is_some() {
-        return;
+        return false;
     }
     let dispatch_id = v["dispatch"]["id"].as_str().map(str::to_string);
     announce(run_id, task_id, dispatch_id, what).await;
+    true
 }
 
 fn latest_dispatch_id(run_id: &str, task_id: &str) -> Option<String> {
@@ -578,9 +644,7 @@ fn latest_dispatch_id(run_id: &str, task_id: &str) -> Option<String> {
 async fn execute(run_id: &str, action: Action) {
     match action {
         Action::Retry { task_id, stop_live, reason } => {
-            let target = action_target(run_id, &task_id);
-            let resp = handle_retry(&request_body(run_id, &task_id, json!({"stopLive": stop_live}))).await;
-            finish_dispatching(run_id, &task_id, ("retry", reason), (&resp, target)).await;
+            retry_task(run_id, &task_id, stop_live, reason).await;
         }
         Action::Start { task_id, retry_of, stop_live, reason } => {
             let target = action_target(run_id, &task_id);
@@ -593,15 +657,88 @@ async fn execute(run_id: &str, action: Action) {
             let response = serde_json::from_str::<Value>(&resp).unwrap_or_default();
             if response["integrated"] == true {
                 announce(run_id, &task_id, None, ("integrate", "completed task merged into the integration branch")).await;
-            } else {
+            } else if response["conflict"] != true {
                 record_action_failure(run_id, &task_id, ("integrate", response_error(&response, &resp)), target).await;
             }
         }
+        Action::ConflictResolve { task_id } => {
+            let target = action_target(run_id, &task_id);
+            let resp = handle_conflict_resolve(&request_body(run_id, &task_id, json!({}))).await;
+            finish_dispatching(run_id, &task_id, ("conflict_resolve", "integration conflict"), (&resp, target)).await;
+        }
+        Action::ContinueStalled { task_id, worker } => {
+            let target = action_target(run_id, &task_id);
+            let current = {
+                let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+                guard.runs.get(run_id).and_then(|entry| entry.tasks.get(&task_id).and_then(|task| {
+                    plan_stalled(&TaskCtx { entry, task, now: unix_ms() as i64, is_live: &tile_is_live })
+                }))
+            };
+            if current != Some(Action::ContinueStalled { task_id: task_id.clone(), worker: worker.clone() }) {
+                return;
+            }
+            if let Err(error) = type_continue(&worker) {
+                record_action_failure(run_id, &task_id, ("continue", error), target).await;
+            } else {
+                announce(run_id, &task_id, Some(worker.dispatch_id), ("continue", STALL_REASON)).await;
+            }
+        }
+        Action::StopStalled { task_id, worker } => stop_stalled(run_id, &task_id, worker).await,
         Action::Resume { task_id, resume_id, revive } => resume(run_id, &task_id, &resume_id, revive).await,
         Action::ResumeReady { task_id, dispatch_id, body } => {
             send_coordinator_notice(run_id.to_string(), task_id, dispatch_id, "resume_ready", body).await;
         }
     }
+}
+
+async fn stop_stalled(run_id: &str, task_id: &str, worker: Revive) {
+    let (run, dispatch) = (run_id.to_string(), worker.dispatch_id.clone());
+    let stopped = super::commit_deferred_idle(move |g| {
+        let entry = g.runs.get(&run).ok_or("not_found:run not found")?;
+        let d = entry.dispatches.get(&dispatch).ok_or("not_found:dispatch not found")?;
+        let task = &entry.tasks[&d.task_id];
+        if !can_handle_stall(entry, task, d)
+            || !entry.latest_dispatch_for_task(&task.id).is_some_and(|latest| latest.id == dispatch)
+            || !stall_continuation(entry, &dispatch).is_some_and(|c| stall_pending(entry, &dispatch, Some(c)))
+        {
+            return Err("conflict:stalled dispatch changed".into());
+        }
+        Ok(Cmd::DispatchUpdate {
+            run_id: run, dispatch_id: dispatch, status: DispatchStatus::Stopped,
+            summary: Some(STALL_REASON.into()), now: unix_ms(),
+        }.with_fields(json!({"routedFailureClass": FailureClass::ExecutionFailed})))
+    }, run_id.to_string()).await;
+    if !matches!(stopped, CommitResult::Ok(_)) {
+        return;
+    }
+    super::stop_worker_session(run_id, &worker.dispatch_id, &worker.tile_id);
+    let retry = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(run_id).and_then(|entry| {
+            let task = entry.tasks.get(task_id)?;
+            if entry.run.status != RunStatus::Active || task.status != TaskStatus::Failed || task.owner.as_deref() == Some("user") {
+                return None;
+            }
+            plan_failed(&TaskCtx { entry, task, now: unix_ms() as i64, is_live: &tile_is_live }, &mut 0)
+        })
+    };
+    if let Some(Action::Retry { stop_live, reason, .. }) = retry {
+        if retry_task(run_id, task_id, stop_live, reason).await {
+            return;
+        }
+    }
+    announce(run_id, task_id, Some(worker.dispatch_id), ("stop", STALL_REASON)).await;
+}
+
+async fn retry_task(run_id: &str, task_id: &str, stop_live: bool, reason: &'static str) -> bool {
+    let target = action_target(run_id, task_id);
+    let resp = handle_retry(&request_body(run_id, task_id, json!({"stopLive": stop_live}))).await;
+    finish_dispatching(run_id, task_id, ("retry", reason), (&resp, target)).await
+}
+
+fn type_continue(worker: &Revive) -> Result<(), String> {
+    supervision_watch().lock().unwrap_or_else(|e| e.into_inner()).remove(&worker.dispatch_id);
+    type_into_tile(&worker.tile_id, CONTINUE_TEXT)
 }
 
 async fn revive_dispatch(run_id: &str, task_id: &str, continuation: (&Revive, &str), target: Option<(TaskStatus, u64)>) -> bool {
@@ -617,8 +754,7 @@ async fn revive_dispatch(run_id: &str, task_id: &str, continuation: (&Revive, &s
         }
         _ => return false,
     }
-    supervision_watch().lock().unwrap_or_else(|e| e.into_inner()).remove(&revive.dispatch_id);
-    if let Err(error) = type_into_tile(&revive.tile_id, CONTINUE_TEXT) {
+    if let Err(error) = type_continue(revive) {
         let revived_target = target.as_ref().map(|_| (TaskStatus::Dispatched, now));
         record_action_failure(run_id, task_id, ("continue", error), revived_target).await;
         if target.is_some() {
@@ -1256,8 +1392,46 @@ mod tests {
         git(repo, &["commit", "-q", "-m", branch]);
     }
 
+    fn persist(run_id: &str, cmd: Cmd) {
+        let home = crate::panorama_dir().unwrap();
+        assert!(matches!(super::super::commit_sync_raw(|_| Ok(cmd), run_id, &home), CommitResult::Ok(_)));
+    }
+
+    fn persisted_run(run_id: &str, repo: &str, base_sha: Option<String>, auto: Autonomy, limits: Limits) {
+        persist(run_id, Cmd::RunCreate {
+            id: run_id.into(), title: "test".into(), repo: repo.into(), base_ref: None, base_sha,
+            setup: None, coordinator_tile: None, limits, now: 1,
+        }.with_fields(json!({"autonomy": auto, "detached": true})));
+    }
+
+    fn persisted_task(run_id: &str, task_id: &str, tile_id: Option<String>, routing: u32) {
+        persist(run_id, Cmd::TaskCreate {
+            run_id: run_id.into(), id: task_id.into(), title: task_id.into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()], verify: vec![],
+            role: None, review: false, owner: None, now: 2,
+        }.with_fields(json!({"routing": routing})));
+        persist(run_id, Cmd::Dispatch {
+            run_id: run_id.into(), id: format!("{run_id}.{task_id}.1"), task_id: task_id.into(), attempt: 1,
+            retry_of: None, profile: Some("codex".into()), model: Some("f12c2".into()), tile_id,
+            owner: None, merge_branch: None, now: 3,
+        });
+    }
+
+    fn replayed(run_id: &str) -> State {
+        let base = crate::panorama_dir().unwrap();
+        let mut replay = State::default();
+        super::super::load_into(&mut replay, &super::super::run_events_path(&base, run_id), run_id);
+        replay
+    }
+
+    fn auto_action_names(run_id: &str) -> Vec<String> {
+        messages_of(run_id, "auto_action").iter().map(|m| {
+            serde_json::from_str::<Value>(m.body.as_deref().unwrap()).unwrap()["action"].as_str().unwrap().to_string()
+        }).collect()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn tick_integration_autonomy_integrates_then_stops_on_conflict() {
+    async fn tick_integration_autonomy_resolves_conflicts_at_most_twice() {
         f12_test_home();
         let run_id = unique("int");
         let repo = std::env::temp_dir().join(format!("panorama-c2-{run_id}"));
@@ -1270,40 +1444,125 @@ mod tests {
         feature_branch(&repo, &base, "feat-a", "from a\n");
         feature_branch(&repo, &base, "feat-b", "from b\n");
 
-        let mut s = new_state(&run_id, autonomy(false, false, true));
-        add_task(&mut s, &run_id, "t1", &["codex:f12c2"], &[]);
-        add_task(&mut s, &run_id, "t2", &["codex:f12c2"], &[]);
-        let entry = s.runs.get_mut(&run_id).unwrap();
-        entry.run.repo = repo.to_string_lossy().into_owned();
-        entry.run.base_sha = Some(base);
-        install(s);
-        for (task, branch) in [("t1", "feat-a"), ("t2", "feat-b")] {
-            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
-            let entry = guard.runs.get_mut(&run_id).unwrap();
-            let id = format!("{run_id}.{task}.1");
-            let mut d = super::super::tests::mk_dispatch_entry(&id, task, 1, None, None, None, 0);
-            d.branch = Some(branch.into());
-            d.outcome = Some("succeeded".into());
-            entry.dispatches.insert(id, d);
-            let t = entry.tasks.get_mut(task).unwrap();
-            t.status = TaskStatus::Completed;
-            t.attempts = 1;
-        }
+        let repo_path = repo.to_str().unwrap();
+        persisted_run(&run_id, repo_path, Some(base), autonomy(false, false, true), Limits::default());
+        let report_branch = |task: &str, attempt, branch: &str| {
+            let id = format!("{run_id}.{task}.{attempt}");
+            persist(&run_id, Cmd::DispatchSetWorktree {
+                run_id: run_id.clone(), dispatch_id: id.clone(), worktree: repo_path.into(), branch: branch.into(), now: unix_ms(),
+            });
+            let seq = state().lock().unwrap().runs[&run_id].next_msg_seq();
+            persist(&run_id, Cmd::Send {
+                run_id: run_id.clone(), seq, from: id.clone(), to: vec!["coordinator".into()],
+                msg_type: "worker_done".into(), task_id: Some(task.into()), dispatch_id: Some(id),
+                reply_to: None, body: None, outcome: Some("succeeded".into()), files_modified: vec![],
+                summary: None, now: unix_ms(),
+            });
+        };
+        persisted_task(&run_id, "t1", None, 1);
+        persisted_task(&run_id, "t2", None, 1);
+        report_branch("t1", 1, "feat-a");
+        report_branch("t2", 1, "feat-b");
 
         let now = unix_ms() as i64;
-        tick_run(&run_id, now).await;
-        tick_run(&run_id, now + 20_000).await;
-        {
-            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
-            let entry = &guard.runs[&run_id];
+        for attempt in 1..=3 {
+            tick_run(&run_id, now).await;
+            let mut replay = replayed(&run_id);
+            let entry = &replay.runs[&run_id];
             assert!(entry.tasks["t1"].integrated_sha.is_some(), "t1 integrates");
-            assert_eq!(entry.tasks["t2"].status, TaskStatus::Blocked, "t2 conflicts and stops alone");
-            assert!(entry.tasks["t2"].integrated_sha.is_none());
+            assert_eq!(entry.tasks["t2"].status, TaskStatus::Blocked);
+            assert!(entry.auto_action_failures.is_empty());
+            let expected = if attempt < 3 { vec![Action::ConflictResolve { task_id: "t2".into() }] } else { vec![] };
+            assert_eq!(plan_at(&replay, &run_id, now), expected);
+            {
+                let guard = state().lock().unwrap();
+                let entry = &guard.runs[&run_id];
+                assert!(entry.auto_action_failures.is_empty());
+                assert_eq!(plan(TickInput { entry, now, is_live: &|_| true }), expected);
+                let conflict = entry.messages.iter().rev().find(|m| m.msg_type == "integration_conflict").unwrap();
+                assert_eq!(super::super::needs_decision(conflict, entry, now), attempt == 3);
+            }
+            replay.runs.get_mut(&run_id).unwrap().run.autonomy.integration = false;
+            assert!(plan_at(&replay, &run_id, now).is_empty());
+            let entry = replay.runs.get_mut(&run_id).unwrap();
+            entry.run.autonomy.integration = true;
+            entry.tasks.get_mut("t2").unwrap().owner = Some("user".into());
+            assert!(plan_at(&replay, &run_id, now).is_empty());
+            if attempt < 3 {
+                let entry = replay.runs.get_mut(&run_id).unwrap();
+                entry.tasks.get_mut("t2").unwrap().owner = None;
+                let gate_seq = entry.next_msg_seq();
+                f12_commit(&mut replay, Cmd::GateCreate {
+                    run_id: run_id.clone(), id: "g1".into(), task_id: "t2".into(), question: "Proceed?".into(),
+                    options: vec![], msg_seq: gate_seq, now: unix_ms(),
+                });
+                assert!(plan_at(&replay, &run_id, now).is_empty());
+                tick_run(&run_id, now).await;
+                assert_eq!(dispatch_count(&run_id), attempt + 2);
+                let actions = messages_of(&run_id, "auto_action");
+                let action = actions.last().unwrap();
+                assert_eq!(action.dispatch_id.as_deref(), Some(format!("{run_id}.t2.{}", attempt + 1).as_str()));
+                report_branch("t2", attempt + 1, "feat-b");
+            }
         }
-        assert_eq!(messages_of(&run_id, "auto_action").len(), 1);
-        let integration = super::super::git::integration_worktree_path(repo.to_str().unwrap(), &run_id);
+        tick_run(&run_id, now).await;
+        assert_eq!(dispatch_count(&run_id), 4);
+        assert_eq!(auto_action_names(&run_id), ["integrate", "conflict_resolve", "conflict_resolve"]);
+        let integration = super::super::git::integration_worktree_path(repo_path, &run_id);
         assert!(std::path::Path::new(&integration).exists());
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[tokio::test]
+    async fn tick_stalled_dispatch_continues_once_then_retries_within_operational_budget() {
+        f12_test_home();
+        for (operational, routing, cap) in [(false, 1, 2), (true, 1, 2), (true, 0, 2), (true, 1, 1)] {
+            let run_id = unique(&format!("stall-{operational}-{routing}-{cap}"));
+            let tile = format!("tile-{run_id}");
+            let dispatch_id = format!("{run_id}.t1.1");
+            live_tile(&tile);
+            persisted_run(&run_id, "/tmp", None, autonomy(operational, false, false),
+                Limits { max_operational_attempts: cap, max_attempts: 1, ..Limits::default() });
+            persisted_task(&run_id, "t1", Some(tile.clone()), routing);
+            let stall = |reason| {
+                let seq = state().lock().unwrap().runs[&run_id].next_msg_seq();
+                persist(&run_id, Cmd::Send {
+                    run_id: run_id.clone(), seq, from: "brain".into(), to: vec!["coordinator".into()],
+                    msg_type: "worker_stalled".into(), task_id: Some("t1".into()), dispatch_id: Some(dispatch_id.clone()),
+                    reply_to: None, body: Some(json!({"reason": reason}).to_string()), outcome: None,
+                    files_modified: vec![], summary: None, now: unix_ms(),
+                });
+            };
+            let now = unix_ms() as i64;
+            stall("timeout");
+            let replay = replayed(&run_id);
+            assert_eq!(matches!(plan_at(&replay, &run_id, now).as_slice(), [Action::ContinueStalled { .. }]), operational);
+            tick_run(&run_id, now).await;
+            tick_run(&run_id, now).await;
+            assert!(plan_at(&replayed(&run_id), &run_id, now).is_empty());
+            stall("quiet");
+            let replay = replayed(&run_id);
+            assert_eq!(matches!(plan_at(&replay, &run_id, now).as_slice(), [Action::StopStalled { .. }]), operational);
+            tick_run(&run_id, now).await;
+            tick_run(&run_id, now).await;
+            let typed = TEST_TYPED.lock().unwrap().iter().filter(|(t, text)| t == &tile && text == "continue").count();
+            assert_eq!(typed, usize::from(operational));
+            let retried = operational && cap > 1;
+            assert_eq!(dispatch_count(&run_id), 1 + usize::from(retried));
+            let replay = replayed(&run_id);
+            let entry = &replay.runs[&run_id];
+            let task = &entry.tasks["t1"];
+            assert_eq!(task.operational_attempts, u32::from(operational));
+            assert_eq!(task.quality_attempts, 0);
+            assert_eq!(entry.dispatches[&dispatch_id].status, if operational { DispatchStatus::Stopped } else { DispatchStatus::Running });
+            assert!(plan_at(&replay, &run_id, now).is_empty());
+            let actions = auto_action_names(&run_id);
+            if operational {
+                assert_eq!(actions, ["continue", if retried { "retry" } else { "stop" }]);
+            } else {
+                assert!(actions.is_empty());
+            }
+        }
     }
 
     fn detached_state(auto: Autonomy) -> State {
@@ -1327,10 +1586,7 @@ mod tests {
         let messages = &s.runs["r1"].messages;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].msg_type, "run_idle");
-        let report: IdleReport = serde_json::from_str(messages[0].body.as_deref().unwrap()).unwrap();
-        assert_eq!(report.tasks.review.len(), 1);
-        assert_eq!(report.tasks.review[0].id, "t2");
-        assert!(report.tasks.waiting_no_resume.is_empty());
+        assert!(messages[0].body.as_deref().unwrap().contains("t2 (t2): Review"));
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -1351,7 +1607,7 @@ mod tests {
         tick_run(&run_id, now).await;
         let messages = messages_of(&run_id, "run_idle");
         assert_eq!(messages.len(), 2);
-        assert!(messages[1].body.as_deref().unwrap().contains("resumeDue"));
+        assert!(messages[1].body.as_deref().unwrap().contains("resume due"));
     }
 
     #[test]

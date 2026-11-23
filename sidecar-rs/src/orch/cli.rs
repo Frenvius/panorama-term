@@ -5,7 +5,7 @@ use std::time::Duration;
 pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
     if args.is_empty() {
-        eprintln!("usage: panorama-cli orch <command> [--flags]");
+        eprintln!("usage: panorama-cli orch <command> [--flags]\n       panorama-cli orch plan-apply --file <path.json>");
         std::process::exit(2);
     }
     let command = args[0].clone();
@@ -14,7 +14,9 @@ pub fn main() {
         eprintln!("[orch] {msg}");
         std::process::exit(2);
     });
-    apply_env_defaults(&command, &mut body);
+    if command != "plan-apply" {
+        apply_env_defaults(&command, &mut body);
+    }
     if command == "worker-send" && body.get("keys").and_then(|v| v.as_bool()) == Some(true) {
         if let Some(text) = body.get("text").and_then(|v| v.as_str()) {
             match decode_keys(text) {
@@ -27,6 +29,14 @@ pub fn main() {
     if let Err(msg) = validate_required(&command, &body) {
         eprintln!("[orch] {msg}");
         std::process::exit(2);
+    }
+
+    if command == "plan-apply" {
+        body = read_plan(std::path::Path::new(body["file"].as_str().unwrap_or_default()))
+            .unwrap_or_else(|msg| {
+                eprintln!("[orch] {msg}");
+                std::process::exit(2);
+            });
     }
 
     let wait = body.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -130,21 +140,54 @@ fn apply_env_defaults(command: &str, body: &mut serde_json::Map<String, serde_js
     if command == "check" && !body.contains_key("recipient") {
         body.insert("recipient".into(), from_default.clone().into());
     }
-    if command == "run-create" && !body.contains_key("coordinatorTile") {
-        if let Ok(tile) = std::env::var("PANORAMA_TILE_ID").map(|t| t.trim().to_string()) {
-            if !tile.is_empty() {
-                body.insert("coordinatorTile".into(), tile.into());
-            }
-        }
+    if command == "run-create" {
+        apply_coordinator_tile(body);
     }
     if command == "send" && !body.contains_key("to") {
         body.insert("to".into(), "coordinator".into());
     }
 }
 
+fn apply_coordinator_tile(body: &mut serde_json::Map<String, serde_json::Value>) {
+    if !body.contains_key("coordinatorTile") {
+        if let Ok(tile) = std::env::var("PANORAMA_TILE_ID").map(|t| t.trim().to_string()) {
+            if !tile.is_empty() {
+                body.insert("coordinatorTile".into(), tile.into());
+            }
+        }
+    }
+}
+
+fn read_plan(path: &std::path::Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read plan {}: {e}", path.display()))?;
+    let mut plan: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&contents)
+        .map_err(|e| format!("invalid plan {}: {e}", path.display()))?;
+    if let Some(run) = plan.get_mut("run").and_then(serde_json::Value::as_object_mut) {
+        apply_coordinator_tile(run);
+    }
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if let Some(tasks) = plan.get_mut("tasks").and_then(serde_json::Value::as_array_mut) {
+        for (index, task) in tasks.iter_mut().enumerate() {
+            let label = super::plan::task_label(index, task);
+            let Some(file) = task.as_object_mut().and_then(|obj| obj.remove("specFile")) else {
+                continue;
+            };
+            let file = file.as_str().filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{label}: specFile must be a non-empty path"))?;
+            let spec_path = dir.join(file);
+            let spec = std::fs::read_to_string(&spec_path)
+                .map_err(|e| format!("{label}: cannot read specFile {}: {e}", spec_path.display()))?;
+            task["spec"] = spec.into();
+        }
+    }
+    Ok(plan)
+}
+
 fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
     let required: &[&str] = match command {
         "run-create" => &["repo"],
+        "plan-apply" => &["file"],
         "run-show" => &["runId"],
         "run-set-status" => &["runId", "status"],
         "run-update" => &["runId"],
@@ -202,6 +245,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
 
         let allowed = match command {
             "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach corrective-retry worker-summary-cap",
+            "plan-apply" => "file",
             "run-show" => "run-id full brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
@@ -313,6 +357,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
 fn flag_to_field<'a>(flag: &'a str, command: &str) -> &'a str {
     match flag {
         "dep" => "deps",
+        "file" if command == "plan-apply" => "file",
         "file" => "filesModified",
         "option" => "options",
         "type" if command == "check" => "types",
@@ -434,6 +479,27 @@ mod tests {
     fn parse(args: &[&str], command: &str) -> serde_json::Map<String, serde_json::Value> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         parse_flags(&owned, command).unwrap().0
+    }
+
+    #[test]
+    fn plan_apply_reads_specs_relative_to_the_plan_file() {
+        let dir = std::env::temp_dir().join(format!("plan-cli-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("specs")).unwrap();
+        let path = dir.join("plan.json");
+        std::fs::write(dir.join("specs").join("task.md"), "task content").unwrap();
+        std::fs::write(&path, r#"{
+            "run":{"coordinatorTile":"explicit"},
+            "tasks":[{"key":"first","specFile":"specs/task.md"},{"spec":"inline"}]
+        }"#).unwrap();
+        let args = parse(&["--file", path.to_str().unwrap()], "plan-apply");
+        assert!(validate_required("plan-apply", &args).is_ok());
+        assert!(validate_required("plan-apply", &Default::default()).is_err());
+        let plan = read_plan(&path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(plan["run"]["coordinatorTile"], "explicit");
+        assert_eq!(plan["tasks"][0]["spec"], "task content");
+        assert!(plan["tasks"][0].get("specFile").is_none());
+        assert_eq!(plan["tasks"][1]["spec"], "inline");
     }
 
     #[test]

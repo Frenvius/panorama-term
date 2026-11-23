@@ -42,7 +42,7 @@ pub(crate) enum IdleState {
 }
 
 pub(crate) fn idle_fingerprint(msg_type: &str, body: &str) -> String {
-    let mut value: Value = serde_json::from_str(body).unwrap_or_default();
+    let Ok(mut value) = serde_json::from_str::<Value>(body) else { return format!("{msg_type}:{body}") };
     if let Some(groups) = value["tasks"].as_object_mut() {
         for tasks in groups.values_mut().filter_map(Value::as_array_mut) {
             tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
@@ -87,6 +87,7 @@ pub struct RunEntry {
     pub(crate) idle_state: IdleState,
     pub(crate) idle_fingerprint: Option<String>,
     pub(crate) auto_action_failures: HashMap<String, AutoActionFailure>,
+    pub(super) integration_conflicts: std::collections::HashSet<String>,
     pub gate_count: u32,
     pub msg_seq: u32,
     pub event_seq: u32,
@@ -109,6 +110,7 @@ impl RunEntry {
             idle_state: IdleState::Active,
             idle_fingerprint: None,
             auto_action_failures: HashMap::new(),
+            integration_conflicts: std::collections::HashSet::new(),
             gate_count: 0,
             msg_seq: 0,
             event_seq: 0,
@@ -211,6 +213,11 @@ pub struct State {
 }
 
 pub enum Cmd {
+    PlanApply {
+        run: Box<Cmd>,
+        tasks: Vec<Cmd>,
+        order: Vec<usize>,
+    },
     RunCreate {
         id: String,
         title: String,
@@ -492,6 +499,30 @@ impl Cmd {
 impl State {
     pub fn apply(&self, cmd: &Cmd) -> ApplyResult {
         match cmd {
+            Cmd::PlanApply { run, tasks, order } => {
+                let run_data = match self.apply(run) {
+                    ApplyResult::Ok(_, data) => data,
+                    result => return result,
+                };
+                let mut staged = State::default();
+                if let Err(e) = staged.replay_run_create(&run_data) {
+                    return ApplyResult::Err(OrchError::BadRequest(e));
+                }
+                let mut task_data = vec![Value::Null; tasks.len()];
+                for &index in order {
+                    let data = match staged.apply(&tasks[index]) {
+                        ApplyResult::Ok(_, data) => data,
+                        result => return result,
+                    };
+                    if let Err(e) = staged.replay_task_create(&data) {
+                        return ApplyResult::Err(OrchError::BadRequest(e));
+                    }
+                    task_data[index] = data;
+                }
+                ApplyResult::Ok("plan-apply".into(), serde_json::json!({
+                    "run": run_data, "tasks": task_data,
+                }))
+            }
             Cmd::Extra { cmd, fields } => match self.apply(cmd) {
                 ApplyResult::Ok(kind, data) => ApplyResult::Ok(kind, merge_fields(data, fields)),
                 ApplyResult::Stale(kind, data) => ApplyResult::Stale(kind, merge_fields(data, fields)),
@@ -858,7 +889,7 @@ impl State {
                     if task.operational_attempts >= entry.run.limits.max_operational_attempts {
                         return ApplyResult::Err(OrchError::Limit("max operational attempts reached".into()));
                     }
-                } else if task.attempts >= entry.run.limits.max_attempts {
+                } else if task.attempts.saturating_sub(task.operational_attempts) >= entry.run.limits.max_attempts {
                     return ApplyResult::Err(OrchError::Limit("max attempts reached".into()));
                 }
                 if entry.running_dispatch_count() >= entry.run.limits.max_workers as usize {
@@ -1213,6 +1244,7 @@ impl State {
 
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
         match kind {
+            "plan-apply" => self.replay_plan_apply(data),
             "task-auto-action-failure" => self.replay_auto_action_failure(data),
             "run-create" => self.replay_run_create(data),
             "run-update" => self.replay_run_update(data),
@@ -1269,6 +1301,9 @@ impl State {
             entry.auto_action_failures.retain(|id, failure| {
                 entry.tasks.get(id).is_some_and(|task| task.status == failure.status)
             });
+            entry.integration_conflicts.retain(|id| {
+                entry.tasks.get(id).is_some_and(|task| task.status == TaskStatus::Blocked)
+            });
             if let Some(class) = parse_opt(data, "routedFailureClass") {
                 let dispatch_id = str_field(data, if kind == "send" { "from" } else { "dispatchId" });
                 let chain_index = entry.dispatches.get(&dispatch_id).and_then(|d| d.chain_index);
@@ -1294,6 +1329,17 @@ impl State {
                 entry.auto_action_failures.insert(task_id, failure);
             }
         }
+        Ok(())
+    }
+
+    fn replay_plan_apply(&mut self, data: &Value) -> Result<(), String> {
+        let mut staged = State::default();
+        staged.replay_run_create(&data["run"])?;
+        let tasks = data["tasks"].as_array().ok_or("plan-apply: missing tasks")?;
+        for task in tasks {
+            staged.replay_task_create(task)?;
+        }
+        self.runs.extend(staged.runs);
         Ok(())
     }
 
@@ -1767,6 +1813,7 @@ impl State {
             task.updated_at = now;
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
+        entry.integration_conflicts.insert(task_id.clone());
         let msg = Message {
             seq: msg_seq,
             from: "brain".to_string(),
