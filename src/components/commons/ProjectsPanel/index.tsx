@@ -227,6 +227,7 @@ interface GroupRowProps {
   signals: ProjectsPanelSignals;
   actions: ProjectsPanelActions;
   onToggle: (key: string) => void;
+  onMoveTile: (tileId: string, groupKey: string) => void;
   onGroupContextMenu: (e: React.MouseEvent, group: ProjectGroup) => void;
   onTileContextMenu: (e: React.MouseEvent, tile: Tile) => void;
 }
@@ -240,6 +241,7 @@ const GroupRow = ({
   signals,
   actions,
   onToggle,
+  onMoveTile,
   onGroupContextMenu,
   onTileContextMenu
 }: GroupRowProps) => {
@@ -270,7 +272,8 @@ const GroupRow = ({
   const { ordered, handlers } = useChildReorder({
     groupKey: group.path?.toLowerCase() ?? group.key,
     children: [...visibleTiles, ...visibleOutside],
-    enabled: group.kind !== 'loose' && !query
+    enabled: !query,
+    onDropOut: onMoveTile
   });
 
   const hasVisibleTiles = visibleTiles.length > 0 || visibleOutside.length > 0;
@@ -331,7 +334,7 @@ const GroupRow = ({
   };
 
   return (
-    <div className={styles.groupBlock}>
+    <div className={styles.groupBlock} data-drop-key={group.kind === 'loose' ? undefined : group.key}>
       <div
         onClick={handleSelect}
         className={styles.groupRow}
@@ -551,6 +554,12 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
     const source = groups.find((g) => g.key === ids[from]);
     const target = groups.find((g) => g.key === ids[to]);
     if (source && target) reorderGroup(source, target, to > from ? 'after' : 'before');
+  };
+
+  const moveTileToGroup = (tileId: string, groupKey: string) => {
+    const tile = allTiles.find((t) => t.id === tileId);
+    const target = groups.find((g) => g.key === groupKey);
+    if (tile && target && tileGroupMap.get(tileId)?.key !== groupKey) actions.onMoveTileToGroup(tile, target);
   };
 
   const bodyHandlers = useListReorder({ enabled: reorderable, handleSelector: '[data-group-key]', onReorder: handleGroupReorder });
@@ -885,6 +894,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
                 signals={signals}
                 actions={actions}
                 onToggle={toggleCollapsed}
+                onMoveTile={moveTileToGroup}
                 onGroupContextMenu={openGroupContextMenu}
                 onTileContextMenu={openTileContextMenu}
               />

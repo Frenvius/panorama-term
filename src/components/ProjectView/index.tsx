@@ -712,6 +712,13 @@ const ProjectView = () => {
 
   const pvGetViewCenter = React.useCallback(() => ({ x: 0, y: 0 }), []);
 
+  const redockMovedTile = (id: string) => {
+    const tile = tileMap.get(id);
+    if (!tile || tile.dormant || tile.tabClosed) return;
+    detachTile(id);
+    activateTile(id);
+  };
+
   const projectActions = useProjectsPanelActions({
     ops: pvGroupOps,
     removeFrameOp: removeFrame,
@@ -728,7 +735,9 @@ const ProjectView = () => {
     removeProjectOp: removeProject,
     reorderProjectOp: reorderProjects,
     reorderFrameOp: reorderFrameGroups,
-    sleepTileOp: sleepTile
+    sleepTileOp: sleepTile,
+    patchTileOp: patchTile,
+    onTileMovedOp: redockMovedTile
   });
 
   const projectActionsWithBoards = React.useMemo(() => ({

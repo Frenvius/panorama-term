@@ -3,7 +3,7 @@ import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 
 import { test, expect, describe } from 'bun:test';
 
-import { fixGroupFrame, moveTileIntoFrame, spawnInGroup } from '~/usecase/util/projectGroupActions';
+import { spawnInGroup, fixGroupFrame, moveTileToGroup, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
 import type { GroupOps } from '~/usecase/util/projectGroupActions';
 
 const makeTile = (id: string, x = 0, y = 0, w = 200, h = 160): Tile => ({
@@ -106,6 +106,50 @@ describe('moveTileIntoFrame', () => {
       const p = patched.get('fr1')!;
       expect(p.width ?? 300).toBeGreaterThanOrEqual(300);
     }
+  });
+});
+
+describe('moveTileToGroup', () => {
+  test('path target: moves a framed tile out of its frame and pins the project', () => {
+    const tile = makeTile('t1', 50, 50);
+    const frame = makeFrame('fa', 0, 0, 800, 600);
+    const { ops, moved } = makeOps([tile], [frame]);
+    const patches: Partial<Tile>[] = [];
+    moveTileToGroup({ ops, tile, group: makeGroup({ key: 'path:/b', kind: 'path', path: '/b' }), patchTile: (_, p) => patches.push(p) });
+    expect(moved).toHaveLength(1);
+    const { x, y } = moved[0]![0]!;
+    const insideFrame = x < frame.x + frame.width && x + tile.width > frame.x && y < frame.y + frame.height && y + tile.height > frame.y;
+    expect(insideFrame).toBe(false);
+    expect(patches).toEqual([{ workspacePath: '/b' }]);
+  });
+
+  test('path target: leaves an unframed tile in place', () => {
+    const tile = makeTile('t1', 2000, 2000);
+    const { ops, moved } = makeOps([tile], [makeFrame('fa', 0, 0, 800, 600)]);
+    const patches: Partial<Tile>[] = [];
+    moveTileToGroup({ ops, tile, group: makeGroup({ key: 'path:/b', kind: 'path', path: '/b' }), patchTile: (_, p) => patches.push(p) });
+    expect(moved).toHaveLength(0);
+    expect(patches).toEqual([{ workspacePath: '/b' }]);
+  });
+
+  test('frame target: places the tile inside the frame', () => {
+    const tile = makeTile('t1', 3000, 3000);
+    const { ops, moved } = makeOps([tile], [makeFrame('fb', 0, 0, 800, 600)]);
+    const patches: Partial<Tile>[] = [];
+    const group = makeGroup({ key: 'frame:fb', kind: 'frame', frameId: 'fb', path: '/b' });
+    moveTileToGroup({ ops, tile, group, patchTile: (_, p) => patches.push(p) });
+    expect(moved).toHaveLength(1);
+    expect(moved[0]![0]!.x).toBeLessThan(800);
+    expect(patches).toEqual([{ workspacePath: '/b' }]);
+  });
+
+  test('loose target: does nothing', () => {
+    const tile = makeTile('t1');
+    const { ops, moved } = makeOps([tile]);
+    const patches: Partial<Tile>[] = [];
+    moveTileToGroup({ ops, tile, group: makeGroup(), patchTile: (_, p) => patches.push(p) });
+    expect(moved).toHaveLength(0);
+    expect(patches).toHaveLength(0);
   });
 });
 

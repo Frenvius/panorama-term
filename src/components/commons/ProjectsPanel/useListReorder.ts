@@ -7,6 +7,7 @@ const DURATION = 180;
 const EDGE_PX = 32;
 const MAX_SPEED = 12;
 const ITEM_SELECTOR = '[data-reorder-id]';
+const DROP_SELECTOR = '[data-drop-key]';
 
 export interface ListReorder {
   ids: string[];
@@ -18,6 +19,7 @@ interface ListReorderOpts {
   enabled: boolean;
   handleSelector?: string;
   onReorder: (move: ListReorder) => void;
+  onDropOut?: (id: string, targetKey: string) => void;
 }
 
 interface Press {
@@ -32,7 +34,9 @@ interface Press {
   pointerId: number;
   startX: number;
   startY: number;
+  x: number;
   y: number;
+  dropTarget: HTMLElement | null;
   from: number;
   to: number;
   dragging: boolean;
@@ -51,7 +55,19 @@ const findScrollParent = (el: HTMLElement): HTMLElement | null => {
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReorderOpts) => {
+const findDropTarget = (current: Press): HTMLElement | null => {
+  const target = document.elementFromPoint(current.x, current.y)?.closest<HTMLElement>(DROP_SELECTOR) ?? null;
+  return target && !target.contains(current.list) ? target : null;
+};
+
+const setDropTarget = (current: Press, target: HTMLElement | null) => {
+  if (current.dropTarget === target) return;
+  if (current.dropTarget) delete current.dropTarget.dataset.dropTarget;
+  if (target) target.dataset.dropTarget = 'true';
+  current.dropTarget = target;
+};
+
+export const useListReorder = ({ enabled, handleSelector, onReorder, onDropOut }: ListReorderOpts) => {
   const press = React.useRef<Press | null>(null);
   const suppressClick = React.useRef(false);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -64,6 +80,7 @@ export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReord
     });
     delete current.list.dataset.dragging;
     delete current.list.dataset.settling;
+    setDropTarget(current, null);
     if (current.list.hasPointerCapture(current.pointerId)) current.list.releasePointerCapture(current.pointerId);
     if (press.current === current) press.current = null;
   };
@@ -73,8 +90,21 @@ export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReord
     if (press.current) clear(press.current);
   }, []);
 
+  const paintOutside = (current: Press) => {
+    const delta = current.y - current.startY + ((current.scroll?.scrollTop ?? 0) - current.scrollTop);
+    current.to = current.from;
+    current.rows.forEach((row, index) => {
+      row.style.transform = index === current.from ? `translate(${current.x - current.startX}px, ${delta}px) scale(1.02)` : '';
+    });
+  };
+
   const paint = (current: Press) => {
     const { tops, heights, from, rows } = current;
+    if (onDropOut) setDropTarget(current, findDropTarget(current));
+    if (current.dropTarget) {
+      paintOutside(current);
+      return;
+    }
     const last = rows.length - 1;
     const delta = current.y - current.startY + ((current.scroll?.scrollTop ?? 0) - current.scrollTop);
     const offset = clamp(delta, tops[0] - tops[from], tops[last] + heights[last] - tops[from] - heights[from]);
@@ -114,14 +144,14 @@ export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReord
     const rows = (Array.from(e.currentTarget.children) as HTMLElement[]).filter(
       (item) => item.matches(ITEM_SELECTOR) && item.dataset.reorderZone === zone
     );
-    if (rows.length < 2) return;
+    if (rows.length < (onDropOut ? 1 : 2)) return;
     const rects = rows.map((item) => item.getBoundingClientRect());
     const scroll = findScrollParent(e.currentTarget);
     press.current = {
       list: e.currentTarget, row, rows, ids: rows.map((item) => item.dataset.reorderId ?? ''),
       tops: rects.map((rect) => rect.top), heights: rects.map((rect) => rect.height),
-      scroll, scrollTop: scroll?.scrollTop ?? 0, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, y: e.clientY,
-      from: rows.indexOf(row), to: rows.indexOf(row), dragging: false, frame: 0
+      scroll, scrollTop: scroll?.scrollTop ?? 0, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY,
+      from: rows.indexOf(row), to: rows.indexOf(row), dragging: false, frame: 0, dropTarget: null
     };
   };
 
@@ -136,6 +166,7 @@ export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReord
       current.row.dataset.dragged = 'true';
       current.frame = requestAnimationFrame(() => tick(current));
     }
+    current.x = e.clientX;
     current.y = e.clientY;
     paint(current);
   };
@@ -147,6 +178,13 @@ export const useListReorder = ({ enabled, handleSelector, onReorder }: ListReord
     suppressClick.current = true;
     cancelAnimationFrame(current.frame);
     current.dragging = false;
+    const dropKey = current.dropTarget?.dataset.dropKey;
+    if (dropKey && onDropOut) {
+      const id = current.ids[current.from];
+      clear(current);
+      onDropOut(id, dropKey);
+      return;
+    }
     current.list.dataset.settling = 'true';
     const { tops, heights, from, to } = current;
     const offset = tops[to] - tops[from] + (to > from ? heights[to] - heights[from] : 0);

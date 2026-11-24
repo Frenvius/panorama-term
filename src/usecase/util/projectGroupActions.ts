@@ -1,6 +1,7 @@
 import type { Tile, Frame } from '~/domain/interfaces/workspace.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 
+import { frameOf } from '~/usecase/util/frame';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { planGroupFrame, placeTileInFrame, findFreeRect } from '~/usecase/util/frameLayout';
 import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
@@ -69,6 +70,29 @@ export const moveTileIntoFrame = ({ ops, tile, frameId }: MoveTileIntoFrameArgs)
   placeTiles([{ id: tile.id, x: result.x, y: result.y }]);
 
   return result.fitted;
+};
+
+interface MoveTileToGroupArgs {
+  ops: GroupOps;
+  tile: Tile;
+  group: ProjectGroup;
+  patchTile: (id: string, patch: Partial<Tile>) => void;
+}
+
+export const moveTileToGroup = ({ ops, tile, group, patchTile }: MoveTileToGroupArgs): void => {
+  if (group.kind === 'loose') return;
+  if (group.kind === 'frame' && group.frameId) {
+    moveTileIntoFrame({ ops, tile, frameId: group.frameId });
+  } else if (frameOf(ops.frames, tile)) {
+    const obstacles = [
+      ...ops.tiles.filter((t) => t.id !== tile.id).map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
+      ...ops.frames.map((f) => ({ x: f.x, y: f.y, width: f.width, height: f.height }))
+    ];
+    const near = { x: tile.x, y: tile.y };
+    const { x, y } = findFreeRect({ near, obstacles, gap: currentLayoutSpacing().gap, width: tile.width, height: tile.height });
+    ops.placeTiles([{ id: tile.id, x, y }]);
+  }
+  patchTile(tile.id, { workspacePath: group.path ?? undefined });
 };
 
 interface SpawnInGroupArgs {

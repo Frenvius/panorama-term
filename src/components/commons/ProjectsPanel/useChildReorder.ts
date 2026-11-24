@@ -13,6 +13,7 @@ interface ChildReorderOpts {
   groupKey: string;
   children: Tile[];
   enabled: boolean;
+  onDropOut?: (id: string, targetKey: string) => void;
 }
 
 const readOrder = (key: string): string[] => {
@@ -24,7 +25,7 @@ const readOrder = (key: string): string[] => {
   }
 };
 
-export const useChildReorder = ({ groupKey, children, enabled }: ChildReorderOpts) => {
+export const useChildReorder = ({ groupKey, children, enabled, onDropOut }: ChildReorderOpts) => {
   const [saved, setSaved] = React.useState(() => readOrder(groupKey));
   const ordered = orderProjectChildren(children, saved);
 
@@ -40,5 +41,5 @@ export const useChildReorder = ({ groupKey, children, enabled }: ChildReorderOpt
     setPref(PREFIX + groupKey, JSON.stringify(ids));
   };
 
-  return { ordered, handlers: useListReorder({ enabled, onReorder: handleReorder }) };
+  return { ordered, handlers: useListReorder({ enabled, onDropOut, onReorder: handleReorder }) };
 };

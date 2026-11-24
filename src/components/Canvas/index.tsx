@@ -1121,7 +1121,8 @@ const Canvas = () => {
     getViewCenter: getCanvasCenter,
     reorderProjectOp: reorderProjects,
     reorderFrameOp: reorderFrameGroups,
-    sleepTileOp: sleepTile
+    sleepTileOp: sleepTile,
+    patchTileOp: patchTile
   });
 
   const boards = React.useMemo(() => ({

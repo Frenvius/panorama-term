@@ -24,6 +24,7 @@ export interface ProjectsPanelActions {
   onNewFrame: () => void;
   onFixFrame: (group: ProjectGroup) => void;
   onMoveTileIntoFrame: (tile: Tile, frameId: string) => void;
+  onMoveTileToGroup: (tile: Tile, group: ProjectGroup) => void;
   onRenameFrame: (frameId: string, title: string) => void;
   onDeleteFrame: (frameId: string) => void;
   onSetFolder: (frameId: string) => void;

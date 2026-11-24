@@ -8,7 +8,7 @@ import React from 'react';
 import { findFreeRect } from '~/usecase/util/frameLayout';
 import { sleepIdleTerminals } from '~/usecase/util/dormant';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
-import { fixGroupFrame, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
+import { fixGroupFrame, moveTileToGroup, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
 import type { DropPlace } from '~/usecase/util/projectOrder';
 import { projectName, normalizeProjectPath } from '~/usecase/util/projectLayout';
 import { FRAME_COLOR, FRAME_WIDTH, FRAME_HEIGHT } from '~/usecase/util/constants';
@@ -30,6 +30,8 @@ export interface UseProjectsPanelActionsOpts {
   reorderProjectOp: (from: string, to: string, place: DropPlace) => void;
   reorderFrameOp: (from: string, to: string, place: DropPlace) => void;
   sleepTileOp: (id: string) => void;
+  patchTileOp: (id: string, patch: Partial<Tile>) => void;
+  onTileMovedOp?: (id: string) => void;
 }
 
 export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): ProjectsPanelActions => {
@@ -70,6 +72,12 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
 
   const onMoveTileIntoFrame = React.useCallback((tile: Tile, frameId: string) => {
     moveTileIntoFrame({ ops: ref.current.ops, tile, frameId });
+  }, []);
+
+  const onMoveTileToGroup = React.useCallback((tile: Tile, group: ProjectGroup) => {
+    const { ops, patchTileOp, onTileMovedOp } = ref.current;
+    moveTileToGroup({ ops, tile, group, patchTile: patchTileOp });
+    onTileMovedOp?.(tile.id);
   }, []);
 
   const onRenameFrame = React.useCallback((frameId: string, title: string) => {
@@ -123,6 +131,7 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onNewFrame,
       onFixFrame,
       onMoveTileIntoFrame,
+      onMoveTileToGroup,
       onRenameFrame,
       onDeleteFrame,
       onSetFolder,
@@ -138,6 +147,7 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onDeleteFrame,
       onFixFrame,
       onMoveTileIntoFrame,
+      onMoveTileToGroup,
       onNewFrame,
       onNewNote,
       onNewTerminal,
