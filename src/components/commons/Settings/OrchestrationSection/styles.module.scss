@@ -131,6 +131,13 @@
   background: var(--surface-1);
 }
 
+.effortSelect {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 92px;
+}
+
 .arrowBtn {
   display: flex;
   align-items: center;

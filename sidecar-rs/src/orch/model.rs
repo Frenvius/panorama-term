@@ -33,6 +33,39 @@ impl std::fmt::Display for Role {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Effort::Low),
+            "medium" => Some(Effort::Medium),
+            "high" => Some(Effort::High),
+            "xhigh" => Some(Effort::Xhigh),
+            "max" => Some(Effort::Max),
+            _ => None,
+        }
+    }
+}
+
 fn default_verify_timeout_min() -> u32 { 15 }
 fn default_stall_quiet_min() -> u32 { 5 }
 fn default_max_operational_attempts() -> u32 { 6 }
@@ -346,6 +379,8 @@ pub struct Dispatch {
     pub profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

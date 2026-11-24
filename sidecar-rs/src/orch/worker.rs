@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::orch::model::{Task, Dispatch};
+use crate::orch::model::{Effort, Task, Dispatch};
 use crate::orch::profiles::{
     BriefDelivery, Profile, ReadySignal, brief_pointer_prompt, build_command_line, codex_permission_args, pinned_env_args, quote_arg,
     tokens_to_command,
@@ -51,6 +51,7 @@ pub struct WorkerLaunch<'a> {
     pub group: Option<TileGroup<'a>>,
     pub profile: &'a Profile,
     pub model: Option<&'a str>,
+    pub effort: Option<Effort>,
     pub extra_env: Vec<(String, String)>,
     pub brief_path: &'a Path,
     pub settings_path: Option<String>,
@@ -290,8 +291,8 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
 }
 
 fn worker_command(launch: &WorkerLaunch<'_>, cli: &str, pinned_env: &[(String, String)]) -> String {
-    let WorkerLaunch { profile, model, settings_path, resume_id, brief_path, .. } = launch;
-    let mut tokens: Vec<String> = build_command_line(profile, *model)
+    let WorkerLaunch { profile, model, effort, settings_path, resume_id, brief_path, .. } = launch;
+    let mut tokens: Vec<String> = build_command_line(profile, *model, *effort)
         .into_iter()
         .map(|t| t.replace(CLI_PLACEHOLDER, cli))
         .collect();
@@ -733,6 +734,7 @@ mod tests {
             retry_of: None,
             profile: Some("claude".into()),
             model: Some("claude-haiku-4-5".into()),
+            effort: None,
             tile_id: Some("tile123".into()),
             merge_branch: None,
             worktree: None,
@@ -762,7 +764,7 @@ mod tests {
             profile.probe_permissions = false;
             let mut launch = WorkerLaunch {
                 tile_id: "tile", cwd: dir.to_str().unwrap(), group: None, profile,
-                model: Some("test-model"), extra_env: vec![], brief_path: &path,
+                model: Some("test-model"), effort: None, extra_env: vec![], brief_path: &path,
                 settings_path: None, resume_id: Some("native-id"),
             };
             let env = vec![("PANORAMA_DISPATCH_ID".into(), "r1.t1.2".into())];
@@ -780,6 +782,34 @@ mod tests {
             assert!(!fresh.contains("native-id"), "{fresh}");
             assert_eq!(fresh.contains("Read the file"), profile.exe == "codex");
         }
+    }
+
+    #[test]
+    fn worker_command_includes_effort_flag_when_set() {
+        let dir = tmp_dir("effort-command");
+        let mut profiles = crate::orch::profiles::load_profiles(&dir);
+        let path = dir.join("brief.md");
+        let env = vec![];
+        for profile in profiles.iter_mut().filter(|p| matches!(p.id.as_str(), "claude" | "codex")) {
+            profile.probe_permissions = false;
+            let with_effort = WorkerLaunch {
+                tile_id: "tile", cwd: dir.to_str().unwrap(), group: None, profile,
+                model: Some("test-model"), effort: Some(Effort::High), extra_env: vec![],
+                brief_path: &path, settings_path: None, resume_id: None,
+            };
+            let cmd = worker_command(&with_effort, "/cli", &env);
+            if profile.id == "claude" {
+                assert!(cmd.contains("--effort high"), "{cmd}");
+            } else {
+                assert!(cmd.contains("-c model_reasoning_effort=high"), "{cmd}");
+            }
+
+            let without_effort = WorkerLaunch { effort: None, ..with_effort };
+            let cmd_none = worker_command(&without_effort, "/cli", &env);
+            assert!(!cmd_none.contains("--effort"), "{cmd_none}");
+            assert!(!cmd_none.contains("model_reasoning_effort"), "{cmd_none}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
