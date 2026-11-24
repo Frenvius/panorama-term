@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.14]
+
+### Added
+- The phone app groups terminals by workspace, lists stopped terminals as sleeping, and keeps orchestration workers in a collapsible section labeled by task.
+- Opening a stopped terminal from the phone starts it again on the desktop.
+- Stop all terminals in the canvas context menu and Stop terminals in each project menu stop idle shells and agents, leaving busy ones running.
+
 ## [0.4.13]
 
 ### Added
