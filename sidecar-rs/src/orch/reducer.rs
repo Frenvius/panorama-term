@@ -1497,6 +1497,7 @@ impl State {
             retry_of: opt_str(data, "retryOf"),
             profile: opt_str(data, "profile"),
             model: opt_str(data, "model"),
+            effort: parse_opt(data, "effort"),
             tile_id: opt_str(data, "tileId"),
             merge_branch: opt_str(data, "mergeBranch"),
             worktree: None,
@@ -2931,7 +2932,7 @@ mod tests {
 
         let d2 = crate::orch::model::Dispatch {
             id: "r1.t1.2".into(), task_id: "t1".into(), attempt: 2,
-            retry_of: None, profile: None, model: None, tile_id: None,
+            retry_of: None, profile: None, model: None, effort: None, tile_id: None,
             merge_branch: None,
             worktree: None, branch: None,
             status: DispatchStatus::Running, outcome: None, head_sha: None, files_modified: vec![],

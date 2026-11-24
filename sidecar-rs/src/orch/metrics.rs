@@ -159,7 +159,7 @@ mod tests {
     fn disp(id: &str, outcome: Option<&str>, class: Option<FailureClass>, dur: u64, cost: Option<f64>) -> Dispatch {
         Dispatch { merge_branch: None, report: None,
             id: id.into(), task_id: "t1".into(), attempt: 1, retry_of: None,
-            profile: Some("claude".into()), model: Some("opus".into()), tile_id: None,
+            profile: Some("claude".into()), model: Some("opus".into()), effort: None, tile_id: None,
             worktree: None, branch: None, status: DispatchStatus::Reported,
             outcome: outcome.map(str::to_string), head_sha: None, files_modified: vec![],
             summary: None, started_at: 100, ended_at: Some(100 + dur), last_heartbeat: None,

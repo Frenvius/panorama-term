@@ -1,8 +1,16 @@
 use std::collections::HashMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+use crate::orch::model::Effort;
 
 fn is_false(b: &bool) -> bool { !b }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EffortArg {
+    Flag(String),
+    ConfigKey(String),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +21,8 @@ pub struct Profile {
     pub args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_flag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_arg: Option<EffortArg>,
     #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,6 +72,7 @@ fn cli_profile(id: &str, args: &[&str], model_flag: &str) -> Profile {
         exe: id.into(),
         args: args.iter().map(|a| a.to_string()).collect(),
         model_flag: Some(model_flag.into()),
+        effort_arg: None,
         env: HashMap::new(),
         notes: None,
         ready_signal: ReadySignal::Quiet,
@@ -76,6 +87,7 @@ fn cli_profile(id: &str, args: &[&str], model_flag: &str) -> Profile {
 
 fn codex_profile() -> Profile {
     Profile {
+        effort_arg: Some(EffortArg::ConfigKey("model_reasoning_effort".into())),
         brief_delivery: BriefDelivery::ArgvPointer,
         probe_permissions: true,
         pin_env_via_config: true,
@@ -127,6 +139,7 @@ pub fn pinned_env_args(env: &[(String, String)], powershell: bool) -> Vec<String
 
 fn built_ins() -> Vec<Profile> {
     let claude = Profile {
+        effort_arg: Some(EffortArg::Flag("--effort".into())),
         ready_signal: ReadySignal::Status,
         startup_answers: vec![
             StartupAnswer { contains: "Yes, I trust this folder".into(), send: "\x1b[B\r".into() },
@@ -156,7 +169,10 @@ fn built_ins() -> Vec<Profile> {
             startup_answers: vec![StartupAnswer { contains: "Trust this folder?".into(), send: "\r".into() }],
             ..cli_profile("kimi", &["-y"], "-m")
         },
-        cli_profile("pi", &[], "--model"),
+        Profile {
+            effort_arg: Some(EffortArg::Flag("--thinking".into())),
+            ..cli_profile("pi", &[], "--model")
+        },
         {
             let mut env = std::collections::HashMap::new();
             env.insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "literal:true".into());
@@ -165,6 +181,7 @@ fn built_ins() -> Vec<Profile> {
                 exe: "agy".into(),
                 args: vec!["--dangerously-skip-permissions".into()],
                 model_flag: Some("--model".into()),
+                effort_arg: Some(EffortArg::Flag("--effort".into())),
                 env,
                 notes: None,
                 ready_signal: ReadySignal::Quiet,
@@ -235,6 +252,7 @@ fn provider_to_profile(provider: &crate::orch::settings::OrchProvider) -> Profil
         exe: "claude".into(),
         args: claude_base.args.clone(),
         model_flag: Some("--model".into()),
+        effort_arg: Some(EffortArg::Flag("--effort".into())),
         env,
         notes: None,
         ready_signal: ReadySignal::Status,
@@ -272,7 +290,7 @@ const CLAUDE_MODEL_ALIASES: &[(&str, &str)] = &[
     ("haiku", "claude-haiku-5-5"),
 ];
 
-pub fn build_command_line(profile: &Profile, model: Option<&str>) -> Vec<String> {
+pub fn build_command_line(profile: &Profile, model: Option<&str>, effort: Option<Effort>) -> Vec<String> {
     let resolved_model = model.map(|m| {
         if profile.exe == "claude" && !profile.provider {
             CLAUDE_MODEL_ALIASES.iter()
@@ -291,6 +309,18 @@ pub fn build_command_line(profile: &Profile, model: Option<&str>) -> Vec<String>
     if let (Some(flag), Some(model_val)) = (&profile.model_flag, resolved_model) {
         tokens.push(flag.clone());
         tokens.push(model_val.to_string());
+    }
+    if let (Some(effort_val), Some(effort_arg)) = (effort, &profile.effort_arg) {
+        match effort_arg {
+            EffortArg::Flag(flag) => {
+                tokens.push(flag.clone());
+                tokens.push(effort_val.as_str().to_string());
+            }
+            EffortArg::ConfigKey(key) => {
+                tokens.push("-c".to_string());
+                tokens.push(format!("{key}={}", effort_val.as_str()));
+            }
+        }
     }
     tokens
 }
@@ -441,14 +471,14 @@ mod tests {
     #[test]
     fn command_line_no_model() {
         let p = cli_profile("claude", &["--permission-mode", "acceptEdits"], "--model");
-        let tokens = build_command_line(&p, None);
+        let tokens = build_command_line(&p, None, None);
         assert_eq!(tokens, vec!["claude", "--permission-mode", "acceptEdits"]);
     }
 
     #[test]
     fn command_line_with_model() {
         let p = cli_profile("claude", &["--permission-mode", "acceptEdits"], "--model");
-        let tokens = build_command_line(&p, Some("claude-haiku-5-5"));
+        let tokens = build_command_line(&p, Some("claude-haiku-5-5"), None);
         let cmd = tokens_to_command(&tokens);
         assert!(cmd.contains("--model"));
         assert!(cmd.contains("claude-haiku-5-5"));
@@ -464,7 +494,7 @@ mod tests {
     #[test]
     fn model_alias_resolved_for_claude_non_provider() {
         let p = cli_profile("claude", &[], "--model");
-        let tokens = build_command_line(&p, Some("sonnet"));
+        let tokens = build_command_line(&p, Some("sonnet"), None);
         assert!(tokens.contains(&"claude-sonnet-5-5".to_string()), "sonnet alias must resolve");
         assert!(!tokens.contains(&"sonnet".to_string()), "bare alias must not appear");
     }
@@ -472,9 +502,9 @@ mod tests {
     #[test]
     fn model_alias_resolved_for_opus_and_haiku() {
         let p = cli_profile("claude", &[], "--model");
-        let opus = build_command_line(&p, Some("opus"));
+        let opus = build_command_line(&p, Some("opus"), None);
         assert!(opus.contains(&"claude-opus-5-5".to_string()));
-        let haiku = build_command_line(&p, Some("haiku"));
+        let haiku = build_command_line(&p, Some("haiku"), None);
         assert!(haiku.contains(&"claude-haiku-5-5".to_string()));
     }
 
@@ -489,14 +519,14 @@ mod tests {
             fast_model: "fast-model".into(),
         };
         let p = super::provider_to_profile(&provider);
-        let tokens = build_command_line(&p, Some("sonnet"));
+        let tokens = build_command_line(&p, Some("sonnet"), None);
         assert!(tokens.contains(&"sonnet".to_string()), "provider profile must not map alias");
     }
 
     #[test]
     fn model_alias_not_resolved_for_non_claude_exe() {
         let p = codex_profile();
-        let tokens = build_command_line(&p, Some("haiku"));
+        let tokens = build_command_line(&p, Some("haiku"), None);
         assert!(tokens.contains(&"haiku".to_string()), "non-claude exe must not map alias");
     }
 
@@ -571,7 +601,35 @@ mod tests {
     #[test]
     fn model_alias_passthrough_for_full_id() {
         let p = cli_profile("claude", &[], "--model");
-        let tokens = build_command_line(&p, Some("claude-sonnet-5-5"));
+        let tokens = build_command_line(&p, Some("claude-sonnet-5-5"), None);
         assert!(tokens.contains(&"claude-sonnet-5-5".to_string()), "full id must pass through unchanged");
+    }
+
+    #[test]
+    fn command_line_effort_args_per_profile() {
+        let profiles = built_ins();
+        let find = |id: &str| profiles.iter().find(|p| p.id == id).unwrap();
+
+        let claude = build_command_line(find("claude"), Some("sonnet"), Some(Effort::High));
+        assert!(claude.windows(2).any(|w| w == ["--effort", "high"]), "{claude:?}");
+        let claude_none = build_command_line(find("claude"), Some("sonnet"), None);
+        assert!(!claude_none.contains(&"--effort".to_string()));
+
+        let codex = build_command_line(find("codex"), Some("o3"), Some(Effort::Xhigh));
+        assert!(codex.windows(2).any(|w| w == ["-c", "model_reasoning_effort=xhigh"]), "{codex:?}");
+        let codex_none = build_command_line(find("codex"), Some("o3"), None);
+        assert!(!codex_none.iter().any(|t| t.contains("model_reasoning_effort")));
+
+        let pi = build_command_line(find("pi"), Some("m"), Some(Effort::Medium));
+        assert!(pi.windows(2).any(|w| w == ["--thinking", "medium"]), "{pi:?}");
+
+        let agy = build_command_line(find("antigravity"), Some("m"), Some(Effort::Low));
+        assert!(agy.windows(2).any(|w| w == ["--effort", "low"]), "{agy:?}");
+
+        let kimi = build_command_line(find("kimi"), Some("k"), Some(Effort::Max));
+        assert_eq!(kimi, build_command_line(find("kimi"), Some("k"), None));
+
+        let opencode = build_command_line(find("opencode"), Some("p/m"), Some(Effort::High));
+        assert_eq!(opencode, build_command_line(find("opencode"), Some("p/m"), None));
     }
 }

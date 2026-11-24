@@ -6,6 +6,8 @@ export type DispatchStatus = 'starting' | 'running' | 'reported' | 'failed' | 's
 
 export type Role = 'test' | 'review' | 'explore' | 'implement' | 'mechanical';
 
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export type OrchestrateHint = 'off' | 'auto' | 'suggest';
 
 export type FailureClass =
@@ -184,6 +186,7 @@ export interface Dispatch {
   starting: boolean;
   profile?: string;
   model?: string;
+  effort?: Effort;
   tileId?: string;
   worktree?: string;
   branch?: string;
@@ -285,6 +288,7 @@ export interface OrchSettings {
   providers: OrchProvider[];
   showWorkerTiles: boolean;
   roles: RoleChains;
+  roleEfforts?: Partial<Record<Role, Record<string, Effort>>>;
   orchestrateHint: OrchestrateHint;
   customModels: Record<string, string[]>;
   aiActions: AiActionsSettings;
@@ -298,6 +302,7 @@ export interface OrchAgent {
   hidden: boolean;
   models: string[];
   customModels: string[];
+  supportsEffort?: boolean;
 }
 
 export interface RunSummary {
