@@ -42,6 +42,8 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
 
   const onCloseTile = React.useCallback((id: string) => ref.current.closeTileOp(id), []);
 
+  const onSleepTile = React.useCallback((id: string) => ref.current.sleepTileOp(id), []);
+
   const onRenameTile = React.useCallback((id: string, title: string) => ref.current.renameTileOp(id, title), []);
 
   const onSelectGroup = React.useCallback((group: ProjectGroup) => ref.current.selectGroupOp(group), []);
@@ -118,11 +120,17 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
     void sleepIdleTerminals(group.tiles, ref.current.sleepTileOp);
   }, []);
 
+  const onTerminateTerminals = React.useCallback((group: ProjectGroup) => {
+    group.tiles.filter((t) => t.type === 'term').forEach((t) => ref.current.closeTileOp(t.id));
+  }, []);
+
   return React.useMemo(
     () => ({
       onStopTerminals,
+      onTerminateTerminals,
       onActivateTile,
       onCloseTile,
+      onSleepTile,
       onRenameTile,
       onSelectGroup,
       onNewTerminal,
@@ -158,7 +166,9 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onReorderProject,
       onSelectGroup,
       onSetFolder,
-      onStopTerminals
+      onSleepTile,
+      onStopTerminals,
+      onTerminateTerminals
     ]
   );
 };

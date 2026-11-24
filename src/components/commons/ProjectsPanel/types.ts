@@ -15,11 +15,13 @@ export interface ProjectsPanelSignals {
 export interface ProjectsPanelActions {
   onActivateTile: (tile: Tile) => void;
   onCloseTile: (id: string) => void;
+  onSleepTile: (id: string) => void;
   onRenameTile: (id: string, title: string) => void;
   onSelectGroup: (group: ProjectGroup) => void;
   onNewTerminal: (group: ProjectGroup | null) => void;
   onNewNote: (group: ProjectGroup) => void;
   onStopTerminals: (group: ProjectGroup) => void;
+  onTerminateTerminals: (group: ProjectGroup) => void;
   onAddProject: () => void;
   onNewFrame: () => void;
   onFixFrame: (group: ProjectGroup) => void;

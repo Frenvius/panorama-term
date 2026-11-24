@@ -14,6 +14,7 @@ import {
   Power,
   Folder,
   Loader,
+  Pencil,
   Search,
   Trash2,
   Wand2,
@@ -38,9 +39,10 @@ import { useChildReorder } from './useChildReorder';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
-import { hasSleepableTerminal } from '~/usecase/util/dormant';
 import { revealPath } from '~/adapter/shell/shell.client';
+import { canSleep, hasSleepableTerminal } from '~/usecase/util/dormant';
 import { frameBoards, liveBoards } from '~/usecase/util/boardProject';
+import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
 import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
@@ -83,11 +85,13 @@ interface TileRowProps {
   isActive: boolean;
   isDrifted: boolean;
   isOutside: boolean;
+  isRenaming: boolean;
   frameId: string | null;
   groupKey: string;
   signals: ProjectsPanelSignals;
   actions: ProjectsPanelActions;
   flatGroupTitle?: string;
+  onRenameChange: (tileId: string | null) => void;
   onContextMenu: (e: React.MouseEvent, tile: Tile) => void;
 }
 
@@ -96,14 +100,21 @@ const TileRow = ({
   isActive,
   isDrifted,
   isOutside,
+  isRenaming,
   frameId,
   signals,
   actions,
   flatGroupTitle,
+  onRenameChange,
   onContextMenu
 }: TileRowProps) => {
-  const [renaming, setRenaming] = React.useState(false);
   const [draft, setDraft] = React.useState('');
+  const initialTitleRef = React.useRef('');
+  initialTitleRef.current = tile.userTitle || tileLabel(tile);
+
+  React.useLayoutEffect(() => {
+    if (isRenaming) setDraft(initialTitleRef.current);
+  }, [isRenaming]);
 
   const tileAlert = signals.alerts.has(tile.id);
   const tileAgent = signals.agents.get(tile.id);
@@ -123,21 +134,18 @@ const TileRow = ({
 
   const handleActivate = () => actions.onActivateTile(tile);
 
-  const handleStartRename = () => {
-    setDraft(tile.userTitle || tileLabel(tile));
-    setRenaming(true);
-  };
+  const handleStartRename = () => onRenameChange(tile.id);
 
   const commitRename = () => {
-    if (renaming) actions.onRenameTile(tile.id, draft.trim());
-    setRenaming(false);
+    if (isRenaming) actions.onRenameTile(tile.id, draft.trim());
+    onRenameChange(null);
   };
 
   const handleRenameChange = (e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value);
 
   const handleRenameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') commitRename();
-    if (e.key === 'Escape') setRenaming(false);
+    if (e.key === 'Escape') onRenameChange(null);
   };
 
   const handleClose = (e: React.MouseEvent) => {
@@ -165,7 +173,7 @@ const TileRow = ({
     >
       <div className={styles.tileMain}>
         <span className={styles.tileIcon}>{renderTileIcon(tile)}</span>
-        {renaming ? (
+        {isRenaming ? (
           <input
             autoFocus
             value={draft}
@@ -224,10 +232,12 @@ interface GroupRowProps {
   isOpen: boolean;
   isActive: boolean;
   activeTileId: string | null;
+  renamingTileId: string | null;
   signals: ProjectsPanelSignals;
   actions: ProjectsPanelActions;
   onToggle: (key: string) => void;
   onMoveTile: (tileId: string, groupKey: string) => void;
+  onRenameChange: (tileId: string | null) => void;
   onGroupContextMenu: (e: React.MouseEvent, group: ProjectGroup) => void;
   onTileContextMenu: (e: React.MouseEvent, tile: Tile) => void;
 }
@@ -238,10 +248,12 @@ const GroupRow = ({
   isOpen,
   isActive,
   activeTileId,
+  renamingTileId,
   signals,
   actions,
   onToggle,
   onMoveTile,
+  onRenameChange,
   onGroupContextMenu,
   onTileContextMenu
 }: GroupRowProps) => {
@@ -429,10 +441,12 @@ const GroupRow = ({
               isActive={activeTileId === tile.id}
               isDrifted={group.drifted.includes(tile.id)}
               isOutside={group.outside.some((outside) => outside.id === tile.id)}
+              isRenaming={renamingTileId === tile.id}
               frameId={group.frameId}
               groupKey={group.key}
               signals={signals}
               actions={actions}
+              onRenameChange={onRenameChange}
               onContextMenu={onTileContextMenu}
             />
           ))}
@@ -460,6 +474,8 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
   const [collapsed, setCollapsed] = React.useState<Set<string>>(savedCollapsed);
   const [groupMenu, setGroupMenu] = React.useState<GroupMenuState | null>(null);
   const [tileMenu, setTileMenu] = React.useState<TileMenuState | null>(null);
+  const [renamingTileId, setRenamingTileId] = React.useState<string | null>(null);
+  const [terminateGroup, setTerminateGroup] = React.useState<ProjectGroup | null>(null);
   const [now, setNow] = React.useState(Date.now);
 
   const activity = React.useSyncExternalStore(subscribeTileActivity, getTileActivity);
@@ -576,6 +592,13 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
 
   const closeGroupMenu = () => setGroupMenu(null);
   const closeTileMenu = () => setTileMenu(null);
+  const cancelTerminate = () => setTerminateGroup(null);
+
+  const confirmTerminate = () => {
+    if (!terminateGroup) return;
+    actions.onTerminateTerminals(terminateGroup);
+    setTerminateGroup(null);
+  };
 
   const buildGroupMenuItems = (group: ProjectGroup): ContextMenuEntry[] => {
     const items: ContextMenuEntry[] = [
@@ -596,6 +619,15 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         label: 'Stop terminals',
         icon: <Power size={15} strokeWidth={1.75} />,
         onSelect: () => actions.onStopTerminals(group)
+      });
+    }
+
+    if (group.tiles.some((t) => t.type === 'term')) {
+      items.push({
+        label: 'Terminate all',
+        icon: <Power size={15} strokeWidth={1.75} />,
+        danger: true,
+        onSelect: () => setTerminateGroup(group)
       });
     }
 
@@ -670,33 +702,60 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
     return items;
   };
 
-  const buildTileMenuItems = (tile: Tile): ContextMenuEntry[] => [
-    {
-      label: 'Reveal in explorer',
-      icon: <FolderOpen size={15} strokeWidth={1.75} />,
-      disabled: !tile.cwd || isRemote(),
-      onSelect: () => { if (tile.cwd) revealPath(tile.cwd); }
-    },
-    {
-      label: 'Copy path',
-      icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
-      disabled: !tile.cwd,
-      onSelect: () => { if (tile.cwd) void writeClipboard(tile.cwd); }
-    },
-    'separator',
-    {
+  const buildTileMenuItems = (tile: Tile): ContextMenuEntry[] => {
+    const items: ContextMenuEntry[] = [
+      {
+        label: 'Rename',
+        icon: <Pencil size={15} strokeWidth={1.75} />,
+        onSelect: () => setRenamingTileId(tile.id)
+      },
+      {
+        label: 'Reveal in explorer',
+        icon: <FolderOpen size={15} strokeWidth={1.75} />,
+        disabled: !tile.cwd || isRemote(),
+        onSelect: () => { if (tile.cwd) revealPath(tile.cwd); }
+      },
+      {
+        label: 'Copy path',
+        icon: <ClipboardCopy size={15} strokeWidth={1.75} />,
+        disabled: !tile.cwd,
+        onSelect: () => { if (tile.cwd) void writeClipboard(tile.cwd); }
+      },
+      'separator'
+    ];
+
+    if (tile.type === 'term') {
+      if (canSleep(tile) && !tile.dormant) {
+        items.push({
+          label: 'Stop',
+          icon: <Power size={15} strokeWidth={1.75} />,
+          onSelect: () => actions.onSleepTile(tile.id)
+        });
+      }
+      items.push({
+        label: 'Terminate',
+        icon: <Power size={15} strokeWidth={1.75} />,
+        danger: true,
+        onSelect: () => actions.onCloseTile(tile.id)
+      });
+      return items;
+    }
+
+    items.push({
       label: 'Close tile',
       icon: <X size={15} strokeWidth={2} />,
       danger: true,
       onSelect: () => actions.onCloseTile(tile.id)
-    }
-  ];
+    });
+    return items;
+  };
 
   const handleNewTerminalHeader = () => actions.onNewTerminal(null);
 
   const orphanRuns = liveBoards(actions.orphanRuns ?? [], now).filter((s) => !needle || `${s.run.title} ${s.run.repo}`.toLowerCase().includes(needle));
   const otherBoardsOpen = Boolean(needle) || collapsed.has('other-boards:expanded');
   const isEmpty = groups.length === 0 && orphanRuns.length === 0;
+  const terminateCount = terminateGroup ? terminateGroup.tiles.filter((t) => t.type === 'term').length : 0;
 
   return (
     <>
@@ -891,10 +950,12 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
                 isOpen={!collapsed.has(group.key)}
                 isActive={group.key === activeGroupKey}
                 activeTileId={activeTileId}
+                renamingTileId={renamingTileId}
                 signals={signals}
                 actions={actions}
                 onToggle={toggleCollapsed}
                 onMoveTile={moveTileToGroup}
+                onRenameChange={setRenamingTileId}
                 onGroupContextMenu={openGroupContextMenu}
                 onTileContextMenu={openTileContextMenu}
               />
@@ -912,11 +973,13 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
                 isActive={activeTileId === tile.id}
                 isDrifted={group ? group.drifted.includes(tile.id) : false}
                 isOutside={group ? group.outside.some((t) => t.id === tile.id) : false}
+                isRenaming={renamingTileId === tile.id}
                 frameId={group?.frameId ?? null}
                 groupKey={group?.key ?? ''}
                 signals={signals}
                 actions={actions}
                 flatGroupTitle={group?.title}
+                onRenameChange={setRenamingTileId}
                 onContextMenu={openTileContextMenu}
               />
             );
@@ -938,6 +1001,16 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
           y={tileMenu.y}
           onClose={closeTileMenu}
           items={buildTileMenuItems(tileMenu.tile)}
+        />
+      )}
+      {terminateGroup && (
+        <ConfirmDialog
+          title="Terminate terminals"
+          message={`Terminate ${terminateCount} terminal${terminateCount === 1 ? '' : 's'} in ${terminateGroup.title}? Running processes will be killed and tiles removed.`}
+          confirmLabel="Terminate"
+          danger
+          onConfirm={confirmTerminate}
+          onCancel={cancelTerminate}
         />
       )}
     </>
