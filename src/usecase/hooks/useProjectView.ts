@@ -36,6 +36,7 @@ import {
   syncProjectViewWithTiles,
   removeTileFromPanelState
 } from '~/usecase/util/projectLayout';
+import { useFrameLinks } from '~/usecase/hooks/useFrameLinks';
 import { buildProjectGroups, groupPathResolver, tileOwnerResolver } from '~/usecase/util/projectGroups';
 
 const createId = (): string => Math.random().toString(36).slice(2, 10);
@@ -184,6 +185,8 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       projectFrameSlot(projectPath, width, height) ?? nextTileSlot(tilesRef.current, width, height),
     [projectFrameSlot]
   );
+
+  useFrameLinks({ scope: wsId ?? '', wsId, tiles, frames, paused: false });
 
   const syncedFrames = React.useRef(frames);
   React.useEffect(() => {

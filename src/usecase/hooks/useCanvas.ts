@@ -14,6 +14,8 @@ import { useLayoutHistory } from '~/usecase/hooks/useLayoutHistory';
 import { THEME_EVENT } from '~/usecase/util/theme';
 import { snapTermSize } from '~/usecase/util/termGrid';
 import { clearAlert } from '~/usecase/util/alerts';
+import { inSameFrame } from '~/usecase/util/frameLinks';
+import { useFrameLinks } from '~/usecase/hooks/useFrameLinks';
 import { tileInFrame, withFramePatched } from '~/usecase/util/frame';
 import { findFreeRect, placeBeside, placeTileInFrame } from '~/usecase/util/frameLayout';
 import { getPref, setPref } from '~/usecase/util/prefs';
@@ -188,6 +190,8 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   );
 
   const history = useLayoutHistory({ tiles, frames, interacting, scope: `${wsId}/${tabId}`, apply: restoreLayout });
+
+  useFrameLinks({ scope: `${wsId}/${tabId}`, wsId, tiles, frames, paused: interacting });
 
   const applied = React.useRef({ tiles, frames });
   React.useEffect(() => {
@@ -597,7 +601,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     setTiles((prev) =>
       prev.map((t) => (t.id === noteId ? { ...t, linkedTo: (t.linkedTo ?? []).filter((id) => id !== termId) } : t))
     );
-    void unlinkNote(noteId, bindKey(termId)).catch(() => {});
+    const note = tilesRef.current.find((t) => t.id === noteId);
+    const term = tilesRef.current.find((t) => t.id === termId);
+    if (!inSameFrame(framesRef.current, note, term)) void unlinkNote(noteId, bindKey(termId)).catch(() => {});
   }, [bindKey]);
 
   const linkTermTo = React.useCallback((termId: string, peerId: string) => {
@@ -618,7 +624,9 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
           : t
       )
     );
-    void unlinkTerm(bindKey(termId), bindKey(peerId)).catch(() => {});
+    const term = tilesRef.current.find((t) => t.id === termId);
+    const peer = tilesRef.current.find((t) => t.id === peerId);
+    if (!inSameFrame(framesRef.current, term, peer)) void unlinkTerm(bindKey(termId), bindKey(peerId)).catch(() => {});
   }, [bindKey]);
 
   const closeTile = React.useCallback((id: string) => {
