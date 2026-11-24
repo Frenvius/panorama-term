@@ -19,6 +19,7 @@ export interface ProjectsPanelActions {
   onSelectGroup: (group: ProjectGroup) => void;
   onNewTerminal: (group: ProjectGroup | null) => void;
   onNewNote: (group: ProjectGroup) => void;
+  onStopTerminals: (group: ProjectGroup) => void;
   onAddProject: () => void;
   onNewFrame: () => void;
   onFixFrame: (group: ProjectGroup) => void;

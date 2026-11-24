@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { Group, LayoutGrid, StickyNote, SquareDashed, SquareTerminal, LayoutDashboard } from 'lucide-react';
+import { Group, Power, LayoutGrid, StickyNote, SquareDashed, SquareTerminal, LayoutDashboard } from 'lucide-react';
 
 import { getPref, setPref } from '~/usecase/util/prefs';
 import { revealPath } from '~/adapter/shell/shell.client';
@@ -22,7 +22,7 @@ import { PANEL_DESCRIPTORS } from '~/components/commons/Dock/panels';
 import NoteToolbar from '~/components/Canvas/NoteToolbar';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { useCanvas } from '~/usecase/hooks/useCanvas';
-import { useRemoteTiles } from '~/usecase/hooks/useRemoteTiles';
+import { useRemoteTiles, useRemoteWake } from '~/usecase/hooks/useRemoteTiles';
 import { useBackdrop } from '~/usecase/hooks/useBackdrop';
 import { writeNote } from '~/adapter/notes/notes.client';
 import { fileKey, splitKey } from '~/usecase/util/fileTree';
@@ -35,6 +35,7 @@ import { useNotifyBridge } from '~/components/commons/Notifications/bridge';
 import { useOrchNotifications } from '~/components/commons/Notifications/orchWatch';
 import { TILE_GAP, CULL_MARGIN, MIN_LIVE_WIDTH, TILE_WIDTH, TILE_HEIGHT, NOTE_WIDTH, NOTE_HEIGHT, TOOLBAR_HEIGHT } from '~/usecase/util/constants';
 import { showToast } from '~/usecase/util/toasts';
+import { sleepIdleTerminals } from '~/usecase/util/dormant';
 import { projectsInUse, buildProjectGroups } from '~/usecase/util/projectGroups';
 import { spawnInGroup, fixGroupFrame } from '~/usecase/util/projectGroupActions';
 import { syncProjectViewWithTiles, projectName, projectRootPath, normalizeProjectPath } from '~/usecase/util/projectLayout';
@@ -279,6 +280,7 @@ const Canvas = () => {
     openRemoteTile(id, cwd, group, orchWorker);
   };
   useRemoteTiles(openPhoneTile);
+  useRemoteWake(wakeTile);
 
   const [linkDrag, setLinkDrag] = React.useState<{ srcId: string; x: number; y: number; over: string | null } | null>(null);
   const viewR = React.useRef(view);
@@ -704,6 +706,8 @@ const Canvas = () => {
     if (menu) addFrame(menu.wx, menu.wy);
   };
 
+  const sleepAllTerminals = () => void sleepIdleTerminals(tiles, sleepTile);
+
   const alertKinds = React.useMemo(
     () => new Map([...alerts].map(([id, alert]): [string, NotifyKind] => [id, alert.kind])),
     [alerts]
@@ -1116,7 +1120,8 @@ const Canvas = () => {
     openFolderPicker,
     getViewCenter: getCanvasCenter,
     reorderProjectOp: reorderProjects,
-    reorderFrameOp: reorderFrameGroups
+    reorderFrameOp: reorderFrameGroups,
+    sleepTileOp: sleepTile
   });
 
   const boards = React.useMemo(() => ({
@@ -1498,6 +1503,7 @@ const Canvas = () => {
             { label: 'New terminal', icon: <SquareTerminal size={15} strokeWidth={1.75} />, onSelect: newTerminal },
             { label: 'New note', icon: <StickyNote size={15} strokeWidth={1.75} />, onSelect: newNote },
             { label: 'New frame', icon: <SquareDashed size={15} strokeWidth={1.75} />, onSelect: newFrame },
+            { label: 'Stop all terminals', icon: <Power size={15} strokeWidth={1.75} />, onSelect: sleepAllTerminals },
             {
               label: 'Reorder',
               icon: <LayoutGrid size={15} strokeWidth={1.75} />,

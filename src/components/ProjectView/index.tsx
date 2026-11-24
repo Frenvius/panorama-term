@@ -727,7 +727,8 @@ const ProjectView = () => {
     getViewCenter: pvGetViewCenter,
     removeProjectOp: removeProject,
     reorderProjectOp: reorderProjects,
-    reorderFrameOp: reorderFrameGroups
+    reorderFrameOp: reorderFrameGroups,
+    sleepTileOp: sleepTile
   });
 
   const projectActionsWithBoards = React.useMemo(() => ({

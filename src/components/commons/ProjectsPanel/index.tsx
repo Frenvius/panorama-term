@@ -11,6 +11,7 @@ import {
   X,
   Plus,
   Clock,
+  Power,
   Folder,
   Loader,
   Search,
@@ -37,6 +38,7 @@ import { useChildReorder } from './useChildReorder';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { tileLabel } from '~/usecase/util/title';
 import { getPref, setPref } from '~/usecase/util/prefs';
+import { hasSleepableTerminal } from '~/usecase/util/dormant';
 import { revealPath } from '~/adapter/shell/shell.client';
 import { frameBoards, liveBoards } from '~/usecase/util/boardProject';
 import { boardSubmenu } from '~/components/commons/ContextMenu/boardSubmenu';
@@ -579,6 +581,14 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
         onSelect: () => actions.onNewNote(group)
       }
     ];
+
+    if (hasSleepableTerminal(group.tiles)) {
+      items.push({
+        label: 'Stop terminals',
+        icon: <Power size={15} strokeWidth={1.75} />,
+        onSelect: () => actions.onStopTerminals(group)
+      });
+    }
 
     if (group.kind === 'frame' && group.frameId) {
       items.push('separator');

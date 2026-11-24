@@ -6,6 +6,7 @@ import { SIDECAR_WS } from '~/adapter/pty/sidecar.client';
 const RECONNECT_MS = 2000;
 
 type TileOpenHandler = (req: TileOpenRequest) => void;
+type TileWakeHandler = (tileId: string) => void;
 type OrchChangedHandler = (runId: string) => void;
 type ConnectHandler = () => void;
 
@@ -15,13 +16,14 @@ interface OrchSub {
 }
 
 const tileOpenSubs = new Set<TileOpenHandler>();
+const tileWakeSubs = new Set<TileWakeHandler>();
 const orchSubs = new Set<OrchSub>();
 const orchNotifySubs = new Set<(event: OrchNotification) => void>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-const totalSubs = (): number => tileOpenSubs.size + orchSubs.size + orchNotifySubs.size;
+const totalSubs = (): number => tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size;
 
 const dispatch = (data: string): void => {
   let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string };
@@ -32,6 +34,8 @@ const dispatch = (data: string): void => {
   }
   if (msg.t === 'tile.open') {
     for (const fn of tileOpenSubs) fn(msg as TileOpenRequest);
+  } else if (msg.t === 'tile.wake') {
+    for (const fn of tileWakeSubs) fn(msg.tileId ?? '');
   } else if (msg.t === 'orch.changed') {
     for (const sub of orchSubs) sub.onChanged(msg.runId ?? '');
   } else if (msg.t === 'orch.notify') {
@@ -80,6 +84,15 @@ export const watchTileRequests = (onOpen: TileOpenHandler): (() => void) => {
   ensureConnected();
   return () => {
     tileOpenSubs.delete(onOpen);
+    maybeClose();
+  };
+};
+
+export const watchWakeRequests = (onWake: TileWakeHandler): (() => void) => {
+  tileWakeSubs.add(onWake);
+  ensureConnected();
+  return () => {
+    tileWakeSubs.delete(onWake);
     maybeClose();
   };
 };

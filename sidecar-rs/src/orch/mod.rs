@@ -5296,6 +5296,45 @@ pub fn orch_context(tile_id: &str) -> Option<String> {
     }
 }
 
+pub(crate) struct WorkerTile {
+    pub run_id: String,
+    pub run_title: String,
+    pub task_title: String,
+    pub status: String,
+    pub worktree: Option<String>,
+}
+
+pub(crate) fn worker_tiles() -> HashMap<String, WorkerTile> {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let mut result: HashMap<String, (u64, WorkerTile)> = HashMap::new();
+    for entry in guard.runs.values() {
+        for dispatch in entry.dispatches.values() {
+            let Some(tile_id) = dispatch.tile_id.as_ref() else { continue };
+            let task_title = entry.tasks.get(&dispatch.task_id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
+            let status = match dispatch.status {
+                DispatchStatus::Running => "running",
+                DispatchStatus::Reported => "reported",
+                DispatchStatus::Failed => "failed",
+                DispatchStatus::Stopped => "stopped",
+                DispatchStatus::Stale => "stale",
+            };
+            let prev_at = result.get(tile_id).map(|(at, _)| *at).unwrap_or(0);
+            if dispatch.started_at >= prev_at {
+                result.insert(tile_id.clone(), (dispatch.started_at, WorkerTile {
+                    run_id: entry.run.id.clone(),
+                    run_title: entry.run.title.clone(),
+                    task_title,
+                    status: status.into(),
+                    worktree: dispatch.worktree.clone(),
+                }));
+            }
+        }
+    }
+    result.into_iter().map(|(k, (_, v))| (k, v)).collect()
+}
+
 fn coordinator_block(tile_id: &str) -> Option<String> {
     let cli = crate::panorama_cli_path();
     let Some(base) = crate::panorama_dir() else { return None };

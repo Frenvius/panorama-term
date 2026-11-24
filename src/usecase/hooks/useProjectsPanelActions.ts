@@ -6,6 +6,7 @@ import type { ProjectsPanelActions } from '~/components/commons/ProjectsPanel/ty
 import React from 'react';
 
 import { findFreeRect } from '~/usecase/util/frameLayout';
+import { sleepIdleTerminals } from '~/usecase/util/dormant';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { fixGroupFrame, moveTileIntoFrame } from '~/usecase/util/projectGroupActions';
 import type { DropPlace } from '~/usecase/util/projectOrder';
@@ -28,6 +29,7 @@ export interface UseProjectsPanelActionsOpts {
   removeProjectOp?: (path: string) => void;
   reorderProjectOp: (from: string, to: string, place: DropPlace) => void;
   reorderFrameOp: (from: string, to: string, place: DropPlace) => void;
+  sleepTileOp: (id: string) => void;
 }
 
 export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): ProjectsPanelActions => {
@@ -104,8 +106,13 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
     ref.current.reorderFrameOp(frameId, targetFrameId, place);
   }, []);
 
+  const onStopTerminals = React.useCallback((group: ProjectGroup) => {
+    void sleepIdleTerminals(group.tiles, ref.current.sleepTileOp);
+  }, []);
+
   return React.useMemo(
     () => ({
+      onStopTerminals,
       onActivateTile,
       onCloseTile,
       onRenameTile,
@@ -140,7 +147,8 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onReorderFrame,
       onReorderProject,
       onSelectGroup,
-      onSetFolder
+      onSetFolder,
+      onStopTerminals
     ]
   );
 };

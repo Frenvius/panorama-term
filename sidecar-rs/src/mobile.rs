@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -623,41 +623,194 @@ fn transcript_mtime_ms(binding: &Value) -> Option<u64> {
         .map(|d| d.as_millis() as u64)
 }
 
-fn tiles_json() -> Value {
-    let list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
-    let tiles: Vec<Value> = list
-        .iter()
-        .map(|s| {
-            let binding = read_binding_rec(&s.tile_id);
-            let agent = binding
-                .as_ref()
-                .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
-            let last_activity = binding.as_ref().and_then(|b| {
-                b.get("lastActivity").and_then(|t| t.as_u64()).or_else(|| transcript_mtime_ms(b))
-            });
-            let snippet = tile_snippet(s, agent.as_deref());
-            let model = s
-                .agent_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get("model")
-                .cloned();
-            json!({
-                "tileId": s.tile_id,
-                "kind": tile_kind(&s.tile_id),
-                "title": s.title.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                "cwd": s.effective_cwd(),
-                "branch": s.branch.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                "alive": !s.exited.load(Ordering::Relaxed),
-                "agent": agent,
-                "model": model,
-                "status": agent_status(&s.tile_id),
-                "snippet": snippet,
-                "lastActivity": last_activity,
-            })
-        })
-        .collect();
-    Value::Array(tiles)
+struct CanvasTileInfo {
+    id: String,
+    cwd: Option<String>,
+    title: Option<String>,
+    branch: Option<String>,
+    workspace_id: String,
+    workspace_name: String,
+    workspace_tab: String,
+}
+
+struct SessionView {
+    tile_id: String,
+    kind: &'static str,
+    title: Option<String>,
+    cwd: Option<String>,
+    branch: Option<String>,
+    alive: bool,
+    agent: Option<String>,
+    model: Option<Value>,
+    status: Value,
+    snippet: Option<Value>,
+    last_activity: Option<u64>,
+}
+
+async fn canvas_term_tiles() -> Vec<CanvasTileInfo> {
+    let index = match crate::service_bridge::call("store_read", json!({"name": "workspaces.json"})).await {
+        Ok(v) if v.is_object() => v,
+        Ok(_) => return vec![],
+        Err(e) => {
+            static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                eprintln!("[mobile] canvas read failed: {e}");
+            }
+            return vec![];
+        }
+    };
+    let order: Vec<String> = index["order"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let mut result = Vec::new();
+    for ws_id in &order {
+        let ws_data = match crate::service_bridge::call(
+            "store_read",
+            json!({"name": format!("workspaces/{ws_id}.json")}),
+        ).await {
+            Ok(v) if v.is_object() => v,
+            _ => continue,
+        };
+        let ws_name = ws_data["meta"]["name"].as_str().unwrap_or("").to_string();
+        let Some(tabs) = ws_data["tabs"].as_array() else { continue };
+        for tab in tabs {
+            let tab_name = tab["name"].as_str().unwrap_or("").to_string();
+            let Some(tiles) = tab["state"]["tiles"].as_array() else { continue };
+            for tile in tiles {
+                if tile["type"].as_str() != Some("term") { continue }
+                if tile["orchWorker"].as_bool().unwrap_or(false) { continue }
+                if tile["runId"].is_string() { continue }
+                if tile["runCwd"].is_string() { continue }
+                let Some(id) = tile["id"].as_str() else { continue };
+                let title = tile["userTitle"].as_str()
+                    .or_else(|| tile["boardTitle"].as_str())
+                    .or_else(|| tile["oscTitle"].as_str())
+                    .or_else(|| tile["autoTitle"].as_str())
+                    .map(str::to_string);
+                result.push(CanvasTileInfo {
+                    id: id.to_string(),
+                    cwd: tile["cwd"].as_str().map(str::to_string),
+                    title,
+                    branch: tile["branch"].as_str().map(str::to_string),
+                    workspace_id: ws_id.clone(),
+                    workspace_name: ws_name.clone(),
+                    workspace_tab: tab_name.clone(),
+                });
+            }
+        }
+    }
+    result
+}
+
+fn session_to_view(s: &Arc<Session>) -> SessionView {
+    let binding = read_binding_rec(&s.tile_id);
+    let agent = binding
+        .as_ref()
+        .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
+    let last_activity = binding.as_ref().and_then(|b| {
+        b.get("lastActivity").and_then(|t| t.as_u64()).or_else(|| transcript_mtime_ms(b))
+    });
+    let snippet = tile_snippet(s, agent.as_deref());
+    let model = s.agent_state.lock().unwrap_or_else(|e| e.into_inner()).get("model").cloned();
+    let cwd = s.effective_cwd().or_else(|| {
+        binding.as_ref().and_then(|b| b["cwd"].as_str().map(str::to_string))
+    });
+    SessionView {
+        tile_id: s.tile_id.clone(),
+        kind: tile_kind(&s.tile_id),
+        title: s.title.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        cwd,
+        branch: s.branch.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        alive: !s.exited.load(Ordering::Relaxed),
+        agent,
+        model,
+        status: agent_status(&s.tile_id),
+        snippet,
+        last_activity,
+    }
+}
+
+fn merge_tiles(
+    sessions: &[SessionView],
+    canvas: &[CanvasTileInfo],
+    workers: &HashMap<String, crate::orch::WorkerTile>,
+) -> Vec<Value> {
+    let live_ids: HashSet<&str> = sessions.iter().map(|s| s.tile_id.as_str()).collect();
+    let canvas_map: HashMap<&str, &CanvasTileInfo> =
+        canvas.iter().map(|c| (c.id.as_str(), c)).collect();
+    let mut result = Vec::new();
+    for sv in sessions {
+        let worker = workers.get(sv.tile_id.as_str()).map(|w| json!({
+            "runId": w.run_id,
+            "runTitle": w.run_title,
+            "taskTitle": w.task_title,
+            "status": w.status,
+        }));
+        let cwd = sv.cwd.clone()
+            .or_else(|| workers.get(sv.tile_id.as_str()).and_then(|w| w.worktree.clone()))
+            .or_else(|| canvas_map.get(sv.tile_id.as_str()).and_then(|c| c.cwd.clone()));
+        let workspace = canvas_map.get(sv.tile_id.as_str()).map(|c| json!({
+            "id": c.workspace_id,
+            "name": c.workspace_name,
+            "tab": c.workspace_tab,
+        }));
+        result.push(json!({
+            "tileId": sv.tile_id,
+            "kind": sv.kind,
+            "title": sv.title,
+            "cwd": cwd,
+            "branch": sv.branch,
+            "alive": sv.alive,
+            "agent": sv.agent,
+            "model": sv.model,
+            "status": sv.status,
+            "snippet": sv.snippet,
+            "lastActivity": sv.last_activity,
+            "dormant": false,
+            "workspace": workspace,
+            "worker": worker,
+        }));
+    }
+    for c in canvas {
+        if live_ids.contains(c.id.as_str()) { continue }
+        let binding = read_binding_rec(&c.id);
+        let agent = binding
+            .as_ref()
+            .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
+        let last_activity = binding.as_ref().and_then(|b| {
+            b.get("lastActivity").and_then(|t| t.as_u64()).or_else(|| transcript_mtime_ms(b))
+        });
+        result.push(json!({
+            "tileId": c.id,
+            "kind": "terminal",
+            "title": c.title,
+            "cwd": c.cwd,
+            "branch": c.branch,
+            "alive": false,
+            "agent": agent,
+            "model": Value::Null,
+            "status": Value::Null,
+            "snippet": Value::Null,
+            "lastActivity": last_activity,
+            "dormant": true,
+            "workspace": json!({
+                "id": c.workspace_id,
+                "name": c.workspace_name,
+                "tab": c.workspace_tab,
+            }),
+            "worker": Value::Null,
+        }));
+    }
+    result
+}
+
+async fn tiles_json() -> Value {
+    let session_list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
+    let views: Vec<SessionView> = session_list.iter().map(session_to_view).collect();
+    let canvas = canvas_term_tiles().await;
+    let workers = crate::orch::worker_tiles();
+    Value::Array(merge_tiles(&views, &canvas, &workers))
 }
 
 fn str_param<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -1046,7 +1199,7 @@ async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, Str
             .await
         }
 
-        "tiles.list" => Ok(tiles_json()),
+        "tiles.list" => Ok(tiles_json().await),
         "tile.open" => ui::open_tile(str_param(p, "cwd")?, p["agent"].as_str()),
         "run.list" => run_overview(str_param(p, "tileId")?).await,
         "run.start" => {
@@ -1079,7 +1232,29 @@ async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, Str
         }
         "term.subscribe" => {
             let tile_id = str_param(p, "tileId")?;
-            live_session(tile_id)?;
+            if live_session(tile_id).is_err() {
+                let canvas = canvas_term_tiles().await;
+                let ct = canvas.iter().find(|c| c.id == tile_id)
+                    .ok_or_else(|| "no session for tile".to_string())?;
+                let params = crate::Params {
+                    tile_id: tile_id.to_string(),
+                    cols: 120,
+                    rows: 30,
+                    cwd: ct.cwd.clone(),
+                    shell: None,
+                    target: None,
+                    elevated: false,
+                    idle_compact: false,
+                    spawn_cmd: None,
+                    run_kind: "terminal".into(),
+                    attach_only: false,
+                    watch_only: false,
+                    remote: false,
+                    extra_env: vec![],
+                };
+                crate::get_or_create(&params).await?;
+                ui::broadcast_tile_wake(tile_id);
+            }
             let text = p["view"].as_str() == Some("text");
             subs.terms.insert(tile_id.to_string(), TermSub { text, ..Default::default() });
             Ok(json!({}))
@@ -1497,5 +1672,109 @@ mod tests {
         assert!(codes_match("ABCD", "ABCD"));
         assert!(!codes_match("ABCD", "ABCE"));
         assert!(!codes_match("ABCD", "ABC"));
+    }
+
+    #[test]
+    fn merge_worker_tagged() {
+        let mut workers = HashMap::new();
+        workers.insert("tile1".into(), crate::orch::WorkerTile {
+            run_id: "r1".into(),
+            run_title: "My Run".into(),
+            task_title: "Task 1".into(),
+            status: "running".into(),
+            worktree: None,
+        });
+        let sessions = vec![SessionView {
+            tile_id: "tile1".into(),
+            kind: "terminal",
+            title: None,
+            cwd: Some("/tmp/x".into()),
+            branch: None,
+            alive: true,
+            agent: None,
+            model: None,
+            status: Value::Null,
+            snippet: None,
+            last_activity: None,
+        }];
+        let result = merge_tiles(&sessions, &[], &workers);
+        assert_eq!(result[0]["worker"]["runId"], "r1");
+        assert_eq!(result[0]["worker"]["status"], "running");
+        assert_eq!(result[0]["dormant"], false);
+    }
+
+    #[test]
+    fn merge_dormant_canvas_tile_appended() {
+        let canvas = vec![CanvasTileInfo {
+            id: "canvas1".into(),
+            cwd: Some("/canvas".into()),
+            title: Some("My Canvas Tile".into()),
+            branch: None,
+            workspace_id: "ws1".into(),
+            workspace_name: "Workspace 1".into(),
+            workspace_tab: "Main".into(),
+        }];
+        let result = merge_tiles(&[], &canvas, &HashMap::new());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["dormant"], true);
+        assert_eq!(result[0]["tileId"], "canvas1");
+        assert_eq!(result[0]["cwd"], "/canvas");
+    }
+
+    #[test]
+    fn merge_workspace_attached() {
+        let canvas = vec![CanvasTileInfo {
+            id: "tile2".into(),
+            cwd: Some("/ws".into()),
+            title: None,
+            branch: None,
+            workspace_id: "ws2".into(),
+            workspace_name: "Dev".into(),
+            workspace_tab: "Frontend".into(),
+        }];
+        let sessions = vec![SessionView {
+            tile_id: "tile2".into(),
+            kind: "terminal",
+            title: None,
+            cwd: Some("/ws".into()),
+            branch: None,
+            alive: true,
+            agent: None,
+            model: None,
+            status: Value::Null,
+            snippet: None,
+            last_activity: None,
+        }];
+        let result = merge_tiles(&sessions, &canvas, &HashMap::new());
+        assert_eq!(result[0]["workspace"]["id"], "ws2");
+        assert_eq!(result[0]["workspace"]["name"], "Dev");
+        assert_eq!(result[0]["workspace"]["tab"], "Frontend");
+    }
+
+    #[test]
+    fn merge_cwd_fallback_uses_worker_worktree() {
+        let mut workers = HashMap::new();
+        workers.insert("tile3".into(), crate::orch::WorkerTile {
+            run_id: "r3".into(),
+            run_title: "".into(),
+            task_title: "".into(),
+            status: "running".into(),
+            worktree: Some("/worktree".into()),
+        });
+        let sessions = vec![SessionView {
+            tile_id: "tile3".into(),
+            kind: "terminal",
+            title: None,
+            cwd: None,
+            branch: None,
+            alive: true,
+            agent: None,
+            model: None,
+            status: Value::Null,
+            snippet: None,
+            last_activity: None,
+        }];
+        let result = merge_tiles(&sessions, &[], &workers);
+        assert_eq!(result[0]["cwd"], "/worktree");
     }
 }

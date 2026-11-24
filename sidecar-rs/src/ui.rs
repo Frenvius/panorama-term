@@ -49,6 +49,10 @@ pub(crate) fn broadcast_orch_notify(event: Value) {
     send_event(event);
 }
 
+pub(crate) fn broadcast_tile_wake(tile_id: &str) {
+    send_event(json!({ "t": "tile.wake", "tileId": tile_id }));
+}
+
 fn send_event(event: serde_json::Value) {
     if channel().receiver_count() > 0 {
         let _ = channel().send(event.to_string());
