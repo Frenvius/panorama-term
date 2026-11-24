@@ -11,6 +11,7 @@ $SignTimeoutSeconds = 180
 $MaxLoginAttempts = 3
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -Namespace Native -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr hWnd, uint msg, System.IntPtr wParam, System.IntPtr lParam);'
 
 function Get-SignTool {
     $found = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
@@ -107,7 +108,16 @@ function Submit-Login($Form, $Otp) {
     $ok = Find-ById $Form 'bOk'
     $user.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($env:SIMPLYSIGN_USER)
     $password.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue((Get-FreshTotp $Otp))
-    $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Invoke-Button $ok
+}
+
+# UI Automation Invoke needs focus, which a disconnected session cannot give; BM_CLICK does not.
+function Invoke-Button($Button) {
+    try {
+        $Button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    } catch {
+        [void][Native.User32]::SendMessage([IntPtr]$Button.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
 }
 
 if (-not $env:SIMPLYSIGN_USER -or -not $env:SIMPLYSIGN_OTP_URI) { throw 'SIMPLYSIGN_USER and SIMPLYSIGN_OTP_URI must be set' }

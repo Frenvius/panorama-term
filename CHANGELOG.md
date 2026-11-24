@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.16]
+## [0.4.17]
 
 ### Changed
 - Windows releases are built and signed on a dedicated build machine, so new versions ship faster.
