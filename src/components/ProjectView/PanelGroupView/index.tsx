@@ -9,6 +9,7 @@ import type { PanelGroupViewState, PanelGroupViewHandlers } from '../types';
 import React from 'react';
 import {
   X,
+  Moon,
   Plus,
   Power,
   Rows2,
@@ -350,8 +351,8 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
     if (tile.type === 'term') {
       items.push(
         {
-          label: 'Close tab',
-          icon: <X size={15} strokeWidth={1.75} />,
+          label: 'Stop',
+          icon: <Moon size={15} strokeWidth={1.75} />,
           onSelect: () => handlers.onCloseTile(tile.id)
         },
         {
