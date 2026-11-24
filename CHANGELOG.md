@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.15]
+
+### Added
+- Notes and terminals placed inside the same frame are linked automatically.
+- Drag a tile in the projects panel onto another project or frame to move it there.
+
 ## [0.4.14]
 
 ### Added
