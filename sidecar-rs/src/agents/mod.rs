@@ -123,11 +123,17 @@ pub(crate) fn is_agent_tile(tile_id: &str) -> bool {
 }
 
 pub(crate) fn on_native_session_bound(tile_id: &str, agent: &str, session_id: &str) {
-    let Some(id) = model::agent_id_from_tile(tile_id) else { return };
-    if !lock().agents.contains_key(id) {
+    let Some(record) = agent_for_tile(tile_id) else { return };
+    let cli = launch::session_cli(agent);
+    if profile_exe(&record.profile).as_deref() != Some(cli) {
         return;
     }
-    runtime::bind_session(id, launch::session_cli(agent), session_id);
+    runtime::bind_session(&record.id, cli, session_id);
+}
+
+fn profile_exe(profile_id: &str) -> Option<String> {
+    let base = crate::panorama_dir()?;
+    crate::orch::profiles::find_profile(&crate::orch::profiles::load_profiles(&base), profile_id).map(|p| p.exe.clone())
 }
 
 fn agent_for_tile(tile_id: &str) -> Option<Agent> {

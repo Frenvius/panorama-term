@@ -169,11 +169,15 @@ fn built_ins() -> Vec<Profile> {
         opencode,
         Profile {
             ready_text: Some("context:".into()),
-            startup_answers: vec![StartupAnswer { contains: "Trust this folder?".into(), send: "\r".into() }],
+            startup_answers: vec![
+                StartupAnswer { contains: "Trust this folder?".into(), send: "\r".into() },
+                StartupAnswer { contains: "Continue with current version".into(), send: "\x1b".into() },
+            ],
             ..cli_profile("kimi", &["-y"], "-m")
         },
         Profile {
             effort_arg: Some(EffortArg::Flag("--thinking".into())),
+            startup_answers: vec![StartupAnswer { contains: "Do not trust (this session only)".into(), send: "\r".into() }],
             ..cli_profile("pi", &[], "--model")
         },
         {
@@ -390,9 +394,13 @@ mod tests {
 
         let kimi = profiles.iter().find(|p| p.id == "kimi").unwrap();
         assert_eq!(kimi.model_flag.as_deref(), Some("-m"));
+        let update = kimi.startup_answers.iter().find(|a| a.contains == "Continue with current version").unwrap();
+        assert_eq!(update.send, "\x1b");
 
         let pi = profiles.iter().find(|p| p.id == "pi").unwrap();
         assert_eq!(pi.model_flag.as_deref(), Some("--model"));
+        let trust = pi.startup_answers.iter().find(|a| a.contains == "Do not trust (this session only)").unwrap();
+        assert_eq!(trust.send, "\r");
 
         let agy = profiles.iter().find(|p| p.id == "antigravity").unwrap();
         assert_eq!(agy.exe, "agy");

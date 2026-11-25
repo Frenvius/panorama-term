@@ -202,7 +202,7 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     if profile.exe == "agy" {
         crate::orch::agy::ensure_trusted_workspace(&agent.cwd);
     }
-    if resume_id.is_some() && matches!(profile.exe.as_str(), "claude" | "codex") {
+    if resume_id.is_some() && profile.exe == "claude" {
         crate::clear_binding_session(&tile);
     }
     guard(watches()).insert(id.to_string(), Watch {
