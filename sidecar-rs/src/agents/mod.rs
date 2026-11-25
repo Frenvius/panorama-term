@@ -1,4 +1,5 @@
 pub mod cli;
+mod context;
 mod launch;
 mod model;
 mod reducer;
@@ -127,6 +128,26 @@ pub(crate) fn on_native_session_bound(tile_id: &str, agent: &str, session_id: &s
         return;
     }
     runtime::bind_session(id, launch::session_cli(agent), session_id);
+}
+
+fn agent_for_tile(tile_id: &str) -> Option<Agent> {
+    let id = model::agent_id_from_tile(tile_id)?;
+    lock().agents.get(id).cloned()
+}
+
+pub(crate) fn prompt_context(tile_id: &str, session_id: &str) -> Option<String> {
+    let agent = agent_for_tile(tile_id)?;
+    context::prompt_block(&agent, tile_id, session_id)
+}
+
+pub(crate) fn system_context(tile_id: &str) -> Option<String> {
+    agent_for_tile(tile_id).map(|agent| context::agent_block(&agent))
+}
+
+pub(crate) fn on_compact(tile_id: &str) {
+    if is_agent_tile(tile_id) {
+        context::forget_delivery(tile_id);
+    }
 }
 
 pub(crate) fn on_status(tile_id: &str) {
@@ -384,4 +405,24 @@ fn handle_delete(v: &Value) -> String {
     }
     crate::ui::broadcast_agents_changed(&id);
     ok_resp(json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_context_returns_the_full_block_on_every_call() {
+        let id = format!("apisys{}", unix_ms() % 100_000);
+        let agent = reducer::tests::agent(&id, "pi-agent");
+        lock().agents.insert(id.clone(), agent.clone());
+        let tile = model::tile_id(&id);
+        let first = system_context(&tile);
+        let second = system_context(&tile);
+        lock().agents.remove(&id);
+        assert_eq!(first.as_deref(), Some(context::agent_block(&agent).as_str()));
+        assert_eq!(first, second);
+        assert_eq!(system_context("agent-missing"), None);
+        assert_eq!(system_context("plain-tile"), None);
+    }
 }

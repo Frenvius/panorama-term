@@ -213,6 +213,9 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
             None => LaunchError::Failed(e),
         });
     }
+    if resume_id.is_none() {
+        crate::agents::context::after_fresh_start(&agent, &profile).await;
+    }
     try_capture_session(id).await;
     Ok(())
 }

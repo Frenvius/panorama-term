@@ -3057,6 +3057,9 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     let event = if event == "session-start" {
         let binding = serde_json::json!({ "agent": match evt["agent"].as_str() { Some("codex") => "codex", Some("antigravity") => "antigravity", _ => "claude" }, "sessionId": field("session_id"), "cwd": evt.get("cwd") });
         bind_agent_session(tile_id, &binding.to_string());
+        if field("source") == "compact" {
+            agents::on_compact(tile_id);
+        }
         "compact"
     } else {
         event
@@ -3073,7 +3076,12 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
         }
     }
     if event == "prompt-submit" {
-        return prompt_context(tile_id, &field("cwd"));
+        return [agents::prompt_context(tile_id, &field("session_id")), Some(prompt_context(tile_id, &field("cwd")))]
+            .into_iter()
+            .flatten()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
     }
     prompt_id.unwrap_or_default()
 }
@@ -5695,11 +5703,13 @@ async fn handle_conn(mut stream: TcpStream) {
     if path_only == "/agent/context" {
         let q = parse_query(query);
         let tile_id = q.get("tileId").map(String::as_str).unwrap_or_default();
-        let body = [linked_notes_context(tile_id), linked_peers_context(tile_id)]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let body = agents::system_context(tile_id).unwrap_or_else(|| {
+            [linked_notes_context(tile_id), linked_peers_context(tile_id)]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        });
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
