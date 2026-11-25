@@ -5046,9 +5046,10 @@ pub(crate) fn sanitize_paste(text: &str) -> String {
         .replace('\r', "\n")
         .chars()
         .filter_map(|c| match c {
-            '\n' => Some('\n'),
+            '\n' | '\u{2028}' | '\u{2029}' => Some('\n'),
             '\t' => Some(' '),
             c if c.is_control() => None,
+            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}' => None,
             c => Some(c),
         })
         .collect()
