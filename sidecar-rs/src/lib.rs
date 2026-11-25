@@ -5030,7 +5030,21 @@ impl PasteTarget for TileTarget {
     }
 }
 
+pub(crate) fn sanitize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter_map(|c| match c {
+            '\n' => Some('\n'),
+            '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 fn type_text<T: PasteTarget>(target: &T, msg: &str) -> Result<(), String> {
+    let msg = sanitize_paste(msg);
     if target.bracketed() {
         target.write(format!("\x1b[200~{msg}\x1b[201~").as_bytes())
     } else {
@@ -5056,9 +5070,9 @@ async fn submit_typed<T: PasteTarget>(target: &T, msg: &str) -> Confirm {
 }
 
 pub(crate) async fn paste_confirmed<T: PasteTarget>(target: &T, text: &str) -> Result<Confirm, String> {
-    let msg = text.trim_end_matches(['\r', '\n']);
-    type_text(target, msg)?;
-    Ok(submit_typed(target, msg).await)
+    let msg = sanitize_paste(text.trim_end_matches(['\r', '\n']));
+    type_text(target, &msg)?;
+    Ok(submit_typed(target, &msg).await)
 }
 
 fn tile_writer(tile_id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -5093,7 +5107,7 @@ pub(crate) async fn clear_tile_input(tile_id: &str) {
 }
 
 pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
-    let msg = text.trim_end_matches(['\r', '\n']).to_string();
+    let msg = sanitize_paste(text.trim_end_matches(['\r', '\n']));
     let target = live_target(tile_id)?;
     let writer = tile_writer(tile_id);
     match writer.clone().try_lock_owned() {
@@ -5180,11 +5194,12 @@ mod paste_tests {
         writes: Mutex<Vec<String>>,
         swallow_enter: bool,
         queue_hint: bool,
+        flat: bool,
     }
 
     impl FakeTerminal {
         fn new(swallow_enter: bool) -> Self {
-            Self { input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false }
+            Self { input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false, flat: false }
         }
     }
 
@@ -5193,7 +5208,7 @@ mod paste_tests {
             let hint = if self.queue_hint { "working - tab to queue message" } else { "" };
             format!("{hint}\n\0> {}", self.input_row.lock().unwrap())
         }
-        fn bracketed(&self) -> bool { true }
+        fn bracketed(&self) -> bool { !self.flat }
         fn write(&self, bytes: &[u8]) -> Result<(), String> {
             let text = String::from_utf8_lossy(bytes).to_string();
             self.writes.lock().unwrap().push(text.clone());
@@ -5206,6 +5221,27 @@ mod paste_tests {
         }
     }
 
+    fn has_control(text: &str) -> bool {
+        text.chars().any(|c| (c.is_control() && c != '\n') || c == '\x1b')
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pasted_text_cannot_end_the_bracketed_paste_or_type_keys() {
+        let t = FakeTerminal::new(false);
+        let _ = paste_confirmed(&t, "hi\x1b[201~\r!touch pwned\x03\r\nnext\u{9b}2J").await;
+        let first = t.writes.lock().unwrap()[0].clone();
+        let inner = first.strip_prefix("\x1b[200~").and_then(|s| s.strip_suffix("\x1b[201~")).expect("one bracketed paste");
+        assert!(!has_control(inner), "{inner:?}");
+        assert!(!inner.contains("\x1b[201~"));
+    }
+
+    #[test]
+    fn orch_wakes_typed_without_bracketed_paste_are_sanitized_too() {
+        let t = FakeTerminal { flat: true, ..FakeTerminal::new(false) };
+        type_text(&t, "wake up\r!touch pwned\x1b[A\x03").unwrap();
+        let typed = t.writes.lock().unwrap()[0].clone();
+        assert!(!has_control(&typed), "{typed:?}");
+    }
     #[tokio::test(start_paused = true)]
     async fn confirmed_paste_reports_submitted_when_the_text_leaves_the_input_row() {
         let t = FakeTerminal::new(false);
