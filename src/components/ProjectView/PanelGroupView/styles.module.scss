@@ -59,6 +59,7 @@
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
+  touch-action: none;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -75,6 +76,11 @@
       opacity: 0.75;
     }
   }
+
+  &[data-dragged='true'] {
+    opacity: 0.55;
+    cursor: grabbing;
+  }
 }
 
 .tabActive {
@@ -89,6 +95,10 @@
 
 .tabDragOver {
   box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tabDragOverAfter {
+  box-shadow: inset -2px 0 0 var(--accent);
 }
 
 .tabIcon {

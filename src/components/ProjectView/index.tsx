@@ -33,6 +33,7 @@ import UnsavedDialog from '~/components/commons/UnsavedDialog';
 import { useDockLayout } from '~/usecase/hooks/useDockLayout';
 import { useProjectView } from '~/usecase/hooks/useProjectView';
 import { useRemoteTiles } from '~/usecase/hooks/useRemoteTiles';
+import { useRepoState } from '~/usecase/hooks/useRepoState';
 import { visiblePanels } from '~/usecase/util/dockLayout';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { dockerAvailable } from '~/adapter/docker/docker.client';
@@ -590,6 +591,8 @@ const ProjectView = () => {
   const handleSidebarActivateTile = React.useCallback((tileId: string) => activateTile(tileId), [activateTile]);
 
   const inspectorProject = activeProject && activeProject !== DEFAULT_PROJECT ? activeProject : (activeTile?.cwd ?? null);
+  const activeTileRepo = useRepoState(activeTile?.cwd);
+  const gitRoot = activeTileRepo?.root ?? inspectorProject;
 
   const handleInspectorNewNote = React.useCallback(() => {
     addNote(activeProject ?? undefined);
@@ -794,7 +797,7 @@ const ProjectView = () => {
           return (
             <GitPanel
               activeDiff={activeDiff}
-              activeProject={inspectorProject}
+              root={gitRoot}
               onDiffFiles={setDiffFiles}
               onOpenDiff={openDiff}
               onOpenFile={openFile}
@@ -827,6 +830,7 @@ const ProjectView = () => {
       projectActionsWithBoards,
       tidyAI,
       inspectorProject,
+      gitRoot,
       openFile,
       activeDiff,
       setDiffFiles,

@@ -318,8 +318,11 @@ export const moveTileBetweenGroups = (state: ProjectPanelState, opts: MoveTileOp
   }
 
   const baseTarget = nextGroups[targetGroupId]!;
+  const origIdx = sourceGroup?.id === targetGroupId ? sourceGroup.tileIds.indexOf(tileId) : -1;
+  const adjustedIndex =
+    typeof index === 'number' && origIdx !== -1 && index > origIdx ? index - 1 : index;
   const withoutTile = baseTarget.tileIds.filter((id) => id !== tileId);
-  const insertAt = typeof index === 'number' ? Math.max(0, Math.min(index, withoutTile.length)) : withoutTile.length;
+  const insertAt = typeof adjustedIndex === 'number' ? Math.max(0, Math.min(adjustedIndex, withoutTile.length)) : withoutTile.length;
   const nextTileIds = [...withoutTile.slice(0, insertAt), tileId, ...withoutTile.slice(insertAt)];
 
   nextGroups[targetGroupId] = {

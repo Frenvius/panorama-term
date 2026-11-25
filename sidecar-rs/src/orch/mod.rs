@@ -2786,7 +2786,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
         "taskId": task_id,
         "by": by,
     });
-    for key in ["profile", "model"] {
+    for key in ["profile", "model", "effort"] {
         if let Some(s) = v[key].as_str() {
             inner[key] = s.into();
         }
@@ -2836,7 +2836,7 @@ async fn handle_retry(body: &[u8]) -> String {
             wiring::RetryLimit::Open => {}
         }
         let mut inner_body = serde_json::json!({"runId": run_id, "taskId": task_id, "by": by_retry});
-        for key in ["profile", "model"] {
+        for key in ["profile", "model", "effort"] {
             if let Some(explicit) = v[key].as_str() {
                 inner_body[key] = explicit.into();
             }
@@ -2870,7 +2870,7 @@ async fn handle_retry(body: &[u8]) -> String {
         entry.latest_dispatch_for_task(&task_id).map(|d| d.id.clone())
     };
     let mut inner_body = serde_json::json!({"runId": run_id, "taskId": task_id, "by": by_retry});
-    for key in ["profile", "model"] {
+    for key in ["profile", "model", "effort"] {
         if let Some(explicit) = v[key].as_str() {
             inner_body[key] = explicit.into();
         }
@@ -3561,8 +3561,15 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
     let explicit_model: Option<String> = v["model"].as_str().map(str::to_string);
     let retry_of: Option<String> = v["retryOf"].as_str().map(str::to_string);
     let by = v["by"].as_str().unwrap_or("coordinator").to_string();
+    let explicit_effort: Option<Effort> = match v.get("effort").and_then(|e| e.as_str()).filter(|s| !s.is_empty()) {
+        Some(s) => match Effort::from_str_opt(s) {
+            Some(eff) => Some(eff),
+            None => return err_resp("bad_effort", &format!("invalid effort: {s}")),
+        },
+        None => None,
+    };
 
-    let route = {
+    let (route, task_role) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -3580,7 +3587,8 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
                 return err_resp("conflict", &format!("exclusive {held_name} held by {held_run}/{held_task}"));
             }
         }
-        if task.routing == 1 {
+        let task_role = task.role.clone();
+        let route = if task.routing == 1 {
             let states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
             match wiring::plan_dispatch(plan_input(entry, &task_id, &v, &by), &states) {
                 Err(e) => return err_from_str(&e),
@@ -3611,7 +3619,8 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
                 return err_resp("bad_request", "profile required (no escalation list and no task profile)");
             }
             StartRoute::Legacy(p, m)
-        }
+        };
+        (route, task_role)
     };
     let (profile_id, model, routed) = match route {
         StartRoute::Wait(wait) => {
@@ -3629,6 +3638,8 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
     let Some(base) = crate::panorama_dir() else {
         return err_resp("io", "no panorama dir");
     };
+
+    let effort = explicit_effort.or_else(|| settings::load(&base).effort_for(task_role, &profile_id, model.as_deref()));
 
     let profiles = load_profiles(&base);
     let Some(profile) = find_profile(&profiles, &profile_id) else {
@@ -3723,6 +3734,9 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
             fields["correctiveRetry"] = true.into();
         }
         fields["nativeHome"] = serde_json::json!(native_home);
+        if let Some(eff) = effort {
+            fields["effort"] = serde_json::json!(eff);
+        }
         let cmd = Cmd::Dispatch {
             run_id: run_id_c.clone(),
             id: dispatch_id,
@@ -3811,6 +3825,7 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
         tile_id: tile_id.clone(),
         profile,
         model,
+        effort,
         base,
         cli_path,
         worktree_mode,
@@ -4096,6 +4111,7 @@ struct StartDispatchInput {
     tile_id: String,
     profile: crate::orch::profiles::Profile,
     model: Option<String>,
+    effort: Option<Effort>,
     base: std::path::PathBuf,
     cli_path: String,
     worktree_mode: String,
@@ -4335,7 +4351,7 @@ fn in_place_precondition(head_matches: bool, diff_fingerprint: Option<&str>, rec
 
 async fn start_dispatch(input: StartDispatchInput) {
     let StartDispatchInput {
-        run_id, task_id, dispatch_id, tile_id, profile, model, base, cli_path,
+        run_id, task_id, dispatch_id, tile_id, profile, model, effort, base, cli_path,
         worktree_mode, base_cwd, run_base_sha, run_setup, task_has_deps, repo,
         run_title, task_clone, dispatch_clone, deps_results, extra_env,
     } = input;
@@ -4723,6 +4739,7 @@ async fn start_dispatch(input: StartDispatchInput) {
             group: Some(TileGroup { id: &run_id, title: &run_title }),
             profile: &profile,
             model: model.as_deref(),
+            effort,
             extra_env: extra_env.clone(),
             brief_path: &brief_path,
             settings_path,
@@ -5084,6 +5101,7 @@ fn settings_with_keys_json(s: &settings::OrchSettings, base: Option<&std::path::
             "review": s.roles.review,
             "mechanical": s.roles.mechanical,
         },
+        "roleEfforts": s.role_efforts,
         "orchestrateHint": s.orchestrate_hint,
         "hiddenAgents": s.hidden_agents,
         "providers": providers,
@@ -5174,6 +5192,12 @@ fn handle_settings_set(body: &[u8]) -> String {
                 if let Err(e) = validate_chain(&chain, &ids) {
                     return err_resp("bad_agent", &e);
                 }
+                if let Some(role_map) = s.role_efforts.get_mut(*role_name) {
+                    role_map.retain(|k, _| chain.contains(k));
+                    if role_map.is_empty() {
+                        s.role_efforts.remove(*role_name);
+                    }
+                }
                 match *role_name {
                     "explore" => s.roles.explore = chain,
                     "implement" => s.roles.implement = chain,
@@ -5182,6 +5206,34 @@ fn handle_settings_set(body: &[u8]) -> String {
                     "mechanical" => s.roles.mechanical = chain,
                     _ => {}
                 }
+            }
+        }
+    }
+    if let Some(efforts_obj) = v.get("roleEfforts").filter(|r| r.is_object()) {
+        let valid_roles = ["explore", "implement", "test", "review", "mechanical"];
+        for (role_name, entries_val) in efforts_obj.as_object().unwrap() {
+            if !valid_roles.contains(&role_name.as_str()) {
+                return err_resp("bad_role", &format!("unknown role: {role_name}"));
+            }
+            let Some(entries_map) = entries_val.as_object() else {
+                return err_resp("bad_effort", &format!("roleEfforts.{role_name} must be an object"));
+            };
+            for (entry_key, eff_val) in entries_map {
+                if eff_val.is_null() || eff_val.as_str() == Some("") {
+                    if let Some(role_map) = s.role_efforts.get_mut(role_name) {
+                        role_map.remove(entry_key);
+                    }
+                } else if let Some(s_eff) = eff_val.as_str() {
+                    let Some(eff) = Effort::from_str_opt(s_eff) else {
+                        return err_resp("bad_effort", &format!("invalid effort: {s_eff}"));
+                    };
+                    s.role_efforts.entry(role_name.clone()).or_default().insert(entry_key.clone(), eff);
+                } else {
+                    return err_resp("bad_effort", "effort must be a string or null");
+                }
+            }
+            if s.role_efforts.get(role_name).is_some_and(|m| m.is_empty()) {
+                s.role_efforts.remove(role_name);
             }
         }
     }
@@ -5399,6 +5451,7 @@ async fn handle_agent_list(body: &[u8]) -> String {
                 "id": profile.id, "kind": "provider", "label": label,
                 "available": available, "hidden": hidden, "models": models,
                 "customModels": custom_models,
+                "supportsEffort": profile.effort_arg.is_some(),
             })
         } else {
             let available = crate::command_exists(&profile.exe);
@@ -5409,6 +5462,7 @@ async fn handle_agent_list(body: &[u8]) -> String {
                 "id": profile.id, "kind": "builtin", "label": profile.id,
                 "available": available, "hidden": hidden, "models": models,
                 "customModels": custom_models,
+                "supportsEffort": profile.effort_arg.is_some(),
             })
         }
     }).collect();
@@ -6684,6 +6738,7 @@ mod tests {
             retry_of: retry_of.map(str::to_string),
             profile: Some("claude".to_string()),
             model: None,
+            effort: None,
             tile_id: None,
             merge_branch: None,
             worktree: None,
@@ -7414,6 +7469,7 @@ mod tests {
         let d1 = Dispatch {
             id: "d1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
             profile: Some("claude".into()), model: Some("haiku".into()),
+            effort: None,
             tile_id: None, merge_branch: None, worktree: None, branch: None, status: DispatchStatus::Reported,
             outcome: None, head_sha: None, files_modified: vec![], summary: None, report: None,
             started_at: 0, ended_at: None, last_heartbeat: None, verifications: vec![],
@@ -8428,7 +8484,7 @@ mod tests {
             native_home: Some(home.to_str().unwrap().to_string()),
             native_session: Some(NativeSession { agent: "codex".into(), id: "ip-session".into() }),
             corrective_retry: false, retry_same_entry: true, operational_wait: false,
-            diff_stat: None,
+            diff_stat: None, effort: None,
         };
 
         let previous = base_dispatch.clone();
@@ -8441,6 +8497,49 @@ mod tests {
         let prev_with_worktree = Dispatch { worktree: Some("/some/path".into()), ..previous.clone() };
         assert!(native_resume_id(&prev_with_worktree, &next_with_worktree, "codex", repo_path).is_none(),
             "mismatched worktrees must not allow native resume");
+    }
+
+    #[test]
+    fn settings_set_and_get_role_efforts() {
+        f12_test_home();
+        let set_body = serde_json::json!({
+            "roles": { "implement": ["claude:haiku", "claude:sonnet"] },
+            "roleEfforts": {
+                "implement": {
+                    "claude:haiku": "low",
+                    "claude:sonnet": "high"
+                }
+            }
+        });
+        let resp: Value = serde_json::from_str(&handle_settings_set(set_body.to_string().as_bytes())).unwrap();
+        assert_eq!(resp["ok"], true, "{resp}");
+        assert_eq!(resp["settings"]["roleEfforts"]["implement"]["claude:haiku"], "low");
+        assert_eq!(resp["settings"]["roleEfforts"]["implement"]["claude:sonnet"], "high");
+
+        let get_resp: Value = serde_json::from_str(&handle_settings_get()).unwrap();
+        assert_eq!(get_resp["settings"]["roleEfforts"]["implement"]["claude:sonnet"], "high");
+
+        let unset_body = serde_json::json!({
+            "roleEfforts": { "implement": { "claude:haiku": null } }
+        });
+        let unset_resp: Value = serde_json::from_str(&handle_settings_set(unset_body.to_string().as_bytes())).unwrap();
+        assert_eq!(unset_resp["ok"], true, "{unset_resp}");
+        assert!(unset_resp["settings"]["roleEfforts"]["implement"]["claude:haiku"].is_null());
+        assert_eq!(unset_resp["settings"]["roleEfforts"]["implement"]["claude:sonnet"], "high");
+
+        let bad_body = serde_json::json!({
+            "roleEfforts": { "implement": { "claude:sonnet": "turbo" } }
+        });
+        let bad_resp: Value = serde_json::from_str(&handle_settings_set(bad_body.to_string().as_bytes())).unwrap();
+        assert_eq!(bad_resp["ok"], false);
+        assert_eq!(bad_resp["error"]["code"], "bad_effort");
+
+        let prune_body = serde_json::json!({
+            "roles": { "implement": ["claude:haiku"] }
+        });
+        let prune_resp: Value = serde_json::from_str(&handle_settings_set(prune_body.to_string().as_bytes())).unwrap();
+        assert_eq!(prune_resp["ok"], true, "{prune_resp}");
+        assert!(prune_resp["settings"]["roleEfforts"].get("implement").is_none());
     }
 }
 

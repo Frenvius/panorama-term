@@ -1,4 +1,4 @@
-import type { AiProgress, AiActionsSettings, OrchAgent, OrchPreset, OrchProvider, OrchSettings, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan, Autonomy, CandidateEntry, CandidateKey, MetricsRow, UsageReport } from '~/domain/interfaces/orch.interface';
+import type { AiProgress, AiActionsSettings, Effort, OrchAgent, OrchPreset, OrchProvider, OrchSettings, Role, RunDetail, RunSummary, RoleChains, OrchestrateHint, TidyPlan, Autonomy, CandidateEntry, CandidateKey, MetricsRow, UsageReport } from '~/domain/interfaces/orch.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -54,6 +54,7 @@ export interface SetSettingsOpts {
   hiddenAgents?: string[];
   showWorkerTiles?: boolean;
   roles?: Partial<RoleChains>;
+  roleEfforts?: Partial<Record<Role, Record<string, Effort | null>>>;
   orchestrateHint?: OrchestrateHint;
   customModels?: Record<string, string[]>;
   aiActions?: Partial<AiActionsSettings>;

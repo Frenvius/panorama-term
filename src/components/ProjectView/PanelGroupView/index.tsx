@@ -3,12 +3,12 @@ import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { AgentType } from '~/components/Terminal/AgentBar/parse';
 import type { TerminalRestart } from '~/domain/interfaces/pty.interface';
 import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
-import type { DropZone } from '~/domain/interfaces/projectView.interface';
 import type { PanelGroupViewState, PanelGroupViewHandlers } from '../types';
 
 import React from 'react';
 import {
   X,
+  Moon,
   Plus,
   Power,
   Rows2,
@@ -36,6 +36,7 @@ import { noteTabs } from '~/usecase/util/noteTabs';
 import NoteTile from '~/components/Canvas/NoteTile';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
 import { revealPath } from '~/adapter/shell/shell.client';
+import { useTabDrag } from '~/usecase/hooks/useTabDrag';
 import { parseFrontField } from '~/usecase/util/noteMeta';
 import { reportAgent } from '~/usecase/util/tileActivity';
 import { registerTileRestart } from '~/usecase/util/tileRestart';
@@ -59,16 +60,6 @@ const EMBED_MODE = { embedded: true };
 const DEFAULT_RESTART: TerminalRestart = { key: 0 };
 
 const panelCrash = (retry: () => void) => <CrashNotice title="This panel hit an error" action="Reload panel" onAction={retry} />;
-
-const computeDropZone = (rect: DOMRect, clientX: number, clientY: number): DropZone => {
-  const rx = rect.width > 0 ? (clientX - rect.left) / rect.width : 0.5;
-  const ry = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
-  if (rx < 0.25) return 'left';
-  if (rx > 0.75) return 'right';
-  if (ry < 0.25) return 'top';
-  if (ry > 0.75) return 'bottom';
-  return 'center';
-};
 
 const renderAgentIcon = (agentType: AgentType) => {
   if (agentType === 'antigravity') return <AntigravityLogo size={12} />;
@@ -104,12 +95,23 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
   const renameInputRef = React.useRef<HTMLInputElement>(null);
 
   const [bodySize, setBodySize] = React.useState({ w: 640, h: 420 });
-  const [dropZone, setDropZone] = React.useState<DropZone | null>(null);
-  const [dragOverTabIndex, setDragOverTabIndex] = React.useState<number | null>(null);
   const [renamingTileId, setRenamingTileId] = React.useState<string | null>(null);
   const [renameDraft, setRenameDraft] = React.useState('');
   const [tabContextMenu, setTabContextMenu] = React.useState<{ tile: Tile; x: number; y: number } | null>(null);
   const [dirtyTick, setDirtyTick] = React.useState(0);
+
+  const {
+    dropZone,
+    dragOverTabIndex,
+    onTabPointerDown,
+    onTabClickCapture
+  } = useTabDrag({
+    groupId: group.id,
+    draggingTab,
+    renamingTileId,
+    onDropTab: handlers.onDropTab,
+    onDragStartTab: handlers.onDragStartTab
+  });
 
   const [agentTypes, setAgentTypes] = React.useState<Record<string, AgentType | null>>({});
   const [diffs, setDiffs] = React.useState<Record<string, { a: number; r: number } | null>>({});
@@ -141,13 +143,6 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
   React.useEffect(() => {
     if (renamingTileId) renameInputRef.current?.select();
   }, [renamingTileId]);
-
-  React.useEffect(() => {
-    if (!draggingTab) {
-      setDropZone(null);
-      setDragOverTabIndex(null);
-    }
-  }, [draggingTab]);
 
   const groupTiles = React.useMemo(() => {
     const list: Tile[] = [];
@@ -214,85 +209,11 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
     if (e.key === 'Escape') setRenamingTileId(null);
   };
 
-  const onTabDragStart = (tileId: string) => (e: React.DragEvent) => {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', tileId);
-    handlers.onDragStartTab({ tileId, sourceGroupId: group.id });
-  };
-
-  const onTabDragEnd = () => {
-    setDropZone(null);
-    setDragOverTabIndex(null);
-    handlers.onDragStartTab(null);
-  };
-
-  const onTabDragOver = (index: number) => (e: React.DragEvent) => {
-    if (!draggingTab) return;
+  const onTabAuxClick = (tileId: string) => (e: React.MouseEvent) => {
+    if (e.button !== 1) return;
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverTabIndex(index);
-  };
-
-  const onTabDrop = (index: number) => (e: React.DragEvent) => {
-    if (!draggingTab) return;
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOverTabIndex(null);
-    handlers.onDropTab({
-      tileId: draggingTab.tileId,
-      targetGroupId: group.id,
-      zone: 'center',
-      targetIndex: index
-    });
-    handlers.onDragStartTab(null);
-  };
-
-  const onTabBarDragOver = (e: React.DragEvent) => {
-    if (!draggingTab) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  const onTabBarDrop = (e: React.DragEvent) => {
-    if (!draggingTab) return;
-    e.preventDefault();
-    setDragOverTabIndex(null);
-    handlers.onDropTab({
-      tileId: draggingTab.tileId,
-      targetGroupId: group.id,
-      zone: 'center'
-    });
-    handlers.onDragStartTab(null);
-  };
-
-  const onBodyDragOver = (e: React.DragEvent) => {
-    if (!draggingTab) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const nextZone = computeDropZone(rect, e.clientX, e.clientY);
-    if (nextZone !== dropZone) setDropZone(nextZone);
-  };
-
-  const onBodyDragLeave = (e: React.DragEvent) => {
-    const related = e.relatedTarget as Node | null;
-    if (related && e.currentTarget.contains(related)) return;
-    setDropZone(null);
-  };
-
-  const onBodyDrop = (e: React.DragEvent) => {
-    if (!draggingTab) return;
-    e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const zone = computeDropZone(rect, e.clientX, e.clientY);
-    setDropZone(null);
-    handlers.onDropTab({
-      tileId: draggingTab.tileId,
-      targetGroupId: group.id,
-      zone
-    });
-    handlers.onDragStartTab(null);
+    handlers.onCloseTile(tileId);
   };
 
   const openTabContextMenu = (tile: Tile) => (e: React.MouseEvent) => {
@@ -350,8 +271,8 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
     if (tile.type === 'term') {
       items.push(
         {
-          label: 'Close tab',
-          icon: <X size={15} strokeWidth={1.75} />,
+          label: 'Stop',
+          icon: <Moon size={15} strokeWidth={1.75} />,
           onSelect: () => handlers.onCloseTile(tile.id)
         },
         {
@@ -451,7 +372,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
 
   return (
     <div className={isFocused ? `${styles.panelGroup} ${styles.focused}` : styles.panelGroup} onPointerDown={focusGroup}>
-      <div className={styles.tabBar} onDragOver={onTabBarDragOver} onDrop={onTabBarDrop}>
+      <div className={styles.tabBar} data-tab-bar-group={group.id}>
         <div className={styles.tabList} role="tablist">
           {groupTiles.map((tile, index) => {
             const isActive = tile.id === activeTile?.id;
@@ -460,23 +381,28 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
             const isFileDirty = tile.type === 'editor' && Boolean(tile.filePath && isDirty(tile.filePath));
             const agentType = agentTypes[tile.id] ?? null;
             const isDragTarget = dragOverTabIndex === index;
+            const isDragEndTarget = index === groupTiles.length - 1 && dragOverTabIndex === groupTiles.length;
 
             return (
               <div
                 key={tile.id}
                 role="tab"
+                data-tab-id={tile.id}
                 aria-selected={isActive}
-                draggable={renamingTileId !== tile.id}
-                className={[styles.tab, isActive && styles.tabActive, isDragTarget && styles.tabDragOver]
+                className={[
+                  styles.tab,
+                  isActive && styles.tabActive,
+                  isDragTarget && styles.tabDragOver,
+                  isDragEndTarget && styles.tabDragOverAfter
+                ]
                   .filter(Boolean)
                   .join(' ')}
                 onClick={activateTab(tile.id)}
+                onAuxClick={onTabAuxClick(tile.id)}
+                onClickCapture={onTabClickCapture}
                 onDoubleClick={onTabDoubleClick(tile)}
                 onContextMenu={openTabContextMenu(tile)}
-                onDragStart={onTabDragStart(tile.id)}
-                onDragEnd={onTabDragEnd}
-                onDragOver={onTabDragOver(index)}
-                onDrop={onTabDrop(index)}
+                onPointerDown={onTabPointerDown(tile.id)}
               >
                 <span className={styles.tabIcon}>{renderTileTypeIcon(tile, agentType)}</span>
 
@@ -581,7 +507,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
         />
       )}
 
-      <div ref={bodyRef} className={styles.body} onDragOver={onBodyDragOver} onDragLeave={onBodyDragLeave} onDrop={onBodyDrop}>
+      <div ref={bodyRef} className={styles.body} data-panel-body-group={group.id}>
         <ErrorBoundary fallback={panelCrash}>
           {termTiles.map((termTile) => {
             const isTermActive = termTile.id === activeTile?.id;

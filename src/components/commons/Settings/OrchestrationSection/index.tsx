@@ -1,4 +1,4 @@
-import type { OrchProvider, Role, OrchestrateHint, RoleChains } from '~/domain/interfaces/orch.interface';
+import type { Effort, OrchProvider, Role, OrchestrateHint, RoleChains } from '~/domain/interfaces/orch.interface';
 import type { SaveProviderOpts } from '~/adapter/orch/orch.client';
 
 import React from 'react';
@@ -41,6 +41,10 @@ const OrchestrationSection = () => {
   const saveRoleChain = (role: Role, chain: string[]) => {
     const roles = { [role]: chain } as Partial<RoleChains>;
     void orchSettingsActions.updateSettings({ roles });
+  };
+
+  const saveRoleEffort = (role: Role, entry: string, effort: Effort | null) => {
+    void orchSettingsActions.updateSettings({ roleEfforts: { [role]: { [entry]: effort } } });
   };
 
   const setOrchestrateHint = (hint: string) => {
@@ -146,7 +150,9 @@ const OrchestrationSection = () => {
       >
         {ROLES.map((role) => {
           const handleChange = (chain: string[]) => saveRoleChain(role, chain);
+          const handleEffortChange = (entry: string, effort: Effort | null) => saveRoleEffort(role, entry, effort);
           const chain = settings.roles?.[role] ?? [];
+          const efforts = settings.roleEfforts?.[role] ?? {};
           return (
             <div key={role}>
               <Row
@@ -155,7 +161,14 @@ const OrchestrationSection = () => {
                 description={ROLE_META[role].description}
                 stacked
               >
-                <RoleChainEditor role={role} chain={chain} agents={agents} onChange={handleChange} />
+                <RoleChainEditor
+                  role={role}
+                  chain={chain}
+                  efforts={efforts}
+                  agents={agents}
+                  onChange={handleChange}
+                  onEffortChange={handleEffortChange}
+                />
               </Row>
             </div>
           );

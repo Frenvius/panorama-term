@@ -1,18 +1,31 @@
-import type { Role, OrchAgent } from '~/domain/interfaces/orch.interface';
+import type { Effort, Role, OrchAgent } from '~/domain/interfaces/orch.interface';
+import type { SelectOption } from '~/components/commons/Settings/Select';
 
 import { X, ChevronUp, ChevronDown } from 'lucide-react';
 
 import ModelCombobox from '~/components/commons/ModelCombobox';
+import Select from '~/components/commons/Settings/Select';
 import styles from '../styles.module.scss';
+
+const EFFORT_OPTIONS: SelectOption[] = [
+  { value: '', label: 'Default' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'XHigh' },
+  { value: 'max', label: 'Max' }
+];
 
 interface RoleChainEditorProps {
   role: Role;
   chain: string[];
+  efforts: Record<string, Effort>;
   agents: OrchAgent[];
   onChange: (chain: string[]) => void;
+  onEffortChange: (entry: string, effort: Effort | null) => void;
 }
 
-const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps) => {
+const RoleChainEditor = ({ role, chain, efforts, agents, onChange, onEffortChange }: RoleChainEditorProps) => {
   const moveUp = (i: number) => {
     if (i === 0) return;
     const next = [...chain];
@@ -43,12 +56,25 @@ const RoleChainEditor = ({ role, chain, agents, onChange }: RoleChainEditorProps
       ) : (
         <div className={styles.workersList}>
           {chain.map((entry, i) => {
+            const agentId = entry.split(':')[0];
+            const supportsEffort = agents.find((a) => a.id === agentId)?.supportsEffort ?? false;
+            const handleEffort = (val: string) => onEffortChange(entry, val ? (val as Effort) : null);
             const handleMoveUp = () => moveUp(i);
             const handleMoveDown = () => moveDown(i);
             const handleRemove = () => remove(i);
             return (
               <div key={i} className={styles.workerRow}>
                 <span className={styles.workerChip}>{entry}</span>
+                {supportsEffort && (
+                  <div className={styles.effortSelect}>
+                    <Select
+                      size="sm"
+                      options={EFFORT_OPTIONS}
+                      value={efforts[entry] ?? ''}
+                      onChange={handleEffort}
+                    />
+                  </div>
+                )}
                 <button
                   type="button"
                   className={styles.arrowBtn}

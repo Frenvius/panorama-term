@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+use crate::orch::model::{Effort, Role};
 
 fn default_coordinator() -> String { "claude:opus".into() }
 fn default_workers() -> Vec<String> { vec!["claude:haiku".into(), "claude:sonnet".into()] }
@@ -59,6 +60,8 @@ pub struct OrchSettings {
     pub workers: Vec<String>,
     #[serde(default)]
     pub roles: RoleChains,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub role_efforts: BTreeMap<String, BTreeMap<String, Effort>>,
     #[serde(default)]
     pub orchestrate_hint: OrchestrateHint,
     #[serde(default)]
@@ -79,6 +82,7 @@ impl Default for OrchSettings {
             coordinator: default_coordinator(),
             workers: Vec::new(),
             roles: RoleChains::default(),
+            role_efforts: BTreeMap::new(),
             orchestrate_hint: OrchestrateHint::default(),
             hidden_agents: Vec::new(),
             providers: Vec::new(),
@@ -86,6 +90,18 @@ impl Default for OrchSettings {
             custom_models: BTreeMap::new(),
             ai_actions: AiActions::default(),
         }
+    }
+}
+
+impl OrchSettings {
+    pub fn effort_for(&self, role: Option<Role>, profile: &str, model: Option<&str>) -> Option<Effort> {
+        let role_key = role.unwrap_or(Role::Implement).as_str();
+        let role_map = self.role_efforts.get(role_key)?;
+        let entry = match model {
+            Some(m) => format!("{profile}:{m}"),
+            None => profile.to_string(),
+        };
+        role_map.get(&entry).copied()
     }
 }
 
@@ -323,6 +339,7 @@ mod tests {
             coordinator: "claude:opus".into(),
             workers: Vec::new(),
             roles,
+            role_efforts: BTreeMap::new(),
             orchestrate_hint: OrchestrateHint::Auto,
             hidden_agents: vec!["codex".into()],
             show_worker_tiles: true,
@@ -432,6 +449,48 @@ mod tests {
         let got = loaded.custom_models.get("codex").map(|v| v.as_slice()).unwrap_or(&[]);
         assert_eq!(got, &["test-model-x", "other"]);
         assert!(loaded.custom_models.get("claude").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn role_efforts_roundtrip_and_lookup() {
+        let dir = tmp_dir("role-efforts");
+        let mut s = OrchSettings::default();
+        let mut impl_map = BTreeMap::new();
+        impl_map.insert("claude:sonnet".into(), Effort::High);
+        impl_map.insert("codex".into(), Effort::Xhigh);
+        s.role_efforts.insert("implement".into(), impl_map);
+        let mut rev_map = BTreeMap::new();
+        rev_map.insert("claude:opus".into(), Effort::Max);
+        s.role_efforts.insert("review".into(), rev_map);
+
+        save(&dir, &s).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.effort_for(Some(Role::Implement), "claude", Some("sonnet")), Some(Effort::High));
+        assert_eq!(loaded.effort_for(None, "claude", Some("sonnet")), Some(Effort::High));
+        assert_eq!(loaded.effort_for(None, "codex", None), Some(Effort::Xhigh));
+        assert_eq!(loaded.effort_for(Some(Role::Review), "claude", Some("opus")), Some(Effort::Max));
+        assert_eq!(loaded.effort_for(Some(Role::Explore), "claude", Some("sonnet")), None);
+        assert_eq!(loaded.effort_for(Some(Role::Implement), "claude", Some("haiku")), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn role_efforts_missing_in_json_loads_empty() {
+        let dir = tmp_dir("role-efforts-compat");
+        let json = serde_json::json!({
+            "coordinator": "claude:opus",
+            "roles": { "implement": ["claude:sonnet"] },
+            "hiddenAgents": [],
+            "providers": [],
+            "showWorkerTiles": false
+        });
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json.to_string()).unwrap();
+        let loaded = load(&dir);
+        assert!(loaded.role_efforts.is_empty());
+        assert_eq!(loaded.effort_for(Some(Role::Implement), "claude", Some("sonnet")), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
