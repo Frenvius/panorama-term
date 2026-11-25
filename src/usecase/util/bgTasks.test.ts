@@ -121,4 +121,7 @@ test('cliOf finds the agent CLI a command runs', () => {
   expect(cliOf('timeout 400 gemini -p hi')).toBe('gemini');
   expect(cliOf('grep codex-notes.md file')).toBeUndefined();
   expect(cliOf('bun test')).toBeUndefined();
+  expect(cliOf('"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" exec x')).toBe('codex');
+  expect(cliOf('Codex.exe exec x')).toBe('codex');
+  expect(cliOf('codexify run')).toBeUndefined();
 });

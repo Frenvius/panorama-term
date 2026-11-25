@@ -44,7 +44,7 @@ const SHELL_ENDS_MAX = 50
 const shellIds = new Set<string>()
 const shellEnds = new Map<string, string>()
 // Other agent CLIs the model runs in the foreground (`codex exec ...`), by tool_use_id; listed with the shells.
-const CLI_RE = /(?:^|[\s;&|(/])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?=\s|$)/
+const CLI_RE = /(?:^|[\s;&|(/\\"'])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?(?=[\s"']|$)/i
 const calls = new Map<string, ShellRow>()
 
 const dialogOpen = () => toolDialog || commandDialog || elicitDialog
@@ -257,7 +257,8 @@ function recordShellEnd(id: string, status: string) {
 // A monitor's result names no file; its output sits beside the shells' in the session's tasks folder.
 function siblingOutput(id: string) {
   const known = [...shells.values()].find(s => s.outputFile)?.outputFile
-  return known ? `${known.slice(0, known.lastIndexOf('/') + 1)}${id}.output` : undefined
+  const cut = known ? Math.max(known.lastIndexOf('/'), known.lastIndexOf('\\')) : -1
+  return known ? `${known.slice(0, cut + 1)}${id}.output` : undefined
 }
 
 function trackShell(

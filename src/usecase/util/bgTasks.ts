@@ -40,10 +40,11 @@ const AUTO_ORDER: Side[] = ['right', 'below', 'left', 'above'];
 const EMPTY: BgTask[] = [];
 const REQUEST_EVENT = 'tasks:open';
 
-const CLI_RE = /(?:^|[\s;&|(/])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?=\s|$)/;
+// Matches `codex`, `~/.local/bin/codex`, `C:\...\codex.exe`, `codex.cmd`; Windows wrappers carry an extension.
+const CLI_RE = /(?:^|[\s;&|(/\\"'])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?(?=[\s"']|$)/i;
 
 // The agent CLI a shell command runs, if any.
-export const cliOf = (command: string): string | undefined => CLI_RE.exec(command)?.[1];
+export const cliOf = (command: string): string | undefined => CLI_RE.exec(command)?.[1]?.toLowerCase();
 
 const detailKey = (t: BgTask) => JSON.stringify([t.description, t.label, t.model, t.tokens, t.activity]);
 
