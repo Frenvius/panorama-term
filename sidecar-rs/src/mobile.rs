@@ -31,6 +31,7 @@ use wire::{session_key, Channel};
 use crate::local_origins::LOCAL_ORIGINS;
 
 mod desktop_routes;
+mod groups;
 mod presence;
 mod prompt;
 mod relay;
@@ -625,12 +626,18 @@ fn transcript_mtime_ms(binding: &Value) -> Option<u64> {
 
 struct CanvasTileInfo {
     id: String,
+    tile_type: String,
     cwd: Option<String>,
+    file_path: Option<String>,
     title: Option<String>,
+    user_title: Option<String>,
     branch: Option<String>,
     workspace_id: String,
     workspace_name: String,
     workspace_tab: String,
+    group_info: Option<groups::TileGroupInfo>,
+    ws_order: usize,
+    tab_order: usize,
 }
 
 struct SessionView {
@@ -647,7 +654,7 @@ struct SessionView {
     last_activity: Option<u64>,
 }
 
-async fn canvas_term_tiles() -> Vec<CanvasTileInfo> {
+async fn canvas_all_tiles() -> Vec<CanvasTileInfo> {
     let index = match crate::service_bridge::call("store_read", json!({"name": "workspaces.json"})).await {
         Ok(v) if v.is_object() => v,
         Ok(_) => return vec![],
@@ -664,7 +671,7 @@ async fn canvas_term_tiles() -> Vec<CanvasTileInfo> {
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     let mut result = Vec::new();
-    for ws_id in &order {
+    for (ws_order, ws_id) in order.iter().enumerate() {
         let ws_data = match crate::service_bridge::call(
             "store_read",
             json!({"name": format!("workspaces/{ws_id}.json")}),
@@ -674,28 +681,67 @@ async fn canvas_term_tiles() -> Vec<CanvasTileInfo> {
         };
         let ws_name = ws_data["meta"]["name"].as_str().unwrap_or("").to_string();
         let Some(tabs) = ws_data["tabs"].as_array() else { continue };
-        for tab in tabs {
+        for (tab_order, tab) in tabs.iter().enumerate() {
             let tab_name = tab["name"].as_str().unwrap_or("").to_string();
-            let Some(tiles) = tab["state"]["tiles"].as_array() else { continue };
-            for tile in tiles {
-                if tile["type"].as_str() != Some("term") { continue }
+            let Some(raw_tiles) = tab["state"]["tiles"].as_array() else { continue };
+            let all_tiles: Vec<Value> = raw_tiles.iter().cloned().collect();
+            let frames: Vec<Value> = tab["state"]["frames"]
+                .as_array()
+                .map_or_else(Vec::new, |a| a.iter().cloned().collect());
+            let view_projects: Vec<String> = tab["state"]["projectView"]["projects"]
+                .as_array()
+                .map_or_else(Vec::new, |a| {
+                    a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+                });
+            let sync_projs = groups::sync_project_view_with_tiles(&view_projects, &all_tiles);
+            let used_projs = groups::projects_in_use(&frames, &all_tiles, &sync_projs);
+            let project_groups = groups::build_project_groups(&groups::GroupInputs {
+                frames: &frames,
+                tiles: &all_tiles,
+                projects: &used_projs,
+            });
+            let group_map = groups::assign_group_info(&project_groups);
+            for tile in &all_tiles {
                 if tile["orchWorker"].as_bool().unwrap_or(false) { continue }
                 if tile["runId"].is_string() { continue }
                 if tile["runCwd"].is_string() { continue }
                 let Some(id) = tile["id"].as_str() else { continue };
-                let title = tile["userTitle"].as_str()
-                    .or_else(|| tile["boardTitle"].as_str())
-                    .or_else(|| tile["oscTitle"].as_str())
-                    .or_else(|| tile["autoTitle"].as_str())
-                    .map(str::to_string);
+                let tile_type = tile["type"].as_str().unwrap_or("").to_string();
+                let user_title = tile["userTitle"].as_str().map(str::to_string);
+                let title = user_title.clone()
+                    .or_else(|| tile["boardTitle"].as_str().map(str::to_string))
+                    .or_else(|| tile["oscTitle"].as_str().map(str::to_string))
+                    .or_else(|| tile["autoTitle"].as_str().map(str::to_string))
+                    .or_else(|| {
+                        tile["filePath"].as_str().and_then(|fp| {
+                            std::path::Path::new(fp)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(str::to_string)
+                        })
+                    });
+                let cwd = if tile_type == "term" {
+                    tile["cwd"].as_str().map(str::to_string)
+                } else {
+                    tile["cwd"].as_str()
+                        .or_else(|| tile["folderPath"].as_str())
+                        .or_else(|| tile["workspacePath"].as_str())
+                        .map(str::to_string)
+                };
                 result.push(CanvasTileInfo {
                     id: id.to_string(),
-                    cwd: tile["cwd"].as_str().map(str::to_string),
+                    tile_type,
+                    cwd,
+                    file_path: tile["filePath"].as_str().map(str::to_string),
                     title,
+                    user_title,
                     branch: tile["branch"].as_str().map(str::to_string),
                     workspace_id: ws_id.clone(),
                     workspace_name: ws_name.clone(),
                     workspace_tab: tab_name.clone(),
+                    group_info: group_map.get(id).cloned(),
+                    ws_order,
+                    tab_order,
                 });
             }
         }
@@ -736,27 +782,147 @@ fn merge_tiles(
     canvas: &[CanvasTileInfo],
     workers: &HashMap<String, crate::orch::WorkerTile>,
 ) -> Vec<Value> {
-    let live_ids: HashSet<&str> = sessions.iter().map(|s| s.tile_id.as_str()).collect();
-    let canvas_map: HashMap<&str, &CanvasTileInfo> =
-        canvas.iter().map(|c| (c.id.as_str(), c)).collect();
-    let mut result = Vec::new();
-    for sv in sessions {
+    let session_map: HashMap<&str, &SessionView> =
+        sessions.iter().map(|s| (s.tile_id.as_str(), s)).collect();
+    let canvas_ids: HashSet<&str> = canvas.iter().map(|c| c.id.as_str()).collect();
+
+    let mut sorted_canvas: Vec<&CanvasTileInfo> = canvas.iter().collect();
+    sorted_canvas.sort_by_key(|c| {
+        let (gi, ti) = c
+            .group_info
+            .as_ref()
+            .map_or((usize::MAX, usize::MAX), |g| (g.index, g.order));
+        (c.ws_order, c.tab_order, gi, ti)
+    });
+
+    let mut result: Vec<Value> = Vec::new();
+
+    for c in sorted_canvas {
+        let worker = workers.get(c.id.as_str()).map(|w| json!({
+            "runId": w.run_id,
+            "runTitle": w.run_title,
+            "taskTitle": w.task_title,
+            "status": w.status,
+        }));
+        let workspace = json!({
+            "id": c.workspace_id,
+            "name": c.workspace_name,
+            "tab": c.workspace_tab,
+        });
+        let group = c.group_info.as_ref().map(|g| json!({
+            "key": g.key,
+            "kind": g.kind,
+            "title": g.title,
+            "path": g.path,
+            "index": g.index,
+            "outside": g.outside,
+            "drifted": g.drifted,
+        }));
+        let order: Value = c.group_info.as_ref().map_or(Value::Null, |g| g.order.into());
+
+        if c.tile_type == "term" {
+            if let Some(sv) = session_map.get(c.id.as_str()) {
+                let title = c.user_title.clone().or_else(|| sv.title.clone());
+                let cwd = sv
+                    .cwd
+                    .clone()
+                    .or_else(|| workers.get(c.id.as_str()).and_then(|w| w.worktree.clone()))
+                    .or_else(|| c.cwd.clone());
+                result.push(json!({
+                    "tileId": c.id,
+                    "type": c.tile_type,
+                    "kind": sv.kind,
+                    "title": title,
+                    "cwd": cwd,
+                    "branch": sv.branch,
+                    "alive": sv.alive,
+                    "agent": sv.agent,
+                    "model": sv.model,
+                    "status": sv.status,
+                    "snippet": sv.snippet,
+                    "lastActivity": sv.last_activity,
+                    "dormant": false,
+                    "filePath": c.file_path,
+                    "group": group,
+                    "order": order,
+                    "workspace": workspace,
+                    "worker": worker,
+                }));
+            } else {
+                let binding = read_binding_rec(&c.id);
+                let agent = binding
+                    .as_ref()
+                    .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
+                let last_activity = binding.as_ref().and_then(|b| {
+                    b.get("lastActivity")
+                        .and_then(|t| t.as_u64())
+                        .or_else(|| transcript_mtime_ms(b))
+                });
+                result.push(json!({
+                    "tileId": c.id,
+                    "type": c.tile_type,
+                    "kind": "terminal",
+                    "title": c.title,
+                    "cwd": c.cwd,
+                    "branch": c.branch,
+                    "alive": false,
+                    "agent": agent,
+                    "model": Value::Null,
+                    "status": Value::Null,
+                    "snippet": Value::Null,
+                    "lastActivity": last_activity,
+                    "dormant": true,
+                    "filePath": c.file_path,
+                    "group": group,
+                    "order": order,
+                    "workspace": workspace,
+                    "worker": Value::Null,
+                }));
+            }
+        } else {
+            result.push(json!({
+                "tileId": c.id,
+                "type": c.tile_type,
+                "kind": "canvas",
+                "title": c.title,
+                "cwd": c.cwd,
+                "branch": Value::Null,
+                "alive": false,
+                "agent": Value::Null,
+                "model": Value::Null,
+                "status": Value::Null,
+                "snippet": Value::Null,
+                "lastActivity": Value::Null,
+                "dormant": false,
+                "filePath": c.file_path,
+                "group": group,
+                "order": order,
+                "workspace": workspace,
+                "worker": Value::Null,
+            }));
+        }
+    }
+
+    let mut orphans: Vec<&SessionView> = sessions
+        .iter()
+        .filter(|s| !canvas_ids.contains(s.tile_id.as_str()))
+        .collect();
+    orphans.sort_by(|a, b| a.tile_id.cmp(&b.tile_id));
+
+    for sv in orphans {
         let worker = workers.get(sv.tile_id.as_str()).map(|w| json!({
             "runId": w.run_id,
             "runTitle": w.run_title,
             "taskTitle": w.task_title,
             "status": w.status,
         }));
-        let cwd = sv.cwd.clone()
-            .or_else(|| workers.get(sv.tile_id.as_str()).and_then(|w| w.worktree.clone()))
-            .or_else(|| canvas_map.get(sv.tile_id.as_str()).and_then(|c| c.cwd.clone()));
-        let workspace = canvas_map.get(sv.tile_id.as_str()).map(|c| json!({
-            "id": c.workspace_id,
-            "name": c.workspace_name,
-            "tab": c.workspace_tab,
-        }));
+        let cwd = sv
+            .cwd
+            .clone()
+            .or_else(|| workers.get(sv.tile_id.as_str()).and_then(|w| w.worktree.clone()));
         result.push(json!({
             "tileId": sv.tile_id,
+            "type": Value::Null,
             "kind": sv.kind,
             "title": sv.title,
             "cwd": cwd,
@@ -768,47 +934,21 @@ fn merge_tiles(
             "snippet": sv.snippet,
             "lastActivity": sv.last_activity,
             "dormant": false,
-            "workspace": workspace,
+            "filePath": Value::Null,
+            "group": Value::Null,
+            "order": Value::Null,
+            "workspace": Value::Null,
             "worker": worker,
         }));
     }
-    for c in canvas {
-        if live_ids.contains(c.id.as_str()) { continue }
-        let binding = read_binding_rec(&c.id);
-        let agent = binding
-            .as_ref()
-            .and_then(|b| b.get("agent").and_then(|a| a.as_str()).map(str::to_string));
-        let last_activity = binding.as_ref().and_then(|b| {
-            b.get("lastActivity").and_then(|t| t.as_u64()).or_else(|| transcript_mtime_ms(b))
-        });
-        result.push(json!({
-            "tileId": c.id,
-            "kind": "terminal",
-            "title": c.title,
-            "cwd": c.cwd,
-            "branch": c.branch,
-            "alive": false,
-            "agent": agent,
-            "model": Value::Null,
-            "status": Value::Null,
-            "snippet": Value::Null,
-            "lastActivity": last_activity,
-            "dormant": true,
-            "workspace": json!({
-                "id": c.workspace_id,
-                "name": c.workspace_name,
-                "tab": c.workspace_tab,
-            }),
-            "worker": Value::Null,
-        }));
-    }
+
     result
 }
 
 async fn tiles_json() -> Value {
     let session_list: Vec<Arc<Session>> = sessions().lock().unwrap().values().cloned().collect();
     let views: Vec<SessionView> = session_list.iter().map(session_to_view).collect();
-    let canvas = canvas_term_tiles().await;
+    let canvas = canvas_all_tiles().await;
     let workers = crate::orch::worker_tiles();
     Value::Array(merge_tiles(&views, &canvas, &workers))
 }
@@ -1146,6 +1286,22 @@ fn tile_cwd(tile_id: &str) -> Result<String, String> {
     session.effective_cwd().ok_or_else(|| "tile has no folder yet".to_string())
 }
 
+async fn file_scope(tile_id: &str, path: &str) -> Result<(String, String), String> {
+    if let Ok(cwd) = tile_cwd(tile_id) {
+        return Ok((cwd, path.to_string()));
+    }
+    let canvas = canvas_all_tiles().await;
+    let tile = canvas.iter().find(|c| c.id == tile_id).ok_or_else(|| "no session for tile".to_string())?;
+    if let Some(file_path) = tile.file_path.as_deref().filter(|fp| *fp == path) {
+        let file = std::path::Path::new(file_path);
+        let dir = file.parent().and_then(|d| d.to_str()).ok_or_else(|| "invalid path".to_string())?;
+        let name = file.file_name().and_then(|n| n.to_str()).ok_or_else(|| "invalid path".to_string())?;
+        return Ok((dir.to_string(), name.to_string()));
+    }
+    let cwd = tile.cwd.clone().ok_or_else(|| "tile has no folder yet".to_string())?;
+    Ok((cwd, path.to_string()))
+}
+
 fn run_kind(p: &Value) -> &'static str {
     match p["kind"].as_str() {
         Some("build") => "build",
@@ -1221,19 +1377,17 @@ async fn dispatch(method: &str, p: &Value, subs: &mut Subs) -> Result<Value, Str
             blocking(move || git_glance::diff_json(&cwd, &path)).await
         }
         "fs.list" => {
-            let cwd = tile_cwd(str_param(p, "tileId")?)?;
-            let path = p["path"].as_str().unwrap_or_default().to_string();
+            let (cwd, path) = file_scope(str_param(p, "tileId")?, p["path"].as_str().unwrap_or_default()).await?;
             blocking(move || files::list_json(&cwd, &path)).await
         }
         "fs.read" => {
-            let cwd = tile_cwd(str_param(p, "tileId")?)?;
-            let path = str_param(p, "path")?.to_string();
+            let (cwd, path) = file_scope(str_param(p, "tileId")?, str_param(p, "path")?).await?;
             blocking(move || files::read_json(&cwd, &path)).await
         }
         "term.subscribe" => {
             let tile_id = str_param(p, "tileId")?;
             if live_session(tile_id).is_err() {
-                let canvas = canvas_term_tiles().await;
+                let canvas = canvas_all_tiles().await;
                 let ct = canvas.iter().find(|c| c.id == tile_id)
                     .ok_or_else(|| "no session for tile".to_string())?;
                 let params = crate::Params {
@@ -1707,12 +1861,18 @@ mod tests {
     fn merge_dormant_canvas_tile_appended() {
         let canvas = vec![CanvasTileInfo {
             id: "canvas1".into(),
+            tile_type: "term".into(),
             cwd: Some("/canvas".into()),
+            file_path: None,
             title: Some("My Canvas Tile".into()),
+            user_title: None,
             branch: None,
             workspace_id: "ws1".into(),
             workspace_name: "Workspace 1".into(),
             workspace_tab: "Main".into(),
+            group_info: None,
+            ws_order: 0,
+            tab_order: 0,
         }];
         let result = merge_tiles(&[], &canvas, &HashMap::new());
         assert_eq!(result.len(), 1);
@@ -1725,12 +1885,18 @@ mod tests {
     fn merge_workspace_attached() {
         let canvas = vec![CanvasTileInfo {
             id: "tile2".into(),
+            tile_type: "term".into(),
             cwd: Some("/ws".into()),
+            file_path: None,
             title: None,
+            user_title: None,
             branch: None,
             workspace_id: "ws2".into(),
             workspace_name: "Dev".into(),
             workspace_tab: "Frontend".into(),
+            group_info: None,
+            ws_order: 0,
+            tab_order: 0,
         }];
         let sessions = vec![SessionView {
             tile_id: "tile2".into(),
