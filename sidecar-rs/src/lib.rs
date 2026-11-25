@@ -2258,6 +2258,7 @@ fn handle_agent_status(body: &[u8]) {
             }
             if prev != Some(ns.as_str()) {
                 agents::on_status(&tile_id);
+                agents::on_tile_status(&tile_id, ns);
             }
         }
     }
@@ -4996,12 +4997,14 @@ fn submission_screen_markers() {
 pub(crate) enum Confirm {
     Submitted,
     Stuck,
+    Unconfirmed,
 }
 
 pub(crate) trait PasteTarget {
     fn screen(&self) -> String;
     fn bracketed(&self) -> bool;
     fn write(&self, bytes: &[u8]) -> Result<(), String>;
+    fn busy(&self) -> bool;
 }
 
 struct TileTarget {
@@ -5010,6 +5013,14 @@ struct TileTarget {
 }
 
 impl PasteTarget for TileTarget {
+    fn busy(&self) -> bool {
+        self.session.as_ref()
+            .and_then(|s| cached_agent_state(s))
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .is_some_and(|v| v["lastStatus"] == "busy")
+            || agents::quiet_busy(&self.tile_id)
+    }
+
     fn screen(&self) -> String {
         tile_screen(&self.tile_id)
     }
@@ -5052,21 +5063,39 @@ fn type_text<T: PasteTarget>(target: &T, msg: &str) -> Result<(), String> {
     }
 }
 
+const PASTE_MARKER: &str = "[Pasted text";
+const BUSY_EVIDENCE_POLLS: u32 = 15;
+
+fn shows_paste(screen: &str, msg: &str) -> bool {
+    input_contains(screen, msg) || screen.rsplit_once('\0').is_some_and(|(_, input)| input.contains(PASTE_MARKER))
+}
+
 async fn submit_typed<T: PasteTarget>(target: &T, msg: &str) -> Confirm {
+    let mut seen = false;
     for _ in 0..15 {
-        if input_contains(&target.screen(), msg) { break; }
+        if shows_paste(&target.screen(), msg) {
+            seen = true;
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let submit_key = |screen: &str| -> &'static [u8] { if queue_hint(screen) { b"\t" } else { b"\r" } };
     let _ = target.write(submit_key(&target.screen()));
     tokio::time::sleep(Duration::from_millis(400)).await;
+    if !seen {
+        for _ in 0..BUSY_EVIDENCE_POLLS {
+            if target.busy() { return Confirm::Submitted; }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        return Confirm::Unconfirmed;
+    }
     let screen = target.screen();
-    if !input_contains(&screen, msg) {
+    if !shows_paste(&screen, msg) {
         return Confirm::Submitted;
     }
     let _ = target.write(submit_key(&screen));
     tokio::time::sleep(Duration::from_millis(600)).await;
-    if input_contains(&target.screen(), msg) { Confirm::Stuck } else { Confirm::Submitted }
+    if shows_paste(&target.screen(), msg) { Confirm::Stuck } else { Confirm::Submitted }
 }
 
 pub(crate) async fn paste_confirmed<T: PasteTarget>(target: &T, text: &str) -> Result<Confirm, String> {
@@ -5094,10 +5123,12 @@ fn live_target(tile_id: &str) -> Result<TileTarget, String> {
     Ok(TileTarget { tile_id: tile_id.to_string(), session })
 }
 
-pub(crate) async fn send_to_tile_confirmed(tile_id: &str, text: &str) -> Result<Confirm, String> {
-    let target = live_target(tile_id)?;
-    let _writer = tile_writer(tile_id).lock_owned().await;
-    paste_confirmed(&target, text).await
+pub(crate) async fn lock_tile_writer(tile_id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    Some(tile_writer(tile_id).lock_owned().await)
+}
+
+pub(crate) async fn paste_to_locked_tile(tile_id: &str, text: &str) -> Result<Confirm, String> {
+    paste_confirmed(&live_target(tile_id)?, text).await
 }
 
 pub(crate) async fn clear_tile_input(tile_id: &str) {
@@ -5195,11 +5226,18 @@ mod paste_tests {
         swallow_enter: bool,
         queue_hint: bool,
         flat: bool,
+        invisible: bool,
+        collapsed: bool,
+        busy_on_enter: bool,
+        busy: Mutex<bool>,
     }
 
     impl FakeTerminal {
         fn new(swallow_enter: bool) -> Self {
-            Self { input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false, flat: false }
+            Self {
+                input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false, flat: false,
+                invisible: false, collapsed: false, busy_on_enter: false, busy: Mutex::new(false),
+            }
         }
     }
 
@@ -5214,11 +5252,35 @@ mod paste_tests {
             self.writes.lock().unwrap().push(text.clone());
             if text == "\r" || text == "\t" {
                 if !self.swallow_enter { self.input_row.lock().unwrap().clear(); }
-            } else {
+                if self.busy_on_enter { *self.busy.lock().unwrap() = true; }
+            } else if self.collapsed {
+                *self.input_row.lock().unwrap() = "[Pasted text #1 +3 lines]".into();
+            } else if !self.invisible {
                 self.input_row.lock().unwrap().push_str(text.trim_start_matches("\x1b[200~").trim_end_matches("\x1b[201~"));
             }
             Ok(())
         }
+        fn busy(&self) -> bool { *self.busy.lock().unwrap() }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_never_seen_and_never_busy_is_not_reported_submitted() {
+        let t = FakeTerminal { invisible: true, ..FakeTerminal::new(false) };
+        assert_eq!(paste_confirmed(&t, "hello agent").await, Ok(Confirm::Unconfirmed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_never_seen_counts_as_submitted_once_the_cli_goes_busy() {
+        let t = FakeTerminal { invisible: true, busy_on_enter: true, ..FakeTerminal::new(false) };
+        assert_eq!(paste_confirmed(&t, "hello agent").await, Ok(Confirm::Submitted));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_collapsed_paste_marker_is_evidence_on_the_input_row() {
+        let t = FakeTerminal { collapsed: true, ..FakeTerminal::new(false) };
+        assert_eq!(paste_confirmed(&t, "line one\nline two\nline three").await, Ok(Confirm::Submitted));
+        let stuck = FakeTerminal { collapsed: true, ..FakeTerminal::new(true) };
+        assert_eq!(paste_confirmed(&stuck, "line one\nline two").await, Ok(Confirm::Stuck));
     }
 
     fn has_control(text: &str) -> bool {

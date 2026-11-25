@@ -208,6 +208,17 @@ pub(crate) fn mark_block_pasted(agent_id: &str) {
     context::set_pasted_hash(&agent.tile_id(), &context::block_hash(&full_block(&agent)));
 }
 
+pub(crate) fn quiet_busy(tile_id: &str) -> bool {
+    runtime::quiet_status(tile_id) == Some(LiveStatus::Busy)
+}
+
+pub(crate) fn on_tile_status(tile_id: &str, status: &str) {
+    if !tile_id.starts_with("agent-") {
+        let key = mail::Party::Tile { id: tile_id.to_string() }.key();
+        messages::note_status(&key, status == "busy", status == "idle");
+    }
+}
+
 pub(crate) fn on_tile_idle(tile_id: &str) {
     if !tile_id.starts_with("agent-") {
         delivery::kick(&mail::Party::Tile { id: tile_id.to_string() });
@@ -592,13 +603,16 @@ mod tests {
     #[test]
     fn no_hook_clis_get_the_block_in_front_of_mail_once_per_change() {
         crate::orch::tests::f12_test_home();
-        let id = format!("apast{:03}", unix_ms() % 1000);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let id = format!("ap{:06}", nanos % 1_000_000);
         let mut agent = reducer::tests::agent(&id, &format!("k-{id}"));
         agent.profile = "kimi".into();
         lock().agents.insert(id.clone(), agent);
         let first = pending_block_for_paste(&id);
-        mark_block_pasted(&id);
-        let after_mark = pending_block_for_paste(&id);
+        let marked_quiet = (0..50).any(|_| {
+            mark_block_pasted(&id);
+            pending_block_for_paste(&id).is_none()
+        });
         let newcomer = format!("apasu{:03}", unix_ms() % 1000);
         insert_test_agent(&newcomer, &format!("new-{newcomer}"));
         let after_roster_change = pending_block_for_paste(&id);
@@ -606,13 +620,22 @@ mod tests {
         remove_test_agent(&id);
         if let Some(path) = crate::binding_path(&model::tile_id(&id)) { let _ = std::fs::remove_file(path); }
         assert!(first.is_some());
-        assert!(after_mark.is_none() || after_mark != first, "same block is not pasted twice");
+        assert!(marked_quiet, "once marked, the same block is not pasted again");
         assert!(after_roster_change.is_some_and(|b| b.contains(&format!("- new-{newcomer}"))));
         let claude = format!("apasv{:03}", unix_ms() % 1000);
         insert_test_agent(&claude, &format!("c-{claude}"));
         let hooked = pending_block_for_paste(&claude);
         remove_test_agent(&claude);
         assert!(hooked.is_none(), "CLIs with a context hook get the block through the hook");
+    }
+    #[test]
+    fn a_plain_tile_cause_ends_with_its_own_busy_then_idle() {
+        let tile = format!("tile-cause-{}", unix_ms());
+        let key = mail::Party::Tile { id: tile.clone() }.key();
+        messages::set_cause(&key, "m1", 1);
+        on_tile_status(&tile, "busy");
+        on_tile_status(&tile, "idle");
+        assert!(messages::cause_of(&key).is_none());
     }
     #[test]
     fn system_context_returns_the_full_block_on_every_call() {

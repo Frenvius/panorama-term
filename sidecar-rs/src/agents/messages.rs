@@ -61,21 +61,29 @@ pub struct Cause {
     pub seen_busy: bool,
 }
 
-pub(crate) fn cause_of(agent_id: &str) -> Option<Cause> {
-    guard(causes()).get(agent_id).cloned()
+pub(crate) fn cause_of(key: &str) -> Option<Cause> {
+    guard(causes()).get(key).cloned()
 }
 
-pub(crate) fn set_cause(agent_id: &str, thread: &str, hops: u8) {
-    guard(causes()).insert(agent_id.to_string(), Cause { thread: thread.into(), hops, seen_busy: false });
+pub(crate) fn set_cause(key: &str, thread: &str, hops: u8) {
+    guard(causes()).insert(key.to_string(), Cause { thread: thread.into(), hops, seen_busy: false });
 }
 
-pub(crate) fn note_status(agent_id: &str, busy: bool, idle: bool) {
+pub(crate) fn put_cause(key: &str, cause: Cause) {
+    guard(causes()).insert(key.to_string(), cause);
+}
+
+pub(crate) fn clear_cause(key: &str) {
+    guard(causes()).remove(key);
+}
+
+pub(crate) fn note_status(key: &str, busy: bool, idle: bool) {
     let mut map = guard(causes());
-    let Some(cause) = map.get_mut(agent_id) else { return };
+    let Some(cause) = map.get_mut(key) else { return };
     if busy {
         cause.seen_busy = true;
     } else if idle && cause.seen_busy {
-        map.remove(agent_id);
+        map.remove(key);
     }
 }
 
@@ -314,6 +322,10 @@ fn decision_name(decision: &StartDecision) -> &'static str {
     }
 }
 
+pub(crate) fn inherited_thread(from: &Party) -> Option<(String, u8)> {
+    cause_of(&from.key()).map(|c| (c.thread, c.hops.saturating_add(1)))
+}
+
 pub fn handle_send(v: &Value) -> String {
     let to = text_field(v, "to").unwrap_or_default();
     let text = text_field(v, "text").unwrap_or_default();
@@ -325,7 +337,7 @@ pub fn handle_send(v: &Value) -> String {
         return err_resp("not_found", &format!("no agent named {to}"));
     };
     let (from, from_name) = sender_from(v);
-    let thread = from.agent_id().and_then(cause_of).map(|c| (c.thread, c.hops.saturating_add(1)));
+    let thread = inherited_thread(&from);
     let to_name = party_name(&to_party);
     let out = Outgoing { from, from_name, to: to_party, text, expects_reply, reply_to: None, thread };
     match post(out, recipient) {
@@ -455,7 +467,7 @@ pub(crate) fn on_agent_deleted(agent_id: &str, name: &str) {
             }
         }
     }
-    guard(causes()).remove(agent_id);
+    guard(causes()).remove(&party.key());
 }
 
 #[cfg(test)]
@@ -589,15 +601,15 @@ mod tests {
         let (from, _) = make_agent("l", Desired::Running, false);
         let (to, to_name) = make_agent("m", Desired::Stopped, false);
         let thread = format!("mloop{}", &from[2..]);
-        set_cause(&from, &thread, crate::agents::mail::MAX_HOPS);
+        set_cause(&Party::Agent { id: from.clone() }.key(), &thread, crate::agents::mail::MAX_HOPS);
         let refused = reply_of(handle_send(&json!({ "to": to_name, "text": "again", "fromAgent": from })));
         assert_eq!(refused["error"]["code"], "rejected", "{refused}");
         assert_eq!(lock().agents[&to].desired, Desired::Stopped);
-        set_cause(&from, &thread, 1);
+        set_cause(&Party::Agent { id: from.clone() }.key(), &thread, 1);
         let later = reply_of(handle_send(&json!({ "to": to_name, "text": "later", "fromAgent": from })));
         assert_eq!(later["recipientStatus"], "stopped_loop_guarded", "{later}");
         assert_eq!(lock().agents[&to].desired, Desired::Stopped);
-        guard(causes()).remove(&from);
+        guard(causes()).remove(&Party::Agent { id: from.clone() }.key());
     }
 
     #[test]

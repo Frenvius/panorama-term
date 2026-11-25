@@ -644,7 +644,8 @@ fn hook_status_known(tile: &str) -> bool {
 fn status_settled(id: &str) {
     let Some(agent) = agent_snapshot(id) else { return };
     let status = crate::agents::live_view(&agent).status;
-    crate::agents::messages::note_status(id, status == LiveStatus::Busy, status == LiveStatus::Idle);
+    let key = crate::agents::mail::Party::Agent { id: id.to_string() }.key();
+    crate::agents::messages::note_status(&key, status == LiveStatus::Busy, status == LiveStatus::Idle);
     if status == LiveStatus::Idle {
         crate::agents::delivery::kick(&crate::agents::mail::Party::Agent { id: id.to_string() });
     }

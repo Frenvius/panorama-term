@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::agents::envelope;
 use crate::agents::mail::{MailCmd, Message, Party};
-use crate::agents::messages::{commit_mail, set_cause, with_mailbox};
+use crate::agents::messages::{cause_of, commit_mail, set_cause, with_mailbox};
 use crate::agents::model::{LiveStatus, StatusSource};
 use crate::{ClientInput, Confirm};
 
@@ -48,6 +48,8 @@ pub(crate) trait DeliveryBackend {
     fn bracketed(&self, tile: &str) -> bool;
     fn prefix(&self, party: &Party) -> Option<String>;
     fn prefix_delivered(&self, party: &Party);
+    type Lock;
+    async fn lock(&self, tile: &str) -> Self::Lock;
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String>;
     async fn clear(&self, tile: &str);
     fn retry_later(&self, party: &Party, delay_ms: u64);
@@ -102,13 +104,8 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
         return Outcome::Nothing;
     }
     let Some(view) = backend.view(party) else { return Outcome::NotReady };
-    match readiness(&view, backend.input(&view.tile), backend.now()) {
-        Readiness::NotIdle => return Outcome::NotReady,
-        Readiness::WaitTyping(ms) => {
-            backend.retry_later(party, ms);
-            return Outcome::Waiting(ms);
-        }
-        Readiness::Ready => {}
+    if let Some(outcome) = not_ready(backend, party, &view) {
+        return outcome;
     }
     let bracketed = backend.bracketed(&view.tile);
     let prefix = backend.prefix(party);
@@ -116,17 +113,36 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
     let Some(batch) = envelope::batch(&refs, &crate::panorama_cli_path(), bracketed, prefix.as_deref()) else {
         return Outcome::Nothing;
     };
-    match backend.paste(&view.tile, &batch.text).await {
+    let key = party.key();
+    let previous_cause = cause_of(&key);
+    let paste_started = backend.now();
+    let result = {
+        let _writer = backend.lock(&view.tile).await;
+        let Some(current) = backend.view(party) else { return Outcome::NotReady };
+        if let Some(outcome) = not_ready(backend, party, &current) {
+            return outcome;
+        }
+        if let Some(cause) = queue.iter().filter(|m| batch.ids.contains(&m.id)).max_by_key(|m| m.hops) {
+            set_cause(&key, &cause.thread, cause.hops);
+        }
+        backend.paste(&view.tile, &batch.text).await
+    };
+    if !matches!(result, Ok(Confirm::Submitted)) {
+        restore_cause(&key, previous_cause);
+    }
+    match result {
         Ok(Confirm::Submitted) => {
-            if let Err(e) = commit_mail(MailCmd::Deliver { ids: batch.ids.clone(), at: backend.now() }) {
-                eprintln!("[agents] delivery of {:?} not recorded: {}", batch.ids, e.message);
+            let still_queued: Vec<String> = with_mailbox(|mb| batch.ids.iter()
+                .filter(|id| mb.messages.get(*id).is_some_and(|m| m.status == crate::agents::mail::MsgStatus::Queued))
+                .cloned()
+                .collect());
+            if !still_queued.is_empty() {
+                if let Err(e) = commit_mail(MailCmd::Deliver { ids: still_queued, at: backend.now() }) {
+                    eprintln!("[agents] delivery of {:?} not recorded: {}", batch.ids, e.message);
+                }
             }
             if prefix.is_some() {
                 backend.prefix_delivered(party);
-            }
-            let delivered = queue.iter().filter(|m| batch.ids.contains(&m.id));
-            if let (Some(agent), Some(cause)) = (party.agent_id(), delivered.max_by_key(|m| m.hops)) {
-                set_cause(agent, &cause.thread, cause.hops);
             }
             let mut stuck = guard(stuck_once());
             for id in &batch.ids {
@@ -134,16 +150,21 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
             }
             Outcome::Delivered(batch.ids)
         }
-        Ok(Confirm::Stuck) => {
+        Ok(confirm @ (Confirm::Stuck | Confirm::Unconfirmed)) => {
+            if backend.input(&view.tile).last_ms > paste_started {
+                backend.retry_later(party, RETRY_MS);
+                return Outcome::StuckRetry;
+            }
             let second = {
                 let stuck = guard(stuck_once());
                 batch.ids.iter().all(|id| stuck.contains(id))
             };
             backend.clear(&view.tile).await;
             if second {
+                let reason = if confirm == Confirm::Stuck { "stuck" } else { "unconfirmed" };
                 for id in &batch.ids {
                     guard(stuck_once()).remove(id);
-                    if let Err(e) = commit_mail(MailCmd::Fail { id: id.clone(), at: backend.now(), reason: "stuck".into() }) {
+                    if let Err(e) = commit_mail(MailCmd::Fail { id: id.clone(), at: backend.now(), reason: reason.into() }) {
                         eprintln!("[agents] fail {id}: {}", e.message);
                     }
                 }
@@ -160,6 +181,23 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
     }
 }
 
+fn not_ready<B: DeliveryBackend>(backend: &B, party: &Party, view: &View) -> Option<Outcome> {
+    match readiness(view, backend.input(&view.tile), backend.now()) {
+        Readiness::Ready => None,
+        Readiness::NotIdle => Some(Outcome::NotReady),
+        Readiness::WaitTyping(ms) => {
+            backend.retry_later(party, ms);
+            Some(Outcome::Waiting(ms))
+        }
+    }
+}
+
+fn restore_cause(key: &str, previous: Option<crate::agents::messages::Cause>) {
+    match previous {
+        Some(cause) => crate::agents::messages::put_cause(key, cause),
+        None => crate::agents::messages::clear_cause(key),
+    }
+}
 struct LiveBackend;
 
 fn tile_view(tile: &str) -> View {
@@ -196,7 +234,9 @@ impl DeliveryBackend for LiveBackend {
             crate::agents::mark_block_pasted(id);
         }
     }
-    async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String> { crate::send_to_tile_confirmed(tile, text).await }
+    type Lock = Option<tokio::sync::OwnedMutexGuard<()>>;
+    async fn lock(&self, tile: &str) -> Self::Lock { crate::lock_tile_writer(tile).await }
+    async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String> { crate::paste_to_locked_tile(tile, text).await }
     async fn clear(&self, tile: &str) { crate::clear_tile_input(tile).await }
     fn retry_later(&self, party: &Party, delay_ms: u64) {
         let party = party.clone();
@@ -236,6 +276,12 @@ mod tests {
         retries: Mutex<Vec<u64>>,
         prefix: Option<String>,
         prefix_marked: Mutex<bool>,
+        view_calls: Mutex<u32>,
+        busy_after_first_view: bool,
+        busy_during_paste: Option<String>,
+        drop_during_paste: Option<String>,
+        typed_during_paste: Mutex<bool>,
+        type_during_paste: bool,
     }
 
     impl Fake {
@@ -244,6 +290,8 @@ mod tests {
                 view: Some(View { tile: tile.into(), live: true, starting: false, status: LiveStatus::Idle, source: StatusSource::Hook }),
                 input: ClientInput::default(), now: 1_000_000_000, results: Mutex::new(vec![]), pasted: Mutex::new(vec![]),
                 cleared: Mutex::new(0), retries: Mutex::new(vec![]), prefix: None, prefix_marked: Mutex::new(false),
+                view_calls: Mutex::new(0), busy_after_first_view: false, busy_during_paste: None, drop_during_paste: None,
+                typed_during_paste: Mutex::new(false), type_during_paste: false,
             }
         }
 
@@ -254,14 +302,38 @@ mod tests {
     }
 
     impl DeliveryBackend for Fake {
-        fn view(&self, _: &Party) -> Option<View> { self.view.clone() }
-        fn input(&self, _: &str) -> ClientInput { self.input }
+        fn view(&self, _: &Party) -> Option<View> {
+            let mut calls = self.view_calls.lock().unwrap();
+            *calls += 1;
+            let mut view = self.view.clone()?;
+            if self.busy_after_first_view && *calls > 1 {
+                view.status = LiveStatus::Busy;
+            }
+            Some(view)
+        }
+        fn input(&self, _: &str) -> ClientInput {
+            if *self.typed_during_paste.lock().unwrap() {
+                return ClientInput { last_ms: self.now + 1, pending: 1 };
+            }
+            self.input
+        }
         fn now(&self) -> u64 { self.now }
         fn bracketed(&self, _: &str) -> bool { true }
         fn prefix(&self, _: &Party) -> Option<String> { self.prefix.clone() }
         fn prefix_delivered(&self, _: &Party) { *self.prefix_marked.lock().unwrap() = true; }
+        type Lock = ();
+        async fn lock(&self, _: &str) {}
         async fn paste(&self, _: &str, text: &str) -> Result<Confirm, String> {
             self.pasted.lock().unwrap().push(text.to_string());
+            if let Some(key) = &self.busy_during_paste {
+                crate::agents::messages::note_status(key, true, false);
+            }
+            if let Some(id) = &self.drop_during_paste {
+                commit_mail(MailCmd::Drop { id: id.clone(), at: self.now, reason: "recipient_deleted".into() }).unwrap();
+            }
+            if self.type_during_paste {
+                *self.typed_during_paste.lock().unwrap() = true;
+            }
             let mut results = self.results.lock().unwrap();
             if results.is_empty() { Ok(Confirm::Submitted) } else { results.remove(0) }
         }
@@ -270,9 +342,12 @@ mod tests {
     }
 
     fn queue(tag: &str, n: usize) -> (Party, Vec<String>) {
-        crate::orch::tests::f12_test_home();
         let suffix = format!("{tag}{:07}", crate::agents::unix_ms() % 10_000_000);
-        let to = Party::Agent { id: format!("ad{suffix}") };
+        queue_to(Party::Agent { id: format!("ad{suffix}") }, &suffix, n)
+    }
+
+    fn queue_to(to: Party, suffix: &str, n: usize) -> (Party, Vec<String>) {
+        crate::orch::tests::f12_test_home();
         let ids: Vec<String> = (0..n).map(|i| format!("m{suffix}{i}")).collect();
         for (i, id) in ids.iter().enumerate() {
             let m = Message { hops: (i as u8).min(crate::agents::mail::MAX_HOPS), thread: format!("t{suffix}"), ..msg(id, Party::User, to.clone()) };
@@ -329,7 +404,7 @@ mod tests {
         assert_eq!(fake.pasted.lock().unwrap()[0].lines().count(), 5);
         assert!(ids[..5].iter().all(|id| status_of(id) == MsgStatus::Delivered));
         assert_eq!(status_of(&ids[5]), MsgStatus::Queued);
-        let cause = crate::agents::messages::cause_of(to.agent_id().unwrap()).unwrap();
+        let cause = crate::agents::messages::cause_of(&to.key()).unwrap();
         assert_eq!(cause.hops, 4, "the highest hop in the batch");
     }
 
@@ -371,6 +446,70 @@ mod tests {
         assert!(matches!(drain(&fake, &to).await, Outcome::Delivered(_)));
         assert!(fake.pasted.lock().unwrap()[0].starts_with("[panorama agent] roster\n[panorama msg"));
         assert!(*fake.prefix_marked.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn rechecks_readiness_after_taking_the_writer_lock() {
+        let (to, ids) = queue("h", 1);
+        let fake = Fake { busy_after_first_view: true, ..Fake::idle("agent-x") };
+        assert_eq!(drain(&fake, &to).await, Outcome::NotReady);
+        assert!(fake.pasted.lock().unwrap().is_empty());
+        assert_eq!(status_of(&ids[0]), MsgStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn a_busy_reported_during_the_paste_still_ends_the_cause() {
+        let (to, _) = queue("i", 1);
+        let fake = Fake { busy_during_paste: Some(to.key()), ..Fake::idle("agent-x") };
+        assert!(matches!(drain(&fake, &to).await, Outcome::Delivered(_)));
+        crate::agents::messages::note_status(&to.key(), false, true);
+        assert!(crate::agents::messages::cause_of(&to.key()).is_none(), "the turn that carried the mail is over");
+    }
+
+    #[tokio::test]
+    async fn a_failed_paste_keeps_the_previous_cause() {
+        let (to, _) = queue("j", 1);
+        crate::agents::messages::set_cause(&to.key(), "older", 1);
+        let fake = Fake::idle("agent-x").answering(vec![Err("gone".into())]);
+        assert_eq!(drain(&fake, &to).await, Outcome::Error);
+        assert_eq!(crate::agents::messages::cause_of(&to.key()).map(|c| c.thread).as_deref(), Some("older"));
+    }
+
+    #[tokio::test]
+    async fn a_plain_tile_that_receives_mail_inherits_its_thread() {
+        let suffix = format!("k{:07}", crate::agents::unix_ms() % 10_000_000);
+        let tile = Party::Tile { id: format!("tile-{suffix}") };
+        let (to, ids) = queue_to(tile.clone(), &suffix, 2);
+        assert!(matches!(drain(&Fake::idle("tile-x"), &to).await, Outcome::Delivered(_)));
+        let thread = with_mailbox(|mb| mb.messages[&ids[1]].thread.clone());
+        assert_eq!(crate::agents::messages::inherited_thread(&tile), Some((thread, 2)));
+    }
+
+    #[tokio::test]
+    async fn delivery_commits_the_messages_still_queued_when_one_was_dropped() {
+        let (to, ids) = queue("l", 2);
+        let fake = Fake { drop_during_paste: Some(ids[0].clone()), ..Fake::idle("agent-x") };
+        assert!(matches!(drain(&fake, &to).await, Outcome::Delivered(_)));
+        assert_eq!(status_of(&ids[0]), MsgStatus::Dropped);
+        assert_eq!(status_of(&ids[1]), MsgStatus::Delivered);
+    }
+
+    #[tokio::test]
+    async fn stuck_cleanup_never_erases_text_the_user_typed_meanwhile() {
+        let (to, ids) = queue("n", 1);
+        let fake = Fake { type_during_paste: true, ..Fake::idle("agent-x") }.answering(vec![Ok(Confirm::Stuck)]);
+        drain(&fake, &to).await;
+        assert_eq!(*fake.cleared.lock().unwrap(), 0);
+        assert_eq!(status_of(&ids[0]), MsgStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_paste_is_retried_once_then_failed_as_unconfirmed() {
+        let (to, ids) = queue("o", 1);
+        let fake = Fake::idle("agent-x").answering(vec![Ok(Confirm::Unconfirmed), Ok(Confirm::Unconfirmed)]);
+        assert_eq!(drain(&fake, &to).await, Outcome::StuckRetry);
+        assert_eq!(drain(&fake, &to).await, Outcome::Failed(ids.clone()));
+        assert_eq!(with_mailbox(|mb| mb.messages[&ids[0]].reason.clone()).as_deref(), Some("unconfirmed"));
     }
 
     #[test]
