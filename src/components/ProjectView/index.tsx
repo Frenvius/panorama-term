@@ -284,6 +284,10 @@ const ProjectView = () => {
         if (canSleep(tile)) void isTerminalBusy(id).then((busy) => !busy && sleepTile(id));
         return;
       }
+      if (tile?.type === 'note') {
+        detachTile(id);
+        return;
+      }
       requestCloseTile(id);
     },
     [tileMap, detachTile, sleepTile, requestCloseTile]
