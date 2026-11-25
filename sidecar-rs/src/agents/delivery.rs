@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -49,6 +49,7 @@ pub(crate) trait DeliveryBackend {
     fn bracketed(&self, tile: &str) -> bool;
     fn prefix(&self, party: &Party) -> Option<String>;
     fn prefix_delivered(&self, party: &Party);
+    fn last_busy(&self, party: &Party) -> Option<u64>;
     type Lock;
     async fn lock(&self, tile: &str) -> Self::Lock;
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String>;
@@ -61,8 +62,8 @@ fn in_flight() -> &'static Mutex<HashSet<String>> {
     SET.get_or_init(Default::default)
 }
 
-fn stuck_once() -> &'static Mutex<HashSet<String>> {
-    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+fn stuck_once() -> &'static Mutex<HashMap<String, Option<u64>>> {
+    static SET: OnceLock<Mutex<HashMap<String, Option<u64>>>> = OnceLock::new();
     SET.get_or_init(Default::default)
 }
 
@@ -121,6 +122,17 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
     if let Some(outcome) = not_ready(backend, party, &view) {
         return outcome;
     }
+    let proven = proven_delivered(backend, party, &view.tile, &queue);
+    if !proven.is_empty() {
+        if let Err(e) = commit_mail(MailCmd::Deliver { ids: proven.clone(), at: backend.now() }) {
+            eprintln!("[agents] delivery of {proven:?} not recorded: {}", e.message);
+        }
+        let mut stuck = guard(stuck_once());
+        for id in &proven {
+            stuck.remove(id);
+        }
+        return Outcome::Delivered(proven);
+    }
     let bracketed = backend.bracketed(&view.tile);
     let prefix = backend.prefix(party);
     let refs: Vec<&Message> = queue.iter().collect();
@@ -171,7 +183,7 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
             }
             let second = {
                 let stuck = guard(stuck_once());
-                batch.ids.iter().all(|id| stuck.contains(id))
+                batch.ids.iter().all(|id| stuck.contains_key(id))
             };
             backend.clear(&view.tile).await;
             if second {
@@ -184,7 +196,8 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
                 }
                 return Outcome::Failed(batch.ids);
             }
-            guard(stuck_once()).extend(batch.ids.iter().cloned());
+            let unconfirmed_at = (confirm == Confirm::Unconfirmed).then_some(paste_started);
+            guard(stuck_once()).extend(batch.ids.iter().map(|id| (id.clone(), unconfirmed_at)));
             backend.retry_later(party, RETRY_MS);
             Outcome::StuckRetry
         }
@@ -204,6 +217,16 @@ fn not_ready<B: DeliveryBackend>(backend: &B, party: &Party, view: &View) -> Opt
             Some(Outcome::Waiting(ms))
         }
     }
+}
+
+fn proven_delivered<B: DeliveryBackend>(backend: &B, party: &Party, tile: &str, queue: &[Message]) -> Vec<String> {
+    let Some(busy_at) = backend.last_busy(party) else { return vec![] };
+    let typed_at = backend.input(tile).last_ms;
+    let stuck = guard(stuck_once());
+    queue.iter()
+        .filter(|m| stuck.get(&m.id).copied().flatten().is_some_and(|at| busy_at >= at && typed_at <= at))
+        .map(|m| m.id.clone())
+        .collect()
 }
 
 fn restore_cause(key: &str, previous: Option<crate::agents::messages::Cause>) {
@@ -248,6 +271,7 @@ impl DeliveryBackend for LiveBackend {
             crate::agents::mark_block_pasted(id);
         }
     }
+    fn last_busy(&self, party: &Party) -> Option<u64> { crate::agents::messages::last_busy_ms(&party.key()) }
     type Lock = Option<tokio::sync::OwnedMutexGuard<()>>;
     async fn lock(&self, tile: &str) -> Self::Lock { crate::lock_tile_writer(tile).await }
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String> { crate::paste_to_locked_tile(tile, text).await }
@@ -300,6 +324,7 @@ mod tests {
         drop_during_paste: Option<String>,
         typed_during_paste: Mutex<bool>,
         type_during_paste: bool,
+        last_busy: Option<u64>,
     }
 
     impl Fake {
@@ -309,7 +334,7 @@ mod tests {
                 input: ClientInput::default(), now: 1_000_000_000, results: Mutex::new(vec![]), pasted: Mutex::new(vec![]),
                 cleared: Mutex::new(0), retries: Mutex::new(vec![]), prefix: None, prefix_marked: Mutex::new(false),
                 view_calls: Mutex::new(0), busy_after_first_view: false, busy_during_paste: None, drop_during_paste: None,
-                typed_during_paste: Mutex::new(false), type_during_paste: false,
+                typed_during_paste: Mutex::new(false), type_during_paste: false, last_busy: None,
             }
         }
 
@@ -339,6 +364,7 @@ mod tests {
         fn bracketed(&self, _: &str) -> bool { true }
         fn prefix(&self, _: &Party) -> Option<String> { self.prefix.clone() }
         fn prefix_delivered(&self, _: &Party) { *self.prefix_marked.lock().unwrap() = true; }
+        fn last_busy(&self, _: &Party) -> Option<u64> { self.last_busy }
         type Lock = ();
         async fn lock(&self, _: &str) {}
         async fn paste(&self, _: &str, text: &str) -> Result<Confirm, String> {
@@ -528,6 +554,36 @@ mod tests {
         assert_eq!(drain(&fake, &to).await, Outcome::StuckRetry);
         assert_eq!(drain(&fake, &to).await, Outcome::Failed(ids.clone()));
         assert_eq!(with_mailbox(|mb| mb.messages[&ids[0]].reason.clone()).as_deref(), Some("unconfirmed"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_paste_followed_by_a_turn_is_not_pasted_again() {
+        let (to, ids) = queue("p", 1);
+        let first = Fake::idle("agent-x").answering(vec![Ok(Confirm::Unconfirmed)]);
+        assert_eq!(drain(&first, &to).await, Outcome::StuckRetry);
+        let later = Fake { last_busy: Some(first.now + 3_500), ..Fake::idle("agent-x") };
+        assert_eq!(drain(&later, &to).await, Outcome::Delivered(ids.clone()));
+        assert!(later.pasted.lock().unwrap().is_empty(), "the late busy proves the first paste was submitted");
+        assert_eq!(status_of(&ids[0]), MsgStatus::Delivered);
+    }
+
+    #[tokio::test]
+    async fn a_turn_after_the_user_typed_proves_nothing() {
+        let (to, _) = queue("q", 1);
+        let first = Fake::idle("agent-x").answering(vec![Ok(Confirm::Unconfirmed)]);
+        assert_eq!(drain(&first, &to).await, Outcome::StuckRetry);
+        let mut later = Fake { last_busy: Some(first.now + 3_500), ..Fake::idle("agent-x") };
+        later.now += 20_000;
+        later.input = ClientInput { last_ms: first.now + 1_000, pending: 0 };
+        assert!(matches!(drain(&later, &to).await, Outcome::Delivered(_)));
+        assert_eq!(later.pasted.lock().unwrap().len(), 1, "the user's own prompt could explain the turn, so it pastes again");
+
+        let (to, _) = queue("r", 1);
+        let stuck = Fake::idle("agent-x").answering(vec![Ok(Confirm::Stuck)]);
+        assert_eq!(drain(&stuck, &to).await, Outcome::StuckRetry);
+        let later = Fake { last_busy: Some(stuck.now + 3_500), ..Fake::idle("agent-x") };
+        drain(&later, &to).await;
+        assert_eq!(later.pasted.lock().unwrap().len(), 1, "a paste still visible after Enter was not submitted");
     }
 
     #[test]

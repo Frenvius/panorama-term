@@ -5081,11 +5081,13 @@ async fn submit_typed<T: PasteTarget>(target: &T, msg: &str) -> Confirm {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let submit_key = |screen: &str| -> &'static [u8] { if queue_hint(screen) { b"\t" } else { b"\r" } };
-    let _ = target.write(submit_key(&target.screen()));
+    let before_enter = target.screen();
+    let busy_before_enter = target.busy();
+    let _ = target.write(submit_key(&before_enter));
     tokio::time::sleep(Duration::from_millis(400)).await;
     if !seen {
         for _ in 0..BUSY_EVIDENCE_POLLS {
-            if target.busy() { return Confirm::Submitted; }
+            if target.busy() && (!busy_before_enter || target.screen() != before_enter) { return Confirm::Submitted; }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         return Confirm::Unconfirmed;
@@ -5232,6 +5234,7 @@ mod paste_tests {
         invisible: bool,
         collapsed: bool,
         busy_on_enter: bool,
+        busy_on_paste: bool,
         busy: Mutex<bool>,
     }
 
@@ -5239,7 +5242,7 @@ mod paste_tests {
         fn new(swallow_enter: bool) -> Self {
             Self {
                 input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false, flat: false,
-                invisible: false, collapsed: false, busy_on_enter: false, busy: Mutex::new(false),
+                invisible: false, collapsed: false, busy_on_enter: false, busy_on_paste: false, busy: Mutex::new(false),
             }
         }
     }
@@ -5256,7 +5259,12 @@ mod paste_tests {
             if text == "\r" || text == "\t" {
                 if !self.swallow_enter { self.input_row.lock().unwrap().clear(); }
                 if self.busy_on_enter { *self.busy.lock().unwrap() = true; }
-            } else if self.collapsed {
+                return Ok(());
+            }
+            if self.busy_on_paste {
+                *self.busy.lock().unwrap() = true;
+            }
+            if self.collapsed {
                 *self.input_row.lock().unwrap() = "[Pasted text #1 +3 lines]".into();
             } else if !self.invisible {
                 self.input_row.lock().unwrap().push_str(text.trim_start_matches("\x1b[200~").trim_end_matches("\x1b[201~"));
@@ -5276,6 +5284,12 @@ mod paste_tests {
     async fn a_paste_never_seen_counts_as_submitted_once_the_cli_goes_busy() {
         let t = FakeTerminal { invisible: true, busy_on_enter: true, ..FakeTerminal::new(false) };
         assert_eq!(paste_confirmed(&t, "hello agent").await, Ok(Confirm::Submitted));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_caused_by_the_paste_itself_is_not_evidence_of_submit() {
+        let swallowed = FakeTerminal { invisible: true, busy_on_paste: true, ..FakeTerminal::new(true) };
+        assert_eq!(paste_confirmed(&swallowed, "hello agent").await, Ok(Confirm::Unconfirmed));
     }
 
     #[tokio::test(start_paused = true)]

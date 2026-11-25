@@ -77,7 +77,19 @@ pub(crate) fn clear_cause(key: &str) {
     guard(causes()).remove(key);
 }
 
+fn busy_marks() -> &'static Mutex<HashMap<String, u64>> {
+    static MAP: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+pub(crate) fn last_busy_ms(key: &str) -> Option<u64> {
+    guard(busy_marks()).get(key).copied()
+}
+
 pub(crate) fn note_status(key: &str, busy: bool, idle: bool) {
+    if busy {
+        guard(busy_marks()).insert(key.to_string(), unix_ms());
+    }
     let mut map = guard(causes());
     let Some(cause) = map.get_mut(key) else { return };
     if busy {
@@ -761,6 +773,15 @@ mod tests {
             assert!(notices[0].text.contains(ask_id) && notices[0].text.contains("agent deleted"));
         });
     }
+    #[test]
+    fn every_busy_is_stamped_even_without_a_cause() {
+        let before = unix_ms();
+        note_status("abusy01", false, true);
+        assert_eq!(last_busy_ms("abusy01"), None);
+        note_status("abusy01", true, false);
+        assert!(last_busy_ms("abusy01").is_some_and(|at| at >= before));
+    }
+
     #[test]
     fn cause_clears_only_after_busy_then_idle() {
         set_cause("acause01", "m1", 2);
