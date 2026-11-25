@@ -2245,6 +2245,7 @@ fn handle_agent_status(body: &[u8]) {
             let prev = prev_status.as_deref();
             if ns == "idle" && prev != Some("idle") {
                 orch::on_agent_idle(&tile_id);
+                agents::on_tile_idle(&tile_id);
             }
             if ns == "waiting" && prev != Some("waiting") {
                 orch::on_agent_waiting(&tile_id);
@@ -4988,8 +4989,82 @@ fn submission_screen_markers() {
     assert!(!input_contains("\0> ", ""));
 }
 
-pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
-    let msg = text.trim_end_matches(['\r', '\n']).to_string();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Confirm {
+    Submitted,
+    Stuck,
+}
+
+pub(crate) trait PasteTarget {
+    fn screen(&self) -> String;
+    fn bracketed(&self) -> bool;
+    fn write(&self, bytes: &[u8]) -> Result<(), String>;
+}
+
+struct TileTarget {
+    tile_id: String,
+    session: Option<Arc<Session>>,
+}
+
+impl PasteTarget for TileTarget {
+    fn screen(&self) -> String {
+        tile_screen(&self.tile_id)
+    }
+
+    fn bracketed(&self) -> bool {
+        self.session.as_ref()
+            .and_then(|s| s.parser.lock().ok().map(|p| p.screen().bracketed_paste()))
+            .unwrap_or(false)
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        host_handle().try_write(&self.tile_id, bytes).map_err(|_| "terminal host disconnected".to_string())?;
+        if let Some(s) = &self.session {
+            s.scrollback.store(0, Ordering::Relaxed);
+            s.dirty.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
+fn type_text<T: PasteTarget>(target: &T, msg: &str) -> Result<(), String> {
+    if target.bracketed() {
+        target.write(format!("\x1b[200~{msg}\x1b[201~").as_bytes())
+    } else {
+        target.write(msg.as_bytes())
+    }
+}
+
+async fn submit_typed<T: PasteTarget>(target: &T, msg: &str) -> Confirm {
+    for _ in 0..15 {
+        if input_contains(&target.screen(), msg) { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let submit_key = |screen: &str| -> &'static [u8] { if queue_hint(screen) { b"\t" } else { b"\r" } };
+    let _ = target.write(submit_key(&target.screen()));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let screen = target.screen();
+    if !input_contains(&screen, msg) {
+        return Confirm::Submitted;
+    }
+    let _ = target.write(submit_key(&screen));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    if input_contains(&target.screen(), msg) { Confirm::Stuck } else { Confirm::Submitted }
+}
+
+pub(crate) async fn paste_confirmed<T: PasteTarget>(target: &T, text: &str) -> Result<Confirm, String> {
+    let msg = text.trim_end_matches(['\r', '\n']);
+    type_text(target, msg)?;
+    Ok(submit_typed(target, msg).await)
+}
+
+fn tile_writer(tile_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static WRITERS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = WRITERS.get_or_init(Default::default);
+    map.lock().unwrap_or_else(|e| e.into_inner()).entry(tile_id.to_string()).or_default().clone()
+}
+
+fn live_target(tile_id: &str) -> Result<TileTarget, String> {
     let session = sessions().lock().unwrap().get(tile_id).cloned();
     let live = session.is_some()
         || host_handle()
@@ -4999,40 +5074,163 @@ pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
     if !live {
         return Err("no session for tile".into());
     }
-    let bracketed = session
-        .as_ref()
-        .and_then(|s| s.parser.lock().ok().map(|p| p.screen().bracketed_paste()))
-        .unwrap_or(false);
-    let typed = if bracketed {
-        host_handle().try_write(tile_id, format!("\x1b[200~{msg}\x1b[201~").as_bytes())
-    } else {
-        host_handle().try_write(tile_id, msg.as_bytes())
-    };
-    typed.map_err(|_| "terminal host disconnected".to_string())?;
-    if let Some(s) = &session {
-        s.scrollback.store(0, Ordering::Relaxed);
-        s.dirty.fetch_add(1, Ordering::Relaxed);
+    Ok(TileTarget { tile_id: tile_id.to_string(), session })
+}
+
+pub(crate) async fn send_to_tile_confirmed(tile_id: &str, text: &str) -> Result<Confirm, String> {
+    let target = live_target(tile_id)?;
+    let _writer = tile_writer(tile_id).lock_owned().await;
+    paste_confirmed(&target, text).await
+}
+
+pub(crate) async fn clear_tile_input(tile_id: &str) {
+    let Ok(target) = live_target(tile_id) else { return };
+    let _writer = tile_writer(tile_id).lock_owned().await;
+    let _ = target.write(b"\x15");
+}
+
+pub(crate) fn send_to_tile(tile_id: &str, text: &str) -> Result<(), String> {
+    let msg = text.trim_end_matches(['\r', '\n']).to_string();
+    let target = live_target(tile_id)?;
+    let writer = tile_writer(tile_id);
+    match writer.clone().try_lock_owned() {
+        Ok(held) => {
+            type_text(&target, &msg)?;
+            tokio::spawn(async move {
+                submit_typed(&target, &msg).await;
+                drop(held);
+            });
+        }
+        Err(_) => {
+            tokio::spawn(async move {
+                let _held = writer.lock_owned().await;
+                if type_text(&target, &msg).is_ok() {
+                    submit_typed(&target, &msg).await;
+                }
+            });
+        }
     }
-    let tile_id = tile_id.to_string();
-    tokio::spawn(async move {
-        for _ in 0..15 {
-            if input_contains(&tile_screen(&tile_id), &msg) { break; }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        let screen = tile_screen(&tile_id);
-        host_handle().write(&tile_id, if queue_hint(&screen) { b"\t" } else { b"\r" });
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        let screen = tile_screen(&tile_id);
-        if input_contains(&screen, &msg) {
-            host_handle().write(&tile_id, if queue_hint(&screen) { b"\t" } else { b"\r" });
-        }
-        if let Some(s) = sessions().lock().unwrap().get(&tile_id) {
-            s.dirty.fetch_add(1, Ordering::Relaxed);
-        }
-    });
     Ok(())
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClientInput {
+    pub last_ms: u64,
+    pub pending: i64,
+}
+
+fn client_inputs() -> &'static Mutex<HashMap<String, ClientInput>> {
+    static MAP: OnceLock<Mutex<HashMap<String, ClientInput>>> = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+pub(crate) fn pending_after(pending: i64, data: &str) -> i64 {
+    let mut pending = pending;
+    let mut chars = data.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' | '\n' | '\x03' | '\x15' => pending = 0,
+            '\x7f' | '\x08' => pending = (pending - 1).max(0),
+            '\x1b' => {
+                if chars.peek() == Some(&'[') || chars.peek() == Some(&'O') {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c.is_ascii_alphabetic() || c == '~' { break; }
+                    }
+                }
+            }
+            c if c.is_control() => {}
+            _ => pending += 1,
+        }
+    }
+    pending
+}
+
+fn note_client_input(tile_id: &str, data: &str) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let mut map = client_inputs().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = map.entry(tile_id.to_string()).or_default();
+    entry.pending = pending_after(entry.pending, data);
+    entry.last_ms = now;
+}
+
+pub(crate) fn tile_bracketed_paste(tile_id: &str) -> bool {
+    live_target(tile_id).is_ok_and(|t| t.bracketed())
+}
+
+pub(crate) fn client_input(tile_id: &str) -> ClientInput {
+    client_inputs().lock().unwrap_or_else(|e| e.into_inner()).get(tile_id).copied().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    struct FakeTerminal {
+        input_row: Mutex<String>,
+        writes: Mutex<Vec<String>>,
+        swallow_enter: bool,
+        queue_hint: bool,
+    }
+
+    impl FakeTerminal {
+        fn new(swallow_enter: bool) -> Self {
+            Self { input_row: Mutex::new(String::new()), writes: Mutex::new(vec![]), swallow_enter, queue_hint: false }
+        }
+    }
+
+    impl PasteTarget for FakeTerminal {
+        fn screen(&self) -> String {
+            let hint = if self.queue_hint { "working - tab to queue message" } else { "" };
+            format!("{hint}\n\0> {}", self.input_row.lock().unwrap())
+        }
+        fn bracketed(&self) -> bool { true }
+        fn write(&self, bytes: &[u8]) -> Result<(), String> {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            self.writes.lock().unwrap().push(text.clone());
+            if text == "\r" || text == "\t" {
+                if !self.swallow_enter { self.input_row.lock().unwrap().clear(); }
+            } else {
+                self.input_row.lock().unwrap().push_str(text.trim_start_matches("\x1b[200~").trim_end_matches("\x1b[201~"));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn confirmed_paste_reports_submitted_when_the_text_leaves_the_input_row() {
+        let t = FakeTerminal::new(false);
+        assert_eq!(paste_confirmed(&t, "hello agent").await, Ok(Confirm::Submitted));
+        assert_eq!(*t.writes.lock().unwrap(), vec!["\x1b[200~hello agent\x1b[201~".to_string(), "\r".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn confirmed_paste_reports_stuck_after_one_retry() {
+        let t = FakeTerminal::new(true);
+        assert_eq!(paste_confirmed(&t, "hello agent").await, Ok(Confirm::Stuck));
+        let enters = t.writes.lock().unwrap().iter().filter(|w| *w == "\r").count();
+        assert_eq!(enters, 2, "one Enter and one retry");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn confirmed_paste_uses_tab_when_the_cli_offers_a_queue() {
+        let t = FakeTerminal { queue_hint: true, ..FakeTerminal::new(false) };
+        assert_eq!(paste_confirmed(&t, "queued text").await, Ok(Confirm::Submitted));
+        assert!(t.writes.lock().unwrap().contains(&"\t".to_string()));
+    }
+
+    #[test]
+    fn pending_input_tracks_typing_submit_and_clear() {
+        assert_eq!(pending_after(0, "abc"), 3);
+        assert_eq!(pending_after(3, "\x7f"), 2);
+        assert_eq!(pending_after(2, "\r"), 0);
+        assert_eq!(pending_after(5, "\x15"), 0);
+        assert_eq!(pending_after(1, "\x7f\x7f\x7f"), 0);
+        assert_eq!(pending_after(0, "\x1b[A\x1b[B"), 0, "arrows are not text");
+        assert_eq!(pending_after(0, "\x1b[200~pasted\x1b[201~"), 6);
+        assert_eq!(pending_after(4, "\x03"), 0);
+    }
+}
 pub(crate) fn write_input(s: &Arc<Session>, d: &str) {
     write_input_bytes(s, d.as_bytes());
 }
@@ -5217,6 +5415,7 @@ fn handle_client_msg(s: &Arc<Session>, client: &mut PtyClient, watch_only: bool,
                 update_size(s, |state| state.activity(client.id, "in", false));
             }
             if let Some(d) = v.get("d").and_then(|d| d.as_str()) {
+                note_client_input(&s.tile_id, d);
                 write_input(s, d);
             }
         }

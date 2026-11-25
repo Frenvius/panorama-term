@@ -174,6 +174,7 @@ trait StartBackend {
     async fn after_fresh_start(&self, agent: &Agent, profile: &Profile);
     async fn capture_session(&self, id: &str);
     fn respawn(&self, id: &str);
+    fn ready(&self, id: &str);
 }
 
 struct LiveBackend;
@@ -202,6 +203,7 @@ impl StartBackend for LiveBackend {
     }
     async fn capture_session(&self, id: &str) { try_capture_session(id).await }
     fn respawn(&self, id: &str) { spawn_start(id.to_string()) }
+    fn ready(&self, id: &str) { crate::agents::delivery::kick(&crate::agents::mail::Party::Agent { id: id.to_string() }) }
 }
 
 async fn run_start(id: String) {
@@ -338,6 +340,7 @@ async fn launch_agent<B: StartBackend>(backend: &B, id: &str, force_fresh: bool)
         backend.after_fresh_start(&agent, &profile).await;
     }
     backend.capture_session(id).await;
+    backend.ready(id);
     Ok(())
 }
 fn needs_list_capture(exe: &str) -> bool {
@@ -571,14 +574,14 @@ async fn supervision_tick() {
     }
 }
 
-fn quiet_targets() -> Vec<(String, String, Option<String>)> {
+fn quiet_targets() -> Vec<(String, String, Option<String>, bool)> {
     let Some(base) = crate::panorama_dir() else { return vec![] };
     let profiles = load_profiles(&base);
     lock().agents.values()
         .filter(|a| a.desired == Desired::Running)
         .filter_map(|a| {
             let profile = find_profile(&profiles, &a.profile)?;
-            (!launch::has_status_hook(&profile.exe)).then(|| (a.id.clone(), a.tile_id(), profile.ready_text.clone()))
+            Some((a.id.clone(), a.tile_id(), profile.ready_text.clone(), launch::has_status_hook(&profile.exe)))
         })
         .collect()
 }
@@ -600,10 +603,12 @@ async fn quiet_loop() {
     let mut interval = tokio::time::interval(QUIET_TICK);
     loop {
         interval.tick().await;
-        if !crate::ui::has_subscribers() {
-            continue;
-        }
-        for (id, tile, ready_text) in quiet_targets() {
+        let ui = crate::ui::has_subscribers();
+        for (id, tile, ready_text, hook) in quiet_targets() {
+            let mail = crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: id.clone() });
+            if !quiet_wanted(hook, ui, mail, !hook_status_known(&tile)) {
+                continue;
+            }
             if crate::lookup_live(&tile).is_none() || is_starting(&id) {
                 guard(quiet_states()).remove(&tile);
                 continue;
@@ -619,8 +624,38 @@ async fn quiet_loop() {
             };
             if changed {
                 crate::ui::broadcast_agents_changed(&id);
+                status_settled(&id);
             }
         }
+    }
+}
+
+pub fn quiet_wanted(hook: bool, ui: bool, mail: bool, hook_missing: bool) -> bool {
+    if hook { mail && hook_missing } else { ui || mail }
+}
+
+fn hook_status_known(tile: &str) -> bool {
+    crate::lookup_live(tile)
+        .and_then(|s| crate::cached_agent_state(&s))
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|v| v["lastStatus"].is_string())
+}
+
+fn status_settled(id: &str) {
+    let Some(agent) = agent_snapshot(id) else { return };
+    let status = crate::agents::live_view(&agent).status;
+    crate::agents::messages::note_status(id, status == LiveStatus::Busy, status == LiveStatus::Idle);
+    if status == LiveStatus::Idle {
+        crate::agents::delivery::kick(&crate::agents::mail::Party::Agent { id: id.to_string() });
+    }
+}
+
+pub fn spawn_background<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Some(handle) = tokio::runtime::Handle::try_current().ok().or_else(|| RUNTIME.get().cloned()) {
+        handle.spawn(future);
     }
 }
 
@@ -646,6 +681,7 @@ pub fn status_touched(agent_id: &str) {
         guard(pending).remove(&id);
         if agent_snapshot(&id).is_some() {
             crate::ui::broadcast_agents_changed(&id);
+            status_settled(&id);
         }
     });
 }
@@ -706,6 +742,7 @@ mod tests {
         async fn after_fresh_start(&self, _: &Agent, _: &Profile) { self.step("after_fresh"); }
         async fn capture_session(&self, _: &str) { self.step("capture"); }
         fn respawn(&self, _: &str) { self.step("respawn"); }
+        fn ready(&self, _: &str) { self.step("ready"); }
     }
 
     fn running_kimi_agent(tag: &str, session: Option<&str>) -> String {
@@ -818,6 +855,16 @@ mod tests {
         assert_eq!(session_plan(true, true), SessionPlan::KeepRunning);
         assert_eq!(session_plan(true, false), SessionPlan::Recreate);
         assert_eq!(session_plan(false, false), SessionPlan::Create);
+    }
+
+    #[test]
+    fn quiet_detector_runs_for_hook_clis_only_with_mail_and_no_hook_status() {
+        assert!(quiet_wanted(false, true, false, true), "kimi/opencode with the UI open");
+        assert!(quiet_wanted(false, false, true, true), "kimi/opencode with mail and no UI");
+        assert!(!quiet_wanted(false, false, false, true), "kimi/opencode idle and unwatched");
+        assert!(quiet_wanted(true, false, true, true), "claude with mail and no status yet");
+        assert!(!quiet_wanted(true, true, true, false), "claude with a hook status needs no detector");
+        assert!(!quiet_wanted(true, true, false, true), "claude without mail");
     }
 
     #[test]

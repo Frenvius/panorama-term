@@ -1,6 +1,7 @@
 pub mod cli;
 mod context;
 mod delivery;
+mod envelope;
 mod launch;
 mod mail;
 mod messages;
@@ -162,6 +163,39 @@ pub(crate) fn system_context(tile_id: &str) -> Option<String> {
 pub(crate) fn on_compact(tile_id: &str) {
     if is_agent_tile(tile_id) {
         context::forget_delivery(tile_id);
+    }
+}
+
+pub(crate) fn delivery_view(agent_id: &str) -> Option<delivery::View> {
+    let agent = lock().agents.get(agent_id).cloned()?;
+    let live = live_view(&agent);
+    Some(delivery::View {
+        tile: live.tile_id,
+        live: live.live,
+        starting: runtime::is_starting(agent_id),
+        status: live.status,
+        source: live.status_source,
+    })
+}
+
+pub(crate) fn pending_block_for_paste(agent_id: &str) -> Option<String> {
+    let agent = lock().agents.get(agent_id).cloned()?;
+    if context::has_context_hook(&profile_exe(&agent.profile)?) {
+        return None;
+    }
+    let block = context::agent_block(&agent);
+    (context::pasted_hash(&agent.tile_id()).as_deref() != Some(context::block_hash(&block).as_str())).then_some(block)
+}
+
+pub(crate) fn mark_block_pasted(agent_id: &str) {
+    if let Some(agent) = lock().agents.get(agent_id).cloned() {
+        context::set_pasted_hash(&agent.tile_id(), &context::block_hash(&context::agent_block(&agent)));
+    }
+}
+
+pub(crate) fn on_tile_idle(tile_id: &str) {
+    if !tile_id.starts_with("agent-") {
+        delivery::kick(&mail::Party::Tile { id: tile_id.to_string() });
     }
 }
 

@@ -65,6 +65,22 @@ pub fn prompt_block(agent: &Agent, tile_id: &str, session_id: &str, extra: Optio
     Some(block)
 }
 
+const PASTED_KEY: &str = "agentContextPasted";
+
+pub fn pasted_hash(tile_id: &str) -> Option<String> {
+    crate::read_binding_rec(tile_id)?[PASTED_KEY].as_str().map(str::to_string)
+}
+
+pub fn set_pasted_hash(tile_id: &str, hash: &str) {
+    let Some(path) = crate::binding_path(tile_id) else { return };
+    let _guard = crate::binding_lock();
+    let mut rec = crate::read_binding_rec(tile_id).filter(Value::is_object).unwrap_or_else(|| json!({ "tileId": tile_id }));
+    rec[PASTED_KEY] = hash.into();
+    if let Err(e) = crate::write_binding_rec(&path, &rec) {
+        eprintln!("[agents] pasted marker not saved for {tile_id}: {e}");
+    }
+}
+
 pub fn forget_delivery(tile_id: &str) {
     let Some(path) = crate::binding_path(tile_id) else { return };
     let _guard = crate::binding_lock();
@@ -78,8 +94,9 @@ pub async fn after_fresh_start(agent: &Agent, profile: &Profile) {
     if has_context_hook(&profile.exe) {
         return;
     }
-    if let Err(e) = crate::send_to_tile(&agent.tile_id(), &bootstrap_message(agent)) {
-        eprintln!("[agents] {}: bootstrap not sent: {e}", agent.id);
+    match crate::send_to_tile(&agent.tile_id(), &bootstrap_message(agent)) {
+        Ok(()) => set_pasted_hash(&agent.tile_id(), &block_hash(&agent_block(agent))),
+        Err(e) => eprintln!("[agents] {}: bootstrap not sent: {e}", agent.id),
     }
 }
 
