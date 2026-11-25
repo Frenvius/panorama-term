@@ -1,4 +1,4 @@
-mod model;
+pub(crate) mod model;
 mod autonomy;
 pub(crate) mod repo_config;
 mod candidates;
@@ -12,7 +12,7 @@ pub(crate) mod agy;
 pub(crate) mod cli_env;
 mod model_catalog;
 mod reducer;
-mod store;
+pub(crate) mod store;
 pub mod ai;
 pub mod cli;
 pub mod exec;

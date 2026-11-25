@@ -1,0 +1,304 @@
+pub mod cli;
+mod model;
+mod reducer;
+mod store;
+
+use std::sync::{Mutex, OnceLock};
+
+use serde_json::{json, Value};
+
+use crate::agents::model::*;
+use crate::agents::reducer::{AgentPatch, ApplyResult, Cmd, State};
+
+static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+
+const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+const LIST_TAIL_MAX: usize = 200;
+
+fn state() -> &'static Mutex<State> {
+    STATE.get_or_init(|| Mutex::new(State::default()))
+}
+
+fn lock() -> std::sync::MutexGuard<'static, State> {
+    state().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn gen_agent_id() -> String {
+    let mut bytes = [0u8; 7];
+    getrandom::getrandom(&mut bytes).expect("os rng");
+    let mut id = String::from("a");
+    id.extend(bytes.iter().map(|b| ID_ALPHABET[*b as usize % ID_ALPHABET.len()] as char));
+    id
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn ok_resp(extra: Value) -> String {
+    let mut v = json!({ "ok": true });
+    if let (Some(obj), Some(ext)) = (v.as_object_mut(), extra.as_object()) {
+        obj.extend(ext.clone());
+    }
+    v.to_string()
+}
+
+fn err_resp(code: &str, message: &str) -> String {
+    json!({ "ok": false, "error": { "code": code, "message": message } }).to_string()
+}
+
+fn parse_body(body: &[u8]) -> Result<Value, String> {
+    if body.is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_slice(body).map_err(|_| err_resp("bad_request", "invalid JSON body"))
+}
+
+struct CommitError {
+    code: String,
+    message: String,
+}
+
+impl CommitError {
+    fn resp(&self) -> String {
+        err_resp(&self.code, &self.message)
+    }
+}
+
+fn commit_locked(guard: &mut State, agent_id: &str, cmd: &Cmd) -> Result<Option<(String, Value)>, CommitError> {
+    let (kind, data) = match guard.apply(cmd) {
+        ApplyResult::Ok(kind, data) => (kind, data),
+        ApplyResult::Unchanged => return Ok(None),
+        ApplyResult::Err(e) => return Err(CommitError { code: e.code.into(), message: e.message }),
+    };
+    let io = |message: String| CommitError { code: "io".into(), message };
+    let base = crate::panorama_dir().ok_or_else(|| io("no panorama dir".into()))?;
+    store::ensure_agent_dir(&base, agent_id).map_err(io)?;
+    let seq = guard.seqs.get(agent_id).copied().unwrap_or(0) + 1;
+    let record = store::EventRecord { seq, at: unix_ms(), kind: kind.clone(), data: data.clone() };
+    store::append_event(&store::events_path(&base, agent_id), &record).map_err(io)?;
+    if let Err(e) = guard.replay(&kind, &data) {
+        eprintln!("[agents] replay after commit {kind}: {e}");
+    }
+    guard.seqs.insert(agent_id.to_string(), seq);
+    Ok(Some((kind, data)))
+}
+
+fn commit_cmd(agent_id: &str, cmd: Cmd) -> Result<Option<(String, Value)>, CommitError> {
+    let result = commit_locked(&mut lock(), agent_id, &cmd);
+    if matches!(result, Ok(Some(_))) {
+        crate::ui::broadcast_agents_changed(agent_id);
+    }
+    result
+}
+
+pub fn init() {
+    let Some(base) = crate::panorama_dir() else { return };
+    store::load_all(&mut lock(), &base);
+}
+
+pub async fn handle(command: &str, body: &[u8]) -> String {
+    let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
+    match command {
+        "create" => handle_create(&v),
+        "list" => handle_list(&v),
+        "show" => handle_show(&v),
+        "update" => handle_update(&v),
+        "delete" => handle_delete(&v),
+        _ => err_resp("bad_request", "unknown command"),
+    }
+}
+
+fn known_profiles() -> Vec<String> {
+    crate::panorama_dir()
+        .map(|base| crate::orch::profiles::load_profiles(&base).into_iter().map(|p| p.id).collect())
+        .unwrap_or_default()
+}
+
+fn normalize_cwd(raw: &str) -> Result<(String, Option<String>), String> {
+    let path = crate::native_path(raw.trim());
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("cwd must be an existing absolute directory".into());
+    }
+    let project = crate::repo_root(&path).map(crate::path_string);
+    Ok((crate::path_string(&path), project))
+}
+
+fn text_field(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn resolve_id(v: &Value) -> Result<String, String> {
+    let key = text_field(v, "id").or_else(|| text_field(v, "name")).filter(|k| !k.is_empty())
+        .ok_or_else(|| err_resp("bad_request", "id or name required"))?;
+    lock().resolve(&key).map(|a| a.id.clone()).ok_or_else(|| err_resp("not_found", "agent not found"))
+}
+
+fn handle_create(v: &Value) -> String {
+    let name = text_field(v, "name").unwrap_or_default();
+    let profile = text_field(v, "profile").unwrap_or_default();
+    if name.is_empty() || profile.is_empty() {
+        return err_resp("bad_request", "name and profile required");
+    }
+    let (cwd, project) = match normalize_cwd(&text_field(v, "cwd").unwrap_or_default()) {
+        Ok(pair) => pair,
+        Err(e) => return err_resp("bad_request", &e),
+    };
+    let now = unix_ms();
+    let agent = Agent {
+        id: gen_agent_id(),
+        name,
+        title: text_field(v, "title").unwrap_or_default(),
+        description: text_field(v, "description").unwrap_or_default(),
+        profile,
+        model: text_field(v, "model").filter(|s| !s.is_empty()),
+        effort: text_field(v, "effort").filter(|s| !s.is_empty()),
+        cwd,
+        project,
+        instructions: text_field(v, "instructions").unwrap_or_default(),
+        auto_start: v.get("autoStart").and_then(Value::as_bool).unwrap_or(true),
+        desired: Desired::Stopped,
+        native_session: None,
+        last_exit: None,
+        restarts: vec![],
+        crashed: false,
+        created_at: now,
+        updated_at: now,
+        last_started_at: None,
+    };
+    let id = agent.id.clone();
+    if let Err(e) = commit_cmd(&id, Cmd::Create { agent, known_profiles: known_profiles() }) {
+        return e.resp();
+    }
+    ok_resp(json!({ "agent": agent_json(&id, true) }))
+}
+
+fn live_view(agent: &Agent) -> AgentLive {
+    let tile_id = agent.tile_id();
+    let session = crate::lookup_live(&tile_id);
+    let state: Value = session.as_ref()
+        .and_then(|s| crate::cached_agent_state(s))
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let hook_status = state["lastStatus"].as_str().and_then(|s| match s {
+        "idle" => Some(LiveStatus::Idle),
+        "busy" => Some(LiveStatus::Busy),
+        "waiting" => Some(LiveStatus::Waiting),
+        _ => None,
+    });
+    let live = session.is_some();
+    let (status, status_source) = match (live, hook_status) {
+        (true, Some(status)) => (status, StatusSource::Hook),
+        (true, None) => (LiveStatus::Idle, StatusSource::None),
+        (false, _) if agent.crashed => (LiveStatus::Crashed, StatusSource::None),
+        (false, _) => (LiveStatus::Stopped, StatusSource::None),
+    };
+    AgentLive {
+        tile_id,
+        status,
+        live,
+        status_source,
+        context_pct: state["contextPercent"].as_f64().map(|p| p.clamp(0.0, 100.0).round() as u8),
+        cost_usd: state["costUsd"].as_f64(),
+    }
+}
+
+fn merge_live(agent: &Agent, full: bool) -> Value {
+    let mut value = serde_json::to_value(agent).unwrap_or_default();
+    let live = serde_json::to_value(live_view(agent)).unwrap_or_default();
+    if let (Some(obj), Some(live)) = (value.as_object_mut(), live.as_object()) {
+        if !full {
+            obj.remove("instructions");
+            obj.remove("restarts");
+        }
+        obj.extend(live.clone());
+    }
+    value
+}
+
+fn agent_json(id: &str, full: bool) -> Value {
+    let agent = lock().agents.get(id).cloned();
+    agent.map(|a| merge_live(&a, full)).unwrap_or(Value::Null)
+}
+
+fn handle_list(v: &Value) -> String {
+    let project = text_field(v, "project").filter(|p| !p.is_empty());
+    let agents: Vec<Agent> = lock().agents.values()
+        .filter(|a| project.as_deref().is_none_or(|p| a.project.as_deref().is_some_and(|ap| ap.eq_ignore_ascii_case(p))))
+        .cloned()
+        .collect();
+    let list: Vec<Value> = agents.iter().map(|a| merge_live(a, false)).collect();
+    ok_resp(json!({ "agents": list }))
+}
+
+fn handle_show(v: &Value) -> String {
+    let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
+    let mut agent = agent_json(&id, true);
+    if let Some(lines) = v.get("tail").and_then(Value::as_u64).filter(|n| *n > 0) {
+        let tile = model::tile_id(&id);
+        let text = crate::orch::worker::capture_worker_screen(&tile, (lines as usize).min(LIST_TAIL_MAX));
+        agent["tail"] = text.into();
+    }
+    ok_resp(json!({ "agent": agent }))
+}
+
+fn patch_from_body(v: &Value) -> Result<AgentPatch, String> {
+    let mut patch = reducer::patch_from_json(v);
+    patch.project = None;
+    if v.get("id").is_none() {
+        patch.name = None;
+    }
+    if let Some(raw) = patch.cwd.take() {
+        let (cwd, project) = normalize_cwd(&raw).map_err(|e| err_resp("bad_request", &e))?;
+        patch.cwd = Some(cwd);
+        patch.project = Some(project);
+    }
+    Ok(patch)
+}
+
+fn needs_restart(before: &Agent, after: &Agent) -> bool {
+    before.profile != after.profile || before.model != after.model
+        || before.effort != after.effort || before.cwd != after.cwd
+}
+
+fn handle_update(v: &Value) -> String {
+    let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
+    let patch = match patch_from_body(v) { Ok(p) => p, Err(e) => return e };
+    let before = lock().agents.get(&id).cloned();
+    let cmd = Cmd::Update { id: id.clone(), patch, known_profiles: known_profiles(), at: unix_ms() };
+    if let Err(e) = commit_cmd(&id, cmd) {
+        return e.resp();
+    }
+    let after = lock().agents.get(&id).cloned();
+    let restart_needed = match (&before, &after) {
+        (Some(b), Some(a)) => needs_restart(b, a) && crate::lookup_live(&a.tile_id()).is_some(),
+        _ => false,
+    };
+    ok_resp(json!({ "agent": agent_json(&id, true), "restartNeeded": restart_needed }))
+}
+
+fn handle_delete(v: &Value) -> String {
+    let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
+    let Some(base) = crate::panorama_dir() else { return err_resp("io", "no panorama dir") };
+    let tile = model::tile_id(&id);
+    {
+        let mut guard = lock();
+        let Some(agent) = guard.agents.get(&id) else { return err_resp("not_found", "agent not found") };
+        if agent.desired == Desired::Running || crate::lookup_live(&tile).is_some() {
+            return err_resp("conflict", "agent running; stop it first");
+        }
+        if let Err(e) = store::remove_agent_dir(&base, &id) {
+            return err_resp("io", &e);
+        }
+        guard.agents.remove(&id);
+        guard.seqs.remove(&id);
+    }
+    if let Err(e) = store::remove_binding(&base, &tile) {
+        eprintln!("[agents] {e}");
+    }
+    crate::ui::broadcast_agents_changed(&id);
+    ok_resp(json!({}))
+}

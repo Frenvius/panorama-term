@@ -45,6 +45,10 @@ pub(crate) fn broadcast_orch_changed(run_id: &str) {
     send_event(json!({ "t": "orch.changed", "runId": run_id }));
 }
 
+pub(crate) fn broadcast_agents_changed(agent_id: &str) {
+    send_event(json!({ "t": "agents.changed", "agentId": agent_id }));
+}
+
 pub(crate) fn broadcast_orch_notify(event: Value) {
     send_event(event);
 }

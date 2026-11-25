@@ -602,7 +602,7 @@ fn is_numeric_field(field: &str) -> bool {
     matches!(field, "timeoutMs" | "maxWorkers" | "maxAttempts" | "dispatchTimeoutMin" | "verifyTimeoutMin" | "stallQuietMin" | "maxOperationalAttempts" | "workerSummaryCap" | "replyTo" | "lines" | "tail")
 }
 
-fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
+pub(crate) fn http_post(port: u16, path: &str, body: &str, read_timeout_ms: u64) -> Result<String, String> {
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -636,7 +636,7 @@ fn read_http_response(stream: &mut std::net::TcpStream) -> Result<String, String
     String::from_utf8(buf).map_err(|e| e.to_string())
 }
 
-fn parse_response_body(response: &str) -> &str {
+pub(crate) fn parse_response_body(response: &str) -> &str {
     response.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(response)
 }
 

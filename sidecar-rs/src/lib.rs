@@ -34,6 +34,7 @@ mod scroll_store;
 mod search;
 mod run_commands;
 mod orch;
+mod agents;
 mod accounts;
 
 enum ConsumerMsg {
@@ -511,6 +512,7 @@ pub async fn brain_main() {
     if let Err(e) = service_bridge::init() { eprintln!("[host service] {e}"); }
     mobile::boot();
     tokio::task::block_in_place(|| orch::init());
+    tokio::task::block_in_place(|| agents::init());
     tokio::spawn(async {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -558,6 +560,10 @@ pub fn cli_main() {
     }
     if std::env::args().nth(1).as_deref() == Some("orch") {
         orch::cli::main();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("agent") {
+        agents::cli::main();
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("app") {
@@ -6011,7 +6017,9 @@ async fn handle_conn(mut stream: TcpStream) {
         return;
     }
 
-    if let Some(cmd) = path_only.strip_prefix("/orch/") {
+    let json_route = path_only.strip_prefix("/orch/").map(|cmd| (false, cmd))
+        .or_else(|| path_only.strip_prefix("/agents/").map(|cmd| (true, cmd)));
+    if let Some((is_agents, cmd)) = json_route {
         let len = headers
             .get("content-length")
             .and_then(|v| v.parse::<usize>().ok())
@@ -6025,7 +6033,11 @@ async fn handle_conn(mut stream: TcpStream) {
         if len > 0 {
             let _ = stream.read_exact(&mut req_body).await;
         }
-        let resp_body = orch::handle(cmd, &req_body).await;
+        let resp_body = if is_agents {
+            agents::handle(cmd, &req_body).await
+        } else {
+            orch::handle(cmd, &req_body).await
+        };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             mobile::cors_origin(origin),
