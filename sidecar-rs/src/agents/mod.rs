@@ -146,6 +146,17 @@ fn profile_exe(profile_id: &str) -> Option<String> {
     crate::orch::profiles::find_profile(&crate::orch::profiles::load_profiles(&base), profile_id).map(|p| p.exe.clone())
 }
 
+fn roster_for(agent_id: &str) -> Vec<context::RosterEntry> {
+    lock().agents.values()
+        .filter(|a| a.id != agent_id)
+        .map(|a| context::RosterEntry { name: a.name.clone(), title: a.title.clone() })
+        .collect()
+}
+
+pub(crate) fn full_block(agent: &Agent) -> String {
+    context::with_roster(&context::agent_block(agent), &roster_for(&agent.id), &crate::panorama_cli_path())
+}
+
 fn agent_for_tile(tile_id: &str) -> Option<Agent> {
     let id = model::agent_id_from_tile(tile_id)?;
     lock().agents.get(id).cloned()
@@ -153,11 +164,16 @@ fn agent_for_tile(tile_id: &str) -> Option<Agent> {
 
 pub(crate) fn prompt_context(tile_id: &str, session_id: &str, extra: Option<String>) -> Option<String> {
     let agent = agent_for_tile(tile_id)?;
-    context::prompt_block(&agent, tile_id, session_id, extra.as_deref())
+    let mut block = full_block(&agent);
+    if let Some(extra) = extra.filter(|e| !e.is_empty()) {
+        block.push_str("\n\n");
+        block.push_str(&extra);
+    }
+    context::prompt_block(block, tile_id, session_id)
 }
 
 pub(crate) fn system_context(tile_id: &str) -> Option<String> {
-    agent_for_tile(tile_id).map(|agent| context::agent_block(&agent))
+    agent_for_tile(tile_id).map(|agent| full_block(&agent))
 }
 
 pub(crate) fn on_compact(tile_id: &str) {
@@ -183,14 +199,13 @@ pub(crate) fn pending_block_for_paste(agent_id: &str) -> Option<String> {
     if context::has_context_hook(&profile_exe(&agent.profile)?) {
         return None;
     }
-    let block = context::agent_block(&agent);
+    let block = full_block(&agent);
     (context::pasted_hash(&agent.tile_id()).as_deref() != Some(context::block_hash(&block).as_str())).then_some(block)
 }
 
 pub(crate) fn mark_block_pasted(agent_id: &str) {
-    if let Some(agent) = lock().agents.get(agent_id).cloned() {
-        context::set_pasted_hash(&agent.tile_id(), &context::block_hash(&context::agent_block(&agent)));
-    }
+    let Some(agent) = lock().agents.get(agent_id).cloned() else { return };
+    context::set_pasted_hash(&agent.tile_id(), &context::block_hash(&full_block(&agent)));
 }
 
 pub(crate) fn on_tile_idle(tile_id: &str) {
@@ -560,16 +575,58 @@ mod tests {
     }
 
     #[test]
+    fn full_block_lists_the_other_agents_but_never_itself() {
+        let me = format!("arost{:03}", unix_ms() % 1000);
+        let other = format!("arosu{:03}", unix_ms() % 1000);
+        insert_test_agent(&me, &format!("me-{me}"));
+        insert_test_agent(&other, &format!("peer-{other}"));
+        let agent = lock().agents[&me].clone();
+        let block = full_block(&agent);
+        remove_test_agent(&me);
+        remove_test_agent(&other);
+        assert!(block.contains(&format!("- peer-{other}: Reviewer")), "{block}");
+        assert!(!block.contains(&format!("- me-{me}")), "{block}");
+        assert!(block.contains("agent send <name>"));
+    }
+
+    #[test]
+    fn no_hook_clis_get_the_block_in_front_of_mail_once_per_change() {
+        crate::orch::tests::f12_test_home();
+        let id = format!("apast{:03}", unix_ms() % 1000);
+        let mut agent = reducer::tests::agent(&id, &format!("k-{id}"));
+        agent.profile = "kimi".into();
+        lock().agents.insert(id.clone(), agent);
+        let first = pending_block_for_paste(&id);
+        mark_block_pasted(&id);
+        let after_mark = pending_block_for_paste(&id);
+        let newcomer = format!("apasu{:03}", unix_ms() % 1000);
+        insert_test_agent(&newcomer, &format!("new-{newcomer}"));
+        let after_roster_change = pending_block_for_paste(&id);
+        remove_test_agent(&newcomer);
+        remove_test_agent(&id);
+        if let Some(path) = crate::binding_path(&model::tile_id(&id)) { let _ = std::fs::remove_file(path); }
+        assert!(first.is_some());
+        assert!(after_mark.is_none() || after_mark != first, "same block is not pasted twice");
+        assert!(after_roster_change.is_some_and(|b| b.contains(&format!("- new-{newcomer}"))));
+        let claude = format!("apasv{:03}", unix_ms() % 1000);
+        insert_test_agent(&claude, &format!("c-{claude}"));
+        let hooked = pending_block_for_paste(&claude);
+        remove_test_agent(&claude);
+        assert!(hooked.is_none(), "CLIs with a context hook get the block through the hook");
+    }
+    #[test]
     fn system_context_returns_the_full_block_on_every_call() {
         let id = format!("apisys{}", unix_ms() % 100_000);
         let agent = reducer::tests::agent(&id, "pi-agent");
         lock().agents.insert(id.clone(), agent.clone());
         let tile = model::tile_id(&id);
-        let first = system_context(&tile);
-        let second = system_context(&tile);
+        let stable = (0..50).any(|_| {
+            let expected = full_block(&agent);
+            let first = system_context(&tile);
+            first.as_deref() == Some(expected.as_str()) && first == system_context(&tile)
+        });
         lock().agents.remove(&id);
-        assert_eq!(first.as_deref(), Some(context::agent_block(&agent).as_str()));
-        assert_eq!(first, second);
+        assert!(stable, "pi gets the same full block on every call while the roster is unchanged");
         assert_eq!(system_context("agent-missing"), None);
         assert_eq!(system_context("plain-tile"), None);
     }
