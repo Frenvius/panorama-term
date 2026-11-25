@@ -20,6 +20,9 @@ export const messagePreview = (msg: AgentMessage): string => {
 export const countUnread = (messages: AgentMessage[]): number =>
   messages.filter((m) => !m.read && m.to.kind === 'user').length;
 
+export const lastUnreadSeq = (messages: AgentMessage[]): number | null =>
+  messages.reduce<number | null>((max, m) => (!m.read && m.to.kind === 'user' && (max === null || m.seq > max) ? m.seq : max), null);
+
 export const clampToViewport = (left: number, top: number, size: { width: number; height: number }, viewport: { width: number; height: number }): { left: number; top: number } => ({
   left: Math.max(8, Math.min(left, viewport.width - size.width - 8)),
   top: Math.max(8, Math.min(top, viewport.height - size.height - 8))

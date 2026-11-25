@@ -8,7 +8,7 @@ import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
 import { markAllRead, replyMessage } from '~/adapter/agents/agents.client';
 import { useAgentMessages, refreshMessages } from '~/usecase/hooks/useAgentMessages';
-import { messageDirection, messagePreview, statusChipKind, clampToViewport } from '~/usecase/util/agentMessages';
+import { messageDirection, messagePreview, statusChipKind, lastUnreadSeq, clampToViewport } from '~/usecase/util/agentMessages';
 
 const PARTY = 'user';
 const POPOVER_SIZE = { width: 360, height: 480 };
@@ -31,9 +31,9 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
   const popRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    const hasUnread = messages.some((m) => m.to.kind === 'user' && !m.read);
-    if (hasUnread) {
-      markAllRead()
+    const upto = lastUnreadSeq(messages);
+    if (upto !== null) {
+      markAllRead(upto)
         .then(() => refreshMessages(PARTY))
         .catch(() => undefined);
     }

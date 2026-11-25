@@ -501,9 +501,10 @@ pub fn handle_read(v: &Value) -> String {
 
 pub fn handle_mark_read(v: &Value) -> String {
     let all = v.get("all").and_then(Value::as_bool) == Some(true);
+    let upto = v.get("uptoSeq").and_then(Value::as_u64).map_or(u32::MAX, |s| s.min(u32::MAX as u64) as u32);
     let ids: Vec<String> = v["ids"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
     let unread: Vec<String> = with_mailbox(|mb| mb.messages.values()
-        .filter(|m| !m.read && m.to == Party::User && (all || ids.contains(&m.id)))
+        .filter(|m| !m.read && m.to == Party::User && (all && m.seq <= upto || ids.contains(&m.id)))
         .map(|m| m.id.clone())
         .collect());
     if unread.is_empty() {
@@ -754,6 +755,18 @@ mod tests {
         }
         assert_eq!(reply_of(handle_mark_read(&json!({ "all": true })))["ok"], true);
         assert_eq!(with_mailbox(|mb| mb.unread_for(&Party::User)), 0);
+    }
+
+    #[test]
+    fn mark_read_all_stops_at_the_last_message_shown() {
+        let (from, _) = make_agent("u", Desired::Running, false);
+        let shown = reply_of(handle_send(&json!({ "to": "user", "text": "seen", "fromAgent": from })));
+        let late = reply_of(handle_send(&json!({ "to": "user", "text": "arrived after the list", "fromAgent": from })));
+        let seq = with_mailbox(|mb| mb.messages[shown["message"]["id"].as_str().unwrap()].seq);
+        assert_eq!(reply_of(handle_mark_read(&json!({ "all": true, "uptoSeq": seq })))["ok"], true);
+        let read = |r: &Value| with_mailbox(|mb| mb.messages[r["message"]["id"].as_str().unwrap()].read);
+        assert!(read(&shown));
+        assert!(!read(&late), "a message the list never showed stays unread");
     }
     #[test]
     fn send_never_auto_starts_a_crashed_agent() {

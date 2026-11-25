@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 
 import type { AgentMessage, Party } from '~/domain/interfaces/agents.interface';
 
-import { messageDirection, messagePreview, statusChipKind, countUnread, clampToViewport } from '~/usecase/util/agentMessages';
+import { messageDirection, messagePreview, statusChipKind, countUnread, lastUnreadSeq, clampToViewport } from '~/usecase/util/agentMessages';
 
 const userParty: Party = { kind: 'user' };
 const agentParty = (id: string): Party => ({ kind: 'agent', id });
@@ -89,6 +89,23 @@ describe('countUnread', () => {
 
   it('returns 0 for empty list', () => {
     expect(countUnread([])).toBe(0);
+  });
+});
+
+describe('lastUnreadSeq', () => {
+  it('returns the highest unread seq to the user among the shown messages', () => {
+    const msgs = [
+      baseMsg({ to: userParty, read: false, seq: 4 }),
+      baseMsg({ to: userParty, read: false, seq: 9 }),
+      baseMsg({ to: userParty, read: true, seq: 12 }),
+      baseMsg({ to: agentParty('a001'), read: false, seq: 15 }),
+    ];
+    expect(lastUnreadSeq(msgs)).toBe(9);
+  });
+
+  it('returns null when nothing shown is unread', () => {
+    expect(lastUnreadSeq([baseMsg({ to: userParty, read: true, seq: 3 })])).toBeNull();
+    expect(lastUnreadSeq([])).toBeNull();
   });
 });
 
