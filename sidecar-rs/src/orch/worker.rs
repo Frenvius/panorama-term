@@ -43,6 +43,7 @@ pub struct BriefInput<'a> {
     pub merge_note: Option<&'a str>,
     pub handoff: Option<&'a str>,
     pub correction: Option<&'a Dispatch>,
+    pub in_place: bool,
 }
 
 pub struct WorkerLaunch<'a> {
@@ -64,19 +65,32 @@ const DENIED_WORKER_COMMANDS: &[&str] = &[
     "cargo publish", "bun publish",
 ];
 
-pub fn build_worker_settings() -> serde_json::Value {
-    let deny: Vec<String> = DENIED_WORKER_COMMANDS.iter()
+const DENIED_IN_PLACE_COMMANDS: &[&str] = &["git commit", "git stash", "git merge"];
+
+pub fn build_worker_settings(read_only_paths: &[String], in_place: bool) -> serde_json::Value {
+    let mut deny: Vec<String> = DENIED_WORKER_COMMANDS.iter()
         .flat_map(|cmd| ["Bash", "PowerShell"].map(|tool| format!("{tool}({cmd}:*)")))
         .collect();
+    if in_place {
+        for cmd in DENIED_IN_PLACE_COMMANDS {
+            for tool in ["Bash", "PowerShell"] {
+                deny.push(format!("{tool}({cmd}:*)"));
+            }
+        }
+    }
+    for path in read_only_paths {
+        deny.push(format!("Edit({path}/**)"));
+        deny.push(format!("Write({path}/**)"));
+    }
     serde_json::json!({ "permissions": {
         "allow": ["Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep", "TodoWrite"],
         "deny": deny,
     } })
 }
 
-pub fn write_worker_settings(brief_path: &Path) -> Result<PathBuf, String> {
+pub fn write_worker_settings(brief_path: &Path, read_only_paths: &[String], in_place: bool) -> Result<PathBuf, String> {
     let path = brief_path.with_file_name("claude-settings.json");
-    let json = build_worker_settings();
+    let json = build_worker_settings(read_only_paths, in_place);
     let text = serde_json::to_string_pretty(&json).map_err(|e| format!("serialize worker settings: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("write worker settings: {e}"))?;
     Ok(path)
@@ -131,7 +145,7 @@ fn corrective_message(previous: &Dispatch, cli_path: &str) -> String {
 }
 
 pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
-    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, merge_note, handoff, correction } = input;
+    let BriefInput { base, run_id, dispatch_id, task, dispatch, deps_results, cli_path, cwd, merge_note, handoff, correction, in_place } = input;
     let dispatch_dir = base
         .join("orch")
         .join("runs")
@@ -192,7 +206,11 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
 
     content.push_str("## Contract\n\n");
     content.push_str("`PANORAMA_RUN_ID` and `PANORAMA_DISPATCH_ID` are already set in your environment; no ids are needed in commands.\n\n");
-    content.push_str("Ordinary commands inside the worktree are approved. Pushing, branch or worktree changes, rewriting history, and publishing are blocked. Do not work around a blocked command; mention it in the worker_done summary instead.\n\n");
+    if in_place {
+        content.push_str("This task runs in the main checkout. Leave all changes uncommitted in the working tree; Panorama will commit and integrate them. Do not run git commit, git stash, git merge, or git switch.\n\n");
+    } else {
+        content.push_str("Ordinary commands inside the worktree are approved. Pushing, branch or worktree changes, rewriting history, and publishing are blocked. Do not work around a blocked command; mention it in the worker_done summary instead.\n\n");
+    }
     content.push_str("Provide a full report for every role. Explore and review reports must include all findings with file:line evidence; leave nothing only in chat. Implement, test and mechanical reports must explain what changed, why, the root cause for fixes, what was verified and what was skipped. Write the full report to a temporary file outside the worktree.\n\n");
     content.push_str(&report_instruction(cli_path));
     content.push_str(&format!(
@@ -677,7 +695,7 @@ mod tests {
 
     #[test]
     fn worker_settings_allow_and_deny_rules() {
-        let json = build_worker_settings();
+        let json = build_worker_settings(&[], false);
         let allow: Vec<&str> = json["permissions"]["allow"].as_array().unwrap()
             .iter().filter_map(|v| v.as_str()).collect();
         for tool in ["Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep", "TodoWrite"] {
@@ -719,9 +737,10 @@ mod tests {
             result: None,
             integrated_sha: None,
             attempts: 1,
-            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None,
+            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None, exclusive: vec![],
             created_at: 1_000_000,
             updated_at: 1_000_000,
+            workspace: None, applied_in_place: false, timeout_min: None, max_cost_usd: None,
         }
     }
 
@@ -750,6 +769,7 @@ mod tests {
             cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
             native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+            diff_stat: None,
         }
     }
 
@@ -801,7 +821,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let cli = "/usr/local/bin/panorama-cli";
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", merge_note: None, handoff: None, correction: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: cli, cwd: "/tmp/work", merge_note: None, handoff: None, correction: None, in_place: false }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains(cli), "cli path in brief");
         assert!(content.contains("worker_done"), "worker_done in brief");
@@ -825,7 +845,7 @@ mod tests {
         let mut task = dummy_task();
         task.spec = "First line.\n\n  Preserve spacing and `markdown`.\n".into();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None, in_place: false }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.starts_with("Read CLAUDE.md and AGENTS.md at the worktree root if they exist, and follow their conventions.\nIf those instructions conflict with the task spec below, the task spec wins.\n\n"));
         assert!(content.contains(&format!("## Spec\n\n{}\n\n", task.spec)));
@@ -837,7 +857,7 @@ mod tests {
         let dir = tmp_dir("accept");
         let task = dummy_task();
         let dispatch = dummy_dispatch();
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None, in_place: false }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("hello.txt exists"), "acceptance in brief");
         assert!(content.contains("test -f hello.txt"), "verify cmd in brief");
@@ -850,7 +870,7 @@ mod tests {
         let task = dummy_task();
         let dispatch = dummy_dispatch();
         let deps = vec![("t0".to_string(), Some("output: done".to_string()))];
-        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None }).unwrap();
+        let brief_path = write_brief(BriefInput { base: &dir, run_id: "r1", dispatch_id: "r1.t1.1", task: &task, dispatch: &dispatch, deps_results: &deps, cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: None, correction: None, in_place: false }).unwrap();
         let content = std::fs::read_to_string(&brief_path).unwrap();
         assert!(content.contains("output: done"), "dep result in brief");
         std::fs::remove_dir_all(&dir).ok();

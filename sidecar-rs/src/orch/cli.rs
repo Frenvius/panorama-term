@@ -10,6 +10,9 @@ pub fn main() {
     }
     let command = args[0].clone();
     let rest = &args[1..];
+    if command == "exec" {
+        exec_run(rest, crate::port());
+    }
     let (mut body, pretty) = parse_flags(rest, &command).unwrap_or_else(|msg| {
         eprintln!("[orch] {msg}");
         std::process::exit(2);
@@ -159,12 +162,18 @@ fn apply_coordinator_tile(body: &mut serde_json::Map<String, serde_json::Value>)
 }
 
 fn read_plan(path: &std::path::Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    read_plan_inner(path, true)
+}
+
+fn read_plan_inner(path: &std::path::Path, fill_coordinator: bool) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read plan {}: {e}", path.display()))?;
     let mut plan: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&contents)
         .map_err(|e| format!("invalid plan {}: {e}", path.display()))?;
-    if let Some(run) = plan.get_mut("run").and_then(serde_json::Value::as_object_mut) {
-        apply_coordinator_tile(run);
+    if fill_coordinator {
+        if let Some(run) = plan.get_mut("run").and_then(serde_json::Value::as_object_mut) {
+            apply_coordinator_tile(run);
+        }
     }
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     if let Some(tasks) = plan.get_mut("tasks").and_then(serde_json::Value::as_array_mut) {
@@ -182,6 +191,165 @@ fn read_plan(path: &std::path::Path) -> Result<serde_json::Map<String, serde_jso
         }
     }
     Ok(plan)
+}
+
+struct ExecOpts {
+    file: String,
+    timeout_min: u64,
+}
+
+fn parse_exec_args(args: &[String]) -> Result<ExecOpts, String> {
+    let mut file: Option<String> = None;
+    let mut timeout_min = 240u64;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--file" => {
+                i += 1;
+                file = Some(args.get(i)
+                    .ok_or_else(|| "--file requires a value".to_string())?
+                    .clone());
+            }
+            "--timeout-min" => {
+                i += 1;
+                timeout_min = args.get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| "--timeout-min requires a number".to_string())?;
+            }
+            f if f.starts_with("--") => return Err(format!("unknown flag {f} for exec")),
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(ExecOpts {
+        file: file.ok_or_else(|| "exec requires --file <plan.json>".to_string())?,
+        timeout_min,
+    })
+}
+
+fn exec_exit_code(msgs: &[serde_json::Value], tasks: &serde_json::Value) -> i32 {
+    let any_failed = tasks.as_array().is_some_and(|a| {
+        a.iter().any(|t| t["status"].as_str() == Some("failed"))
+    });
+    let finished = msgs.iter().any(|m| m["type"].as_str() == Some("run_finished"));
+    let only_idle = msgs.iter().all(|m| m["type"].as_str() == Some("run_idle"));
+    match (finished || only_idle, any_failed, finished) {
+        (true, true, _) => 1,
+        (_, false, true) => 0,
+        _ => 2,
+    }
+}
+
+fn exec_fetch_report(port: u16, run_id: &str) -> Option<String> {
+    let body = serde_json::json!({"runId": run_id, "format": "markdown"}).to_string();
+    let response = http_post(port, "/orch/report", &body, 15_000).ok()?;
+    let v: serde_json::Value = serde_json::from_str(parse_response_body(&response)).ok()?;
+    if v["ok"].as_bool() != Some(true) { return None; }
+    v["text"].as_str().map(str::to_string)
+}
+
+fn exec_fetch_tasks(port: u16, run_id: &str) -> serde_json::Value {
+    let body = serde_json::json!({"runId": run_id, "brief": true}).to_string();
+    match http_post(port, "/orch/run-show", &body, 10_000) {
+        Ok(r) => {
+            let v: serde_json::Value = serde_json::from_str(parse_response_body(&r))
+                .unwrap_or_default();
+            v["tasks"].clone()
+        }
+        Err(_) => serde_json::Value::Array(vec![]),
+    }
+}
+
+fn exec_print_decisions(msgs: &[serde_json::Value], run_id: &str, cli: &str) {
+    println!("\n## Decisions needed\n");
+    for m in msgs {
+        let msg_type = m["type"].as_str().unwrap_or("unknown");
+        let task_id = m["taskId"].as_str().unwrap_or("");
+        if task_id.is_empty() {
+            println!("- {msg_type}");
+        } else {
+            println!("- {msg_type} (task {task_id})");
+        }
+    }
+    println!("\nTo handle: `{cli} orch check --run-id {run_id} --decisions`");
+}
+
+fn exec_run(args: &[String], port: u16) -> ! {
+    let opts = parse_exec_args(args).unwrap_or_else(|e| {
+        eprintln!("[orch] {e}");
+        std::process::exit(2);
+    });
+    let mut plan = read_plan_inner(std::path::Path::new(&opts.file), false)
+        .unwrap_or_else(|e| {
+            eprintln!("[orch] {e}");
+            std::process::exit(2);
+        });
+    if let Some(run) = plan.get_mut("run").and_then(serde_json::Value::as_object_mut) {
+        run.remove("detach");
+        run.insert("detached".into(), serde_json::Value::Bool(true));
+    }
+    let plan_body = serde_json::to_string(&plan).unwrap_or_default();
+    let raw = http_post(port, "/orch/plan-apply", &plan_body, 30_000)
+        .unwrap_or_else(|e| {
+            eprintln!("[orch] brain unreachable: {e}");
+            std::process::exit(4);
+        });
+    let start: serde_json::Value = serde_json::from_str(parse_response_body(&raw))
+        .unwrap_or_default();
+    if start["ok"].as_bool() != Some(true) {
+        let code = start["error"]["code"].as_str().unwrap_or("error");
+        eprintln!("[orch] {}: {}", code, start["error"]["message"].as_str().unwrap_or(""));
+        std::process::exit(4);
+    }
+    let run_id = match start["run"]["id"].as_str() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            eprintln!("[orch] no run id in plan-apply response");
+            std::process::exit(4);
+        }
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(opts.timeout_min * 60);
+    let cli = crate::panorama_cli_path();
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        if std::time::Instant::now() >= deadline {
+            if let Some(text) = exec_fetch_report(port, &run_id) {
+                print!("{text}");
+            }
+            eprintln!("[orch] exec timed out after {} min", opts.timeout_min);
+            std::process::exit(3);
+        }
+        let check_body = serde_json::json!({
+            "runId": run_id,
+            "decisions": true,
+            "peek": true,
+            "recipient": "coordinator",
+        }).to_string();
+        let response = match http_post(port, "/orch/check", &check_body, 10_000) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[orch] brain unreachable: {e}");
+                std::process::exit(4);
+            }
+        };
+        let v: serde_json::Value = serde_json::from_str(parse_response_body(&response))
+            .unwrap_or_default();
+        if v["ok"].as_bool() != Some(true) {
+            eprintln!("[orch] check: {}", v["error"]["message"].as_str().unwrap_or("unreachable"));
+            std::process::exit(4);
+        }
+        let Some(msgs) = v["messages"].as_array() else { continue };
+        if msgs.is_empty() { continue; }
+        let tasks = exec_fetch_tasks(port, &run_id);
+        let exit_code = exec_exit_code(msgs, &tasks);
+        if let Some(text) = exec_fetch_report(port, &run_id) {
+            print!("{text}");
+        }
+        if exit_code != 0 {
+            exec_print_decisions(msgs, &run_id, &cli);
+        }
+        std::process::exit(exit_code);
+    }
 }
 
 fn validate_required(command: &str, body: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
@@ -244,18 +412,18 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         let flag = &arg[2..];
 
         let allowed = match command {
-            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min autonomy detach corrective-retry worker-summary-cap",
+            "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min max-verify-rounds autonomy detach corrective-retry worker-summary-cap allow-in-place",
             "plan-apply" => "file",
             "run-show" => "run-id full brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
-            "run-update" => "run-id title autonomy max-operational-attempts detach corrective-retry worker-summary-cap",
+            "run-update" => "run-id title autonomy max-operational-attempts max-verify-rounds detach corrective-retry worker-summary-cap",
             "candidate-list" | "metrics" => "",
             "candidate-clear" => "agent model account",
             "usage-report" => "agent account-id windows",
             "run-set-coordinator" => "run-id tile-id",
-            "task-create" => "run-id title spec spec-file acceptance dep profile escalation verify role review owner by",
-            "task-update" => "run-id task-id status result spec spec-file acceptance verify profile escalation review owner by reason",
+            "task-create" => "run-id title spec spec-file acceptance dep profile escalation verify exclusive role review owner by workspace timeout-min max-cost-usd",
+            "task-update" => "run-id task-id status result spec spec-file acceptance verify profile escalation exclusive review owner by reason timeout-min max-cost-usd",
             "task-list" => "run-id status",
             "dispatch" => "run-id task-id profile model retry-of tile-id",
             "send" => "run-id type from to task-id dispatch-id body outcome summary file report report-file reply-to",
@@ -413,11 +581,11 @@ fn kebab_to_camel(s: &str) -> String {
 }
 
 fn is_bool_flag(flag: &str) -> bool {
-    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "decisions" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live")
+    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "decisions" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live" | "allow-in-place")
 }
 
 fn is_array_field(field: &str, command: &str) -> bool {
-    matches!(field, "deps" | "filesModified" | "verify" | "escalation" | "options")
+    matches!(field, "deps" | "filesModified" | "verify" | "escalation" | "exclusive" | "options")
         || (field == "types" && command == "check")
 }
 
@@ -739,5 +907,72 @@ mod tests {
         let large: u64 = u64::MAX;
         let capped = large.min(600_000).saturating_add(5_000);
         assert_eq!(capped, 605_000);
+    }
+
+    #[test]
+    fn exec_flags_parse() {
+        let opts = parse_exec_args(&["--file".to_string(), "plan.json".to_string()]).unwrap();
+        assert_eq!(opts.file, "plan.json");
+        assert_eq!(opts.timeout_min, 240);
+
+        let opts = parse_exec_args(&[
+            "--file".to_string(), "p.json".to_string(),
+            "--timeout-min".to_string(), "60".to_string(),
+        ]).unwrap();
+        assert_eq!(opts.file, "p.json");
+        assert_eq!(opts.timeout_min, 60);
+
+        assert!(parse_exec_args(&[]).is_err());
+        assert!(parse_exec_args(&["--file".to_string()]).is_err());
+        assert!(parse_exec_args(&["--unknown".to_string()]).is_err());
+        assert!(parse_exec_args(&["--timeout-min".to_string()]).is_err());
+    }
+
+    #[test]
+    fn exec_plan_no_coordinator_tile() {
+        let dir = std::env::temp_dir().join(format!("exec-no-coord-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plan.json");
+        std::fs::write(&path, r#"{"run":{"repo":"/tmp"},"tasks":[]}"#).unwrap();
+        std::env::set_var("PANORAMA_TILE_ID", "tile-exec-test");
+        let plan_no = read_plan_inner(&path, false).unwrap();
+        let plan_yes = read_plan_inner(&path, true).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::env::remove_var("PANORAMA_TILE_ID");
+        assert!(
+            plan_no.get("run")
+                .and_then(|r| r.as_object())
+                .and_then(|r| r.get("coordinatorTile"))
+                .is_none(),
+            "exec must not set coordinatorTile"
+        );
+        assert_eq!(
+            plan_yes.get("run")
+                .and_then(|r| r.as_object())
+                .and_then(|r| r.get("coordinatorTile"))
+                .and_then(|v| v.as_str()),
+            Some("tile-exec-test"),
+            "read_plan (fill=true) must set coordinatorTile from env"
+        );
+    }
+
+    #[test]
+    fn exec_exit_code_mapping() {
+        let finished = serde_json::json!([{"type": "run_finished"}]);
+        let idle = serde_json::json!([{"type": "run_idle"}]);
+        let gate = serde_json::json!([{"type": "gate"}]);
+        let tasks_ok = serde_json::json!([{"status": "completed"}]);
+        let tasks_fail = serde_json::json!([{"status": "failed"}]);
+
+        assert_eq!(exec_exit_code(finished.as_array().unwrap(), &tasks_ok), 0);
+        assert_eq!(exec_exit_code(finished.as_array().unwrap(), &tasks_fail), 1,
+            "run_finished with a failed task is exit 1");
+        assert_eq!(exec_exit_code(idle.as_array().unwrap(), &tasks_fail), 1,
+            "run_idle only + failed tasks = exit 1");
+        assert_eq!(exec_exit_code(idle.as_array().unwrap(), &tasks_ok), 2,
+            "run_idle only + no failed tasks = exit 2");
+        assert_eq!(exec_exit_code(gate.as_array().unwrap(), &tasks_fail), 2,
+            "non-idle decision takes priority over failed task");
+        assert_eq!(exec_exit_code(gate.as_array().unwrap(), &tasks_ok), 2);
     }
 }

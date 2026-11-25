@@ -141,14 +141,16 @@ mod tests {
             status: RunStatus::Active, limits: Limits::default(),
             autonomy: Autonomy::default(), detached: false, corrective_retry: true,
             worker_summary_cap: default_worker_summary_cap(), coordinator_wait: None, created_at: 0, updated_at: 0,
+            allow_in_place: false, in_place_fingerprint: None, applied_integration_sha: None,
         };
         let mut e = RunEntry::new(run);
         e.tasks.insert("t1".into(), Task { owner_reason: None,
             id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
-            deps: vec![], profile: None, escalation: vec![], verify: vec![], role, review: false,
+            deps: vec![], profile: None, escalation: vec![], verify: vec![], exclusive: vec![], role, review: false,
             owner: None, status: TaskStatus::Pending, result: None, integrated_sha: None, attempts: 0,
             routing: 1, quality_floor: 0, quality_attempts: 0, operational_attempts: 0,
             pinned: false, last_failure: None, wait: None, created_at: 0, updated_at: 0,
+            workspace: None, applied_in_place: false, timeout_min: None, max_cost_usd: None,
         });
         for d in dispatches {
             e.dispatches.insert(d.id.clone(), d);
@@ -167,6 +169,7 @@ mod tests {
             account: None, chain_index: None, trigger: None, decision: None,
             failure_class: class, by: None, start_ref: None,
             native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+            diff_stat: None,
         }
     }
 

@@ -207,6 +207,15 @@ impl RunEntry {
     }
 }
 
+pub(crate) fn corrective_dispatches_on_entry(entry: &RunEntry, task_id: &str, dispatch_id: &str) -> u32 {
+    let anchor = entry.dispatches.get(dispatch_id);
+    entry.dispatches.values().filter(|d| {
+        d.task_id == task_id
+            && d.corrective_retry
+            && anchor.is_some_and(|a| a.profile == d.profile && a.model == d.model && a.account == d.account)
+    }).count() as u32
+}
+
 #[derive(Default)]
 pub struct State {
     pub runs: HashMap<String, RunEntry>,
@@ -257,6 +266,7 @@ pub enum Cmd {
         role: Option<crate::orch::model::Role>,
         review: bool,
         owner: Option<String>,
+        exclusive: Vec<String>,
         now: u64,
     },
     RunCoordinatorCost {
@@ -279,6 +289,7 @@ pub enum Cmd {
         verify: Option<Vec<String>>,
         profile: Option<String>,
         escalation: Option<Vec<String>>,
+        exclusive: Option<Vec<String>>,
         review: Option<bool>,
         owner: Option<String>,
         by: String,
@@ -475,6 +486,14 @@ pub enum Cmd {
         run_id: String,
         now: u64,
     },
+    RunSetInPlace {
+        run_id: String,
+        dispatch_id: Option<String>,
+        diff_stat: Option<String>,
+        fingerprint: Option<String>,
+        applied_integration_sha: Option<String>,
+        now: u64,
+    },
     Extra {
         cmd: Box<Cmd>,
         fields: serde_json::Map<String, Value>,
@@ -645,6 +664,19 @@ impl State {
                 }))
             }
 
+            Cmd::RunSetInPlace { run_id, dispatch_id, diff_stat, fingerprint, applied_integration_sha, now } => {
+                let Some(entry) = self.runs.get(run_id.as_str()) else {
+                    return ApplyResult::Err(OrchError::NotFound("run not found".into()));
+                };
+                if entry.run.status.is_terminal() {
+                    return ApplyResult::Err(OrchError::Conflict("run is terminal".into()));
+                }
+                ApplyResult::Ok("run-set-in-place".into(), serde_json::json!({
+                    "runId": run_id, "dispatchId": dispatch_id, "diffStat": diff_stat,
+                    "fingerprint": fingerprint, "appliedIntegrationSha": applied_integration_sha, "now": now
+                }))
+            }
+
             Cmd::DispatchRevive { run_id, dispatch_id, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
@@ -773,7 +805,7 @@ impl State {
                 }))
             }
 
-            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role, review, owner, now } => {
+            Cmd::TaskCreate { run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role, review, owner, exclusive, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -794,11 +826,11 @@ impl State {
                     "runId": run_id, "id": id, "title": title, "spec": spec,
                     "acceptance": acceptance, "deps": deps, "profile": profile,
                     "escalation": escalation, "verify": verify, "role": role,
-                    "review": review, "owner": owner, "now": now
+                    "review": review, "owner": owner, "exclusive": exclusive, "now": now
                 }))
             }
 
-            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, review, owner, by, reason, now } => {
+            Cmd::TaskUpdate { run_id, task_id, status, result, spec, acceptance, verify, profile, escalation, exclusive, review, owner, by, reason, now } => {
                 let Some(entry) = self.runs.get(run_id.as_str()) else {
                     return ApplyResult::Err(OrchError::NotFound("run not found".into()));
                 };
@@ -851,7 +883,7 @@ impl State {
                     }
                 }
                 let field_edit = spec.is_some() || acceptance.is_some() || verify.is_some()
-                    || profile.is_some() || escalation.is_some() || review.is_some();
+                    || profile.is_some() || escalation.is_some() || review.is_some() || exclusive.is_some();
                 let end_status = status.as_ref().unwrap_or(&task.status);
                 if field_edit && !matches!(end_status, TaskStatus::Pending | TaskStatus::Blocked | TaskStatus::Failed) {
                     return ApplyResult::Err(OrchError::Conflict(
@@ -861,7 +893,8 @@ impl State {
                 ApplyResult::Ok("task-update".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "status": status, "result": result,
                     "spec": spec, "acceptance": acceptance, "verify": verify,
-                    "profile": profile, "escalation": escalation, "review": review, "owner": owner, "by": by, "reason": reason, "now": now
+                    "profile": profile, "escalation": escalation, "exclusive": exclusive,
+                    "review": review, "owner": owner, "by": by, "reason": reason, "now": now
                 }))
             }
 
@@ -1196,8 +1229,12 @@ impl State {
                         "task must be verifying".into()
                     ));
                 }
-                let retry_same_entry = entry.run.corrective_retry
-                    && entry.dispatches.get(dispatch_id).is_some_and(|d| !d.corrective_retry && d.merge_branch.is_none());
+                let retry_same_entry = {
+                    let failing = entry.dispatches.get(dispatch_id.as_str());
+                    failing.is_some_and(|d| d.merge_branch.is_none())
+                        && entry.run.corrective_retry
+                        && corrective_dispatches_on_entry(entry, task_id, dispatch_id) < entry.run.limits.max_verify_rounds
+                };
                 ApplyResult::Ok("task-verification-failed".into(), serde_json::json!({
                     "runId": run_id, "taskId": task_id, "dispatchId": dispatch_id,
                     "command": command, "exitCode": exit_code, "timedOut": timed_out,
@@ -1292,6 +1329,7 @@ impl State {
             }
             "run-idle" => self.replay_run_idle(data),
             "run-active" => self.replay_run_active(data),
+            "run-set-in-place" => self.replay_run_set_in_place(data),
             other => Err(format!("unknown event kind: {other}")),
         }?;
         if data["stale"] == true {
@@ -1363,10 +1401,35 @@ impl State {
             corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(true),
             worker_summary_cap: parse_opt(data, "workerSummaryCap").unwrap_or_else(default_worker_summary_cap),
             coordinator_wait: None,
+            allow_in_place: data["allowInPlace"].as_bool().unwrap_or(false),
+            in_place_fingerprint: None,
+            applied_integration_sha: None,
             created_at: now,
             updated_at: now,
         };
         self.runs.insert(id, RunEntry::new(run));
+        Ok(())
+    }
+
+    fn replay_run_set_in_place(&mut self, data: &Value) -> Result<(), String> {
+        let run_id = str_field(data, "runId");
+        if run_id.is_empty() { return Err("run-set-in-place: empty runId".into()); }
+        let now = u64_field(data, "now");
+        let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
+        if let Some(fp) = data["fingerprint"].as_str() {
+            entry.run.in_place_fingerprint = Some(fp.to_string());
+        }
+        if let Some(sha) = data["appliedIntegrationSha"].as_str() {
+            entry.run.applied_integration_sha = Some(sha.to_string());
+        }
+        if let Some(dispatch_id) = data["dispatchId"].as_str().filter(|s| !s.is_empty()) {
+            if let Some(d) = entry.dispatches.get_mut(dispatch_id) {
+                if let Some(stat) = data["diffStat"].as_str() {
+                    d.diff_stat = Some(stat.to_string());
+                }
+            }
+        }
+        entry.run.updated_at = now;
         Ok(())
     }
 
@@ -1424,6 +1487,11 @@ impl State {
             pinned: data["pinned"].as_bool().unwrap_or(false),
             last_failure: None,
             wait: None,
+            exclusive: str_arr(data, "exclusive"),
+            workspace: opt_str(data, "workspace"),
+            applied_in_place: data["appliedInPlace"].as_bool().unwrap_or(false),
+            timeout_min: data["timeoutMin"].as_u64(),
+            max_cost_usd: data["maxCostUsd"].as_f64(),
             created_at: now,
             updated_at: now,
         };
@@ -1470,12 +1538,25 @@ impl State {
             task.pinned = true;
         }
         if let Some(arr) = opt_val_arr(data, "escalation") { task.escalation = arr; }
+        if let Some(arr) = opt_val_arr(data, "exclusive") { task.exclusive = arr; }
         if let Some(v) = data.get("review").filter(|v| !v.is_null()).and_then(|v| v.as_bool()) {
             task.review = v;
         }
         if let Some(owner) = opt_str(data, "owner") {
             task.owner = Some(owner);
             task.owner_reason = opt_str(data, "reason");
+        }
+        if let Some(v) = data.get("workspace").filter(|v| !v.is_null()).and_then(|v| v.as_str()) {
+            task.workspace = Some(v.to_string());
+        }
+        if data["appliedInPlace"].as_bool().unwrap_or(false) {
+            task.applied_in_place = true;
+        }
+        if let Some(v) = data["timeoutMin"].as_u64() {
+            task.timeout_min = Some(v);
+        }
+        if let Some(v) = data["maxCostUsd"].as_f64() {
+            task.max_cost_usd = Some(v);
         }
         task.updated_at = now;
         Ok(())
@@ -1525,6 +1606,7 @@ impl State {
             corrective_retry: data["correctiveRetry"].as_bool().unwrap_or(false),
             retry_same_entry: false,
             operational_wait: false,
+            diff_stat: None,
         };
         if let Some(owner) = opt_str(data, "owner") {
             if let Some(task) = entry.tasks.get_mut(&task_id) {
@@ -1582,7 +1664,10 @@ impl State {
                     dispatch.failure_class = Some(class);
                 }
             }
-            let task_id = entry.dispatches.get(&from).map(|d| d.task_id.clone());
+            let (task_id, dispatch_in_place) = entry.dispatches.get(&from)
+                .map(|d| (d.task_id.clone(), d.worktree.is_none()))
+                .unzip();
+            let dispatch_in_place = dispatch_in_place.unwrap_or(false);
             if let Some(task_id) = task_id {
                 if let Some(task) = entry.tasks.get_mut(&task_id) {
                     task.status = if outcome == "succeeded" {
@@ -1591,6 +1676,9 @@ impl State {
                         } else if task.review {
                             TaskStatus::Review
                         } else {
+                            if task.workspace.as_deref() == Some("main") && dispatch_in_place {
+                                task.applied_in_place = true;
+                            }
                             TaskStatus::Completed
                         }
                     } else {
@@ -1919,6 +2007,9 @@ impl State {
         let Some(entry) = self.runs.get_mut(&run_id) else { return Ok(()) };
         if let Some(task) = entry.tasks.get_mut(&task_id) {
             task.status = if review { TaskStatus::Review } else { TaskStatus::Completed };
+            if data["appliedInPlace"].as_bool().unwrap_or(false) {
+                task.applied_in_place = true;
+            }
             task.updated_at = now;
         }
         let msg_seq = data["msgSeq"].as_u64().unwrap_or(0) as u32;
@@ -2022,6 +2113,9 @@ impl State {
         }
         if let Some(n) = data["maxOperationalAttempts"].as_u64() {
             entry.run.limits.max_operational_attempts = n as u32;
+        }
+        if let Some(n) = data["maxVerifyRounds"].as_u64() {
+            entry.run.limits.max_verify_rounds = n as u32;
         }
         entry.run.updated_at = now;
         Ok(())
@@ -2334,6 +2428,7 @@ mod tests {
             role: None,
             review: false,
             owner: None,
+            exclusive: vec![],
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -2463,6 +2558,7 @@ mod tests {
             role: None,
             review: false,
             owner: None,
+            exclusive: vec![],
             now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::BadRequest(_))));
@@ -2607,7 +2703,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["bun test".into()], role: None, review: false, owner: None, now: ts(),
+            verify: vec!["bun test".into()], role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -2732,7 +2828,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["bun test".into()], role: None, review: false, owner: None, now: ts(),
+            verify: vec!["bun test".into()], role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -2810,7 +2906,7 @@ mod tests {
             let cmd = Cmd::TaskUpdate {
                 run_id: "r1".into(), task_id: tid.to_string(),
                 status: Some(to.clone()), result: None, spec: None,
-                acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+                acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
             };
             assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)), "transition failed for {tid}");
         }
@@ -2833,7 +2929,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: None, result: Some("done".into()), spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2887,7 +2983,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Pending), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Err(OrchError::Conflict(_))));
     }
@@ -2939,13 +3035,14 @@ mod tests {
             verifications: vec![], cost_usd: None, cost_source: None,
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
             native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+            diff_stat: None,
         };
         s.runs.get_mut("r1").unwrap().dispatches.insert("r1.t1.2".into(), d2);
 
         let update = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Failed), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&update) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -2982,7 +3079,7 @@ mod tests {
         apply_capture!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "task".into(),
             spec: "spec".into(), acceptance: None, deps: vec![],
-            profile: None, escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: ts(),
+            profile: None, escalation: vec![], verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         });
         apply_capture!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
@@ -3400,6 +3497,7 @@ mod tests {
             role: None,
             review,
             owner: None,
+            exclusive: vec![],
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -3622,7 +3720,7 @@ mod tests {
         apply_ev!(Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![],
-            verify: vec!["check".into()], role: None, review: false, owner: None, now: ts(),
+            verify: vec!["check".into()], role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         });
         apply_ev!(Cmd::Dispatch {
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(),
@@ -3684,6 +3782,7 @@ mod tests {
             role: None,
             review: true,
             owner: None,
+            exclusive: vec![],
             now: ts(),
         };
         match state.apply(&cmd) {
@@ -3721,7 +3820,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Completed), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -3739,7 +3838,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Pending), result: None, spec: Some("new spec".into()),
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -3758,7 +3857,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: ts(),
         };
         assert!(matches!(s.apply(&cmd), ApplyResult::Ok(_, _)));
     }
@@ -3788,7 +3887,7 @@ mod tests {
         let mut cmd = Cmd::TaskUpdate {
             run_id: "r1".into(), task_id: "t1".into(), status: None, result: None,
             spec: None, acceptance: None, verify: None, profile: None, escalation: None,
-            review: None, owner: Some("coordinator".into()), by: "coordinator".into(),
+            exclusive: None, review: None, owner: Some("coordinator".into()), by: "coordinator".into(),
             reason: None, now: ts(),
         };
         assert!(matches!(state.apply(&cmd), ApplyResult::Err(_)));
@@ -3846,7 +3945,7 @@ mod tests {
             spec: "look around".into(), acceptance: None, deps: vec![],
             profile: None, escalation: vec!["claude:haiku".into()],
             verify: vec![], role: Some(crate::orch::model::Role::Explore),
-            review: false, owner: None, now: ts(),
+            review: false, owner: None, exclusive: vec![], now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -3864,7 +3963,7 @@ mod tests {
             run_id: "r1".into(), id: "t1".into(), title: "task".into(),
             spec: "spec".into(), acceptance: None, deps: vec![],
             profile: None, escalation: vec![], verify: vec![], role: None,
-            review: false, owner: None, now: ts(),
+            review: false, owner: None, exclusive: vec![], now: ts(),
         };
         match s.apply(&cmd) {
             ApplyResult::Ok(k, d) => s.replay(&k, &d).expect("replay"),
@@ -4074,7 +4173,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: run_id.into(), id: task_id.into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![], verify: vec![],
-            role: None, review: false, owner: None, now: ts(),
+            role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false}));
         commit_cmd(s, cmd).expect("routed task-create");
     }
@@ -4180,7 +4279,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("claude".into()), escalation: vec![],
-            verify: vec![], role: None, review: false, owner: None, now: ts(),
+            verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: ts(),
         }.with_fields(serde_json::json!({"routing": 1, "pinned": true}));
         commit_cmd(&mut s, cmd).unwrap();
         let t = &s.runs["r1"].tasks["t1"];
@@ -4199,7 +4298,7 @@ mod tests {
         mk_routed_task(&mut s, "r1", "t1");
         let cmd = Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: None, result: None, spec: None,
-            acceptance: None, verify: None, profile: Some("codex".into()), escalation: None,
+            acceptance: None, verify: None, profile: Some("codex".into()), escalation: None, exclusive: None,
             review: None, now: ts(),
         };
         commit_cmd(&mut s, cmd).unwrap();
@@ -4382,7 +4481,7 @@ mod tests {
         commit_cmd(&mut s, wait_cmd(None)).unwrap();
         let cmd = Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled), result: None,
-            spec: None, acceptance: None, verify: None, profile: None, escalation: None, review: None, now: ts(),
+            spec: None, acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, now: ts(),
         };
         commit_cmd(&mut s, cmd).unwrap();
         let t = &s.runs["r1"].tasks["t1"];

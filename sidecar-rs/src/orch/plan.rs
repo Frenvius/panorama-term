@@ -29,7 +29,7 @@ struct Tasks {
     summaries: Vec<Value>,
 }
 
-fn prepare_tasks(run_id: &str, tasks: &[Value]) -> Result<Tasks, String> {
+fn prepare_tasks(run_id: &str, tasks: &[Value], allow_in_place: bool) -> Result<Tasks, String> {
     let ids: Vec<_> = (1..=tasks.len()).map(|n| format!("t{n}")).collect();
     let mut references: HashMap<&str, usize> = ids
         .iter()
@@ -85,6 +85,19 @@ fn prepare_tasks(run_id: &str, tasks: &[Value]) -> Result<Tasks, String> {
                 Ok(ids[index].clone())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let task_workspace = task["workspace"].as_str();
+        if task_workspace == Some("main") && !allow_in_place {
+            return Err(context(err_resp("bad_request", "workspace 'main' requires the run to have allowInPlace set")));
+        }
+        if task_workspace != Some("main") {
+            let dep_is_main = deps.iter().any(|dep_id| {
+                ids.iter().position(|id| id == dep_id)
+                    .is_some_and(|idx| tasks[idx]["workspace"].as_str() == Some("main"))
+            });
+            if dep_is_main {
+                return Err(context(err_resp("bad_request", "a worktree task cannot depend on an in-place task")));
+            }
+        }
         let make_cmd = task_create_cmd(task, run_id.to_owned(), deps).map_err(context)?;
         commands.push(make_cmd(ids[i].clone()));
         summaries.push(json!({"key": task["key"], "id": ids[i], "title": task["title"]}));
@@ -137,12 +150,34 @@ async fn apply(mut body: Value, run_id: String) -> Result<String, String> {
     let tasks = body["tasks"]
         .as_array()
         .ok_or_else(|| err_resp("bad_request", "tasks must be an array"))?;
+    let allow_in_place = body["run"]["allowInPlace"].as_bool().unwrap_or(false);
     let Tasks {
         commands,
         order,
         roots,
         summaries,
-    } = prepare_tasks(&run_id, tasks)?;
+    } = prepare_tasks(&run_id, tasks, allow_in_place)?;
+
+    if let Some(repo) = body["run"]["repo"].as_str().map(str::to_string) {
+        let exclusive_names: Vec<String> = tasks.iter()
+            .flat_map(|t| t["exclusive"].as_array().iter().flat_map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string))).collect::<Vec<_>>())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !exclusive_names.is_empty() {
+            let val_result = tokio::task::spawn_blocking(move || {
+                match crate::orch::repo_config::RepoConfig::load(&repo) {
+                    Ok(Some(cfg)) => cfg.validate_exclusive_names(&exclusive_names),
+                    Ok(None) => Err("no .panorama/worktree.json; cannot use exclusive without declaring names".to_string()),
+                    Err(e) => Err(e),
+                }
+            }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+            if let Err(e) = val_result {
+                return Err(err_resp("bad_request", &e));
+            }
+        }
+    }
+
     let run = run_create_cmd(&body["run"], run_id.clone()).await?;
     let cmd = Cmd::PlanApply {
         run: Box::new(run),
@@ -321,6 +356,76 @@ mod tests {
         assert_eq!(response["deferred"], json!([]));
         assert_eq!(response["failedToStart"][0]["taskId"], "t1");
         assert_eq!(response["failedToStart"][0]["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_rejects_main_workspace_without_allow_in_place() {
+        let mut request = plan(json!([
+            {"title":"ip","spec":"do it","profile":"codex","workspace":"main"},
+        ]));
+        request["run"].as_object_mut().unwrap().remove("allowInPlace");
+        let run_id = gen_run_id();
+        let err = apply(request, run_id).await.unwrap_err();
+        assert!(err.contains("allowInPlace"), "{err}");
+        assert!(err.contains("task t1"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_accepts_main_workspace_with_allow_in_place() {
+        let mut request = plan(json!([
+            {"title":"ip","spec":"do it","profile":"codex","workspace":"main"},
+        ]));
+        request["run"]["allowInPlace"] = json!(true);
+        let response: Value = serde_json::from_str(&apply(request, gen_run_id()).await.unwrap()).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["tasks"][0]["id"], "t1");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_rejects_worktree_task_depending_on_main_task() {
+        let mut request = plan(json!([
+            {"key":"ip","title":"ip","spec":"do it","profile":"codex","workspace":"main"},
+            {"key":"wt","title":"wt","spec":"do it","profile":"codex","deps":["ip"]},
+        ]));
+        request["run"]["allowInPlace"] = json!(true);
+        let run_id = gen_run_id();
+        let err = apply(request, run_id).await.unwrap_err();
+        assert!(err.contains("worktree task cannot depend on an in-place task"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_allows_main_task_depending_on_main_task() {
+        let mut request = plan(json!([
+            {"key":"ip1","title":"ip1","spec":"do it","profile":"codex","workspace":"main"},
+            {"key":"ip2","title":"ip2","spec":"do it","profile":"codex","workspace":"main","deps":["ip1"]},
+        ]));
+        request["run"]["allowInPlace"] = json!(true);
+        let response: Value = serde_json::from_str(&apply(request, gen_run_id()).await.unwrap()).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_workspace_none_defaults_to_worktree_behavior() {
+        let request = plan(json!([
+            {"title":"wt","spec":"do it","profile":"codex"},
+        ]));
+        let run_id = gen_run_id();
+        let response: Value = serde_json::from_str(&apply(request, run_id.clone()).await.unwrap()).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        let guard = super::super::state().lock().unwrap_or_else(|e| e.into_inner());
+        let task = &guard.runs[&run_id].tasks["t1"];
+        assert!(task.workspace.is_none(), "workspace should be None for worktree default");
+    }
+
+    #[tokio::test]
+    async fn plan_apply_allow_in_place_replay_defaults_false() {
+        let request = plan(json!([{"title":"t","spec":"s","profile":"codex"}]));
+        let run_id = gen_run_id();
+        apply(request, run_id.clone()).await.unwrap();
+        let base = crate::panorama_dir().unwrap();
+        let mut replayed = State::default();
+        load_into(&mut replayed, &run_events_path(&base, &run_id), &run_id);
+        assert!(!replayed.runs[&run_id].run.allow_in_place, "allowInPlace defaults false on replay");
     }
 
 }

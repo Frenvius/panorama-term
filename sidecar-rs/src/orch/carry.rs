@@ -270,6 +270,7 @@ mod tests {
         let path = crate::orch::worker::write_brief(crate::orch::worker::BriefInput {
             base: &dir, run_id: "r1", dispatch_id: "r1.t1.2", task: &task, dispatch: &next,
             deps_results: &[], cli_path: "/cli", cwd: "/tmp", merge_note: None, handoff: Some(&handoff), correction: None,
+            in_place: false,
         }).unwrap();
         let text = std::fs::read_to_string(path).unwrap();
         assert!(text.contains("quota_exhausted on claude/opus"));

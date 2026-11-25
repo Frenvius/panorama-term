@@ -36,6 +36,7 @@ impl std::fmt::Display for Role {
 fn default_verify_timeout_min() -> u32 { 15 }
 fn default_stall_quiet_min() -> u32 { 5 }
 fn default_max_operational_attempts() -> u32 { 6 }
+fn default_max_verify_rounds() -> u32 { 3 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +50,8 @@ pub struct Limits {
     pub stall_quiet_min: u32,
     #[serde(default = "default_max_operational_attempts")]
     pub max_operational_attempts: u32,
+    #[serde(default = "default_max_verify_rounds")]
+    pub max_verify_rounds: u32,
 }
 
 impl Default for Limits {
@@ -60,6 +63,7 @@ impl Default for Limits {
             verify_timeout_min: 15,
             stall_quiet_min: 5,
             max_operational_attempts: 6,
+            max_verify_rounds: 3,
         }
     }
 }
@@ -239,6 +243,12 @@ pub struct Run {
     pub worker_summary_cap: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_wait: Option<CoordinatorWait>,
+    #[serde(default)]
+    pub allow_in_place: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_place_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_integration_sha: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -307,6 +317,16 @@ pub struct Task {
     pub last_failure: Option<FailureClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<TaskWait>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusive: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applied_in_place: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_min: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -399,6 +419,8 @@ pub struct Dispatch {
     pub retry_same_entry: bool,
     #[serde(default)]
     pub operational_wait: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stat: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

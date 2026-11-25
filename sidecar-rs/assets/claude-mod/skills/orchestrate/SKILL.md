@@ -89,3 +89,41 @@ and reasons for the user; do not force-remove them.
 
 For attached mode, all message types, steering, retries, conflicts, boards and autonomy details, read
 `reference.md` in this skill directory when needed.
+
+## When a worktree cannot do the task
+
+A worker runs in an isolated git worktree. If the task needs gitignored files, a heavy build
+artifact, or a running app that is not in the worktree, the worktree cannot serve it.
+
+When you recognize this: stop and ask the user which route to take (link the files through
+`.panorama/worktree.json`, an in-place task with `workspace: "main"`, or doing it by hand),
+and which model to use. Never bypass with the Agent tool, subagents, or another agent CLI.
+Do not override the profile or model unless the user asks. Split implement from build/validate
+tasks when only the latter needs the missing files.
+
+## One task: `orch exec`
+
+For a single self-contained task, skip the conversation loop:
+
+```
+{cli} orch exec --file <plan.json> [--timeout-min N]
+```
+
+Applies the plan (same JSON shape as `plan-apply`), waits until done or a decision is needed,
+prints a compact markdown report, and exits. Exit codes: 0 all done, 1 a task failed, 2
+decision needed (run `{cli} orch check --run-id <run> --decisions`), 3 timeout (default 240
+min), 4 brain unreachable. Does not set `coordinatorTile`; nobody is woken during the wait.
+
+## `.panorama/worktree.json`, `exclusive`, in-place tasks
+
+Place `.panorama/worktree.json` in the repo root (may be gitignored). The brain reads it at
+every dispatch start. `link` junctions/symlinks directories into each worktree. `copy` copies
+files or directories. `exclusive` lists lock names tasks can hold (task field
+`exclusive: ["name"]`; name must be in the list). The reserved name `main` is implicit for
+in-place tasks.
+
+`workspace: "main"` on a task runs the worker in the main checkout instead of a worktree.
+Requires `run.allowInPlace: true` on the run. One in-place task at a time per repo. The worker
+must not commit, switch branches, reset or stash. The diff stays in the working tree.
+
+See `reference.md` for the full field reference.

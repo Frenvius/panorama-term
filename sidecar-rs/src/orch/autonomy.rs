@@ -29,12 +29,14 @@ pub(super) enum Action {
     ConflictResolve { task_id: String },
     ContinueStalled { task_id: String, worker: Revive },
     StopStalled { task_id: String, worker: Revive },
+    BudgetExceeded { task_id: String },
 }
 
 pub(super) struct TickInput<'a> {
     pub entry: &'a RunEntry,
     pub now: i64,
     pub is_live: &'a dyn Fn(&str) -> bool,
+    pub locked_exclusive: &'a [String],
 }
 
 struct TaskCtx<'a> {
@@ -53,7 +55,7 @@ fn take_slot(slots: &mut usize) -> bool {
 }
 
 pub(super) fn plan(input: TickInput) -> Vec<Action> {
-    let TickInput { entry, now, is_live } = input;
+    let TickInput { entry, now, is_live, locked_exclusive } = input;
     if entry.run.status != RunStatus::Active {
         return Vec::new();
     }
@@ -61,10 +63,15 @@ pub(super) fn plan(input: TickInput) -> Vec<Action> {
     let mut tasks: Vec<&Task> = entry.tasks.values().collect();
     tasks.sort_by_key(|t| (t.id.len(), t.id.clone()));
     let mut actions = Vec::new();
+    let mut locked: Vec<String> = locked_exclusive.to_vec();
     for task in tasks {
         if task.owner.as_deref() == Some("user")
             || (entry.run.detached && entry.auto_action_failures.contains_key(&task.id))
         {
+            continue;
+        }
+        let starts = matches!(task.status, TaskStatus::Waiting | TaskStatus::Failed | TaskStatus::Pending);
+        if starts && task_lock_names(task).any(|n| locked.iter().any(|l| l == n)) {
             continue;
         }
         let ctx = TaskCtx { entry, task, now, is_live };
@@ -79,6 +86,9 @@ pub(super) fn plan(input: TickInput) -> Vec<Action> {
             TaskStatus::Dispatched => plan_stalled(&ctx),
             _ => None,
         };
+        if starts && planned.is_some() {
+            locked.extend(task_lock_names(task).map(str::to_string));
+        }
         actions.extend(planned);
     }
     actions
@@ -86,6 +96,21 @@ pub(super) fn plan(input: TickInput) -> Vec<Action> {
 
 fn has_counter(task: &Task, counter: FailureCounter) -> bool {
     task.last_failure.is_some_and(|class| class.counter() == counter)
+}
+
+fn task_dispatch_cost(entry: &RunEntry, task_id: &str) -> f64 {
+    entry.dispatches.values()
+        .filter(|d| d.task_id == task_id)
+        .map(|d| d.cost_usd.unwrap_or(0.0))
+        .sum()
+}
+
+fn budget_exceeded(entry: &RunEntry, task: &Task) -> bool {
+    task.max_cost_usd.is_some_and(|cap| task_dispatch_cost(entry, &task.id) >= cap)
+}
+
+fn budget_exceeded_already_sent(entry: &RunEntry, task_id: &str) -> bool {
+    entry.messages.iter().any(|m| m.msg_type == "budget_exceeded" && m.task_id.as_deref() == Some(task_id))
 }
 
 fn failure_recorded(ctx: &TaskCtx) -> bool {
@@ -100,9 +125,16 @@ fn has_chain(task: &Task) -> bool {
     !task.escalation.is_empty() || task.profile.is_some()
 }
 
+fn task_lock_names(task: &Task) -> impl Iterator<Item = &str> {
+    let in_place = task.workspace.as_deref() == Some("main");
+    task.exclusive.iter().map(String::as_str).chain(in_place.then_some("main"))
+}
+
 fn deps_integrated(entry: &RunEntry, task: &Task) -> bool {
     task.deps.iter().all(|dep| {
-        entry.tasks.get(dep).is_some_and(|d| d.status == TaskStatus::Completed && d.integrated_sha.is_some())
+        entry.tasks.get(dep).is_some_and(|d| {
+            d.status == TaskStatus::Completed && (d.integrated_sha.is_some() || d.applied_in_place)
+        })
     })
 }
 
@@ -162,6 +194,12 @@ fn plan_failed(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
     if (task.routing != 1 && !stalled) || !failure_recorded(ctx) {
         return None;
     }
+    if budget_exceeded(entry, task) {
+        if !budget_exceeded_already_sent(entry, &task.id) {
+            return Some(Action::BudgetExceeded { task_id: task.id.clone() });
+        }
+        return None;
+    }
     let autonomy = entry.run.autonomy;
     let limits = &entry.run.limits;
     if autonomy.operational
@@ -206,6 +244,9 @@ fn plan_pending(ctx: &TaskCtx, slots: &mut usize) -> Option<Action> {
 
 fn plan_integrate(ctx: &TaskCtx) -> Option<Action> {
     let (entry, task) = (ctx.entry, ctx.task);
+    if task.applied_in_place {
+        return None;
+    }
     if !entry.run.autonomy.integration || (task.review && !entry.run.detached) || task.integrated_sha.is_some() {
         return None;
     }
@@ -372,7 +413,7 @@ pub(super) fn idle_reason(entry: &RunEntry, now: i64) -> Option<IdleReport> {
     {
         return None;
     }
-    let actions = plan(TickInput { entry, now, is_live: &|_| false });
+    let actions = plan(TickInput { entry, now, is_live: &|_| false, locked_exclusive: &[] });
     if actions.iter().any(|a| !matches!(a, Action::ResumeReady { .. })) {
         return None;
     }
@@ -384,7 +425,7 @@ pub(super) fn idle_reason(entry: &RunEntry, now: i64) -> Option<IdleReport> {
         match task.status {
             TaskStatus::Completed => {
                 counts.completed += 1;
-                if task.integrated_sha.is_some() {
+                if task.integrated_sha.is_some() || task.applied_in_place {
                     counts.integrated += 1;
                 } else if let Some(failure) = entry.auto_action_failures.get(&task.id) {
                     groups.auto_action_failed.push(idle_task(task, Some(format!("{}: {}", failure.action, failure.error))));
@@ -562,11 +603,43 @@ pub(super) async fn tick_all() {
     }
 }
 
+pub(super) fn locked_exclusive_names_canon(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|p| {
+            let s = p.to_string_lossy();
+            let trimmed = s.trim_start_matches(r"\\?\");
+            trimmed.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+        })
+        .unwrap_or_else(|_| path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase())
+}
+
+pub(super) fn locked_exclusive_names(state: &crate::orch::reducer::State, repo: &str) -> Vec<String> {
+    let repo_canon = locked_exclusive_names_canon(repo);
+    let mut names: Vec<String> = Vec::new();
+    for entry in state.runs.values() {
+        if locked_exclusive_names_canon(&entry.run.repo) != repo_canon {
+            continue;
+        }
+        for task in entry.tasks.values() {
+            if !matches!(task.status, TaskStatus::Dispatched | TaskStatus::Verifying) {
+                continue;
+            }
+            for name in task_lock_names(task) {
+                if !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
 pub(super) async fn tick_run(run_id: &str, now: i64) {
     let actions = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = guard.runs.get(run_id) else { return };
-        plan(TickInput { entry, now, is_live: &tile_is_live })
+        let locked = locked_exclusive_names(&guard, &entry.run.repo);
+        plan(TickInput { entry, now, is_live: &tile_is_live, locked_exclusive: &locked })
     };
     for action in actions {
         execute(run_id, action).await;
@@ -687,6 +760,11 @@ async fn execute(run_id: &str, action: Action) {
         Action::Resume { task_id, resume_id, revive } => resume(run_id, &task_id, &resume_id, revive).await,
         Action::ResumeReady { task_id, dispatch_id, body } => {
             send_coordinator_notice(run_id.to_string(), task_id, dispatch_id, "resume_ready", body).await;
+        }
+        Action::BudgetExceeded { task_id } => {
+            let dispatch_id = latest_dispatch_id(run_id, &task_id);
+            let body = json!({"taskId": task_id}).to_string();
+            send_coordinator_notice(run_id.to_string(), task_id, dispatch_id, "budget_exceeded", body).await;
         }
     }
 }
@@ -867,7 +945,7 @@ mod tests {
             run_id: run_id.into(), id: id.into(), title: id.into(), spec: "s".into(), acceptance: None,
             deps: deps.iter().map(|d| d.to_string()).collect(),
             profile: None, escalation: chain.iter().map(|c| c.to_string()).collect(),
-            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            verify: vec![], exclusive: vec![], role: None, review: false, owner: None, now: 1_000_000,
         }.with_fields(json!({"routing": 1, "pinned": false})));
     }
 
@@ -903,7 +981,7 @@ mod tests {
     }
 
     fn plan_at(s: &State, run_id: &str, now: i64) -> Vec<Action> {
-        plan(TickInput { entry: &s.runs[run_id], now, is_live: &|_| true })
+        plan(TickInput { entry: &s.runs[run_id], now, is_live: &|_| true, locked_exclusive: &[] })
     }
 
     fn install(s: State) {
@@ -1100,7 +1178,7 @@ mod tests {
         apply(&mut s, Cmd::TaskCreate {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()],
-            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            verify: vec![], exclusive: vec![], role: None, review: false, owner: None, now: 1_000_000,
         }.with_fields(json!({"routing": 1, "pinned": false})));
         apply(&mut s, Cmd::Dispatch { merge_branch: None,
             run_id: "r1".into(), id: "r1.t1.1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
@@ -1135,7 +1213,7 @@ mod tests {
         assert!(matches!(s.apply(&revive()), ApplyResult::Err(_)), "task is failed, not pending");
         f12_commit(&mut s, Cmd::TaskUpdate { owner: None, by: "test".into(), reason: None,
             run_id: "r1".into(), task_id: "t1".into(), status: Some(TaskStatus::Pending), result: None,
-            spec: None, acceptance: None, verify: None, profile: None, escalation: None, review: None, now: 5,
+            spec: None, acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, now: 5,
         });
         f12_commit(&mut s, revive());
         let entry = &s.runs["r1"];
@@ -1407,7 +1485,7 @@ mod tests {
     fn persisted_task(run_id: &str, task_id: &str, tile_id: Option<String>, routing: u32) {
         persist(run_id, Cmd::TaskCreate {
             run_id: run_id.into(), id: task_id.into(), title: task_id.into(), spec: "s".into(), acceptance: None,
-            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()], verify: vec![],
+            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()], verify: vec![], exclusive: vec![],
             role: None, review: false, owner: None, now: 2,
         }.with_fields(json!({"routing": routing})));
         persist(run_id, Cmd::Dispatch {
@@ -1478,7 +1556,7 @@ mod tests {
                 let guard = state().lock().unwrap();
                 let entry = &guard.runs[&run_id];
                 assert!(entry.auto_action_failures.is_empty());
-                assert_eq!(plan(TickInput { entry, now, is_live: &|_| true }), expected);
+                assert_eq!(plan(TickInput { entry, now, is_live: &|_| true, locked_exclusive: &[] }), expected);
                 let conflict = entry.messages.iter().rev().find(|m| m.msg_type == "integration_conflict").unwrap();
                 assert_eq!(super::super::needs_decision(conflict, entry, now), attempt == 3);
             }
@@ -1754,5 +1832,137 @@ mod tests {
         assert_eq!(r.reason, "finished");
         assert_eq!(r.counts, IdleCounts { completed: 1, integrated: 1, cancelled: 1 });
         assert_eq!(r.tasks, IdleGroups::default());
+    }
+
+    fn add_exclusive_task(s: &mut State, run_id: &str, id: &str, exclusive: &[&str]) {
+        f12_commit(s, Cmd::TaskCreate {
+            run_id: run_id.into(), id: id.into(), title: id.into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()],
+            verify: vec![], exclusive: exclusive.iter().map(|e| e.to_string()).collect(),
+            role: None, review: false, owner: None, now: 1_000_000,
+        }.with_fields(json!({"routing": 1, "pinned": false})));
+    }
+
+    #[test]
+    fn plan_exclusive_lock_allows_only_one_start_per_name_per_tick() {
+        let mut s = new_state("r1", autonomy(false, true, false));
+        add_exclusive_task(&mut s, "r1", "t1", &["x"]);
+        add_exclusive_task(&mut s, "r1", "t2", &["x"]);
+        let actions = plan_at(&s, "r1", NOW);
+        assert_eq!(actions.len(), 1, "only one of two tasks sharing exclusive 'x' planned: {actions:?}");
+        assert!(matches!(actions[0], Action::Start { ref task_id, .. } if task_id == "t1"));
+    }
+
+    #[test]
+    fn plan_exclusive_lock_blocks_failed_retry_when_name_held() {
+        let mut s = new_state("r1", autonomy(true, true, false));
+        add_exclusive_task(&mut s, "r1", "t1", &["y"]);
+        add_exclusive_task(&mut s, "r1", "t2", &["y"]);
+        let d = dispatch(&mut s, "r1", "t1", None);
+        fail(&mut s, "r1", &d, FailureClass::QuotaExhausted);
+        let d2 = dispatch(&mut s, "r1", "t2", None);
+        s.runs.get_mut("r1").unwrap().dispatches.get_mut(&d2).unwrap().status = DispatchStatus::Running;
+        s.runs.get_mut("r1").unwrap().tasks.get_mut("t2").unwrap().status = TaskStatus::Dispatched;
+        let actions = plan(TickInput {
+            entry: &s.runs["r1"],
+            now: NOW,
+            is_live: &|_| true,
+            locked_exclusive: &["y".to_string()],
+        });
+        assert!(actions.iter().all(|a| !matches!(a, Action::Retry { ref task_id, .. } if task_id == "t1")),
+            "failed task with held exclusive must not be retried: {actions:?}");
+    }
+
+    fn add_in_place_task(s: &mut State, run_id: &str, id: &str) {
+        f12_commit(s, Cmd::TaskCreate {
+            run_id: run_id.into(), id: id.into(), title: id.into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()],
+            verify: vec![], exclusive: vec![], role: None, review: false, owner: None, now: 1_000_000,
+        }.with_fields(json!({"routing": 1, "pinned": false, "workspace": "main"})));
+    }
+
+    #[test]
+    fn task_lock_names_includes_main_for_in_place_tasks() {
+        let mut s = new_state("r1", Autonomy::default());
+        add_in_place_task(&mut s, "r1", "t1");
+        add_exclusive_task(&mut s, "r1", "t2", &["rail-build"]);
+        f12_commit(&mut s, Cmd::TaskCreate {
+            run_id: "r1".into(), id: "t3".into(), title: "t3".into(), spec: "s".into(), acceptance: None,
+            deps: vec![], profile: None, escalation: vec!["codex:f12c2".into()],
+            verify: vec![], exclusive: vec![], role: None, review: false, owner: None, now: 1_000_000,
+        }.with_fields(json!({"routing": 1})));
+        let entry = &s.runs["r1"];
+        let t1_names: Vec<&str> = task_lock_names(&entry.tasks["t1"]).collect();
+        assert_eq!(t1_names, ["main"], "in-place task has implicit 'main' lock");
+        let t2_names: Vec<&str> = task_lock_names(&entry.tasks["t2"]).collect();
+        assert_eq!(t2_names, ["rail-build"], "worktree exclusive task");
+        let t3_names: Vec<&str> = task_lock_names(&entry.tasks["t3"]).collect();
+        assert!(t3_names.is_empty(), "plain worktree task has no locks");
+    }
+
+    #[test]
+    fn deps_integrated_accepts_applied_in_place_dep() {
+        let mut s = new_state("r1", Autonomy::default());
+        add_in_place_task(&mut s, "r1", "t1");
+        add_in_place_task(&mut s, "r1", "t2");
+        {
+            let entry = s.runs.get_mut("r1").unwrap();
+            let t1 = entry.tasks.get_mut("t1").unwrap();
+            t1.status = TaskStatus::Completed;
+            t1.applied_in_place = true;
+            let t2 = entry.tasks.get_mut("t2").unwrap();
+            t2.deps = vec!["t1".into()];
+        }
+        let entry = &s.runs["r1"];
+        assert!(deps_integrated(entry, &entry.tasks["t2"]), "applied_in_place dep counts as integrated");
+    }
+
+    #[test]
+    fn plan_integrate_skips_applied_in_place_tasks() {
+        let mut s = new_state("r1", autonomy(false, false, true));
+        add_in_place_task(&mut s, "r1", "t1");
+        let d = dispatch(&mut s, "r1", "t1", None);
+        {
+            let entry = s.runs.get_mut("r1").unwrap();
+            let task = entry.tasks.get_mut("t1").unwrap();
+            task.status = TaskStatus::Completed;
+            task.applied_in_place = true;
+            let disp = entry.dispatches.get_mut(&d).unwrap();
+            disp.status = DispatchStatus::Reported;
+            disp.outcome = Some("succeeded".into());
+            disp.branch = Some("orch/r1/t1-1".into());
+        }
+        let actions = plan_at(&s, "r1", NOW);
+        assert!(actions.is_empty(), "applied_in_place task must not be integrated: {actions:?}");
+    }
+
+    #[test]
+    fn budget_cap_blocks_auto_retry_and_emits_once() {
+        let mut s = new_state("r1", autonomy(true, true, false));
+        add_task(&mut s, "r1", "t1", &["codex:f12c2"], &[]);
+        {
+            let entry = s.runs.get_mut("r1").unwrap();
+            entry.tasks.get_mut("t1").unwrap().max_cost_usd = Some(1.0);
+        }
+        let d = dispatch(&mut s, "r1", "t1", None);
+        {
+            let entry = s.runs.get_mut("r1").unwrap();
+            entry.dispatches.get_mut(&d).unwrap().cost_usd = Some(1.5);
+        }
+        fail(&mut s, "r1", &d, FailureClass::QualityFailed);
+        let actions = plan_at(&s, "r1", NOW);
+        let has_budget = actions.iter().any(|a| matches!(a, Action::BudgetExceeded { task_id } if task_id == "t1"));
+        assert!(has_budget, "BudgetExceeded action expected when cost >= cap: {actions:?}");
+        let no_retry = !actions.iter().any(|a| matches!(a, Action::Retry { task_id, .. } if task_id == "t1"));
+        assert!(no_retry, "Retry must be suppressed when budget exceeded: {actions:?}");
+
+        s.runs.get_mut("r1").unwrap().messages.push(Message {
+            seq: 1, task_id: Some("t1".into()), dispatch_id: None,
+            from: "coordinator".into(), to: "user".into(),
+            msg_type: "budget_exceeded".into(), body: None, reply_to: None, at: NOW as u64, acked: false,
+        });
+        let actions2 = plan_at(&s, "r1", NOW);
+        let no_dup = !actions2.iter().any(|a| matches!(a, Action::BudgetExceeded { task_id } if task_id == "t1"));
+        assert!(no_dup, "BudgetExceeded must not be emitted twice: {actions2:?}");
     }
 }

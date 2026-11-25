@@ -161,6 +161,7 @@ retries, starts, and integration; act on the decision messages it returns.
 | `operational_failure` | A worker stopped for a reason that is not its fault. JSON body: `class`, `dispatchId`, `suggested` (the next candidate), `hint` | `retry`. It costs no quality attempt |
 | `resume_ready` | A waiting task is due. JSON body: `resumeId`, `kind`, `resumeAt` | `task-update --status pending`, then `worker-start`. Sent once per resume |
 | `auto_action` | The brain acted on its own under the run's autonomy. JSON body: `action` (`retry`, `start`, `continue`, `integrate`), `taskId`, `dispatchId`, `reason` | Read it so your picture of the run stays correct. Do not repeat the action |
+| `budget_exceeded` | A verify failure was not retried because the task's total dispatch cost reached `maxCostUsd`. JSON body: `taskId` | Inspect the work done so far, adjust the spec or raise the cap with `task-update --max-cost-usd N`, then `retry` manually |
 | `late_report` | A `worker_done` arrived from an attempt already superseded by a newer one. Not applied | Compare with the newer attempt. Integrate the old one with `integrate --dispatch-id` if it is the better result |
 | `task_integrated` | The merge into the integration branch succeeded | Start the tasks that depend on it |
 | `integration_conflict` | The merge conflicted and was aborted. Nothing changed on any branch. The task is `blocked`. JSON body with `files`, `branch`, `integrationTip` and `hint` | Explain it to the user in a sentence or two, then run `conflict-resolve`. Do not retry and do not present it as redoing the task |
@@ -353,3 +354,89 @@ attached as coordinator.
 - Boards can be renamed with `run-update --run-id <id> --title "<new name>".
 
 Worker reports arrive in the `worker_done` body and are available through `worker-show`. If a report is missing, use `worker-send` to ask the worker for it. Use `worker-read --all` for live scrollback or `worker-transcript --run-id <run> --dispatch-id <id> [--tail N]` for live or saved transcripts.
+
+## `orch exec`
+
+```
+{cli} orch exec --file <plan.json> [--timeout-min N]
+```
+
+Same plan shape as `plan-apply`. `detached` is forced true. `coordinatorTile` is NOT set from
+the environment: no wake-up occurs; the caller waits for the exit code.
+
+Polls the brain every 2 s until the run is finished, a decision appears, or the timeout.
+Prints a compact markdown report on any exit. On exit 2, also prints the pending decisions
+and the follow-up command.
+
+Flags: `--file <path>` (required), `--timeout-min N` (default 240).
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | All tasks completed and integrated |
+| 1 | A task failed (run is idle with no more autonomous actions) |
+| 2 | Decision needed: `{cli} orch check --run-id <run> --decisions` |
+| 3 | Timeout |
+| 4 | Brain unreachable |
+
+## `.panorama/worktree.json`
+
+Place in the repo root (may be gitignored). Read at every dispatch start; missing = no effect.
+
+```json
+{
+  "link": [{"path": "build/src", "readOnly": true}, {"path": "docs"}],
+  "copy": [".env", "src-tauri/binaries"],
+  "exclusive": ["rail-build"]
+}
+```
+
+- `link`: directories only. Junction on Windows (`mklink /J`, no admin), symlink elsewhere.
+  `readOnly: true` denies `Edit`/`Write` to that path in the worker's `claude-settings.json`.
+- `copy`: files or directories, copied recursively.
+- `exclusive`: names available for task `exclusive` fields (typo guard). The name `main` is
+  reserved for in-place tasks.
+- Validation per entry: relative path, no `..`, exists in the main checkout, ignored there
+  (`git check-ignore -q`). Failure = `setup_failed` naming the entry.
+
+## Task and run fields (P2/P3)
+
+P2 exclusive locks and P3 in-place tasks are fully active.
+
+### Task `exclusive`
+
+Array of lock names the task holds while dispatching, running, starting, or verifying. Names
+must be listed in `.panorama/worktree.json` `exclusive`. The reserved name `main` is implicit
+for in-place tasks (`workspace: "main"`).
+
+### Task `workspace`
+
+`"worktree"` (default) or `"main"`. `"main"` requires `run.allowInPlace: true` on the run.
+
+### Run `allowInPlace`
+
+Boolean. Permits `workspace: "main"` tasks in this run. Set via plan.json run object or
+`run-create --allow-in-place`.
+
+### Run `maxVerifyRounds`
+
+How many same-entry corrective retries are allowed before escalating to the next candidate.
+Default 3. Set via plan.json run object, `run-create --max-verify-rounds N`, or `run-update`.
+
+### Task `timeoutMin`
+
+Overrides the run `dispatchTimeoutMin` for this task's dispatches. Set via
+`task-create --timeout-min N` or `task-update`.
+
+### Task `maxCostUsd`
+
+After each verify failure, if the task's total dispatch cost (sum of `costUsd` figures) is at
+or above this cap, no automatic retry occurs; a `budget_exceeded` decision is issued instead.
+Unknown cost counts as 0 (noted in the report). Not a real-time cut: cost arrives at
+`worker_done`. Set via `task-create --max-cost-usd N` or `task-update`.
+
+## Coordinator model rule
+
+The coordinator must not override the worker's profile or model unless the user explicitly
+asks. The brain picks the agent from the role chain in Settings > Orchestration.

@@ -195,6 +195,47 @@ pub(crate) fn has_commits_beyond(path: &str, base_sha: &str) -> Result<bool, Str
     Ok(count > 0)
 }
 
+pub(crate) fn diff_binary_head(repo: &str) -> Result<Vec<u8>, String> {
+    git(repo, &["diff", "HEAD", "--binary"])
+}
+
+pub(crate) fn diff_stat_head(repo: &str) -> Result<String, String> {
+    let raw = git(repo, &["diff", "HEAD", "--stat"])?;
+    Ok(String::from_utf8_lossy(&raw).trim_end().to_string())
+}
+
+pub(crate) fn diff_binary(repo: &str, from: &str, to: &str) -> Result<Vec<u8>, String> {
+    git(repo, &["diff", "--binary", from, to])
+}
+
+pub(crate) fn apply_patch(repo: &str, patch: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .args(["-C", repo, "-c", "core.quotepath=off", "apply", "--index", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git apply: spawn: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(patch).map_err(|e| format!("git apply: write stdin: {e}"))?;
+    }
+    let out = child.wait_with_output().map_err(|e| format!("git apply: wait: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { "git apply failed".into() } else { err });
+    }
+    Ok(())
+}
+
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,5 +588,48 @@ mod tests {
 
         assert!(is_merged_into(repo_s, &br, &int_branch), "must be merged after merge");
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn diff_binary_and_apply_patch_round_trip() {
+        let main_repo = tmp_dir("diff-apply-main");
+        let branch_repo = tmp_dir("diff-apply-branch");
+        init_repo(&main_repo);
+        let base = write_commit(&main_repo, "readme.txt", "original content");
+        let repo_s = main_repo.to_str().unwrap();
+
+        init_repo(&branch_repo);
+        git_cmd(&branch_repo, &["remote", "add", "origin", repo_s]);
+        git_cmd(&branch_repo, &["fetch", "origin"]);
+        git_cmd(&branch_repo, &["checkout", "-b", "work", &base]);
+
+        std::fs::write(branch_repo.join("readme.txt"), "modified content").unwrap();
+        std::fs::write(branch_repo.join("new_file.txt"), "brand new file").unwrap();
+        git_cmd(&branch_repo, &["add", "."]);
+        git_cmd(&branch_repo, &["commit", "-m", "modify and add"]);
+        let branch_s = branch_repo.to_str().unwrap();
+        let tip = {
+            let out = std::process::Command::new("git")
+                .args(["-C", branch_s, "rev-parse", "HEAD"])
+                .output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let patch = diff_binary(branch_s, &base, &tip).expect("diff_binary");
+        assert!(!patch.is_empty(), "patch must not be empty");
+
+        apply_patch(repo_s, &patch).expect("apply_patch");
+
+        assert_eq!(std::fs::read_to_string(main_repo.join("readme.txt")).unwrap(), "modified content");
+        assert_eq!(std::fs::read_to_string(main_repo.join("new_file.txt")).unwrap(), "brand new file");
+
+        let head_after = head_sha(repo_s).unwrap();
+        assert_eq!(head_after, base, "HEAD must not change after apply");
+
+        let diff_after = diff_binary_head(repo_s).expect("diff_binary_head");
+        assert!(!diff_after.is_empty(), "working tree must be dirty after apply");
+
+        std::fs::remove_dir_all(&main_repo).ok();
+        std::fs::remove_dir_all(&branch_repo).ok();
     }
 }

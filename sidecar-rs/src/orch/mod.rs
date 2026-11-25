@@ -1,5 +1,6 @@
 mod model;
 mod autonomy;
+pub(crate) mod repo_config;
 mod candidates;
 mod carry;
 mod metrics;
@@ -719,7 +720,7 @@ fn needs_decision(msg: &Message, entry: &RunEntry, now: i64) -> bool {
                         && dispatch.tile_id.as_deref().is_some_and(|tile| crate::lookup_live(tile).is_some())
                 })
             }),
-        "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" => true,
+        "integration_conflict" | "worker_stalled" | "setup_failed" | "gate" | "budget_exceeded" => true,
         "note" => msg.from == "user",
         "run_idle" => is_current_idle_msg(msg, entry, now, "idle"),
         "run_finished" => is_current_idle_msg(msg, entry, now, "finished"),
@@ -877,6 +878,9 @@ fn run_create_fields(v: &Value) -> Result<Value, String> {
     if let Some(cap) = parse_worker_summary_cap(v)? {
         fields["workerSummaryCap"] = cap.into();
     }
+    if v["allowInPlace"].as_bool().unwrap_or(false) {
+        fields["allowInPlace"] = true.into();
+    }
     Ok(fields)
 }
 
@@ -893,6 +897,7 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
     let vt = get_u64("verifyTimeoutMin").unwrap_or(15);
     let sq = get_u64("stallQuietMin").unwrap_or(5);
     let moa = get_u64("maxOperationalAttempts").unwrap_or(6);
+    let mvr = get_u64("maxVerifyRounds").unwrap_or(3);
     if mw < 1 { return Err(err_resp("bad_request", "maxWorkers must be >= 1")); }
     if ma < 1 { return Err(err_resp("bad_request", "maxAttempts must be >= 1")); }
     if dt < 1 { return Err(err_resp("bad_request", "dispatchTimeoutMin must be >= 1")); }
@@ -903,6 +908,7 @@ fn parse_limits(v: &Value) -> Result<Limits, String> {
         verify_timeout_min: vt as u32,
         stall_quiet_min: sq as u32,
         max_operational_attempts: moa as u32,
+        max_verify_rounds: mvr as u32,
     })
 }
 
@@ -1310,9 +1316,10 @@ async fn handle_run_update(body: &[u8]) -> String {
     if v.get("maxOperationalAttempts").map(|n| !n.is_null()).unwrap_or(false) && max_operational.map(|n| n < 1).unwrap_or(true) {
         return err_resp("bad_request", "maxOperationalAttempts must be an integer >= 1");
     }
+    let max_verify_rounds = v.get("maxVerifyRounds").filter(|n| !n.is_null()).and_then(|n| n.as_u64());
     let corrective = match parse_run_bool(&v, "correctiveRetry") { Ok(c) => c, Err(e) => return e };
     let summary_cap = match parse_worker_summary_cap(&v) { Ok(cap) => cap, Err(e) => return e };
-    if title.is_empty() && autonomy.is_none() && max_operational.is_none() && detached.is_none() && corrective.is_none() && summary_cap.is_none() {
+    if title.is_empty() && autonomy.is_none() && max_operational.is_none() && max_verify_rounds.is_none() && detached.is_none() && corrective.is_none() && summary_cap.is_none() {
         return err_resp("bad_request", "title, autonomy, maxOperationalAttempts, detached, correctiveRetry or workerSummaryCap required");
     }
     let now = unix_ms();
@@ -1330,6 +1337,9 @@ async fn handle_run_update(body: &[u8]) -> String {
         }
         if let Some(cap) = summary_cap {
             fields["workerSummaryCap"] = cap.into();
+        }
+        if let Some(n) = max_verify_rounds {
+            fields["maxVerifyRounds"] = n.into();
         }
         Ok(cmd.with_fields(fields))
     }, run_id).await;
@@ -1489,8 +1499,19 @@ fn task_create_cmd(
     let now = unix_ms();
     let pinned = profile.is_some();
 
+    let workspace: Option<String> = match v["workspace"].as_str() {
+        Some("main") => Some("main".to_string()),
+        Some("worktree") | None => None,
+        Some(other) => return Err(err_resp("bad_request", &format!("workspace must be 'main' or 'worktree'; got: {other}"))),
+    };
     let mut escalation = strict_str_arr(v, "escalation")?;
     let verify = strict_str_arr(v, "verify")?;
+    let exclusive = strict_str_arr(v, "exclusive")?;
+    for name in &exclusive {
+        if name == "main" {
+            return Err(err_resp("bad_request", "exclusive name 'main' is reserved for in-place tasks"));
+        }
+    }
 
     let role: Option<model::Role> = match v.get("role").filter(|r| !r.is_null()) {
         None => None,
@@ -1526,12 +1547,25 @@ fn task_create_cmd(
         escalation = chain.clone();
     }
 
+    let timeout_min = v["timeoutMin"].as_u64();
+    let max_cost_usd = v["maxCostUsd"].as_f64();
+
     Ok(move |id| {
         let cmd = Cmd::TaskCreate {
             run_id, id, title, spec, acceptance, deps, profile, escalation, verify, role,
-            review, owner, now,
+            review, owner, exclusive, now,
         };
-        cmd.with_fields(serde_json::json!({"routing": 1, "pinned": pinned}))
+        let mut extra = serde_json::json!({"routing": 1, "pinned": pinned});
+        if let Some(ref ws) = workspace {
+            extra["workspace"] = ws.clone().into();
+        }
+        if let Some(t) = timeout_min {
+            extra["timeoutMin"] = t.into();
+        }
+        if let Some(c) = max_cost_usd {
+            extra["maxCostUsd"] = c.into();
+        }
+        cmd.with_fields(extra)
     })
 }
 
@@ -1540,10 +1574,53 @@ async fn handle_task_create(body: &[u8]) -> String {
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
     let deps = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
+    let exclusive = match strict_str_arr(&v, "exclusive") { Ok(a) => a, Err(e) => return e };
     let make_cmd = match task_create_cmd(&v, run_id.clone(), deps) {
         Ok(make_cmd) => make_cmd,
         Err(e) => return e,
     };
+    if !exclusive.is_empty() {
+        let repo_opt = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get(&run_id).map(|e| e.run.repo.clone())
+        };
+        if let Some(repo) = repo_opt {
+            let excl = exclusive.clone();
+            let val_result = tokio::task::spawn_blocking(move || {
+                match crate::orch::repo_config::RepoConfig::load(&repo) {
+                    Ok(Some(cfg)) => cfg.validate_exclusive_names(&excl),
+                    Ok(None) => Err("no .panorama/worktree.json; cannot use exclusive without declaring names".to_string()),
+                    Err(e) => Err(e),
+                }
+            }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+            if let Err(e) = val_result {
+                return err_resp("bad_request", &e);
+            }
+        }
+    }
+    let workspace = v["workspace"].as_str().map(str::to_string);
+    let deps_for_ws = match strict_str_arr(&v, "deps") { Ok(a) => a, Err(e) => return e };
+    if workspace.as_deref() == Some("main") {
+        let allow = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get(&run_id).is_some_and(|e| e.run.allow_in_place)
+        };
+        if !allow {
+            return err_resp("bad_request", "workspace 'main' requires the run to have allowInPlace set");
+        }
+    } else if workspace.is_none() || workspace.as_deref() == Some("worktree") {
+        let has_main_dep = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            guard.runs.get(&run_id).is_some_and(|e| {
+                deps_for_ws.iter().any(|dep| {
+                    e.tasks.get(dep.as_str()).is_some_and(|t| t.workspace.as_deref() == Some("main"))
+                })
+            })
+        };
+        if has_main_dep {
+            return err_resp("bad_request", "a worktree task cannot depend on an in-place task");
+        }
+    }
     let by = v["by"].as_str().unwrap_or("coordinator");
     let title = v["title"].as_str().unwrap_or("untitled");
     let run_id_c = run_id.clone();
@@ -1605,6 +1682,20 @@ async fn handle_task_update(body: &[u8]) -> String {
             Err(_) => return err_resp("bad_request", "escalation must be array of strings"),
         }
     };
+    let exclusive: Option<Vec<String>> = match v.get("exclusive").filter(|s| !s.is_null()) {
+        None => None,
+        Some(s) => match serde_json::from_value(s.clone()) {
+            Ok(ts) => Some(ts),
+            Err(_) => return err_resp("bad_request", "exclusive must be array of strings"),
+        }
+    };
+    if let Some(ref names) = exclusive {
+        for name in names {
+            if name == "main" {
+                return err_resp("bad_request", "exclusive name 'main' is reserved for in-place tasks");
+            }
+        }
+    }
     let result_val = v["result"].as_str().map(str::to_string);
     let spec = v["spec"].as_str().map(str::to_string);
     let acceptance = v["acceptance"].as_str().map(str::to_string);
@@ -1629,11 +1720,17 @@ async fn handle_task_update(body: &[u8]) -> String {
     let run_id_c = run_id.clone();
     let task_id_c = task_id.clone();
     let actor = by.clone();
+    let timeout_min = v["timeoutMin"].as_u64();
+    let max_cost_usd = v["maxCostUsd"].as_f64();
     let commit_result = commit(move |_| {
-        Ok(Cmd::TaskUpdate {
+        let cmd = Cmd::TaskUpdate {
             run_id: run_id_c, task_id: task_id_c, status, result: result_val,
-            spec, acceptance, verify, profile, escalation, review: review_field, owner, by: actor, reason, now,
-        })
+            spec, acceptance, verify, profile, escalation, exclusive, review: review_field, owner, by: actor, reason, now,
+        };
+        let mut extra = serde_json::json!({});
+        if let Some(t) = timeout_min { extra["timeoutMin"] = t.into(); }
+        if let Some(c) = max_cost_usd { extra["maxCostUsd"] = c.into(); }
+        Ok(cmd.with_fields(extra))
     }, run_id.clone()).await;
 
     match commit_result {
@@ -1943,7 +2040,7 @@ async fn commit_worker_leftovers(run_id: &str, dispatch_id: &str) {
 }
 
 async fn worker_done_side_effects(run_id: String, dispatch_id: String, verification: Option<VerificationFlight>) {
-    let (wt_path, base_sha, commit_msg, task_id, tile_id, dispatch_profile) = {
+    let (wt_path, base_sha, commit_msg, task_id, tile_id, dispatch_profile, repo, task_workspace) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let entry = match guard.runs.get(&run_id) {
             Some(e) => e,
@@ -1958,10 +2055,41 @@ async fn worker_done_side_effects(run_id: String, dispatch_id: String, verificat
         let tile_id = d.tile_id.clone();
         let dispatch_profile = d.profile.clone();
         let title = entry.tasks.get(&task_id).map(|t| t.title.clone()).unwrap_or_default();
-        (wt, entry.run.base_sha.clone(), format!("orch({task_id}): {title}"), task_id, tile_id, dispatch_profile)
+        let workspace = entry.tasks.get(&task_id).and_then(|t| t.workspace.clone());
+        (wt, entry.run.base_sha.clone(), format!("orch({task_id}): {title}"), task_id, tile_id, dispatch_profile, entry.run.repo.clone(), workspace)
     };
 
     let Some(wt) = wt_path else {
+        let dispatch_in_place = task_workspace.as_deref() == Some("main");
+        if dispatch_in_place {
+            let repo_c = repo.clone();
+            let dispatch_id_c = dispatch_id.clone();
+            let result = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
+                let diff = crate::orch::git::diff_binary_head(&repo_c)?;
+                let fingerprint = crate::orch::git::sha256_hex(&diff);
+                let stat = if diff.is_empty() {
+                    None
+                } else {
+                    crate::orch::git::diff_stat_head(&repo_c).ok().filter(|s| !s.is_empty())
+                };
+                Ok((fingerprint, stat))
+            }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+
+            if let Ok((fingerprint, diff_stat)) = result {
+                let run_id_c = run_id.clone();
+                let now = unix_ms();
+                commit(move |_| {
+                    Ok(Cmd::RunSetInPlace {
+                        run_id: run_id_c,
+                        dispatch_id: Some(dispatch_id_c),
+                        diff_stat,
+                        fingerprint: Some(fingerprint),
+                        applied_integration_sha: None,
+                        now,
+                    })
+                }, run_id.clone()).await;
+            }
+        }
         if let Some(flight) = verification {
             run_verification(run_id, task_id, flight, None).await;
         }
@@ -2226,10 +2354,15 @@ async fn run_verification(run_id: String, task_id: String, flight: VerificationF
     commit(move |g| {
         let entry = g.runs.get(&run_id_c)
             .ok_or_else(|| "not_found:run not found".to_string())?;
-        Ok(Cmd::TaskVerified {
+        let in_place = entry.tasks.get(&task_id_c)
+            .is_some_and(|t| t.workspace.as_deref() == Some("main"))
+            && entry.dispatches.get(&dispatch_id_c)
+            .is_some_and(|d| d.worktree.is_none());
+        let cmd = Cmd::TaskVerified {
             run_id: run_id_c, task_id: task_id_c, dispatch_id: dispatch_id_c,
             msg_seq: entry.next_msg_seq(), now,
-        })
+        };
+        Ok(if in_place { cmd.with_fields(serde_json::json!({"appliedInPlace": true})) } else { cmd })
     }, run_id).await;
 }
 
@@ -2341,7 +2474,7 @@ async fn supervision_tick() {
     for (run_id, tile) in overdue { recheck_coordinator(&run_id, &tile); }
 
     let starting_set = starting().lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let running_dispatches: Vec<(String, String, String, u64, Limits)> = {
+    let running_dispatches: Vec<(String, String, String, u64, Limits, Option<u64>)> = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         guard.runs.values()
             .filter(|e| !e.run.status.is_terminal())
@@ -2349,19 +2482,23 @@ async fn supervision_tick() {
                 let limits = e.run.limits.clone();
                 e.dispatches.values()
                     .filter(|d| d.status == DispatchStatus::Running && !starting_set.contains(&d.id))
-                    .filter_map(|d| d.tile_id.clone().map(|tid| (
-                        e.run.id.clone(),
-                        d.id.clone(),
-                        tid,
-                        d.started_at / 1000,
-                        limits.clone(),
-                    )))
+                    .filter_map(|d| {
+                        let task_timeout = e.tasks.get(&d.task_id).and_then(|t| t.timeout_min);
+                        d.tile_id.clone().map(|tid| (
+                            e.run.id.clone(),
+                            d.id.clone(),
+                            tid,
+                            d.started_at / 1000,
+                            limits.clone(),
+                            task_timeout,
+                        ))
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
     };
 
-    for (run_id, dispatch_id, tile_id, started_secs, limits) in running_dispatches {
+    for (run_id, dispatch_id, tile_id, started_secs, limits, task_timeout_min) in running_dispatches {
         let (auto_stall, stall_pending, continued_secs) = {
             let guard = state().lock().unwrap_or_else(|e| e.into_inner());
             let Some(entry) = guard.runs.get(&run_id) else { continue };
@@ -2427,7 +2564,7 @@ async fn supervision_tick() {
             agent_status: agent_status.clone(),
             running_secs: now_secs.saturating_sub(started_secs.max(continued_secs)),
             is_waiting,
-            limits_dispatch_timeout_min: limits.dispatch_timeout_min,
+            limits_dispatch_timeout_min: task_timeout_min.map(|t| t as u32).unwrap_or(limits.dispatch_timeout_min),
             limits_stall_quiet_min: limits.stall_quiet_min,
         };
         let findings = assess(&facts, &sent);
@@ -2804,6 +2941,7 @@ fn build_report(entry: &RunEntry, integration_tip: Option<String>) -> Value {
                     "costUsd": d.cost_usd,
                     "costSource": d.cost_source,
                     "report": d.report,
+                    "diffStat": d.diff_stat,
                 })
             })
             .collect();
@@ -2823,6 +2961,7 @@ fn build_report(entry: &RunEntry, integration_tip: Option<String>) -> Value {
             "attempts": task.attempts,
             "dispatches": dispatches_json,
             "integratedSha": task.integrated_sha,
+            "appliedInPlace": task.applied_in_place,
             "conflictFiles": conflict_files,
         })
     }).collect();
@@ -2884,6 +3023,9 @@ fn render_report_markdown(data: &Value, usage: &Value) -> String {
         for t in tasks {
             out.push_str(&format!("### {} ({})\n", t["title"].as_str().unwrap_or(""), t["status"].as_str().unwrap_or("")));
             out.push_str(&format!("Attempts: {}\n\n", t["attempts"]));
+            if t["appliedInPlace"].as_bool() == Some(true) {
+                out.push_str("In place (uncommitted): the changes are in the main checkout working tree.\n\n");
+            }
             if let Some(files) = t["conflictFiles"].as_array() {
                 if !files.is_empty() {
                     let list: Vec<&str> = files.iter().filter_map(|f| f.as_str()).collect();
@@ -2905,6 +3047,7 @@ fn render_report_markdown(data: &Value, usage: &Value) -> String {
                         None => out.push_str(" cost=unknown"),
                     }
                     out.push('\n');
+                    if let Some(stat) = d["diffStat"].as_str() { out.push_str(&format!("\n```\n{stat}\n```\n")); }
                     if let Some(report) = d["report"].as_str() { out.push_str(&format!("\n{report}\n\n")); }
                     for v in d["verifications"].as_array().into_iter().flatten() {
                         out.push_str(&format!(
@@ -3034,6 +3177,16 @@ async fn handle_integrate(body: &[u8]) -> String {
 
     if task_status != TaskStatus::Completed {
         return err_resp("conflict", "task must be completed to integrate");
+    }
+
+    let task_applied_in_place = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(&run_id)
+            .and_then(|e| e.tasks.get(&task_id))
+            .is_some_and(|t| t.applied_in_place)
+    };
+    if task_applied_in_place {
+        return err_resp("conflict", "in-place task; diff is already in the working tree, nothing to integrate");
     }
 
     let int_path = git::integration_worktree_path(&repo, &run_id);
@@ -3179,10 +3332,18 @@ async fn handle_worktree_clean(body: &[u8]) -> String {
         tokio::time::sleep(Duration::from_millis(SESSION_RELEASE_SETTLE_MS)).await;
     }
 
+    let panorama_base = crate::panorama_dir();
     let (removed, failed) = tokio::task::spawn_blocking(move || {
         let mut removed = vec![];
         let mut failed = vec![];
         for c in removable {
+            if let Some(ref base) = panorama_base {
+                let dispatch_dir = base.join("orch").join("runs").join(&run_id).join("dispatch").join(&c.id);
+                if let Err(e) = crate::orch::repo_config::unlink_recorded(&dispatch_dir, &c.worktree) {
+                    failed.push(serde_json::json!({"path": c.worktree, "reason": format!("unlink failed: {e}")}));
+                    continue;
+                }
+            }
             match git::worktree_remove(&repo, &c.worktree) {
                 Ok(()) => removed.push(c.worktree),
                 Err(e) => failed.push(serde_json::json!({"path": c.worktree, "reason": format!("remove failed: {e}")})),
@@ -3356,6 +3517,35 @@ async fn handle_gate_resolve(body: &[u8]) -> String {
     }
 }
 
+fn find_exclusive_lock(
+    state: &crate::orch::reducer::State,
+    run_id: &str,
+    task_id: &str,
+    repo: &str,
+    exclusive: &[String],
+) -> Option<(String, String, String)> {
+    let repo_canon = autonomy::locked_exclusive_names_canon(repo);
+    for (rid, entry) in &state.runs {
+        if autonomy::locked_exclusive_names_canon(&entry.run.repo) != repo_canon {
+            continue;
+        }
+        for (tid, task) in &entry.tasks {
+            if rid == run_id && tid == task_id {
+                continue;
+            }
+            if !matches!(task.status, TaskStatus::Dispatched | TaskStatus::Verifying) {
+                continue;
+            }
+            for name in exclusive {
+                if task.exclusive.contains(name) {
+                    return Some((name.clone(), rid.clone(), tid.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn handle_worker_start(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     worker_start_inner(v, None).await
@@ -3384,6 +3574,11 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
         };
         if by != "user" && merge_branch.is_none() && task.owner.as_deref() == Some("user") {
             return err_resp("owned_by_user", "this task is owned by the user; only the user can dispatch it");
+        }
+        if by != "brain" && merge_branch.is_none() && !task.exclusive.is_empty() {
+            if let Some((held_name, held_run, held_task)) = find_exclusive_lock(&guard, &run_id, &task_id, &entry.run.repo, &task.exclusive) {
+                return err_resp("conflict", &format!("exclusive {held_name} held by {held_run}/{held_task}"));
+            }
         }
         if task.routing == 1 {
             let states = candidate_states().lock().unwrap_or_else(|e| e.into_inner());
@@ -3600,6 +3795,12 @@ async fn worker_start_inner(v: Value, merge_branch: Option<String>) -> String {
         let has_deps = !task.deps.is_empty();
         let title = entry.run.title.clone();
         (task, dispatch, deps_results, cwd, entry.run.base_sha.clone(), entry.run.setup.clone(), has_deps, entry.run.repo.clone(), title)
+    };
+
+    let worktree_mode = if task_clone.workspace.as_deref() == Some("main") {
+        "none".to_string()
+    } else {
+        worktree_mode
     };
 
     extra_env.push(("PANORAMA_DISPATCH_ID".into(), dispatch_id.clone()));
@@ -4060,7 +4261,7 @@ async fn stop_native_worker(tile_id: &str) -> bool {
     true
 }
 
-fn native_resume_id<'a>(previous: &'a Dispatch, next: &Dispatch, exe: &str) -> Option<&'a str> {
+fn native_resume_id<'a>(previous: &'a Dispatch, next: &Dispatch, exe: &str, repo: &str) -> Option<&'a str> {
     let eligible = (next.corrective_retry && previous.retry_same_entry)
         || (next.trigger == Some(Trigger::Resume) && previous.operational_wait);
     if !eligible || previous.profile != next.profile || previous.model != next.model
@@ -4075,7 +4276,8 @@ fn native_resume_id<'a>(previous: &'a Dispatch, next: &Dispatch, exe: &str) -> O
     if session.agent != exe || !worker::valid_session_id(&session.id) {
         return None;
     }
-    crate::native_worker_transcript(home, exe, &session.id, previous.worktree.as_deref()?)?;
+    let cwd = previous.worktree.as_deref().unwrap_or(repo);
+    crate::native_worker_transcript(home, exe, &session.id, cwd)?;
     Some(&session.id)
 }
 
@@ -4090,11 +4292,11 @@ async fn prepare_native_resume(repo: &str, run_id: &str, next: &Dispatch, exe: &
     let next = next.clone();
     let exe = exe.to_string();
     let previous = tokio::task::spawn_blocking(move || {
-        native_resume_id(&previous, &next, &exe)?;
-        let path = previous.worktree.as_deref()?;
-        let branch = previous.branch.as_deref()?;
-        if !git::can_adopt_worktree(&repo, path, branch) {
-            return None;
+        native_resume_id(&previous, &next, &exe, &repo)?;
+        if let (Some(path), Some(branch)) = (previous.worktree.as_deref(), previous.branch.as_deref()) {
+            if !git::can_adopt_worktree(&repo, path, branch) {
+                return None;
+            }
         }
         Some(previous)
     }).await.ok()??;
@@ -4117,6 +4319,18 @@ async fn record_worker_worktree(run_id: &str, dispatch_id: &str, path: &str, bra
             None => cmd,
         })
     }, run_id.into()).await
+}
+
+fn in_place_precondition(head_matches: bool, diff_fingerprint: Option<&str>, recorded_fingerprint: Option<&str>) -> Result<(), &'static str> {
+    if !head_matches {
+        return Err("HEAD does not match run baseSha; the main checkout has advanced");
+    }
+    if let Some(sha) = diff_fingerprint {
+        if recorded_fingerprint != Some(sha) {
+            return Err("working tree has unexpected tracked changes");
+        }
+    }
+    Ok(())
 }
 
 async fn start_dispatch(input: StartDispatchInput) {
@@ -4160,6 +4374,94 @@ async fn start_dispatch(input: StartDispatchInput) {
 
     let resolves_conflict = dispatch_clone.merge_branch.is_some();
     let use_worktree = worktree_mode != "none" && run_base_sha.is_some();
+    let is_in_place = !use_worktree && task_clone.workspace.as_deref() == Some("main");
+
+    if is_in_place {
+        let repo_c = repo.clone();
+        let base_sha_c = run_base_sha.clone();
+        let check = tokio::task::spawn_blocking(move || -> Result<(bool, Vec<u8>, Option<String>), String> {
+            let head = crate::orch::git::head_sha(&repo_c)?;
+            let base = base_sha_c.ok_or("run has no baseSha")?;
+            let head_matches = head == base;
+            let diff = crate::orch::git::diff_binary_head(&repo_c)?;
+            let diff_sha = if diff.is_empty() { None } else { Some(crate::orch::git::sha256_hex(&diff)) };
+            Ok((head_matches, diff, diff_sha))
+        }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+
+        let (head_matches, diff_bytes, diff_sha) = match check {
+            Ok(c) => c,
+            Err(e) => bail_fail!(
+                format!("in-place precondition failed: {e}"),
+                "setup_failed".into(),
+                serde_json::json!({"reason":"setup_failed","detail":e}).to_string()
+            ),
+        };
+
+        let (fingerprint, applied_int_sha, has_non_main_deps) = {
+            let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let entry = guard.runs.get(&run_id);
+            let fp = entry.and_then(|e| e.run.in_place_fingerprint.clone());
+            let ais = entry.and_then(|e| e.run.applied_integration_sha.clone());
+            let non_main = entry.is_some_and(|e| {
+                task_clone.deps.iter().any(|dep| {
+                    e.tasks.get(dep.as_str()).is_some_and(|t| t.workspace.as_deref() != Some("main"))
+                })
+            });
+            (fp, ais, non_main)
+        };
+
+        if let Err(detail) = in_place_precondition(head_matches, diff_sha.as_deref(), fingerprint.as_deref()) {
+            bail_fail!(
+                detail.to_string(),
+                "setup_failed".into(),
+                serde_json::json!({"reason":"setup_failed","detail":detail}).to_string()
+            );
+        }
+
+        if diff_bytes.is_empty() && has_non_main_deps && applied_int_sha.is_none() {
+            let int_branch = crate::orch::git::integration_branch(&run_id);
+            let repo_c = repo.clone();
+            let int_br_c = int_branch.clone();
+            let base_sha_c = run_base_sha.clone().unwrap_or_default();
+            let patch_result = tokio::task::spawn_blocking(move || {
+                let tip = crate::orch::git::rev_parse(&repo_c, &int_br_c)
+                    .map_err(|e| format!("integration branch not found: {e}"))?;
+                let patch = crate::orch::git::diff_binary(&repo_c, &base_sha_c, &tip)
+                    .map_err(|e| format!("diff failed: {e}"))?;
+                if patch.is_empty() {
+                    return Ok(None::<(String, String)>);
+                }
+                crate::orch::git::apply_patch(&repo_c, &patch)
+                    .map_err(|e| format!("apply failed: {e}"))?;
+                let applied = crate::orch::git::diff_binary_head(&repo_c)?;
+                Ok(Some((tip, crate::orch::git::sha256_hex(&applied))))
+            }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+
+            match patch_result {
+                Ok(Some((tip, applied_fingerprint))) => {
+                    let run_id_c = run_id.clone();
+                    let now = unix_ms();
+                    commit(move |_| {
+                        Ok(Cmd::RunSetInPlace {
+                            run_id: run_id_c,
+                            dispatch_id: None,
+                            diff_stat: None,
+                            fingerprint: Some(applied_fingerprint),
+                            applied_integration_sha: Some(tip),
+                            now,
+                        })
+                    }, run_id.clone()).await;
+                }
+                Ok(None) => {}
+                Err(e) => bail_fail!(
+                    format!("integration diff apply failed: {e}"),
+                    "setup_failed".into(),
+                    serde_json::json!({"reason":"setup_failed","detail":e}).to_string()
+                ),
+            }
+        }
+    }
+
     let mut resume = None;
     if use_worktree && !resolves_conflict {
         if let Some(lock) = run_worktree_lock(&run_id) {
@@ -4173,6 +4475,7 @@ async fn start_dispatch(input: StartDispatchInput) {
             }
         }
     }
+    let mut worktree_read_only_paths: Vec<String> = vec![];
     loop {
         if !is_running() { break; }
 
@@ -4246,6 +4549,41 @@ async fn start_dispatch(input: StartDispatchInput) {
                     serde_json::json!({"reason":"worktree_failed","detail":"could not record worker worktree"}).to_string()
                 );
             }
+
+            worktree_read_only_paths = {
+                let repo_m = repo.clone();
+                let wt_m = wt_path.clone();
+                let dispatch_dir_m = base.join("orch").join("runs").join(&run_id).join("dispatch").join(&dispatch_id);
+                let mat_result: Result<Vec<String>, String> = tokio::task::spawn_blocking(move || {
+                    let cfg = match crate::orch::repo_config::RepoConfig::load(&repo_m) {
+                        Ok(Some(c)) => c,
+                        Ok(None) => return Ok(vec![]),
+                        Err(e) => return Err(e),
+                    };
+                    if cfg.link.is_empty() && cfg.copy.is_empty() {
+                        return Ok(vec![]);
+                    }
+                    if let Err(e) = std::fs::create_dir_all(&dispatch_dir_m) {
+                        return Err(format!("create dispatch dir: {e}"));
+                    }
+                    crate::orch::repo_config::materialize(crate::orch::repo_config::MaterializeOpts {
+                        repo: &repo_m,
+                        worktree: &wt_m,
+                        dispatch_dir: &dispatch_dir_m,
+                        config: &cfg,
+                    }).map(|r| r.read_only_paths)
+                }).await.unwrap_or_else(|e| Err(format!("spawn panic: {e}")));
+                match mat_result {
+                    Ok(paths) => paths,
+                    Err(detail) => {
+                        bail_fail!(
+                            format!("worktree materialize failed: {detail}"),
+                            "worker_failed".into(),
+                            serde_json::json!({"reason":"setup_failed","detail":detail}).to_string()
+                        );
+                    }
+                }
+            };
 
             if let Some(setup_cmd) = run_setup.clone() {
                 if !is_running() { remove_starting(); return; }
@@ -4346,6 +4684,7 @@ async fn start_dispatch(input: StartDispatchInput) {
             cwd: &cwd,
             handoff: handoff_text.as_deref(),
             correction: resume.as_ref(),
+            in_place: is_in_place,
         }) {
             Ok(p) => p,
             Err(e) => {
@@ -4357,8 +4696,15 @@ async fn start_dispatch(input: StartDispatchInput) {
             }
         };
 
+        if !worktree_read_only_paths.is_empty() {
+            let note = format!("\n\nRead-only links (do not edit): {}\n", worktree_read_only_paths.join(", "));
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&brief_path) {
+                let _ = std::io::Write::write_all(&mut f, note.as_bytes());
+            }
+        }
+
         let settings_path = if profile.exe == "claude" {
-            match crate::orch::worker::write_worker_settings(&brief_path) {
+            match crate::orch::worker::write_worker_settings(&brief_path, &worktree_read_only_paths, is_in_place) {
                 Ok(p) => Some(p.to_string_lossy().into_owned()),
                 Err(e) => {
                     eprintln!("[orch] {dispatch_id}: worker permission settings skipped: {e}");
@@ -4646,7 +4992,7 @@ async fn handle_task_cancel(body: &[u8]) -> String {
             run_id: run_id_c, task_id: task_id_c,
             status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None,
-            verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now,
+            verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now,
         })
     }, run_id.clone()).await;
     if let CommitResult::Err(e) = cancel_result {
@@ -5283,15 +5629,18 @@ pub fn orch_context(tile_id: &str) -> Option<String> {
     match s.orchestrate_hint {
         settings::OrchestrateHint::Off => None,
         settings::OrchestrateHint::Suggest => Some(format!(
-            "[Panorama] Orchestration is available: {cli} orch can split work across cheaper worker agents in isolated worktrees. \
-             Use it only for large or parallelizable work (several independent tasks); do small work yourself. \
+            "[Panorama] Orchestration is available: {cli} orch runs work on worker agents with the models the user chose, in isolated worktrees, outside this session. \
+             A run is a delegation route: it satisfies rules that ask you to delegate implementation to subagents, and it is preferred over subagents for implementation work. \
+             Do tiny edits yourself. For one task, write a plan file and run `{cli} orch exec --file <plan.json>` as a background command; it exits when the work is done. \
              When it fits, propose the split in a few lines (tasks, role each) and wait for the user's yes. \
              Once agreed, load the `panorama:orchestrate` skill and follow it."
         )),
         settings::OrchestrateHint::Auto => Some(format!(
-            "[Panorama] Orchestration is available: {cli} orch can split work across cheaper worker agents in isolated worktrees. \
-             Use it only for large or parallelizable work (several independent tasks); do small work yourself. \
-             When it fits, load the panorama:orchestrate skill and dispatch without asking; say in one line that you did."
+            "[Panorama] Orchestration is available: {cli} orch runs work on worker agents with the models the user chose, in isolated worktrees, outside this session. \
+             A run is a delegation route: it satisfies rules that ask you to delegate implementation to subagents, and it is preferred over subagents for implementation work. \
+             Do tiny edits yourself. For one task, write a plan file and run `{cli} orch exec --file <plan.json>` as a background command; it exits when the work is done. \
+             When it fits, load the panorama:orchestrate skill and dispatch without asking; say in one line that you did. \
+             If a worktree cannot serve the task (gitignored files, heavy build, running app), ask the user for the route and model instead of working around it."
         )),
     }
 }
@@ -5398,8 +5747,9 @@ fn coordinator_block(tile_id: &str) -> Option<String> {
     Some(format!(
         "[Panorama] Orchestrate mode is ON in this terminal. You are the coordinator of a multi-agent run, not the implementer.\n\
          - If the `panorama:orchestrate` skill is not loaded in this conversation yet, load it with the Skill tool and follow it.\n\
-         - Treat the user's message as work to split across workers. Do not edit project files yourself.\n\
+         - Treat the user's message as work to split across workers. Implementation goes only through a run: do not edit project files yourself and do not implement through the Agent tool, subagents or another agent CLI.\n\
          - When the request is clear, state the plan in a few lines and dispatch right away; ask first only if it is ambiguous.\n\
+         - If a worker worktree cannot serve a task (it needs gitignored files, a heavy build or a running app), stop and ask the user which route to take (link the files through `.panorama/worktree.json`, an in-place task, or doing it by hand) and which model.\n\
          - Default to plan and detach: create the run with --detach, dispatch, and end the turn; on wake use check --decisions.\n\
          - {boards_block}\n\
          - Tasks owned by the user (owner: user) are not yours to dispatch.\n\
@@ -5529,7 +5879,7 @@ mod tests {
         run_cmd(Cmd::TaskCreate {
             run_id: run_id.clone(), id: "t1".into(), title: "Task".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec![], verify: vec![],
-            role: None, review: false, owner: None, now: 1,
+            role: None, review: false, owner: None, exclusive: vec![], now: 1,
         });
         run_cmd(Cmd::Dispatch {
             run_id: run_id.clone(), id: dispatch_id.clone(), task_id: "t1".into(), attempt: 1,
@@ -5837,7 +6187,7 @@ mod tests {
             run_id: run_id.clone(), id: "t1".into(), title: "Task 1".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 2,
+            role: None, review: false, owner: None, exclusive: vec![], now: 2,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         let count_type = |kind: &str| -> usize {
             let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -5867,7 +6217,7 @@ mod tests {
             run_id: run_id.clone(), id: "t2".into(), title: "Task 2".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 7,
+            role: None, review: false, owner: None, exclusive: vec![], now: 7,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         assert_eq!(state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].idle_state, IdleState::Active);
 
@@ -5889,12 +6239,12 @@ mod tests {
         run_cmd(Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None, verify: None, profile: None,
-            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 11,
+            escalation: None, exclusive: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 11,
         });
         run_cmd(Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: "t2".into(), status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None, verify: None, profile: None,
-            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 12,
+            escalation: None, exclusive: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 12,
         });
         assert_eq!(count_type("run_finished"), 1);
 
@@ -5902,7 +6252,7 @@ mod tests {
             run_id: run_id.clone(), id: "t3".into(), title: "Task 3".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 13,
+            role: None, review: false, owner: None, exclusive: vec![], now: 13,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         run_cmd(Cmd::Dispatch {
             run_id: run_id.clone(), id: format!("{run_id}.t3.1"), task_id: "t3".into(),
@@ -5966,7 +6316,7 @@ mod tests {
             run_id: run_id.clone(), id: "t1".into(), title: "Ready".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 2,
+            role: None, review: false, owner: None, exclusive: vec![], now: 2,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
 
         {
@@ -6009,7 +6359,7 @@ mod tests {
             run_id: run_id.clone(), id: "t1".into(), title: "Ready".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 2,
+            role: None, review: false, owner: None, exclusive: vec![], now: 2,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
 
         let peek_resp = handle_check(
@@ -6037,13 +6387,13 @@ mod tests {
         run_cmd(Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None, verify: None, profile: None,
-            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 4,
+            escalation: None, exclusive: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 4,
         });
         run_cmd(Cmd::TaskCreate {
             run_id: run_id.clone(), id: "t2".into(), title: "More".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 5,
+            role: None, review: false, owner: None, exclusive: vec![], now: 5,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
 
         let resp2 = handle_check(
@@ -6079,7 +6429,7 @@ mod tests {
             run_id: run_id.clone(), id: "t1".into(), title: "T1".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 2,
+            role: None, review: false, owner: None, exclusive: vec![], now: 2,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         run_cmd(Cmd::Dispatch {
             run_id: run_id.clone(), id: format!("{run_id}.t1.1"), task_id: "t1".into(),
@@ -6098,7 +6448,7 @@ mod tests {
             run_id: run_id.clone(), id: "t2".into(), title: "T2".into(), spec: "s".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()),
             escalation: vec!["codex:m".into()], verify: vec![],
-            role: None, review: false, owner: None, now: 6,
+            role: None, review: false, owner: None, exclusive: vec![], now: 6,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         let seq = state().lock().unwrap_or_else(|e| e.into_inner()).runs[&run_id].next_msg_seq();
         run_cmd(Cmd::GateCreate {
@@ -6134,7 +6484,7 @@ mod tests {
         run_cmd(Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: "t1".into(), status: Some(TaskStatus::Cancelled),
             result: None, spec: None, acceptance: None, verify: None, profile: None,
-            escalation: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 13,
+            escalation: None, exclusive: None, review: None, owner: None, by: "coordinator".into(), reason: None, now: 13,
         });
         run_cmd(Cmd::RunUpdate { run_id: run_id.clone(), title: "att2".into(), now: 14 });
 
@@ -6296,6 +6646,7 @@ mod tests {
             coordinator_wait: None,
             created_at: 1_000_000,
             updated_at: 1_000_000,
+            allow_in_place: false, in_place_fingerprint: None, applied_integration_sha: None,
         };
         RunEntry::new(run)
     }
@@ -6318,9 +6669,10 @@ mod tests {
             result: None,
             integrated_sha: None,
             attempts,
-            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None,
+            routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None, exclusive: vec![],
             created_at: 1_000_000,
             updated_at: 1_000_000,
+            workspace: None, applied_in_place: false, timeout_min: None, max_cost_usd: None,
         }
     }
 
@@ -6350,6 +6702,7 @@ mod tests {
             cost_source: cost_source.map(str::to_string),
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
             native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+            diff_stat: None,
         }
     }
 
@@ -6750,7 +7103,7 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
             spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
-            escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            escalation: vec![], verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: 1_000_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::Dispatch {
@@ -6769,7 +7122,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_002_000,
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_002_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let entry = guard.runs.get(&run_id).unwrap();
@@ -6802,13 +7155,13 @@ mod tests {
         let cmd = Cmd::TaskCreate {
             run_id: run_id.clone(), id: task_id.clone(), title: "T1".into(),
             spec: "spec".into(), acceptance: None, deps: vec![], profile: None,
-            escalation: vec![], verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            escalation: vec![], verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: 1_000_000,
         };
         if let ApplyResult::Ok(k, d) = guard.apply(&cmd) { guard.replay(&k, &d).unwrap(); }
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
         };
         match guard.apply(&cmd) {
             ApplyResult::Ok(k, d) => guard.replay(&k, &d).unwrap(),
@@ -6850,7 +7203,7 @@ mod tests {
         let cmd = Cmd::TaskUpdate {
             run_id: run_id.clone(), task_id: task_id.clone(),
             status: Some(TaskStatus::Cancelled), result: None, spec: None,
-            acceptance: None, verify: None, profile: None, escalation: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
+            acceptance: None, verify: None, profile: None, escalation: None, exclusive: None, review: None, owner: None, by: "user".into(), reason: None, now: 1_001_000,
         };
         match guard.apply(&cmd) {
             ApplyResult::Err(e) => assert!(
@@ -7008,7 +7361,7 @@ mod tests {
             let cmd = Cmd::TaskCreate {
                 run_id: run_id.clone(), id: "t1".into(), title: "t".into(),
                 spec: "s".into(), acceptance: None, deps: vec![], profile: None,
-                escalation: vec![], verify: vec![], role: None, review: false,
+                escalation: vec![], verify: vec![], exclusive: vec![], role: None, review: false,
                 owner: None, now: unix_ms(),
             };
             match guard.apply(&cmd) {
@@ -7042,14 +7395,16 @@ mod tests {
             limits: Limits::default(), autonomy: Autonomy::default(), detached: false, corrective_retry: true,
             worker_summary_cap: default_worker_summary_cap(), coordinator_wait: None,
             created_at: 0, updated_at: 0,
+            allow_in_place: false, in_place_fingerprint: None, applied_integration_sha: None,
         };
         let mut entry = RunEntry::new(run);
         let t1 = Task {
             id: "t1".into(), title: "t1".into(), spec: "s".into(), acceptance: None,
-            deps: vec![], profile: None, escalation: vec![], verify: vec![],
+            deps: vec![], profile: None, escalation: vec![], verify: vec![], exclusive: vec![],
             role: Some(Role::Explore), review: false, owner: None, owner_reason: None,
             status: TaskStatus::Completed, result: None, integrated_sha: None,
             attempts: 1, routing: 0, quality_floor: 0, quality_attempts: 0, operational_attempts: 0, pinned: false, last_failure: None, wait: None, created_at: 0, updated_at: 0,
+            workspace: None, applied_in_place: false, timeout_min: None, max_cost_usd: None,
         };
         let mut t2 = t1.clone();
         t2.id = "t2".into();
@@ -7065,6 +7420,7 @@ mod tests {
             cost_usd: Some(0.1), cost_source: Some("exact".into()),
             account: None, chain_index: None, trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
             native_home: None, native_session: None, corrective_retry: false, retry_same_entry: false, operational_wait: false,
+            diff_stat: None,
         };
         let mut d2 = d1.clone();
         d2.id = "d2".into();
@@ -7142,7 +7498,7 @@ mod tests {
             run_id: "r1".into(), id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: task.profile.map(str::to_string),
             escalation: task.escalation.iter().map(|e| e.to_string()).collect(),
-            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: 1_000_000,
         }.with_fields(serde_json::json!({"routing": task.routing, "pinned": task.pinned})));
         s
     }
@@ -7414,7 +7770,7 @@ mod tests {
         f12_commit(&mut s, Cmd::TaskCreate {
             run_id: run_id.into(), id: "t1".into(), title: "t".into(), spec: "s".into(), acceptance: None,
             deps: vec![], profile: None, escalation: vec![format!("{profile}:{}", model.unwrap_or("m"))],
-            verify: vec![], role: None, review: false, owner: None, now: 1_000_000,
+            verify: vec![], role: None, review: false, owner: None, exclusive: vec![], now: 1_000_000,
         }.with_fields(serde_json::json!({"routing": 1, "pinned": false})));
         f12_commit(&mut s, Cmd::Dispatch { merge_branch: None,
             run_id: run_id.into(), id: format!("{run_id}.t1.1"), task_id: "t1".into(), attempt: 1, retry_of: None,
@@ -7579,7 +7935,7 @@ mod tests {
         run_cmd(Cmd::TaskCreate {
             run_id: run_id.clone(), id: "t1".into(), title: "test".into(), spec: "test".into(),
             acceptance: None, deps: vec![], profile: None, escalation: vec!["codex:test-model".into(), "claude:sonnet".into()],
-            verify: vec!["verify".into()], role: None, review: false, owner: None, now: 2,
+            verify: vec!["verify".into()], role: None, review: false, owner: None, exclusive: vec![], now: 2,
         }.with_fields(serde_json::json!({"routing": 1})));
         run_cmd(Cmd::Dispatch {
             run_id: run_id.clone(), task_id: "t1".into(), id: dispatch_id.clone(), attempt: 1,
@@ -7645,16 +8001,16 @@ mod tests {
             Dispatch { native_home: Some("other".into()), ..next.clone() },
             Dispatch { worktree: Some("other".into()), ..next.clone() },
         ] {
-            assert!(native_resume_id(&old, &changed, "codex").is_none());
+            assert!(native_resume_id(&old, &changed, "codex", repo).is_none());
         }
         next.trigger = Some(Trigger::Escalation);
         next.corrective_retry = true;
         let old = Dispatch { retry_same_entry: true, ..old };
-        assert_eq!(native_resume_id(&old, &next, "codex"), Some("native-id"));
+        assert_eq!(native_resume_id(&old, &next, "codex", repo), Some("native-id"));
         let unbound = Dispatch { native_session: None, ..old.clone() };
-        assert!(native_resume_id(&unbound, &next, "codex").is_none());
+        assert!(native_resume_id(&unbound, &next, "codex", repo).is_none());
         std::fs::remove_file(rollout).unwrap();
-        assert!(native_resume_id(&old, &next, "codex").is_none());
+        assert!(native_resume_id(&old, &next, "codex", repo).is_none());
     }
 
     #[tokio::test]
@@ -7699,7 +8055,7 @@ mod tests {
                 &candidates::CandidateStates::default()).unwrap();
             assert_eq!(f12_expect_dispatch(plan).profile, "claude");
         }
-        let response = handle_run_update(serde_json::json!({"runId":run_id,"correctiveRetry":true}).to_string().as_bytes()).await;
+        let response = handle_run_update(serde_json::json!({"runId":run_id,"correctiveRetry":true,"maxVerifyRounds":1}).to_string().as_bytes()).await;
         assert!(serde_json::from_str::<Value>(&response).unwrap()["ok"] == true);
         let retry = serde_json::json!({"runId":run_id,"taskId":"t1"}).to_string();
         let second: Value = serde_json::from_str(&handle_retry(retry.as_bytes()).await).unwrap();
@@ -7770,7 +8126,7 @@ mod tests {
         run_cmd(Cmd::TaskCreate {
             run_id: run_id.into(), id: "t1".into(), title: "test".into(), spec: "test".into(),
             acceptance: None, deps: vec![], profile: Some("codex".into()), escalation: vec![],
-            verify: verify.iter().map(|cmd| (*cmd).into()).collect(), role: None, review: false,
+            verify: verify.iter().map(|cmd| (*cmd).into()).collect(), exclusive: vec![], role: None, review: false,
             owner: None, now: 2,
         }.with_fields(serde_json::json!({"routing": 1})));
         run_cmd(Cmd::Dispatch {
@@ -7810,7 +8166,7 @@ mod tests {
             let entry = &guard.runs[&run_id];
             assert_eq!(entry.auto_action_failures["t1"].action, "integrate");
             assert!(entry.auto_action_failures["t1"].error.contains("integration worktree create failed"));
-            assert!(autonomy::plan(autonomy::TickInput { entry, now: unix_ms() as i64, is_live: &|_| false }).is_empty());
+            assert!(autonomy::plan(autonomy::TickInput { entry, now: unix_ms() as i64, is_live: &|_| false, locked_exclusive: &[] }).is_empty());
             let messages: Vec<_> = entry.messages.iter().filter(|m| m.msg_type == "run_idle").collect();
             assert_eq!(messages.len(), 1);
             let digest = messages[0].body.as_deref().unwrap();
@@ -7962,6 +8318,129 @@ mod tests {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let t = &guard.runs[&run_id].tasks["t1"];
         assert_eq!((t.operational_attempts, t.quality_attempts), (1, 0));
+    }
+
+    #[test]
+    fn in_place_precondition_head_mismatch_returns_err() {
+        assert!(in_place_precondition(false, None, None).is_err());
+        let e = in_place_precondition(false, None, None).unwrap_err();
+        assert!(e.contains("baseSha"), "{e}");
+    }
+
+    #[test]
+    fn in_place_precondition_dirty_no_recorded_fingerprint_returns_err() {
+        let result = in_place_precondition(true, Some("abc123"), None);
+        assert!(result.is_err(), "dirty with no recorded fingerprint must fail");
+        assert!(result.unwrap_err().contains("unexpected tracked changes"));
+    }
+
+    #[test]
+    fn in_place_precondition_dirty_matching_returns_ok() {
+        assert!(in_place_precondition(true, Some("abc123"), Some("abc123")).is_ok());
+    }
+
+    #[test]
+    fn in_place_precondition_clean_returns_ok() {
+        assert!(in_place_precondition(true, None, None).is_ok());
+        assert!(in_place_precondition(true, None, Some("anything")).is_ok());
+    }
+
+    #[test]
+    fn p4_limits_replay_default_max_verify_rounds_is_3() {
+        let limits: Limits = serde_json::from_value(serde_json::json!({
+            "maxWorkers": 2, "maxAttempts": 3, "dispatchTimeoutMin": 60
+        })).unwrap();
+        assert_eq!(limits.max_verify_rounds, 3, "maxVerifyRounds defaults to 3 on replay");
+    }
+
+    #[test]
+    fn p4_retry_same_entry_allowed_for_rounds_then_escalates() {
+        let mut s = State::default();
+        f12_commit(&mut s, Cmd::RunCreate {
+            id: "r-mvr".into(), title: "t".into(), repo: String::new(),
+            base_ref: None, base_sha: None, setup: None, coordinator_tile: None,
+            limits: Limits { max_verify_rounds: 1, ..Limits::default() }, now: 1,
+        });
+        f12_commit(&mut s, Cmd::RunUpdate { run_id: "r-mvr".into(), title: "t".into(), now: 2 }
+            .with_fields(serde_json::json!({"correctiveRetry": true})));
+        f12_commit(&mut s, Cmd::TaskCreate {
+            run_id: "r-mvr".into(), id: "t1".into(), title: "t".into(), spec: "s".into(),
+            acceptance: None, deps: vec![], profile: Some("codex".into()), escalation: vec!["claude".into()],
+            verify: vec![], exclusive: vec![], role: None, review: false, owner: None, now: 3,
+        }.with_fields(serde_json::json!({"routing": 1})));
+
+        let d1 = "r-mvr.t1.1".to_string();
+        f12_commit(&mut s, Cmd::Dispatch {
+            run_id: "r-mvr".into(), id: d1.clone(), task_id: "t1".into(), attempt: 1,
+            retry_of: None, profile: Some("codex".into()), model: None,
+            tile_id: None, merge_branch: None, owner: None, now: 10,
+        }.with_fields(serde_json::json!({"correctiveRetry": false})));
+
+        {
+            let entry = s.runs.get_mut("r-mvr").unwrap();
+            entry.tasks.get_mut("t1").unwrap().status = TaskStatus::Verifying;
+            entry.dispatches.get_mut(&d1).unwrap().status = DispatchStatus::Reported;
+        }
+        f12_commit(&mut s, Cmd::TaskVerificationFailed {
+            run_id: "r-mvr".into(), task_id: "t1".into(), dispatch_id: d1.clone(),
+            command: "verify".into(), exit_code: Some(1), timed_out: false,
+            tail: String::new(), msg_seq: 1, now: 20,
+        });
+        assert!(s.runs["r-mvr"].dispatches[&d1].retry_same_entry, "round 0 of 1: same entry allowed");
+
+        let d2 = "r-mvr.t1.2".to_string();
+        f12_commit(&mut s, Cmd::Dispatch {
+            run_id: "r-mvr".into(), id: d2.clone(), task_id: "t1".into(), attempt: 2,
+            retry_of: Some(d1.clone()), profile: Some("codex".into()), model: None,
+            tile_id: None, merge_branch: None, owner: None, now: 11,
+        }.with_fields(serde_json::json!({"correctiveRetry": true})));
+
+        {
+            let entry = s.runs.get_mut("r-mvr").unwrap();
+            entry.tasks.get_mut("t1").unwrap().status = TaskStatus::Verifying;
+            entry.dispatches.get_mut(&d2).unwrap().status = DispatchStatus::Reported;
+        }
+        f12_commit(&mut s, Cmd::TaskVerificationFailed {
+            run_id: "r-mvr".into(), task_id: "t1".into(), dispatch_id: d2.clone(),
+            command: "verify".into(), exit_code: Some(1), timed_out: false,
+            tail: String::new(), msg_seq: 2, now: 21,
+        });
+        assert!(!s.runs["r-mvr"].dispatches[&d2].retry_same_entry, "round 1 of 1: at cap, escalate");
+    }
+
+    #[test]
+    fn p4_native_resume_id_allowed_for_in_place_pair() {
+        let dir = tmp_dir("native-ip-resume");
+        let repo_path = dir.to_str().unwrap();
+        let home = dir.join("codex");
+        let sessions = home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("rollout-ip-session.jsonl"), "{}\n").unwrap();
+
+        let base_dispatch = Dispatch {
+            id: "d1".into(), task_id: "t1".into(), attempt: 1, retry_of: None,
+            profile: Some("codex".into()), model: None, tile_id: None, merge_branch: None,
+            worktree: None, branch: None, status: DispatchStatus::Reported,
+            outcome: None, head_sha: None, files_modified: vec![], summary: None, report: None,
+            started_at: 1, ended_at: None, last_heartbeat: None, verifications: vec![],
+            cost_usd: None, cost_source: None, account: None, chain_index: None,
+            trigger: None, decision: None, failure_class: None, by: None, start_ref: None,
+            native_home: Some(home.to_str().unwrap().to_string()),
+            native_session: Some(NativeSession { agent: "codex".into(), id: "ip-session".into() }),
+            corrective_retry: false, retry_same_entry: true, operational_wait: false,
+            diff_stat: None,
+        };
+
+        let previous = base_dispatch.clone();
+        let next = Dispatch { corrective_retry: true, retry_same_entry: false, ..base_dispatch.clone() };
+
+        assert_eq!(native_resume_id(&previous, &next, "codex", repo_path), Some("ip-session"),
+            "in-place pair (both no worktree) should allow native resume");
+
+        let next_with_worktree = Dispatch { worktree: Some("/different/path".into()), ..next.clone() };
+        let prev_with_worktree = Dispatch { worktree: Some("/some/path".into()), ..previous.clone() };
+        assert!(native_resume_id(&prev_with_worktree, &next_with_worktree, "codex", repo_path).is_none(),
+            "mismatched worktrees must not allow native resume");
     }
 }
 
