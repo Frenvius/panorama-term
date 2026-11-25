@@ -170,6 +170,7 @@ pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     let path = store::messages_path(&base);
     let Ok(bytes) = std::fs::read(&path) else { return };
+    let auto_started = auto_started_by_messages(unix_ms());
     let mut state = mail_lock();
     for line in bytes.split(|b| *b == b'\n') {
         let Ok(text) = std::str::from_utf8(line) else { continue };
@@ -179,7 +180,7 @@ pub fn init() {
             eprintln!("[agents] skip mail event {}: {e}", record.seq);
         }
     }
-    *guard(rates()) = rebuild_rates(&state.mailbox, unix_ms());
+    *guard(rates()) = rebuild_rates(&state.mailbox, &auto_started, unix_ms());
     let waiting: Vec<Party> = state.mailbox.messages.values()
         .filter(|m| m.status == MsgStatus::Queued && m.to != Party::User)
         .map(|m| m.to.clone())
@@ -287,14 +288,22 @@ fn release(sender: &str, now: u64, units: usize) {
     }
 }
 
-pub(crate) fn rebuild_rates(mailbox: &Mailbox, now: u64) -> HashMap<String, RateWindow> {
+fn auto_started_by_messages(now: u64) -> HashSet<String> {
+    lock().agents.values()
+        .filter(|a| a.last_started_at.is_some_and(|at| now.saturating_sub(at) < HOUR_MS))
+        .filter_map(|a| a.started_by.as_deref()?.strip_prefix("message ").map(str::to_string))
+        .collect()
+}
+
+pub(crate) fn rebuild_rates(mailbox: &Mailbox, auto_started: &HashSet<String>, now: u64) -> HashMap<String, RateWindow> {
     let mut windows: HashMap<String, RateWindow> = HashMap::new();
     let mut recent: Vec<&Message> = mailbox.messages.values()
         .filter(|m| !m.notice && now.saturating_sub(m.at) < HOUR_MS)
         .collect();
     recent.sort_by_key(|m| m.at);
     for m in recent {
-        windows.entry(m.from.key()).or_default().record(m.at, 1);
+        let units = if auto_started.contains(&m.id) { 2 } else { 1 };
+        windows.entry(m.from.key()).or_default().record(m.at, units);
     }
     windows
 }
@@ -694,9 +703,36 @@ mod tests {
         }
         let old = Message { at: now - 2 * HOUR_MS, ..crate::agents::mail::tests::msg("old", Party::Agent { id: "ay".into() }, Party::User) };
         mb.messages.insert(old.id.clone(), old);
-        let windows = rebuild_rates(&mb, now);
+        let windows = rebuild_rates(&mb, &HashSet::new(), now);
         assert!(windows["agent:ax"].check(now, 1).is_err());
         assert!(!windows.contains_key("agent:ay"), "older than an hour");
+    }
+
+    #[test]
+    fn the_rebuilt_window_counts_the_extra_unit_of_an_auto_start() {
+        let now = 50 * HOUR_MS;
+        let mut mb = Mailbox::default();
+        for i in 0..3 {
+            let m = Message { at: now - 1_000 - i as u64, ..crate::agents::mail::tests::msg(&format!("s{i}"), Party::Agent { id: "az".into() }, Party::User) };
+            mb.messages.insert(m.id.clone(), m);
+        }
+        let windows = rebuild_rates(&mb, &HashSet::from(["s1".to_string()]), now);
+        assert!(windows["agent:az"].check(now, 2).is_ok());
+        assert!(windows["agent:az"].check(now, 3).is_err(), "3 messages + 1 auto-start = 4 of 6 units");
+    }
+
+    #[test]
+    fn a_refund_in_the_same_millisecond_leaves_the_other_send_counted() {
+        let mut window = RateWindow::default();
+        let now = 10 * HOUR_MS;
+        window.try_reserve(now, 1).unwrap();
+        window.try_reserve(now, 1).unwrap();
+        window.release(now, 1);
+        assert_eq!(window.times.len(), 1, "units with the same timestamp are interchangeable");
+        for _ in 0..RATE_PER_MINUTE - 1 {
+            window.try_reserve(now, 1).unwrap();
+        }
+        assert!(window.try_reserve(now, 1).is_err());
     }
 
     #[test]
