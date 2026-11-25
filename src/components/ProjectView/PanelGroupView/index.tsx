@@ -103,11 +103,8 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
   const {
     dropZone,
     dragOverTabIndex,
-    onTabPointerUp,
     onTabPointerDown,
-    onTabPointerMove,
-    onTabClickCapture,
-    onTabPointerCancel
+    onTabClickCapture
   } = useTabDrag({
     groupId: group.id,
     draggingTab,
@@ -405,9 +402,6 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
                 onClickCapture={onTabClickCapture}
                 onDoubleClick={onTabDoubleClick(tile)}
                 onContextMenu={openTabContextMenu(tile)}
-                onPointerUp={onTabPointerUp}
-                onPointerMove={onTabPointerMove}
-                onPointerCancel={onTabPointerCancel}
                 onPointerDown={onTabPointerDown(tile.id)}
               >
                 <span className={styles.tabIcon}>{renderTileTypeIcon(tile, agentType)}</span>

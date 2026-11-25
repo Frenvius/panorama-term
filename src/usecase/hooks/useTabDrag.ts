@@ -30,6 +30,7 @@ interface PressState {
   tab: HTMLElement;
   pointerId: number;
   dragging: boolean;
+  cleanup: () => void;
 }
 
 export const computeDropZone = (rect: DOMRect, clientX: number, clientY: number): DropZone => {
@@ -76,10 +77,14 @@ export const hitTestTabDrop = (clientX: number, clientY: number): Omit<TabDropPa
 export const useTabDrag = ({ groupId, draggingTab, renamingTileId, onDropTab, onDragStartTab }: UseTabDragOpts) => {
   const pressRef = React.useRef<PressState | null>(null);
   const suppressClickRef = React.useRef(false);
+  const latestRef = React.useRef({ groupId, onDropTab, onDragStartTab });
+  latestRef.current = { groupId, onDropTab, onDragStartTab };
+
   const [dropZone, setDropZone] = React.useState<DropZone | null>(null);
   const [dragOverTabIndex, setDragOverTabIndex] = React.useState<number | null>(null);
 
   const clearPress = React.useCallback((current: PressState) => {
+    current.cleanup();
     delete current.tab.dataset.dragged;
     if (current.tab.hasPointerCapture(current.pointerId)) {
       current.tab.releasePointerCapture(current.pointerId);
@@ -131,7 +136,10 @@ export const useTabDrag = ({ groupId, draggingTab, renamingTileId, onDropTab, on
 
   React.useEffect(
     () => () => {
-      if (pressRef.current) clearPress(pressRef.current);
+      if (!pressRef.current) return;
+      const wasDragging = pressRef.current.dragging;
+      clearPress(pressRef.current);
+      if (wasDragging) latestRef.current.onDragStartTab(null);
     },
     [clearPress]
   );
@@ -140,58 +148,73 @@ export const useTabDrag = ({ groupId, draggingTab, renamingTileId, onDropTab, on
     suppressClickRef.current = false;
     if (e.button !== 0 || pressRef.current || renamingTileId === tileId) return;
     if (e.target instanceof Element && e.target.closest('button, input')) return;
+
+    const handleMove = (ev: PointerEvent) => {
+      const current = pressRef.current;
+      if (!current || ev.pointerId !== current.pointerId) return;
+      if (current.dragging) return;
+      if (Math.hypot(ev.clientX - current.startX, ev.clientY - current.startY) < DRAG_THRESHOLD_PX) return;
+      current.dragging = true;
+      try {
+        current.tab.setPointerCapture(ev.pointerId);
+      } catch {
+        // Tab may have detached or pointer may no longer be active
+      }
+      current.tab.dataset.dragged = 'true';
+      latestRef.current.onDragStartTab({ tileId: current.tileId, sourceGroupId: latestRef.current.groupId });
+    };
+
+    const handleUp = (ev: PointerEvent) => {
+      const current = pressRef.current;
+      if (!current || ev.pointerId !== current.pointerId) return;
+      const wasDragging = current.dragging;
+      const { tileId: draggedTileId } = current;
+      clearPress(current);
+      if (!wasDragging) return;
+      suppressClickRef.current = true;
+      const hit = hitTestTabDrop(ev.clientX, ev.clientY);
+      setDropZone(null);
+      setDragOverTabIndex(null);
+      if (hit) {
+        latestRef.current.onDropTab({
+          tileId: draggedTileId,
+          zone: hit.zone,
+          targetIndex: hit.targetIndex,
+          targetGroupId: hit.targetGroupId
+        });
+      }
+      latestRef.current.onDragStartTab(null);
+    };
+
+    const handleCancel = (ev: PointerEvent) => {
+      const current = pressRef.current;
+      if (!current || ev.pointerId !== current.pointerId) return;
+      const wasDragging = current.dragging;
+      clearPress(current);
+      setDropZone(null);
+      setDragOverTabIndex(null);
+      if (wasDragging) latestRef.current.onDragStartTab(null);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleCancel);
+    };
+
     pressRef.current = {
       tileId,
       dragging: false,
       startX: e.clientX,
       startY: e.clientY,
       tab: e.currentTarget,
-      pointerId: e.pointerId
+      pointerId: e.pointerId,
+      cleanup
     };
-  };
 
-  const onTabPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const current = pressRef.current;
-    if (!current || e.pointerId !== current.pointerId) return;
-    if (!current.dragging) {
-      if (Math.hypot(e.clientX - current.startX, e.clientY - current.startY) < DRAG_THRESHOLD_PX) return;
-      current.dragging = true;
-      current.tab.setPointerCapture(e.pointerId);
-      current.tab.dataset.dragged = 'true';
-      onDragStartTab({ tileId: current.tileId, sourceGroupId: groupId });
-    }
-  };
-
-  const onTabPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    const current = pressRef.current;
-    if (!current || e.pointerId !== current.pointerId) return;
-    const wasDragging = current.dragging;
-    const { tileId } = current;
-    clearPress(current);
-    if (!wasDragging) return;
-    suppressClickRef.current = true;
-    const hit = hitTestTabDrop(e.clientX, e.clientY);
-    setDropZone(null);
-    setDragOverTabIndex(null);
-    if (hit) {
-      onDropTab({
-        tileId,
-        zone: hit.zone,
-        targetIndex: hit.targetIndex,
-        targetGroupId: hit.targetGroupId
-      });
-    }
-    onDragStartTab(null);
-  };
-
-  const onTabPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
-    const current = pressRef.current;
-    if (!current || e.pointerId !== current.pointerId) return;
-    const wasDragging = current.dragging;
-    clearPress(current);
-    setDropZone(null);
-    setDragOverTabIndex(null);
-    if (wasDragging) onDragStartTab(null);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleCancel);
   };
 
   const onTabClickCapture = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -203,10 +226,7 @@ export const useTabDrag = ({ groupId, draggingTab, renamingTileId, onDropTab, on
   return {
     dropZone,
     dragOverTabIndex,
-    onTabPointerUp,
     onTabPointerDown,
-    onTabPointerMove,
-    onTabClickCapture,
-    onTabPointerCancel
+    onTabClickCapture
   };
 };

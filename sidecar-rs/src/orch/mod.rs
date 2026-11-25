@@ -2649,7 +2649,7 @@ async fn handle_conflict_resolve(body: &[u8]) -> String {
         "taskId": task_id,
         "by": by,
     });
-    for key in ["profile", "model"] {
+    for key in ["profile", "model", "effort"] {
         if let Some(s) = v[key].as_str() {
             inner[key] = s.into();
         }
@@ -2699,7 +2699,7 @@ async fn handle_retry(body: &[u8]) -> String {
             wiring::RetryLimit::Open => {}
         }
         let mut inner_body = serde_json::json!({"runId": run_id, "taskId": task_id, "by": by_retry});
-        for key in ["profile", "model"] {
+        for key in ["profile", "model", "effort"] {
             if let Some(explicit) = v[key].as_str() {
                 inner_body[key] = explicit.into();
             }
@@ -2733,7 +2733,7 @@ async fn handle_retry(body: &[u8]) -> String {
         entry.latest_dispatch_for_task(&task_id).map(|d| d.id.clone())
     };
     let mut inner_body = serde_json::json!({"runId": run_id, "taskId": task_id, "by": by_retry});
-    for key in ["profile", "model"] {
+    for key in ["profile", "model", "effort"] {
         if let Some(explicit) = v[key].as_str() {
             inner_body[key] = explicit.into();
         }
