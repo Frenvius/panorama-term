@@ -639,8 +639,14 @@ mod tests {
         let r = reply_of(handle_send(&json!({ "to": busy_name, "text": "over", "fromAgent": from })));
         assert_eq!(r["error"]["code"], "rate_limited", "{r}");
     }
+    fn inbox_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn mail_to_the_user_is_delivered_to_the_panel_at_once() {
+        let _inbox = inbox_lock();
         let (from, _) = make_agent("u", Desired::Running, false);
         let r = reply_of(handle_send(&json!({ "to": "user", "text": "done", "fromAgent": from })));
         let id = r["message"]["id"].as_str().unwrap().to_string();
@@ -651,6 +657,7 @@ mod tests {
     }
     #[test]
     fn mark_read_ignores_messages_not_addressed_to_the_user() {
+        let _inbox = inbox_lock();
         let (agent_id, agent_name) = make_agent("h", Desired::Running, false);
         let to_user = reply_of(handle_send(&json!({ "to": "user", "text": "for you", "fromAgent": agent_id })));
         let from_user = reply_of(handle_send(&json!({ "to": agent_name, "text": "from you", "expectsReply": true })));
@@ -749,6 +756,7 @@ mod tests {
 
     #[test]
     fn mark_read_all_clears_every_unread_message_to_the_user() {
+        let _inbox = inbox_lock();
         let (from, _) = make_agent("k", Desired::Running, false);
         for i in 0..3 {
             reply_of(handle_send(&json!({ "to": "user", "text": format!("note {i}"), "fromAgent": from })));
@@ -759,6 +767,7 @@ mod tests {
 
     #[test]
     fn mark_read_all_stops_at_the_last_message_shown() {
+        let _inbox = inbox_lock();
         let (from, _) = make_agent("u", Desired::Running, false);
         let shown = reply_of(handle_send(&json!({ "to": "user", "text": "seen", "fromAgent": from })));
         let late = reply_of(handle_send(&json!({ "to": "user", "text": "arrived after the list", "fromAgent": from })));

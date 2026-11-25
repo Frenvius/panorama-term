@@ -587,8 +587,9 @@ mod tests {
 
     #[test]
     fn full_block_lists_the_other_agents_but_never_itself() {
-        let me = format!("arost{:03}", unix_ms() % 1000);
-        let other = format!("arosu{:03}", unix_ms() % 1000);
+        let tag = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
+        let me = format!("arost{tag:09}");
+        let other = format!("arosu{tag:09}");
         insert_test_agent(&me, &format!("me-{me}"));
         insert_test_agent(&other, &format!("peer-{other}"));
         let agent = lock().agents[&me].clone();
