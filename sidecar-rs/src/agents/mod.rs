@@ -141,9 +141,9 @@ fn agent_for_tile(tile_id: &str) -> Option<Agent> {
     lock().agents.get(id).cloned()
 }
 
-pub(crate) fn prompt_context(tile_id: &str, session_id: &str) -> Option<String> {
+pub(crate) fn prompt_context(tile_id: &str, session_id: &str, extra: Option<String>) -> Option<String> {
     let agent = agent_for_tile(tile_id)?;
-    context::prompt_block(&agent, tile_id, session_id)
+    context::prompt_block(&agent, tile_id, session_id, extra.as_deref())
 }
 
 pub(crate) fn system_context(tile_id: &str) -> Option<String> {
@@ -411,6 +411,16 @@ fn handle_delete(v: &Value) -> String {
     }
     crate::ui::broadcast_agents_changed(&id);
     ok_resp(json!({}))
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_agent(id: &str, name: &str) {
+    lock().agents.insert(id.to_string(), reducer::tests::agent(id, name));
+}
+
+#[cfg(test)]
+pub(crate) fn remove_test_agent(id: &str) {
+    lock().agents.remove(id);
 }
 
 #[cfg(test)]

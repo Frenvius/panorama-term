@@ -5821,7 +5821,7 @@ fn chain_display(chain: &[String]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU32};
     use crate::orch::model::Limits;
@@ -7815,7 +7815,7 @@ mod tests {
         assert_eq!(d.failure_class, Some(FailureClass::QuotaExhausted));
     }
 
-    pub(super) fn f12_test_home() {
+    pub(crate) fn f12_test_home() {
         static HOME: std::sync::Once = std::sync::Once::new();
         HOME.call_once(|| {
             let dir = std::env::temp_dir().join(format!("panorama-f12-{}", std::process::id()));

@@ -41,14 +41,18 @@ pub fn bootstrap_message(agent: &Agent) -> String {
     format!("{}\n{BOOTSTRAP_TAIL}", agent_block(agent))
 }
 
-pub fn prompt_block(agent: &Agent, tile_id: &str, session_id: &str) -> Option<String> {
+pub fn prompt_block(agent: &Agent, tile_id: &str, session_id: &str, extra: Option<&str>) -> Option<String> {
     let path = crate::binding_path(tile_id)?;
     let mut rec = crate::read_binding_rec(tile_id).filter(Value::is_object).unwrap_or_else(|| json!({ "tileId": tile_id }));
     let session = Some(session_id).filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| rec["agentSessionId"].as_str().map(str::to_string))
         .unwrap_or_default();
-    let block = agent_block(agent);
+    let mut block = agent_block(agent);
+    if let Some(extra) = extra.filter(|e| !e.is_empty()) {
+        block.push_str("\n\n");
+        block.push_str(extra);
+    }
     let hash = block_hash(&block);
     if !needs_delivery(&rec[DELIVERED_KEY], &session, &hash) {
         return None;

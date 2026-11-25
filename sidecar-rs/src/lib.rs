@@ -3076,12 +3076,10 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
         }
     }
     if event == "prompt-submit" {
-        return [agents::prompt_context(tile_id, &field("session_id")), Some(prompt_context(tile_id, &field("cwd")))]
-            .into_iter()
-            .flatten()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        if agents::is_agent_tile(tile_id) {
+            return agents::prompt_context(tile_id, &field("session_id"), orch::orch_context(tile_id)).unwrap_or_default();
+        }
+        return prompt_context(tile_id, &field("cwd"));
     }
     prompt_id.unwrap_or_default()
 }
@@ -6103,6 +6101,26 @@ fn restore_ctrl_c() {
 }
 
 
+#[cfg(test)]
+mod agent_context_tests {
+    #[test]
+    fn agent_tiles_get_context_once_per_session_and_nothing_per_turn() {
+        crate::orch::tests::f12_test_home();
+        let id = format!("ahint{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000);
+        crate::agents::insert_test_agent(&id, "hint");
+        let tile = format!("agent-{id}");
+        let body = serde_json::json!({ "session_id": "s1", "cwd": "" }).to_string();
+        let first = super::handle_agent_hook(&tile, "prompt-submit", body.as_bytes());
+        let second = super::handle_agent_hook(&tile, "prompt-submit", body.as_bytes());
+        let other_session = serde_json::json!({ "session_id": "s2", "cwd": "" }).to_string();
+        let third = super::handle_agent_hook(&tile, "prompt-submit", other_session.as_bytes());
+        crate::agents::remove_test_agent(&id);
+        if let Some(path) = super::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        assert!(first.contains("[panorama agent]"), "{first}");
+        assert_eq!(second, "", "second turn of the same session gets nothing");
+        assert!(third.contains("[panorama agent]"), "{third}");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{
