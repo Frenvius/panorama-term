@@ -62,6 +62,8 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { id: 'agents.usage', section: 'agents', label: 'Status bar usage', keywords: ['usage', 'limit', 'quota', 'status bar'] },
   { id: 'agents.idleCompaction', section: 'agents', label: 'Idle compaction', keywords: ['compact', 'idle', 'claude'] },
   { id: 'agents.tasksOpen', section: 'agents', label: 'Background tasks', keywords: ['shell', 'task', 'background', 'tile', 'codex'] },
+  { id: 'agents.tasksAuto', section: 'agents', label: 'Open tasks automatically', keywords: ['task', 'subagent', 'codex', 'auto', 'open', 'tile'] },
+  { id: 'agents.tasksDetail', section: 'agents', label: 'Tasks detail', keywords: ['task', 'detail', 'output', 'compact', 'full', 'codex'] },
   { id: 'agents.tasksLink', section: 'agents', label: 'Background tasks link', keywords: ['link', 'line', 'dashed', 'connection'] },
   { id: 'accounts.list', section: 'accounts', label: 'Agent accounts', keywords: ['account', 'login', 'claude', 'codex', 'antigravity', 'switch'] },
   { id: 'orchestration.workerTiles', section: 'orchestration', label: 'Open worker tiles automatically', keywords: ['worker', 'tiles'] },

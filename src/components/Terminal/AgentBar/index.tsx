@@ -11,7 +11,7 @@ import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import OrchToggle from './OrchToggle';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { getTasksOpen, reportShells, requestTasksTile } from '~/usecase/util/bgTasks';
+import { getTasksAuto, getTasksOpen, reportAgents, reportShells, requestTasksTile } from '~/usecase/util/bgTasks';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 import { subscribePromptRestore } from '~/usecase/util/promptRestore';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
@@ -1069,9 +1069,13 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
   const effortColor = EFFORT_LEVELS.find((l) => l.id === effort)?.color;
 
   const shells = agentType === 'claude' ? structured?.shells ?? [] : [];
+  const liveAgents = agentType === 'claude' ? structured?.subagents ?? [] : [];
+  // With a tasks tile the chip counts subagents too; the inline panel lists shells only.
+  const tasksTile = getTasksOpen() !== 'inline';
+  const taskCount = shells.length + (tasksTile ? liveAgents.length : 0);
   const orchLabel = useOrchCoordinator(tileId).label;
   const hasOrchChip = agentType === 'claude' && orchLabel != null;
-  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null || shells.length > 0 || hasOrchChip);
+  const hasStatus = Boolean(parsed.model || parsed.mode || parsed.focused || parsed.progress != null || effort || structured?.costUsd != null || taskCount > 0 || hasOrchChip);
 
   React.useEffect(() => {
     if (!shells.length) setShellsOpen(false);
@@ -1080,9 +1084,18 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
   // Keyed on ids and ends: the report object is rebuilt on every poll even when nothing changed.
   const shellEnds = agentType === 'claude' ? structured?.shellEnds : undefined;
   const shellsKey = shells.map((s) => s.id).join(' ') + JSON.stringify(shellEnds ?? {});
+  const agentEnds = agentType === 'claude' ? structured?.agentEnds : undefined;
+  const agentsKey = JSON.stringify([liveAgents.map((a) => [a.id, a.label, a.tokens, a.activity]), agentEnds ?? {}]);
+  // A task that just started opens the tile when set to, without taking focus.
+  const autoOpenTasks = () => {
+    if (getTasksAuto() && getTasksOpen() !== 'inline') requestTasksTile(tileId, false);
+  };
   React.useEffect(() => {
-    reportShells(tileId, shells, shellEnds);
+    if (reportShells(tileId, shells, shellEnds)) autoOpenTasks();
   }, [tileId, shellsKey]);
+  React.useEffect(() => {
+    if (reportAgents(tileId, liveAgents, agentEnds)) autoOpenTasks();
+  }, [tileId, agentsKey]);
 
   const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
   const suggestSelect = { arg: onArgSelect, slash: onSlashSelect, model: onModelSelect, effort: onEffortSelect };
@@ -1353,17 +1366,17 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
                     <span className={styles.chipLabel}>focus</span>
                   </span>
                 )}
-                {shells.length > 0 && (
+                {taskCount > 0 && (
                   <button
                     type="button"
                     data-shells
                     aria-pressed={shellsOpen}
                     className={`${styles.chip} ${styles.chipShells}`}
-                    title={shellsOpen ? 'Hide background shells' : 'Show background shells'}
+                    title={tasksTile ? 'Show tasks' : shellsOpen ? 'Hide background shells' : 'Show background shells'}
                     onClick={toggleShells}
                   >
                     <span className={styles.shellDot} />
-                    <span>{shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
+                    <span>{tasksTile ? (taskCount === 1 ? '1 task' : `${taskCount} tasks`) : shells.length === 1 ? '1 shell' : `${shells.length} shells`}</span>
                   </button>
                 )}
                 {agentType === 'claude' && <OrchChip tileId={tileId} />}

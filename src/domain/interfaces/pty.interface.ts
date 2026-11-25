@@ -58,6 +58,12 @@ export interface Subagent {
   status: string;
   startedAt?: number;
   description: string;
+  // What it reports doing now, when that differs from the description; a model's text.
+  label?: string;
+  model?: string;
+  tokens?: number;
+  // Its last tool calls, one line each, newest last.
+  activity?: string[];
 }
 
 export interface BackgroundShell {
@@ -66,6 +72,8 @@ export interface BackgroundShell {
   startedAt: number;
   outputFile?: string;
   description?: string;
+  // A Monitor task rather than a shell.
+  monitor?: boolean;
 }
 
 export interface ClaudeState {
@@ -103,6 +111,8 @@ export interface ClaudeState {
   shells?: BackgroundShell[];
   // How background shells ended, by id: completed, failed or killed.
   shellEnds?: Record<string, string>;
+  // How subagents ended, by id: completed, failed or killed.
+  agentEnds?: Record<string, string>;
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

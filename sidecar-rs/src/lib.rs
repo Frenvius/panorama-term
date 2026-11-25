@@ -2060,6 +2060,7 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "subagents",
     "shells",
     "shellEnds",
+    "agentEnds",
     "viewing",
 ];
 
@@ -7039,6 +7040,13 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
         assert_eq!(v["shellEnds"]["b1"], "completed");
         assert_eq!(v["shellEnds"]["b2"], "failed");
+    }
+
+    #[test]
+    fn mod_state_carries_how_subagents_ended() {
+        let body = r#"{"source":"mod","tileId":"t1","subagents":[],"agentEnds":{"a1":"killed"}}"#;
+        let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
+        assert_eq!(v["agentEnds"]["a1"], "killed");
     }
 
     #[test]

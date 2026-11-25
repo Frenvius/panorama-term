@@ -9,7 +9,19 @@ import Group from '~/components/commons/Settings/Group';
 import Row from '~/components/commons/Settings/Row';
 import Switch from '~/components/commons/Settings/Switch';
 import Select from '~/components/commons/Settings/Select';
-import { type TasksOpen, type TasksLink, getTasksOpen, getTasksLink, setTasksOpen, setTasksLink } from '~/usecase/util/bgTasks';
+import {
+  type TasksOpen,
+  type TasksLink,
+  type TasksDetail,
+  getTasksOpen,
+  getTasksLink,
+  getTasksAuto,
+  getTasksDetail,
+  setTasksOpen,
+  setTasksLink,
+  setTasksAuto,
+  setTasksDetail
+} from '~/usecase/util/bgTasks';
 
 const TASKS_OPEN_OPTIONS: { value: TasksOpen; label: string }[] = [
   { value: 'inline', label: 'In the agent bar' },
@@ -27,6 +39,12 @@ const TASKS_LINK_OPTIONS: { value: TasksLink; label: string }[] = [
   { value: 'none', label: 'None' }
 ];
 
+const TASKS_DETAIL_OPTIONS: { value: TasksDetail; label: string }[] = [
+  { value: 'compact', label: 'Compact' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'full', label: 'Full' }
+];
+
 const AgentsSection = () => {
   const [idleCompact, setIdleCompact] = React.useState(() => getSetting(IDLE_COMPACTION_KEY, true));
   const [providers] = React.useState(getSeenProviders);
@@ -34,6 +52,18 @@ const AgentsSection = () => {
   const usageProviders = useUsageProviders();
   const [tasksOpen, setOpen] = React.useState(getTasksOpen);
   const [tasksLink, setLink] = React.useState(getTasksLink);
+  const [tasksAuto, setAuto] = React.useState(getTasksAuto);
+  const [tasksDetail, setDetail] = React.useState(getTasksDetail);
+
+  const toggleTasksAuto = () => {
+    setAuto(!tasksAuto);
+    setTasksAuto(!tasksAuto);
+  };
+
+  const pickTasksDetail = (value: string) => {
+    setDetail(value as TasksDetail);
+    setTasksDetail(value as TasksDetail);
+  };
 
   const pickTasksOpen = (value: string) => {
     setOpen(value as TasksOpen);
@@ -102,8 +132,28 @@ const AgentsSection = () => {
         </Row>
       </Group>
       <Group label="Background tasks">
-        <Row settingId="agents.tasksOpen" label="Open" description="Where the shells chip shows the agent's background tasks. A tile can be moved, resized and closed.">
+        <Row
+          settingId="agents.tasksOpen"
+          label="Open"
+          description="Where the tasks chip shows what the agent runs: subagents, background shells and monitors, and other agent CLIs such as Codex. A tile can be moved, resized and closed."
+        >
           <Select options={TASKS_OPEN_OPTIONS} value={tasksOpen} onChange={pickTasksOpen} />
+        </Row>
+        <Row
+          settingId="agents.tasksAuto"
+          label="Open automatically"
+          description="Open the tile beside the terminal when a task starts, without taking focus."
+          disabled={tasksOpen === 'inline'}
+        >
+          <Switch checked={tasksAuto} onChange={toggleTasksAuto} label="Open automatically" disabled={tasksOpen === 'inline'} />
+        </Row>
+        <Row
+          settingId="agents.tasksDetail"
+          label="Detail"
+          description="Compact: title, status and time. Normal: plus what each task is doing now. Full: every running task expanded with its live output, Codex reasoning included."
+          disabled={tasksOpen === 'inline'}
+        >
+          <Select options={TASKS_DETAIL_OPTIONS} value={tasksDetail} onChange={pickTasksDetail} disabled={tasksOpen === 'inline'} />
         </Row>
         <Row settingId="agents.tasksLink" label="Link" description="Line between the terminal and its tasks tile." disabled={tasksOpen === 'inline'}>
           <Select options={TASKS_LINK_OPTIONS} value={tasksLink} onChange={pickTasksLink} disabled={tasksOpen === 'inline'} />

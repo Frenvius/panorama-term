@@ -2,7 +2,7 @@ import { setSetting } from '~/adapter/settings/settings.client';
 import { setTabScope } from '~/usecase/util/tabScope';
 import { KEYBINDINGS, resetBinding } from '~/usecase/util/keybindings';
 import { DEFAULT_FONT, setFontChoice } from '~/usecase/util/fonts';
-import { setTasksOpen, setTasksLink } from '~/usecase/util/bgTasks';
+import { setTasksOpen, setTasksLink, setTasksAuto, setTasksDetail } from '~/usecase/util/bgTasks';
 import { setNotifToasts, setNotifPlacement, setNotifHideOverFullscreen } from '~/usecase/util/notifPlacement';
 import { TERMINAL_TARGET_KEY } from '~/usecase/util/terminalTarget';
 import { setMinimapCorner, setMinimapPinned } from '~/usecase/util/minimap';
@@ -50,6 +50,8 @@ export const resetAgents = (): void => {
   void setSetting(IDLE_COMPACTION_KEY, true);
   setTasksOpen('inline');
   setTasksLink('dashed');
+  setTasksAuto(false);
+  setTasksDetail('normal');
   setUsageProviders(USAGE_PROVIDERS);
 };
 

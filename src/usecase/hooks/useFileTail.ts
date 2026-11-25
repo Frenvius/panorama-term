@@ -7,7 +7,8 @@ const TAIL_BYTES = 64 * 1024;
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const BARE_CR_RE = /\r(?!\n)/g;
 
-export const useFileTail = (path: string | undefined) => {
+// `live` false reads once: the file no longer grows.
+export const useFileTail = (path: string | undefined, { maxBytes = TAIL_BYTES, live = true }: { maxBytes?: number; live?: boolean } = {}) => {
   const [text, setText] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
 
@@ -17,7 +18,7 @@ export const useFileTail = (path: string | undefined) => {
     setError(null);
     let alive = true;
     const load = () => {
-      readFileTail(path, TAIL_BYTES)
+      readFileTail(path, maxBytes)
         .then((raw) => {
           if (!alive) return;
           setText(raw.replace(ANSI_RE, '').replace(BARE_CR_RE, '\n'));
@@ -26,12 +27,12 @@ export const useFileTail = (path: string | undefined) => {
         .catch((e) => alive && setError(String(e)));
     };
     load();
-    const timer = window.setInterval(load, POLL_MS);
+    const timer = live ? window.setInterval(load, POLL_MS) : undefined;
     return () => {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [path]);
+  }, [path, maxBytes, live]);
 
   return { text, error };
 };

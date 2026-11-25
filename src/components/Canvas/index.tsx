@@ -394,9 +394,9 @@ const Canvas = () => {
 
   React.useEffect(
     () =>
-      onTasksTileRequest((sourceId) => {
-        if (fsIdRef.current) exitFs();
-        addTasksTile(sourceId);
+      onTasksTileRequest(({ sourceId, focus }) => {
+        if (focus && fsIdRef.current) exitFs();
+        addTasksTile(sourceId, focus);
       }),
     [addTasksTile, exitFs]
   );

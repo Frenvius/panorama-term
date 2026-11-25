@@ -576,10 +576,10 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     return id;
   }, []);
 
-  const addTasksTile = React.useCallback((sourceId: string) => {
+  const addTasksTile = React.useCallback((sourceId: string, focus = true) => {
     const existing = tilesRef.current.find((t) => t.type === 'tasks' && t.taskSource === sourceId);
     if (existing) {
-      setActiveTile(existing.id);
+      if (focus) setActiveTile(existing.id);
       return;
     }
     const source = tilesRef.current.find((t) => t.id === sourceId);
@@ -591,7 +591,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       ...prev,
       { id, type: 'tasks' as const, taskSource: sourceId, cwd: source.cwd, x, y, width, height, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
     ]);
-    setActiveTile(id);
+    if (focus) setActiveTile(id);
   }, []);
 
   const patchTile = React.useCallback((id: string, patch: Partial<Tile>) => {
