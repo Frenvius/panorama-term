@@ -49,6 +49,10 @@ pub(crate) fn has_subscribers() -> bool {
     channel().receiver_count() > 0
 }
 
+pub(crate) fn broadcast_agents_mail(parties: &[String]) {
+    send_event(json!({ "t": "agents.mail", "parties": parties }));
+}
+
 pub(crate) fn broadcast_agents_changed(agent_id: &str) {
     send_event(json!({ "t": "agents.changed", "agentId": agent_id }));
 }

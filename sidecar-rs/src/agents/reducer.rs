@@ -71,7 +71,7 @@ impl AgentPatch {
 pub enum Cmd {
     Create { agent: Agent, known_profiles: Vec<String> },
     Update { id: String, patch: AgentPatch, known_profiles: Vec<String>, at: u64 },
-    Start { id: String, at: u64, live: bool, resume_id: Option<String> },
+    Start { id: String, at: u64, live: bool, started_by: Option<String> },
     Stop { id: String, at: u64, by: String, force: bool, crashed: bool },
     Exit { id: String, at: u64, reason: String, code: Option<i32>, detail: Option<String> },
     Restart { id: String, at: u64 },
@@ -188,12 +188,12 @@ impl State {
                     "id": id, "at": at, "fields": patch.to_json(), "clearSession": clear_session,
                 }))))
             }
-            Cmd::Start { id, at, live, resume_id } => {
+            Cmd::Start { id, at, live, started_by } => {
                 let agent = self.get(id)?;
                 if agent.desired == Desired::Running && *live {
                     return Ok(None);
                 }
-                Ok(Some(("agent-start", json!({ "id": id, "at": at, "resumeId": resume_id }))))
+                Ok(Some(("agent-start", json!({ "id": id, "at": at, "startedBy": started_by }))))
             }
             Cmd::Stop { id, at, by, force, crashed } => {
                 let agent = self.get(id)?;
@@ -267,9 +267,11 @@ impl State {
                 agent.crashed = false;
                 agent.restarts.clear();
                 agent.last_started_at = Some(at);
+                agent.started_by = data["startedBy"].as_str().map(str::to_string);
             }
             "agent-stop" => {
                 agent.desired = Desired::Stopped;
+                agent.started_by = None;
                 agent.crashed = data["crashed"].as_bool().unwrap_or(false);
             }
             "agent-exit" => {
@@ -350,7 +352,7 @@ pub(crate) mod tests {
             profile: "claude".into(), model: Some("haiku".into()), effort: None, cwd: tmp_cwd(), project: None,
             instructions: "Answer in one line.".into(), auto_start: false, desired: Desired::Stopped,
             native_session: None, last_exit: None, restarts: vec![], crashed: false,
-            created_at: 1, updated_at: 1, last_started_at: None,
+            created_at: 1, updated_at: 1, last_started_at: None, started_by: None,
         }
     }
 
@@ -469,18 +471,18 @@ pub(crate) mod tests {
     fn start_is_idempotent_only_while_live() {
         let mut state = State::default();
         create(&mut state, "a1", "rev");
-        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 10, live: false, resume_id: None }).unwrap().is_some());
+        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 10, live: false, started_by: None }).unwrap().is_some());
         assert_eq!(state.agents["a1"].desired, Desired::Running);
         assert_eq!(state.agents["a1"].last_started_at, Some(10));
-        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 11, live: true, resume_id: None }).unwrap().is_none());
-        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 12, live: false, resume_id: None }).unwrap().is_some());
+        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 11, live: true, started_by: None }).unwrap().is_none());
+        assert!(commit(&mut state, Cmd::Start { id: "a1".into(), at: 12, live: false, started_by: None }).unwrap().is_some());
     }
 
     #[test]
     fn stop_exit_and_crash_marker() {
         let mut state = State::default();
         create(&mut state, "a1", "rev");
-        commit(&mut state, Cmd::Start { id: "a1".into(), at: 1, live: false, resume_id: None }).unwrap();
+        commit(&mut state, Cmd::Start { id: "a1".into(), at: 1, live: false, started_by: None }).unwrap();
         commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "shell_returned".into(), code: Some(1), detail: Some("x".repeat(500)) }).unwrap();
         assert_eq!(state.agents["a1"].last_exit, Some(Exit { at: 2, reason: "shell_returned".into(), code: Some(1), detail: Some("x".repeat(EXIT_DETAIL_MAX)) }));
         assert!(commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "bogus".into(), code: None, detail: None }).is_err());
@@ -488,7 +490,7 @@ pub(crate) mod tests {
         assert!(state.agents["a1"].crashed);
         assert_eq!(state.agents["a1"].desired, Desired::Stopped);
         assert!(commit(&mut state, Cmd::Stop { id: "a1".into(), at: 4, by: "brain".into(), force: true, crashed: true }).unwrap().is_none());
-        commit(&mut state, Cmd::Start { id: "a1".into(), at: 5, live: false, resume_id: None }).unwrap();
+        commit(&mut state, Cmd::Start { id: "a1".into(), at: 5, live: false, started_by: None }).unwrap();
         assert!(!state.agents["a1"].crashed);
         commit(&mut state, Cmd::Stop { id: "a1".into(), at: 6, by: "user".into(), force: false, crashed: false }).unwrap();
         assert!(commit(&mut state, Cmd::Stop { id: "a1".into(), at: 7, by: "user".into(), force: false, crashed: false }).unwrap().is_none());
@@ -506,7 +508,7 @@ pub(crate) mod tests {
         assert_eq!(err.code, "restart_limit");
         commit(&mut state, Cmd::Restart { id: "a1".into(), at: base + RESTART_WINDOW_MS + 1 }).unwrap();
         assert_eq!(state.agents["a1"].restarts.len(), 3);
-        commit(&mut state, Cmd::Start { id: "a1".into(), at: base + RESTART_WINDOW_MS + 2, live: false, resume_id: None }).unwrap();
+        commit(&mut state, Cmd::Start { id: "a1".into(), at: base + RESTART_WINDOW_MS + 2, live: false, started_by: None }).unwrap();
         assert!(state.agents["a1"].restarts.is_empty());
     }
 
@@ -532,7 +534,7 @@ pub(crate) mod tests {
             if let Some(event) = commit(state, cmd).unwrap() { log.push(event); }
         };
         record(&mut live, Cmd::Create { agent: agent("a1", "rev"), known_profiles: profiles() });
-        record(&mut live, Cmd::Start { id: "a1".into(), at: 2, live: false, resume_id: None });
+        record(&mut live, Cmd::Start { id: "a1".into(), at: 2, live: false, started_by: None });
         record(&mut live, Cmd::BindSession { id: "a1".into(), agent: "claude".into(), session_id: "s1".into(), at: 3 });
         record(&mut live, Cmd::Exit { id: "a1".into(), at: 4, reason: "session_gone".into(), code: None, detail: None });
         record(&mut live, Cmd::Restart { id: "a1".into(), at: 5 });

@@ -1,6 +1,9 @@
 pub mod cli;
 mod context;
+mod delivery;
 mod launch;
+mod mail;
+mod messages;
 mod model;
 mod reducer;
 mod runtime;
@@ -101,6 +104,7 @@ fn commit_cmd(agent_id: &str, cmd: Cmd) -> Result<Option<(String, Value)>, Commi
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     store::load_all(&mut lock(), &base);
+    messages::init();
     runtime::restore_all();
 }
 
@@ -114,6 +118,11 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "delete" => handle_delete(&v),
         "start" => handle_start(&v),
         "stop" => handle_stop(&v).await,
+        "send" => messages::handle_send(&v),
+        "reply" => messages::handle_reply(&v),
+        "messages" => messages::handle_messages(&v),
+        "read" => messages::handle_read(&v),
+        "mark-read" => messages::handle_mark_read(&v),
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -162,9 +171,9 @@ pub(crate) fn on_status(tile_id: &str) {
     }
 }
 
-fn start_agent(id: &str) -> Result<(), CommitError> {
+fn start_agent(id: &str, started_by: Option<String>) -> Result<(), CommitError> {
     let live = crate::lookup_live(&model::tile_id(id)).is_some();
-    let started = commit_cmd(id, Cmd::Start { id: id.into(), at: unix_ms(), live, resume_id: None })?;
+    let started = commit_cmd(id, Cmd::Start { id: id.into(), at: unix_ms(), live, started_by })?;
     if started.is_some() || !live {
         runtime::spawn_start(id.to_string());
     }
@@ -182,7 +191,7 @@ fn handle_start(v: &Value) -> String {
             return e.resp();
         }
     }
-    if let Err(e) = start_agent(&id) {
+    if let Err(e) = start_agent(&id, None) {
         return e.resp();
     }
     let live = crate::lookup_live(&model::tile_id(&id)).is_some();
@@ -276,7 +285,7 @@ fn handle_create(v: &Value) -> String {
         crashed: false,
         created_at: now,
         updated_at: now,
-        last_started_at: None,
+        last_started_at: None, started_by: None,
     };
     let id = agent.id.clone();
     let auto_start = agent.auto_start;
@@ -284,7 +293,7 @@ fn handle_create(v: &Value) -> String {
         return e.resp();
     }
     if auto_start {
-        if let Err(e) = start_agent(&id) {
+        if let Err(e) = start_agent(&id, None) {
             return e.resp();
         }
     }
@@ -334,6 +343,9 @@ fn merge_live(agent: &Agent, full: bool) -> Value {
             obj.remove("restarts");
         }
         obj.extend(live.clone());
+        let (queued, awaiting) = messages::mail_counts(&agent.id);
+        obj.insert("queued".into(), queued.into());
+        obj.insert("awaitingReplies".into(), awaiting.into());
     }
     value
 }
@@ -404,19 +416,22 @@ fn handle_delete(v: &Value) -> String {
     let Some(base) = crate::panorama_dir() else { return err_resp("io", "no panorama dir") };
     let tile = model::tile_id(&id);
     let live = crate::lookup_live(&tile).is_some();
-    {
+    let name = {
         let mut guard = lock();
         let Some(agent) = guard.agents.get(&id) else { return err_resp("not_found", "agent not found") };
         if agent.desired == Desired::Running || live {
             return err_resp("conflict", "agent running; stop it first");
         }
+        let name = agent.name.clone();
         if let Err(e) = store::remove_agent_dir(&base, &id) {
             return err_resp("io", &e);
         }
         guard.agents.remove(&id);
         guard.seqs.remove(&id);
-    }
+        name
+    };
     runtime::forget(&id, &tile);
+    messages::on_agent_deleted(&id, &name);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }

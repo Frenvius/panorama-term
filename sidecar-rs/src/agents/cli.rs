@@ -2,7 +2,22 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop> [name-or-id] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox> [args] [--flags] [--json]";
+const PREVIEW_CHARS: usize = 40;
+
+#[derive(Debug, Default)]
+struct CliEnv {
+    agent: Option<String>,
+    tile: Option<String>,
+    worker: bool,
+}
+
+impl CliEnv {
+    fn from_process() -> Self {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        Self { agent: var("PANORAMA_AGENT_ID"), tile: var("PANORAMA_TILE_ID"), worker: var("PANORAMA_DISPATCH_ID").is_some() }
+    }
+}
 const EXIT_USAGE: i32 = 2;
 const EXIT_API: i32 = 3;
 const EXIT_UNREACHABLE: i32 = 4;
@@ -23,6 +38,10 @@ fn allowed_flags(command: &str) -> Option<&'static str> {
         "delete" => "id",
         "start" => "id fresh",
         "stop" => "id force",
+        "send" => "expects-reply file",
+        "reply" => "file",
+        "read" => "",
+        "inbox" => "pending limit",
         _ => return None,
     })
 }
@@ -44,6 +63,10 @@ fn field_for(flag: &str) -> &'static str {
         "tail" => "tail",
         "fresh" => "fresh",
         "force" => "force",
+        "expects-reply" => "expectsReply",
+        "file" => "text",
+        "pending" => "pending",
+        "limit" => "limit",
         _ => "",
     }
 }
@@ -56,7 +79,16 @@ fn parse_bool(flag: &str, raw: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_args<R>(args: &[String], read_file: R) -> Result<Parsed, String>
+fn positional_fields(command: &str) -> &'static [&'static str] {
+    match command {
+        "create" | "list" => &[],
+        "send" | "reply" => &["to", "text"],
+        "inbox" => &["agent"],
+        _ => &["id"],
+    }
+}
+
+fn parse_args<R>(args: &[String], env: &CliEnv, read_file: R) -> Result<Parsed, String>
 where
     R: Fn(&str) -> Result<String, String>,
 {
@@ -68,10 +100,10 @@ where
     while i < args.len() {
         let arg = &args[i];
         let Some(flag) = arg.strip_prefix("--") else {
-            if body.contains_key("id") || command == "create" || command == "list" {
+            let Some(field) = positional_fields(&command).iter().find(|f| !body.contains_key(**f)) else {
                 return Err(format!("unexpected argument {arg}"));
-            }
-            body.insert("id".into(), arg.clone().into());
+            };
+            body.insert((*field).into(), arg.clone().into());
             i += 1;
             continue;
         };
@@ -84,7 +116,7 @@ where
             return Err(format!("unknown flag --{flag} for {command}"));
         }
         let field = field_for(flag);
-        if matches!(flag, "fresh" | "force") {
+        if matches!(flag, "fresh" | "force" | "expects-reply" | "pending") {
             body.insert(field.into(), true.into());
             i += 1;
             continue;
@@ -92,8 +124,8 @@ where
         let raw = args.get(i + 1).ok_or_else(|| format!("--{flag} requires a value"))?;
         let value: Value = match flag {
             "auto-start" => parse_bool(flag, raw)?.into(),
-            "tail" => raw.parse::<u64>().map_err(|_| "--tail requires a number".to_string())?.into(),
-            "instructions-file" => read_file(raw)?.into(),
+            "tail" | "limit" => raw.parse::<u64>().map_err(|_| format!("--{flag} requires a number"))?.into(),
+            "instructions-file" | "file" => read_file(raw)?.into(),
             _ => raw.clone().into(),
         };
         body.insert(field.into(), value);
@@ -107,7 +139,16 @@ where
             let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
             body.insert("cwd".into(), cwd.to_string_lossy().into_owned().into());
         }
-    } else if command != "list" && !body.contains_key("id") {
+    } else if matches!(command.as_str(), "send" | "reply") {
+        if !body.contains_key("to") || !body.contains_key("text") {
+            return Err(format!("{command} requires a recipient and a text (or --file)"));
+        }
+        if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+        if env.worker { body.insert("worker".into(), true.into()); }
+    } else if command == "read" && !body.contains_key("id") {
+        return Err("read requires a message id".into());
+    } else if !matches!(command.as_str(), "list" | "inbox" | "read") && !body.contains_key("id") {
         return Err(format!("{command} requires an agent name or id"));
     }
     Ok(Parsed { command, body, json })
@@ -124,6 +165,25 @@ fn list_line(agent: &Value) -> String {
     format!("{}  {}  {}{}  {}", field("name"), field("status"), field("profile"), model, project)
 }
 
+fn message_line(m: &Value) -> String {
+    let field = |k: &str| m[k].as_str().unwrap_or("").to_string();
+    let flag = if m["expectsReply"] == true {
+        if m["repliedBy"].is_string() { "  answered" } else { "  reply expected" }
+    } else if m["replyTo"].is_string() {
+        "  reply"
+    } else {
+        ""
+    };
+    let text = field("text").replace(char::is_control, " ");
+    let mut preview: String = text.chars().take(PREVIEW_CHARS).collect();
+    if text.chars().count() > PREVIEW_CHARS { preview.push_str("..."); }
+    format!("{}  {} -> {}  {}{}  \"{}\"", field("id"), field("fromLabel"), field("toLabel"), field("status"), flag, preview)
+}
+
+fn route(command: &str) -> &str {
+    if command == "inbox" { "messages" } else { command }
+}
+
 fn exit_with(message: &str, code: i32) -> ! {
     eprintln!("[agent] {message}");
     std::process::exit(code);
@@ -131,9 +191,9 @@ fn exit_with(message: &str, code: i32) -> ! {
 
 pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
-    let parsed = parse_args(&args, read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
     let body = serde_json::to_string(&parsed.body).unwrap_or_else(|_| "{}".into());
-    let path = format!("/agents/{}", parsed.command);
+    let path = format!("/agents/{}", route(&parsed.command));
     let response = http_post(crate::port(), &path, &body, 15_000)
         .unwrap_or_else(|e| exit_with(&format!("brain unreachable: {e}"), EXIT_UNREACHABLE));
     let text = parse_response_body(&response);
@@ -152,8 +212,16 @@ pub fn main() {
     }
     if parsed.json {
         println!("{text}");
-    } else {
-        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string()));
+        return;
+    }
+    match parsed.command.as_str() {
+        "send" | "reply" => println!("{}", v["text"].as_str().unwrap_or_default()),
+        "inbox" => v["messages"].as_array().into_iter().flatten().for_each(|m| println!("{}", message_line(m))),
+        "read" => {
+            println!("{}", message_line(&v["message"]));
+            println!("{}", v["message"]["text"].as_str().unwrap_or_default());
+        }
+        _ => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string())),
     }
 }
 
@@ -161,9 +229,50 @@ pub fn main() {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> Result<Parsed, String> {
+    fn parse_with(args: &[&str], env: &CliEnv) -> Result<Parsed, String> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_args(&owned, |path| if path == "inst.md" { Ok("from file".into()) } else { Err("missing".into()) })
+        parse_args(&owned, env, |path| if path == "inst.md" { Ok("from file".into()) } else { Err("missing".into()) })
+    }
+
+    fn parse(args: &[&str]) -> Result<Parsed, String> {
+        parse_with(args, &CliEnv::default())
+    }
+
+    #[test]
+    fn send_takes_recipient_and_text_and_the_sender_from_env() {
+        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false };
+        let p = parse_with(&["send", "rev", "hello there", "--expects-reply"], &env).unwrap();
+        assert_eq!(Value::Object(p.body), serde_json::json!({
+            "to": "rev", "text": "hello there", "expectsReply": true, "fromAgent": "a1234567", "fromTile": "agent-a1234567",
+        }));
+        let worker = CliEnv { tile: Some("t1".into()), worker: true, ..Default::default() };
+        let p = parse_with(&["send", "rev", "--file", "inst.md"], &worker).unwrap();
+        assert_eq!(p.body["text"], "from file");
+        assert_eq!(p.body["worker"], true);
+        assert!(p.body.get("fromAgent").is_none());
+        let user = parse(&["reply", "m123456", "ok"]).unwrap();
+        assert_eq!(Value::Object(user.body), serde_json::json!({ "to": "m123456", "text": "ok" }));
+    }
+
+    #[test]
+    fn messaging_usage_errors_and_routes() {
+        assert!(parse(&["send", "rev"]).is_err());
+        assert!(parse(&["send", "rev", "a", "b"]).is_err());
+        assert!(parse(&["reply", "m1", "x", "--expects-reply"]).is_err(), "a reply cannot expect a reply");
+        assert!(parse(&["read"]).is_err());
+        assert_eq!(parse(&["read", "m1"]).unwrap().body["id"], "m1");
+        let inbox = parse(&["inbox", "rev", "--pending", "--limit", "5"]).unwrap();
+        assert_eq!(Value::Object(inbox.body), serde_json::json!({ "agent": "rev", "pending": true, "limit": 5 }));
+        assert!(parse(&["inbox"]).is_ok());
+        assert_eq!(route("inbox"), "messages");
+        assert_eq!(route("send"), "send");
+    }
+
+    #[test]
+    fn message_line_format() {
+        let m = serde_json::json!({ "id": "m4k2p9", "fromLabel": "planner", "toLabel": "rev", "status": "delivered",
+            "expectsReply": true, "text": "Can you review src/foo.rs for the off-by-one in parse()?" });
+        assert_eq!(message_line(&m), "m4k2p9  planner -> rev  delivered  reply expected  \"Can you review src/foo.rs for the off-by...\"");
     }
 
     #[test]

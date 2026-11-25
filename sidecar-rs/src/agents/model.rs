@@ -74,6 +74,8 @@ pub struct Agent {
     pub updated_at: u64,
     #[serde(default)]
     pub last_started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 impl Agent {

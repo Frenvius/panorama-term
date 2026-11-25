@@ -7,6 +7,10 @@ pub fn agents_dir(base: &Path) -> PathBuf {
     base.join("agents")
 }
 
+pub fn messages_path(base: &Path) -> PathBuf {
+    agents_dir(base).join("messages").join("events.jsonl")
+}
+
 pub fn agent_dir(base: &Path, agent_id: &str) -> PathBuf {
     agents_dir(base).join(agent_id)
 }
