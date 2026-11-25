@@ -160,6 +160,42 @@ describe('binary split panel tree operations', () => {
     }
   });
 
+  test('moveTileBetweenGroups reorders tabs left and right within the same group', () => {
+    const initial = emptyProjectPanelState(['t1', 't2', 't3'], 'g1');
+
+    const movedRight = moveTileBetweenGroups(initial, {
+      tileId: 't1',
+      targetGroupId: 'g1',
+      zone: 'center',
+      index: 2
+    });
+    expect(movedRight.groups.g1?.tileIds).toEqual(['t2', 't1', 't3']);
+
+    const movedToEnd = moveTileBetweenGroups(initial, {
+      tileId: 't1',
+      targetGroupId: 'g1',
+      zone: 'center',
+      index: 3
+    });
+    expect(movedToEnd.groups.g1?.tileIds).toEqual(['t2', 't3', 't1']);
+
+    const movedLeft = moveTileBetweenGroups(initial, {
+      tileId: 't3',
+      targetGroupId: 'g1',
+      zone: 'center',
+      index: 0
+    });
+    expect(movedLeft.groups.g1?.tileIds).toEqual(['t3', 't1', 't2']);
+
+    const noOpAfterSelf = moveTileBetweenGroups(initial, {
+      tileId: 't2',
+      targetGroupId: 'g1',
+      zone: 'center',
+      index: 2
+    });
+    expect(noOpAfterSelf.groups.g1?.tileIds).toEqual(['t1', 't2', 't3']);
+  });
+
   test('removeTileFromPanelState removes tile and collapses empty split group', () => {
     let state = emptyProjectPanelState(['t1', 't2'], 'g1');
     state = splitPanelGroup(state, {
