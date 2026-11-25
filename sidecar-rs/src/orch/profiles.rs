@@ -147,7 +147,10 @@ fn built_ins() -> Vec<Profile> {
         ],
         ..cli_profile(
             "claude",
-            &["--permission-mode", "acceptEdits", "--allowedTools", "Bash({cli} orch:*)", "PowerShell({cli} orch:*)"],
+            &[
+                "--permission-mode", "acceptEdits", "--strict-mcp-config",
+                "--allowedTools", "Bash({cli} orch:*)", "PowerShell({cli} orch:*)",
+            ],
             "--model",
         )
     };

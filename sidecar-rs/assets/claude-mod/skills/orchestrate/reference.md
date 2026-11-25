@@ -171,7 +171,7 @@ Inspecting and steering a worker:
 
 ```
 {cli} orch worker-show    --run-id <run> --dispatch-id <id>
-{cli} orch worker-read    --run-id <run> --dispatch-id <id> --lines 60
+{cli} orch worker-read    --run-id <run> --dispatch-id <id> --lines 30
 {cli} orch worker-send    --run-id <run> --dispatch-id <id> --text "<message>"
 {cli} orch worker-send    --run-id <run> --dispatch-id <id> --keys --text 1
 {cli} orch worker-stop    --run-id <run> --dispatch-id <id>
@@ -288,8 +288,10 @@ attempt is still running, when it has uncommitted changes (often a dead attempt 
 replaced), or when its branch is unmerged. Do not force-remove what it keeps. List each kept path
 and its reason for the user to decide.
 
-Other commands: `run-list`, `run-show --run-id <run>` (add `--brief` for ids, states, owner,
-attempt, live tile and agent status only), `task-list --run-id <run>`,
+Other commands: `run-list`, `run-show --run-id <run>` (compact by default: ids, states, owner,
+attempt, live tile, agent status and open gates; add `--detail` for every field and costs, or
+`--full` to also include worker reports; use them only when the compact view lacks what you need),
+`task-list --run-id <run>`,
 `gate-create --run-id <run> --task-id <t> --question "..." --option a --option b`,
 `gate-resolve --run-id <run> --gate-id <g> --resolution a`, and
 `run-set-status --status paused|active|cancelled`.

@@ -1047,8 +1047,9 @@ fn handle_run_show(body: &[u8]) -> String {
     let v = match parse_body(body) { Ok(v) => v, Err(e) => return e };
     let run_id = v["runId"].as_str().unwrap_or("").to_string();
     if run_id.is_empty() { return err_resp("bad_request", "runId required"); }
-    let brief_mode = v["brief"].as_bool().unwrap_or(false);
     let full = v["full"].as_bool().unwrap_or(false);
+    let detail = v["detail"].as_bool().unwrap_or(false);
+    let brief_mode = v["brief"].as_bool().unwrap_or(!full && !detail);
 
     struct DispatchRow {
         val: Value,
@@ -4802,7 +4803,7 @@ fn handle_worker_read(body: &[u8]) -> String {
     if run_id.is_empty() || dispatch_id.is_empty() {
         return err_resp("bad_request", "runId and dispatchId required");
     }
-    let lines = v["lines"].as_u64().unwrap_or(80) as usize;
+    let lines = v["lines"].as_u64().unwrap_or(40) as usize;
     let tile_id = match dispatch_tile(run_id, dispatch_id) {
         Ok(t) => t,
         Err(e) => return e,
@@ -5994,15 +5995,22 @@ mod tests {
         let handoff = entry.messages.iter().find(|m| m.msg_type == "worker_done").unwrap();
         assert_eq!(handoff.body.as_deref(), Some(expected.as_str()));
         state().lock().unwrap_or_else(|e| e.into_inner()).runs.insert(run_id.clone(), entry);
-        let show = |full| parse(handle_run_show(
-            serde_json::json!({"runId": run_id, "full": full}).to_string().as_bytes()
-        ));
-        let full = show(true);
+        let show = |flags: Value| {
+            let mut body = flags;
+            body["runId"] = run_id.clone().into();
+            parse(handle_run_show(body.to_string().as_bytes()))
+        };
+        let full = show(serde_json::json!({"full": true}));
         assert_eq!(full["dispatches"][0]["report"], report);
         assert_eq!(full["dispatches"][0]["lateReports"][0]["report"], late_report);
-        let standard = show(false);
-        assert!(standard["dispatches"][0].get("report").is_none());
-        assert!(standard["dispatches"][0].get("lateReports").is_none());
+        let detail = show(serde_json::json!({"detail": true}));
+        assert!(detail["dispatches"][0].get("report").is_none());
+        assert!(detail["dispatches"][0].get("lateReports").is_none());
+        assert!(detail.get("costByRole").is_some());
+        let default = show(serde_json::json!({}));
+        assert!(default["dispatches"][0].get("report").is_none());
+        assert!(default.get("costByRole").is_none());
+        assert_eq!(default["dispatches"][0]["id"], detail["dispatches"][0]["id"]);
         let worker = parse(handle_worker_show(
             serde_json::json!({"runId": run_id, "dispatchId": dispatch_id}).to_string().as_bytes()
         ));

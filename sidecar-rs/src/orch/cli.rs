@@ -414,7 +414,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<(serde_json::Map<String
         let allowed = match command {
             "run-create" => "repo title base-ref setup coordinator-tile max-workers max-attempts dispatch-timeout-min verify-timeout-min stall-quiet-min max-verify-rounds autonomy detach corrective-retry worker-summary-cap allow-in-place",
             "plan-apply" => "file",
-            "run-show" => "run-id full brief last-status",
+            "run-show" => "run-id full detail brief last-status",
             "run-list" => "",
             "run-set-status" => "run-id status",
             "run-update" => "run-id title autonomy max-operational-attempts max-verify-rounds detach corrective-retry worker-summary-cap",
@@ -581,7 +581,7 @@ fn kebab_to_camel(s: &str) -> String {
 }
 
 fn is_bool_flag(flag: &str) -> bool {
-    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "decisions" | "pretty" | "keys" | "brief" | "stopLive" | "stop-live" | "allow-in-place")
+    matches!(flag, "all" | "full" | "review" | "peek" | "wait" | "decisions" | "pretty" | "keys" | "brief" | "detail" | "stopLive" | "stop-live" | "allow-in-place")
 }
 
 fn is_array_field(field: &str, command: &str) -> bool {
@@ -712,7 +712,7 @@ mod tests {
             ("report", "run-id format"),
             ("worktree-clean", "run-id"),
             ("run-set-status", "run-id status"),
-            ("run-show", "run-id brief"),
+            ("run-show", "run-id brief detail full"),
             ("task-list", "run-id"),
             ("gate-create", "run-id task-id question option"),
             ("gate-resolve", "run-id gate-id resolution"),
