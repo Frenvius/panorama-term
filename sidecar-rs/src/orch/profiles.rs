@@ -350,14 +350,15 @@ pub fn build_command_line(profile: &Profile, model: Option<&str>, effort: Option
     tokens
 }
 
+fn bare_token(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/=+-".contains(&b))
+}
+
 pub fn tokens_to_command(tokens: &[String]) -> String {
-    tokens.iter().map(|t| {
-        if t.contains(' ') {
-            format!("\"{t}\"")
-        } else {
-            t.clone()
-        }
-    }).collect::<Vec<_>>().join(" ")
+    tokens.iter()
+        .map(|t| if bare_token(t) { t.clone() } else { quote_arg(t, cfg!(windows)) })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -517,7 +518,28 @@ mod tests {
     fn command_line_quoting_spaces() {
         let tokens = vec!["exe".to_string(), "value with spaces".to_string()];
         let cmd = tokens_to_command(&tokens);
-        assert_eq!(cmd, "exe \"value with spaces\"");
+        assert_eq!(cmd, "exe 'value with spaces'");
+    }
+
+    #[test]
+    fn command_line_quotes_shell_syntax_for_powershell_and_bash() {
+        for (token, quoted) in [
+            ("haiku;calc", "'haiku;calc'"),
+            ("x $(calc)", "'x $(calc)'"),
+            ("a`b", "'a`b'"),
+            ("a&b", "'a&b'"),
+            ("@splat", "'@splat'"),
+            ("a,b", "'a,b'"),
+            ("[1m]", "'[1m]'"),
+        ] {
+            let cmd = tokens_to_command(&["exe".to_string(), token.to_string()]);
+            assert_eq!(cmd, format!("exe {quoted}"), "{token}");
+        }
+        let cmd = tokens_to_command(&["exe".to_string(), "it's".to_string()]);
+        assert!(cmd == "exe 'it''s'" || cmd == "exe 'it'\\''s'", "{cmd}");
+        let plain = ["--model", "claude-haiku-5-5", "C:/x/y.json", "model_reasoning_effort=high", "provider/m:high"];
+        let cmd = tokens_to_command(&plain.map(str::to_string));
+        assert_eq!(cmd, plain.join(" "));
     }
 
     #[test]

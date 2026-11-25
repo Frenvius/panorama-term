@@ -9,6 +9,7 @@ pub const RESTART_WINDOW_MS: u64 = 10 * 60 * 1000;
 pub const RESTART_MAX: usize = 3;
 
 const EXIT_DETAIL_MAX: usize = 400;
+const MODEL_MAX: usize = 128;
 const EXIT_REASONS: &[&str] = &["session_gone", "shell_returned", "resume_failed"];
 const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user"];
 
@@ -92,6 +93,13 @@ pub fn valid_name(name: &str) -> bool {
         && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
+pub fn valid_model(model: &str) -> bool {
+    let bytes = model.as_bytes();
+    (1..=MODEL_MAX).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || b"._:/@[]-".contains(b))
+}
+
 fn valid_effort(effort: &str) -> bool {
     crate::orch::model::Effort::from_str_opt(effort).is_some()
 }
@@ -111,6 +119,9 @@ fn check_fields(agent: &Agent, known_profiles: &[String]) -> Result<(), AgentErr
     }
     if !known_profiles.iter().any(|p| *p == agent.profile) {
         return Err(bad(format!("unknown profile: {}", agent.profile)));
+    }
+    if agent.model.as_deref().is_some_and(|m| !valid_model(m)) {
+        return Err(bad("model may only use letters, digits and . _ : / @ [ ] -"));
     }
     if agent.effort.as_deref().is_some_and(|e| !valid_effort(e)) {
         return Err(bad("effort must be low, medium, high, xhigh or max"));
@@ -384,6 +395,25 @@ pub(crate) mod tests {
         let ok = Agent { instructions: "x".repeat(INSTRUCTIONS_MAX_BYTES), ..agent("a3", "other-1") };
         commit(&mut state, Cmd::Create { agent: ok, known_profiles: profiles() }).unwrap();
         assert_eq!(state.agents.len(), 2);
+    }
+
+    #[test]
+    fn model_with_shell_syntax_is_rejected_on_create_and_update() {
+        let mut state = State::default();
+        create(&mut state, "a1", "rev");
+        for model in ["haiku;calc", "x $(calc)", "a`b", "m'q", "m\"q", "a&b", "a|b", "m\nq", "", "-x"] {
+            let candidate = Agent { model: Some(model.into()), ..agent("a2", "other") };
+            let err = commit(&mut state, Cmd::Create { agent: candidate, known_profiles: profiles() }).unwrap_err();
+            assert_eq!(err.code, "bad_request", "create {model:?}");
+            let patch = AgentPatch { model: Some(Some(model.into())), ..Default::default() };
+            let err = commit(&mut state, Cmd::Update { id: "a1".into(), patch, known_profiles: profiles(), at: 9 }).unwrap_err();
+            assert_eq!(err.code, "bad_request", "update {model:?}");
+        }
+        for model in ["haiku", "claude-haiku-5-5[1m]", "openai/gpt-5.6-terra", "provider/model:high", "kimi-k2.5@latest"] {
+            let candidate = Agent { model: Some(model.into()), ..agent("a3", "ok") };
+            commit(&mut state, Cmd::Create { agent: candidate, known_profiles: profiles() }).unwrap();
+            state.agents.remove("a3");
+        }
     }
 
     #[test]
