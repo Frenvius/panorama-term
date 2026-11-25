@@ -43,6 +43,7 @@ pub fn bootstrap_message(agent: &Agent) -> String {
 
 pub fn prompt_block(agent: &Agent, tile_id: &str, session_id: &str, extra: Option<&str>) -> Option<String> {
     let path = crate::binding_path(tile_id)?;
+    let _guard = crate::binding_lock();
     let mut rec = crate::read_binding_rec(tile_id).filter(Value::is_object).unwrap_or_else(|| json!({ "tileId": tile_id }));
     let session = Some(session_id).filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -66,6 +67,7 @@ pub fn prompt_block(agent: &Agent, tile_id: &str, session_id: &str, extra: Optio
 
 pub fn forget_delivery(tile_id: &str) {
     let Some(path) = crate::binding_path(tile_id) else { return };
+    let _guard = crate::binding_lock();
     let Some(mut rec) = crate::read_binding_rec(tile_id).filter(Value::is_object) else { return };
     if rec.as_object_mut().and_then(|o| o.remove(DELIVERED_KEY)).is_some() {
         let _ = crate::write_binding_rec(&path, &rec);

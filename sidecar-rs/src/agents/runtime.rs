@@ -440,9 +440,13 @@ fn schedule_restart(id: String, delay: Duration) {
     });
 }
 
+pub fn restores_on_boot(agent: &Agent) -> bool {
+    agent.desired == Desired::Running && agent.auto_start
+}
+
 pub fn restore_all() {
     let ids: Vec<String> = lock().agents.values()
-        .filter(|a| a.desired == Desired::Running)
+        .filter(|a| restores_on_boot(a))
         .map(|a| a.id.clone())
         .collect();
     let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
@@ -563,6 +567,9 @@ async fn quiet_loop() {
 }
 
 pub fn status_touched(agent_id: &str) {
+    if agent_snapshot(agent_id).is_none() {
+        return;
+    }
     static PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let pending = PENDING.get_or_init(Default::default);
     if !guard(pending).insert(agent_id.to_string()) {
@@ -625,6 +632,19 @@ mod tests {
         assert_eq!(session_plan(true, true), SessionPlan::KeepRunning);
         assert_eq!(session_plan(true, false), SessionPlan::Recreate);
         assert_eq!(session_plan(false, false), SessionPlan::Create);
+    }
+
+    #[test]
+    fn restore_on_boot_needs_running_and_auto_start() {
+        let mut agent = crate::agents::reducer::tests::agent("a1", "r");
+        agent.desired = Desired::Running;
+        agent.auto_start = true;
+        assert!(restores_on_boot(&agent));
+        agent.auto_start = false;
+        assert!(!restores_on_boot(&agent));
+        agent.auto_start = true;
+        agent.desired = Desired::Stopped;
+        assert!(!restores_on_boot(&agent));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 0 8px 0 24px;
   height: 28px;
   cursor: pointer;
@@ -76,7 +76,7 @@
   color: var(--text-dim);
   background: var(--hover-soft);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 0 4px;
   flex: none;
   white-space: nowrap;
 }

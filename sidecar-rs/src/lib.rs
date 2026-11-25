@@ -1526,22 +1526,25 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     let Some(path) = binding_path(tile_id) else {
         return;
     };
-    let mut rec = read_binding_rec(tile_id)
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let obj = rec.as_object_mut().unwrap();
-    if obj.get("agentSessionId").and_then(|s| s.as_str()) == Some(session_id)
-        && obj.get("agent").and_then(|s| s.as_str()) == Some(agent)
     {
-        return;
+        let _guard = binding_lock();
+        let mut rec = read_binding_rec(tile_id)
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let obj = rec.as_object_mut().unwrap();
+        if obj.get("agentSessionId").and_then(|s| s.as_str()) == Some(session_id)
+            && obj.get("agent").and_then(|s| s.as_str()) == Some(agent)
+        {
+            return;
+        }
+        obj.insert("agent".into(), agent.into());
+        obj.insert("agentSessionId".into(), session_id.into());
+        if let Some(cwd) = v["cwd"].as_str() {
+            obj.insert("cwd".into(), cwd.into());
+        }
+        obj.insert("tileId".into(), tile_id.into());
+        let _ = write_binding_rec(&path, &rec);
     }
-    obj.insert("agent".into(), agent.into());
-    obj.insert("agentSessionId".into(), session_id.into());
-    if let Some(cwd) = v["cwd"].as_str() {
-        obj.insert("cwd".into(), cwd.into());
-    }
-    obj.insert("tileId".into(), tile_id.into());
-    let _ = write_binding_rec(&path, &rec);
     orch::on_native_session_bound(tile_id, agent, session_id, v["cwd"].as_str());
     agents::on_native_session_bound(tile_id, agent, session_id);
 }
@@ -1550,6 +1553,7 @@ fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
     let Some(path) = binding_path(tile_id) else {
         return;
     };
+    let _guard = binding_lock();
     let mut rec = read_binding_rec(tile_id)
         .filter(|v| v.is_object())
         .unwrap_or_else(|| serde_json::json!({}));
@@ -1558,6 +1562,11 @@ fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
     obj.insert("agent".into(), agent.into());
     obj.insert("cwd".into(), cwd.into());
     let _ = write_binding_rec(&path, &rec);
+}
+
+pub(crate) fn binding_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn read_binding_rec(tile_id: &str) -> Option<serde_json::Value> {
@@ -1569,6 +1578,7 @@ fn stamp_binding_activity(tile_id: &str) {
     let Some(path) = binding_path(tile_id) else {
         return;
     };
+    let _guard = binding_lock();
     let mut rec = read_binding_rec(tile_id)
         .filter(|v| v.is_object())
         .unwrap_or_else(|| serde_json::json!({ "tileId": tile_id }));
@@ -1584,6 +1594,7 @@ fn clear_binding_session(tile_id: &str) {
     let Some(path) = binding_path(tile_id) else {
         return;
     };
+    let _guard = binding_lock();
     let Some(mut rec) = read_binding_rec(tile_id).filter(|v| v.is_object()) else {
         return;
     };

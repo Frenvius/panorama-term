@@ -29,3 +29,7 @@ export const isHeadlessTile = (t: Tile): boolean => Boolean(t.orchWorker) || Boo
 export const isNotResumable = (agent: PersistentAgent): boolean =>
   agent.nativeSession === null &&
   (agent.profile === 'kimi' || agent.profile === 'opencode');
+
+export const needsForceStop = (agent: PersistentAgent): boolean =>
+  agent.live &&
+  (agent.status === 'busy' || agent.status === 'waiting' || (agent.status === 'idle' && agent.statusSource === 'none'));

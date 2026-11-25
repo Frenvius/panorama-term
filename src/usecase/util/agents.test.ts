@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
 import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
-import { sortAgents, statusToDotKind, isValidAgentName, utf8ByteLength, isHeadlessTile, isNotResumable } from '~/usecase/util/agents';
+import { sortAgents, statusToDotKind, isValidAgentName, utf8ByteLength, isHeadlessTile, isNotResumable, needsForceStop } from '~/usecase/util/agents';
 
 const baseAgent = (overrides: Partial<PersistentAgent> = {}): PersistentAgent => ({
   id: 'a0000001',
@@ -91,5 +91,19 @@ describe('isNotResumable', () => {
     const session = { agent: 'kimi', id: 'session_1', boundAt: 1, model: null };
     expect(isNotResumable(baseAgent({ profile: 'kimi', nativeSession: session }))).toBe(false);
     expect(isNotResumable(baseAgent({ profile: 'claude' }))).toBe(false);
+  });
+});
+
+describe('needsForceStop', () => {
+  it('requires force while busy, waiting or when the live status is unknown', () => {
+    expect(needsForceStop(baseAgent({ live: true, status: 'busy', statusSource: 'hook' }))).toBe(true);
+    expect(needsForceStop(baseAgent({ live: true, status: 'waiting', statusSource: 'hook' }))).toBe(true);
+    expect(needsForceStop(baseAgent({ live: true, status: 'idle', statusSource: 'none' }))).toBe(true);
+  });
+
+  it('allows a plain stop when the status is known idle or the agent is not live', () => {
+    expect(needsForceStop(baseAgent({ live: true, status: 'idle', statusSource: 'hook' }))).toBe(false);
+    expect(needsForceStop(baseAgent({ live: true, status: 'idle', statusSource: 'quiet' }))).toBe(false);
+    expect(needsForceStop(baseAgent({ live: false, status: 'stopped' }))).toBe(false);
   });
 });

@@ -4,11 +4,11 @@ import React from 'react';
 import { Plus, ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react';
 
 import AgentRow from './AgentRow';
-import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
+import styles from './styles.module.scss';
+import { sortAgents } from '~/usecase/util/agents';
 import { deleteAgent } from '~/adapter/agents/agents.client';
 import { useAgents, agentActions } from '~/usecase/hooks/useAgents';
-import { sortAgents } from '~/usecase/util/agents';
-import styles from './styles.module.scss';
+import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 
 interface AgentsGroupProps {
   isOpen: boolean;

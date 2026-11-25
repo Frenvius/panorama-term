@@ -157,7 +157,7 @@ pub(crate) fn on_compact(tile_id: &str) {
 }
 
 pub(crate) fn on_status(tile_id: &str) {
-    if let Some(id) = model::agent_id_from_tile(tile_id).filter(|_| is_agent_tile(tile_id)) {
+    if let Some(id) = model::agent_id_from_tile(tile_id) {
         runtime::status_touched(id);
     }
 }
@@ -189,13 +189,23 @@ fn handle_start(v: &Value) -> String {
     ok_resp(json!({ "agent": agent_json(&id, false), "live": live }))
 }
 
+fn stop_refusal(live: &AgentLive, force: bool) -> Option<&'static str> {
+    if force {
+        return None;
+    }
+    match (live.status, live.status_source) {
+        (LiveStatus::Busy | LiveStatus::Waiting, _) => Some("agent busy; use force to stop it"),
+        (LiveStatus::Idle, StatusSource::None) if live.live => Some("agent status unknown; use force to stop it"),
+        _ => None,
+    }
+}
+
 async fn handle_stop(v: &Value) -> String {
     let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
     let force = v.get("force").and_then(Value::as_bool) == Some(true);
     let Some(agent) = lock().agents.get(&id).cloned() else { return err_resp("not_found", "agent not found") };
-    let status = live_view(&agent).status;
-    if matches!(status, LiveStatus::Busy | LiveStatus::Waiting) && !force {
-        return err_resp("conflict", "agent busy; use force to stop it");
+    if let Some(reason) = stop_refusal(&live_view(&agent), force) {
+        return err_resp("conflict", reason);
     }
     let cmd = Cmd::Stop { id: id.clone(), at: unix_ms(), by: "user".into(), force, crashed: false };
     if let Err(e) = commit_cmd(&id, cmd) {
@@ -393,10 +403,11 @@ fn handle_delete(v: &Value) -> String {
     let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
     let Some(base) = crate::panorama_dir() else { return err_resp("io", "no panorama dir") };
     let tile = model::tile_id(&id);
+    let live = crate::lookup_live(&tile).is_some();
     {
         let mut guard = lock();
         let Some(agent) = guard.agents.get(&id) else { return err_resp("not_found", "agent not found") };
-        if agent.desired == Desired::Running || crate::lookup_live(&tile).is_some() {
+        if agent.desired == Desired::Running || live {
             return err_resp("conflict", "agent running; stop it first");
         }
         if let Err(e) = store::remove_agent_dir(&base, &id) {
@@ -426,6 +437,56 @@ pub(crate) fn remove_test_agent(id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live(status: LiveStatus, status_source: StatusSource, is_live: bool) -> AgentLive {
+        AgentLive { tile_id: "agent-x".into(), status, live: is_live, status_source, context_pct: None, cost_usd: None }
+    }
+
+    #[test]
+    fn stop_needs_force_when_busy_or_status_unknown() {
+        assert!(stop_refusal(&live(LiveStatus::Busy, StatusSource::Hook, true), false).is_some());
+        assert!(stop_refusal(&live(LiveStatus::Waiting, StatusSource::Hook, true), false).is_some());
+        assert!(stop_refusal(&live(LiveStatus::Idle, StatusSource::None, true), false).is_some());
+        assert!(stop_refusal(&live(LiveStatus::Idle, StatusSource::Hook, true), false).is_none());
+        assert!(stop_refusal(&live(LiveStatus::Idle, StatusSource::Quiet, true), false).is_none());
+        assert!(stop_refusal(&live(LiveStatus::Starting, StatusSource::None, false), false).is_none());
+        assert!(stop_refusal(&live(LiveStatus::Busy, StatusSource::Hook, true), true).is_none());
+    }
+
+    fn body(v: Value) -> Value {
+        serde_json::from_str(&v.to_string()).unwrap()
+    }
+
+    fn reply(text: String) -> Value {
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn handlers_rename_by_id_reject_injected_models_and_refuse_deleting_a_running_agent() {
+        crate::orch::tests::f12_test_home();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let name = format!("h{}", unix_ms() % 1_000_000);
+        let created = reply(handle_create(&body(json!({ "name": name, "profile": "claude", "cwd": cwd, "autoStart": false }))));
+        let id = created["agent"]["id"].as_str().unwrap().to_string();
+
+        let renamed = reply(handle_update(&body(json!({ "id": id, "name": format!("{name}-2") }))));
+        assert_eq!(renamed["agent"]["name"], format!("{name}-2"));
+        let by_name = reply(handle_update(&body(json!({ "name": format!("{name}-2"), "title": "T" }))));
+        assert_eq!(by_name["agent"]["name"], format!("{name}-2"), "name alone identifies, it does not rename");
+
+        let injected = reply(handle_update(&body(json!({ "id": id, "model": "haiku;calc" }))));
+        assert_eq!(injected["error"]["code"], "bad_request");
+        let injected_create = reply(handle_create(&body(json!({ "name": format!("{name}-x"), "profile": "claude", "cwd": cwd, "model": "x $(calc)", "autoStart": false }))));
+        assert_eq!(injected_create["error"]["code"], "bad_request");
+
+        lock().agents.get_mut(&id).unwrap().desired = Desired::Running;
+        let refused = reply(handle_delete(&body(json!({ "id": id }))));
+        assert_eq!(refused["error"]["code"], "conflict");
+        lock().agents.get_mut(&id).unwrap().desired = Desired::Stopped;
+        let deleted = reply(handle_delete(&body(json!({ "id": id }))));
+        assert_eq!(deleted["ok"], true);
+        assert!(!lock().agents.contains_key(&id));
+    }
 
     #[test]
     fn system_context_returns_the_full_block_on_every_call() {

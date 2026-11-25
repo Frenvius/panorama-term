@@ -4,12 +4,14 @@ export interface NativeSession {
   agent: string;
   id: string;
   boundAt: number;
+  model?: string | null;
 }
 
 export interface AgentExit {
   at: number;
   reason: string;
-  code?: number;
+  code?: number | null;
+  detail?: string;
 }
 
 export interface AgentLive {

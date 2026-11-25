@@ -1,5 +1,6 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import { Group, Power, LayoutGrid, StickyNote, SquareDashed, SquareTerminal, LayoutDashboard } from 'lucide-react';
 
 import { getPref, setPref } from '~/usecase/util/prefs';
@@ -50,14 +51,13 @@ import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { type ShowAgentRequest, onShowAgentRequest } from '~/usecase/util/agentRequest';
-import AgentDialog from '~/components/commons/AgentDialog';
-import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { tileBoardProject, frameBoards, orphanBoards } from '~/usecase/util/boardProject';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
 import { gitRoot } from '~/adapter/git/git.client';
 import { frameOf } from '~/usecase/util/frame';
+import AgentDialog from '~/components/commons/AgentDialog';
 import NewBoardDialog from '~/components/commons/NewBoardDialog';
 import { onRefDiff } from '~/usecase/util/refDiff';
 import { touchTile } from '~/usecase/util/tileRecency';
@@ -1557,7 +1557,6 @@ const Canvas = () => {
           defaultCwd={agentDialog.cwd}
           onClose={() => setAgentDialog(null)}
           onSaved={() => setAgentDialog(null)}
-
           onFolderPick={openFolderPicker}
         />
       )}

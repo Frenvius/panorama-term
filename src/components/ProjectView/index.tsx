@@ -1,5 +1,6 @@
 import { orphanBoards } from '~/usecase/util/boardProject';
 import type { EditorView } from '@codemirror/view';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import type { PanelId } from '~/domain/interfaces/dock.interface';
 import type { CommandId } from '~/usecase/util/keybindings';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
@@ -54,11 +55,10 @@ import { isTerminalBusy } from '~/adapter/pty/sidecar.client';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { type ShowAgentRequest, onShowAgentRequest } from '~/usecase/util/agentRequest';
-import AgentDialog from '~/components/commons/AgentDialog';
-import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
+import AgentDialog from '~/components/commons/AgentDialog';
 import NewBoardDialog from '~/components/commons/NewBoardDialog';
 
 let pendingFocusTileId: string | null = null;
@@ -1026,7 +1026,6 @@ const ProjectView = () => {
           defaultCwd={agentDialog.cwd}
           onClose={() => setAgentDialog(null)}
           onSaved={() => setAgentDialog(null)}
-
           onFolderPick={openFolderPicker}
         />
       )}

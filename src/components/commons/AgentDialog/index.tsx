@@ -4,13 +4,13 @@ import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import React from 'react';
 import { FolderOpen } from 'lucide-react';
 
+import styles from './styles.module.scss';
 import Dialog from '~/components/commons/Dialog';
-import ModelCombobox from '~/components/commons/ModelCombobox';
-import { createAgent, updateAgent } from '~/adapter/agents/agents.client';
 import { agentActions } from '~/usecase/hooks/useAgents';
 import { useOrchSettings } from '~/usecase/hooks/useOrchSettings';
+import ModelCombobox from '~/components/commons/ModelCombobox';
+import { createAgent, updateAgent } from '~/adapter/agents/agents.client';
 import { isValidAgentName, utf8ByteLength } from '~/usecase/util/agents';
-import styles from './styles.module.scss';
 
 const INSTRUCTION_CAP = 4096;
 
@@ -27,6 +27,7 @@ interface AgentDialogProps {
 
 const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: AgentDialogProps) => {
   const isEdit = agent != null;
+  const fieldId = React.useId();
   const { agents: orchAgents } = useOrchSettings();
 
   const [name, setName] = React.useState(agent?.name ?? '');
@@ -53,7 +54,8 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
 
   const cwdChanged = isEdit && agent != null && samePath(cwd) !== samePath(agent.cwd);
   const profileChanged = isEdit && agent != null && profileId !== agent.profile;
-  const sessionWillDrop = cwdChanged || profileChanged;
+  const modelChanged = isEdit && agent != null && (modelVal || null) !== agent.model;
+  const sessionWillDrop = Boolean(agent?.nativeSession) && (cwdChanged || profileChanged || modelChanged);
 
   const nameValid = isValidAgentName(name);
   const canSubmit = nameValid && Boolean(profileId) && Boolean(cwd) && !instrOver && !submitting;
@@ -128,8 +130,9 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
     <Dialog title={isEdit ? 'Edit agent' : 'New agent'} onClose={onClose} onSubmit={handleSubmit} footer={footer}>
       <div className={styles.fields}>
         <div className={styles.field}>
-          <label className={styles.label}>Name</label>
+          <label className={styles.label} htmlFor={`${fieldId}-name`}>Name</label>
           <input
+            id={`${fieldId}-name`}
             type="text"
             className={`${styles.input}${name && !nameValid ? ` ${styles.invalid}` : ''}`}
             value={name}
@@ -140,8 +143,9 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
           {name && !nameValid && <span className={styles.hint}>Lowercase letters, digits and hyphens only</span>}
         </div>
         <div className={styles.field}>
-          <label className={styles.label}>Title</label>
+          <label className={styles.label} htmlFor={`${fieldId}-title`}>Title</label>
           <input
+            id={`${fieldId}-title`}
             type="text"
             className={styles.input}
             value={title}
@@ -151,8 +155,9 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
           />
         </div>
         <div className={styles.field}>
-          <label className={styles.label}>Description</label>
+          <label className={styles.label} htmlFor={`${fieldId}-description`}>Description</label>
           <input
+            id={`${fieldId}-description`}
             type="text"
             className={styles.input}
             value={description}
@@ -166,8 +171,8 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
           <ModelCombobox agents={orchAgents} value={profile || undefined} placeholder="Select agent..." onPick={setProfile} />
         </div>
         <div className={styles.field}>
-          <label className={styles.label}>Effort</label>
-          <select className={styles.select} value={effort} onChange={handleEffortChange}>
+          <label className={styles.label} htmlFor={`${fieldId}-effort`}>Effort</label>
+          <select id={`${fieldId}-effort`} className={styles.select} value={effort} onChange={handleEffortChange}>
             <option value="">Default</option>
             {EFFORTS.map((e) => (
               <option key={e} value={e}>{e}</option>
@@ -175,9 +180,9 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
           </select>
         </div>
         <div className={styles.field}>
-          <label className={styles.label}>Working directory</label>
+          <label className={styles.label} htmlFor={`${fieldId}-cwd`}>Working directory</label>
           <div className={styles.cwdRow}>
-            <input type="text" className={styles.input} value={cwd} readOnly />
+            <input id={`${fieldId}-cwd`} type="text" className={styles.input} value={cwd} readOnly />
             <button type="button" className={styles.browseBtn} onClick={handlePickFolder} aria-label="Browse">
               <FolderOpen size={14} strokeWidth={1.75} />
             </button>
