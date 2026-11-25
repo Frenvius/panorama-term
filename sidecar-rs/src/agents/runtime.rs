@@ -495,6 +495,7 @@ pub fn restore_all() {
         .map(|a| a.id.clone())
         .collect();
     let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+    remember_runtime(handle.clone());
     handle.spawn(async move {
         for id in ids {
             let tile = crate::agents::model::tile_id(&id);
@@ -611,13 +612,19 @@ async fn quiet_loop() {
     }
 }
 
+static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+
+pub fn remember_runtime(handle: tokio::runtime::Handle) {
+    let _ = RUNTIME.set(handle);
+}
+
 pub fn status_touched(agent_id: &str) {
     static PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let pending = PENDING.get_or_init(Default::default);
     if !guard(pending).insert(agent_id.to_string()) {
         return;
     }
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+    let Some(handle) = tokio::runtime::Handle::try_current().ok().or_else(|| RUNTIME.get().cloned()) else {
         guard(pending).remove(agent_id);
         return;
     };

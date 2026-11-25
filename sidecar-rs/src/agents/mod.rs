@@ -488,6 +488,28 @@ mod tests {
         assert!(!lock().agents.contains_key(&id));
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_status_reported_from_a_plain_thread_reaches_the_ui() {
+        let id = format!("aosc{:04}", unix_ms() % 10_000);
+        insert_test_agent(&id, "osc");
+        runtime::remember_runtime(tokio::runtime::Handle::current());
+        let mut events = crate::ui::subscribe_events();
+        let tile = model::tile_id(&id);
+        std::thread::spawn(move || on_status(&tile)).join().unwrap();
+        let expected = format!("\"agentId\":\"{id}\"");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match events.recv().await {
+                    Ok(text) if text.contains("agents.changed") && text.contains(&expected) => return true,
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return false,
+                }
+            }
+        }).await.unwrap_or(false);
+        remove_test_agent(&id);
+        assert!(seen, "no agents.changed for a status posted from a std::thread");
+    }
+
     #[test]
     fn system_context_returns_the_full_block_on_every_call() {
         let id = format!("apisys{}", unix_ms() % 100_000);
