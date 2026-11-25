@@ -1,6 +1,9 @@
 import React from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
+import { watchAppUpdateRequests } from '~/adapter/ui/ui.client';
+import { postUpdateStatus } from '~/adapter/ui/appUpdate.client';
 
 export type UpdaterStatus = 'idle' | 'checking' | 'available' | 'up-to-date' | 'downloading' | 'ready' | 'error';
 
@@ -30,11 +33,17 @@ let state = INITIAL_STATE;
 let pendingUpdate: Update | null = null;
 let checking = false;
 let bootCheckScheduled = false;
+let lastReportKey = '';
 const listeners = new Set<() => void>();
 
 const setState = (patch: Partial<UpdaterState>) => {
   state = { ...state, ...patch };
   listeners.forEach((fn) => fn());
+  const percent = state.contentLength > 0 ? Math.floor((state.downloaded / state.contentLength) * 10) : 0;
+  const reportKey = `${state.status}:${percent}`;
+  if (reportKey === lastReportKey) return;
+  lastReportKey = reportKey;
+  postUpdateStatus(state);
 };
 
 const subscribe = (fn: () => void) => {
@@ -115,6 +124,38 @@ const scheduleBootCheck = () => {
   if (bootCheckScheduled || !canUpdate()) return;
   bootCheckScheduled = true;
   window.setTimeout(() => void checkForUpdate(), 3000);
+};
+
+const reportBootStatus = async (): Promise<void> => {
+  if (!canUpdate()) {
+    postUpdateStatus({ ...INITIAL_STATE, status: 'error', error: 'updates disabled in dev builds' });
+    return;
+  }
+  try {
+    const version = await getVersion();
+    postUpdateStatus({ ...INITIAL_STATE, currentVersion: version });
+  } catch {
+    postUpdateStatus(INITIAL_STATE);
+  }
+};
+
+export const runRemoteUpdate = async (): Promise<void> => {
+  if (!canUpdate()) {
+    postUpdateStatus({ ...INITIAL_STATE, status: 'error', error: 'updates disabled in dev builds' });
+    return;
+  }
+  await checkForUpdate();
+  if (getState().status !== 'available') return;
+  await downloadAndInstall();
+  if (getState().status !== 'ready') return;
+  await restart();
+};
+
+export const useRemoteUpdate = (): void => {
+  React.useEffect(() => {
+    void reportBootStatus();
+    return watchAppUpdateRequests(runRemoteUpdate);
+  }, []);
 };
 
 export const useUpdater = () => {

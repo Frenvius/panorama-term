@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod app_update;
 mod service_bridge;
 mod ui;
 mod host;
@@ -557,6 +558,10 @@ pub fn cli_main() {
     }
     if std::env::args().nth(1).as_deref() == Some("orch") {
         orch::cli::main();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("app") {
+        app_cmd();
         return;
     }
     eprintln!("panorama-cli: unknown command");
@@ -2705,6 +2710,179 @@ fn statusline_cmd() {
         }
     }
     println!("{}", default_status_line(&v));
+}
+
+fn app_http_get(p: u16, path: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{p}")
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    match stream.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) => {
+            if buf.is_empty() {
+                return Err(e.to_string());
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn app_http_post_empty(p: u16, path: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{p}")
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    let req = format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    match stream.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) => {
+            if buf.is_empty() {
+                return Err(e.to_string());
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn app_parse_body(resp: &str) -> &str {
+    resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(resp)
+}
+
+fn app_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if args.is_empty() {
+        eprintln!("usage: panorama-cli app <update|version>");
+        std::process::exit(2);
+    }
+    let p = port();
+    match args[0].as_str() {
+        "version" => {
+            let resp = app_http_get(p, "/app/update-status").unwrap_or_else(|e| {
+                eprintln!("panorama-cli: brain unreachable: {e}");
+                std::process::exit(1);
+            });
+            let v: serde_json::Value = serde_json::from_str(app_parse_body(&resp)).unwrap_or_default();
+            if let Some(cv) = v["currentVersion"].as_str() {
+                println!("{cv}");
+            } else {
+                eprintln!("panorama-cli: no version reported yet");
+                std::process::exit(1);
+            }
+        }
+        "update" => app_update_cmd(p),
+        _ => {
+            eprintln!("panorama-cli: unknown app command: {}", args[0]);
+            std::process::exit(2);
+        }
+    }
+}
+
+fn app_update_cmd(p: u16) {
+    let initial_seq = app_http_get(p, "/app/update-status")
+        .ok()
+        .and_then(|r| serde_json::from_str::<serde_json::Value>(app_parse_body(&r)).ok())
+        .and_then(|v| v["seq"].as_u64())
+        .unwrap_or(0);
+
+    let post_resp = app_http_post_empty(p, "/app/update").unwrap_or_else(|e| {
+        eprintln!("panorama-cli: brain unreachable: {e}");
+        std::process::exit(1);
+    });
+    let post_v: serde_json::Value = serde_json::from_str(app_parse_body(&post_resp)).unwrap_or_default();
+    if let Some(err) = post_v["error"].as_str() {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(600);
+    let mut last_seq = initial_seq;
+    let mut last_status = String::new();
+    let mut update_version: Option<String> = None;
+
+    loop {
+        if start.elapsed() > timeout {
+            eprintln!("error: timeout");
+            std::process::exit(1);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+
+        let resp = match app_http_get(p, "/app/update-status") {
+            Ok(r) => r,
+            Err(_) => {
+                if last_status == "ready" {
+                    if let Some(v) = update_version {
+                        println!("updated to {v}");
+                    } else {
+                        println!("updated");
+                    }
+                    return;
+                }
+                eprintln!("error: brain unreachable");
+                std::process::exit(1);
+            }
+        };
+        let v: serde_json::Value = serde_json::from_str(app_parse_body(&resp)).unwrap_or_default();
+        let seq = v["seq"].as_u64().unwrap_or(0);
+        if seq == last_seq {
+            continue;
+        }
+        last_seq = seq;
+
+        let status = v["status"].as_str().unwrap_or("").to_string();
+
+        if last_status == "ready" && status == "idle" {
+            let cv = v["currentVersion"].as_str().map(str::to_string);
+            println!("updated to {}", cv.as_deref().unwrap_or("unknown"));
+            return;
+        }
+
+        match status.as_str() {
+            "checking" => println!("checking"),
+            "available" => {
+                let ver = v["version"].as_str().unwrap_or("unknown");
+                update_version = Some(ver.to_string());
+                println!("available {ver}");
+            }
+            "downloading" => {
+                let cl = v["contentLength"].as_u64().unwrap_or(0);
+                if cl > 0 {
+                    let dl = v["downloaded"].as_u64().unwrap_or(0);
+                    println!("downloading {}%", dl * 100 / cl);
+                } else {
+                    println!("downloading");
+                }
+            }
+            "ready" => {
+                println!("ready");
+            }
+            "up-to-date" => {
+                println!("up-to-date");
+                return;
+            }
+            "error" => {
+                let err = v["error"].as_str().unwrap_or("unknown error");
+                eprintln!("error: {err}");
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+        last_status = status;
+    }
 }
 
 const EVENT_TEXT_CAP: usize = 200;
@@ -5263,11 +5441,13 @@ async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
     }
 }
 
-fn parse_head(head: &[u8]) -> (String, HashMap<String, String>) {
+fn parse_head(head: &[u8]) -> (String, String, HashMap<String, String>) {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split("\r\n");
     let first = lines.next().unwrap_or("");
-    let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or("GET").to_string();
+    let path = parts.next().unwrap_or("/").to_string();
     let mut headers = HashMap::new();
     for line in lines {
         if line.is_empty() {
@@ -5277,7 +5457,7 @@ fn parse_head(head: &[u8]) -> (String, HashMap<String, String>) {
             headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
         }
     }
-    (path, headers)
+    (method, path, headers)
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -5339,7 +5519,7 @@ async fn handle_conn(mut stream: TcpStream) {
         Some(h) => h,
         None => return,
     };
-    let (path, headers) = parse_head(&head);
+    let (method, path, headers) = parse_head(&head);
     if !http_guard::allowed(&headers, mobile::desktop_tunnel::secret()) {
         let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
         return;
@@ -5786,6 +5966,48 @@ async fn handle_conn(mut stream: TcpStream) {
             resp_body
         );
         let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/app/update" {
+        let connected = ui::broadcast_app_update();
+        let body = if connected {
+            "{\"ok\":true}".to_string()
+        } else {
+            serde_json::json!({ "error": "desktop app not connected" }).to_string()
+        };
+        let status = if connected { "200 OK" } else { "503 Service Unavailable" };
+        let resp = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return;
+    }
+
+    if path_only == "/app/update-status" {
+        if method == "POST" {
+            let len = headers
+                .get("content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            if len > 0 && len <= STATUS_POST_MAX {
+                let mut body = vec![0u8; len];
+                if stream.read_exact(&mut body).await.is_ok() {
+                    app_update::record(&body);
+                }
+            }
+            let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n").await;
+        } else {
+            let body = app_update::get_json();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        }
         return;
     }
 

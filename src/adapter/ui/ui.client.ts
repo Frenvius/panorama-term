@@ -9,6 +9,7 @@ type TileOpenHandler = (req: TileOpenRequest) => void;
 type TileWakeHandler = (tileId: string) => void;
 type OrchChangedHandler = (runId: string) => void;
 type ConnectHandler = () => void;
+type AppUpdateHandler = () => void;
 
 interface OrchSub {
   onChanged: OrchChangedHandler;
@@ -19,11 +20,13 @@ const tileOpenSubs = new Set<TileOpenHandler>();
 const tileWakeSubs = new Set<TileWakeHandler>();
 const orchSubs = new Set<OrchSub>();
 const orchNotifySubs = new Set<(event: OrchNotification) => void>();
+const appUpdateSubs = new Set<AppUpdateHandler>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-const totalSubs = (): number => tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size;
+const totalSubs = (): number =>
+  tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size + appUpdateSubs.size;
 
 const dispatch = (data: string): void => {
   let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string };
@@ -40,6 +43,8 @@ const dispatch = (data: string): void => {
     for (const sub of orchSubs) sub.onChanged(msg.runId ?? '');
   } else if (msg.t === 'orch.notify') {
     for (const fn of orchNotifySubs) fn(msg as unknown as OrchNotification);
+  } else if (msg.t === 'app.update') {
+    for (const fn of appUpdateSubs) fn();
   }
 };
 
@@ -103,6 +108,15 @@ export const watchOrchEvents = (onChanged: OrchChangedHandler, onConnect: Connec
   ensureConnected();
   return () => {
     orchSubs.delete(sub);
+    maybeClose();
+  };
+};
+
+export const watchAppUpdateRequests = (onUpdate: AppUpdateHandler): (() => void) => {
+  appUpdateSubs.add(onUpdate);
+  ensureConnected();
+  return () => {
+    appUpdateSubs.delete(onUpdate);
     maybeClose();
   };
 };

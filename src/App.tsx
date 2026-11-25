@@ -6,11 +6,13 @@ import Titlebar from '~/components/commons/Titlebar';
 import StatusBar from '~/components/commons/StatusBar';
 import { useWorkspace } from '~/usecase/context/WorkspaceContext';
 import { useBackgroundNotify } from '~/components/commons/Notifications/backgroundWatch';
+import { useRemoteUpdate } from '~/usecase/hooks/useUpdater';
 
 const App = () => {
   const { tabKey, activeTabId, activeTabMode } = useWorkspace();
 
   useBackgroundNotify();
+  useRemoteUpdate();
 
   React.useEffect(() => {
     const blockBrowserFind = (e: KeyboardEvent) => {

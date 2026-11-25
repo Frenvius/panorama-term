@@ -53,6 +53,14 @@ pub(crate) fn broadcast_tile_wake(tile_id: &str) {
     send_event(json!({ "t": "tile.wake", "tileId": tile_id }));
 }
 
+pub(crate) fn broadcast_app_update() -> bool {
+    if channel().receiver_count() == 0 {
+        return false;
+    }
+    send_event(json!({ "t": "app.update" }));
+    true
+}
+
 fn send_event(event: serde_json::Value) {
     if channel().receiver_count() > 0 {
         let _ = channel().send(event.to_string());
