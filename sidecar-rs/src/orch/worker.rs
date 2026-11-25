@@ -465,32 +465,59 @@ async fn answer_startup_prompt(tile_id: &str, profile: &Profile, answer_sends: &
     true
 }
 
+trait StartupProbe {
+    fn screen_len(&self) -> usize;
+    fn at_shell(&self) -> bool;
+    async fn answer(&self, answer_sends: &mut [u8]) -> bool;
+    fn exit_error(&self) -> String;
+    fn answer_count(&self) -> usize;
+}
+
+struct TileProbe<'a> {
+    tile_id: &'a str,
+    profile: &'a Profile,
+}
+
+impl StartupProbe for TileProbe<'_> {
+    fn screen_len(&self) -> usize { host_handle().snapshot(self.tile_id).len() }
+    fn at_shell(&self) -> bool { agent_back_at_shell(self.tile_id) }
+    async fn answer(&self, answer_sends: &mut [u8]) -> bool { answer_startup_prompt(self.tile_id, self.profile, answer_sends).await }
+    fn exit_error(&self) -> String { exited_error(self.tile_id) }
+    fn answer_count(&self) -> usize { self.profile.startup_answers.len() }
+}
+
 async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), String> {
+    watch_startup(&TileProbe { tile_id, profile }).await
+}
+
+async fn watch_startup<P: StartupProbe>(probe: &P) -> Result<(), String> {
+    use tokio::time::Instant;
     let deadline = Instant::now() + Duration::from_secs(ARGV_EARLY_EXIT_WATCH_S);
     let launch_time = Instant::now();
     let mut last_activity = Instant::now();
     let mut last_snapshot_len = 0usize;
-    let mut answer_sends = vec![0u8; profile.startup_answers.len()];
+    let mut answer_sends = vec![0u8; probe.answer_count()];
     let mut shell = ShellWatch::default();
 
     while Instant::now() < deadline {
-        let snapshot_len = host_handle().snapshot(tile_id).len();
+        let snapshot_len = probe.screen_len();
         if snapshot_len != last_snapshot_len {
             last_snapshot_len = snapshot_len;
             last_activity = Instant::now();
         }
         let quiet_duration = Instant::now().duration_since(last_activity);
-        if quiet_duration >= Duration::from_millis(STARTUP_ANSWER_QUIET_MS)
-            && answer_startup_prompt(tile_id, profile, &mut answer_sends).await
-        {
+        if quiet_duration >= Duration::from_millis(STARTUP_ANSWER_QUIET_MS) && probe.answer(&mut answer_sends).await {
             last_activity = Instant::now();
         }
 
-        shell.observe(agent_back_at_shell(tile_id));
+        shell.observe(probe.at_shell());
         if shell.exited(Instant::now().duration_since(launch_time)) {
-            return Err(exited_error(tile_id));
+            return Err(probe.exit_error());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    if shell.polls >= EXITED_SHELL_POLLS {
+        return Err(probe.exit_error());
     }
     Ok(())
 }
@@ -734,6 +761,28 @@ mod tests {
         seen.observe(false);
         for _ in 0..EXITED_SHELL_POLLS { seen.observe(true); }
         assert!(seen.exited(late));
+    }
+
+    struct FakeProbe {
+        at_shell: bool,
+    }
+
+    impl StartupProbe for FakeProbe {
+        fn screen_len(&self) -> usize { 10 }
+        fn at_shell(&self) -> bool { self.at_shell }
+        async fn answer(&self, _: &mut [u8]) -> bool { false }
+        fn exit_error(&self) -> String { "exited".into() }
+        fn answer_count(&self) -> usize { 0 }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn argv_watch_reports_a_cli_that_exited_before_it_was_seen() {
+        assert_eq!(watch_startup(&FakeProbe { at_shell: true }).await, Err("exited".to_string()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn argv_watch_passes_a_cli_that_keeps_running() {
+        assert_eq!(watch_startup(&FakeProbe { at_shell: false }).await, Ok(()));
     }
 
     #[test]
