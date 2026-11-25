@@ -1,11 +1,12 @@
 import type { Tile, Frame } from '~/domain/interfaces/canvas.interface';
 
 import { frameOf } from '~/usecase/util/frame';
+import { isHeadlessTile } from '~/usecase/util/agents';
 
 export type FrameLink = { kind: 'note'; a: string; b: string } | { kind: 'term'; a: string; b: string };
 
 const isEligibleTerm = (t: Tile): boolean =>
-  t.type === 'term' && !t.runCwd && !t.runId && !t.orchWorker;
+  t.type === 'term' && !t.runCwd && !t.runId && !isHeadlessTile(t);
 
 export const frameLinks = (tiles: Tile[], frames: Frame[]): FrameLink[] => {
   const byFrame = new Map<string, { notes: Tile[]; terms: Tile[] }>();

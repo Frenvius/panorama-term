@@ -53,6 +53,9 @@ import { canSleep } from '~/usecase/util/dormant';
 import { isTerminalBusy } from '~/adapter/pty/sidecar.client';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { type ShowAgentRequest, onShowAgentRequest } from '~/usecase/util/agentRequest';
+import AgentDialog from '~/components/commons/AgentDialog';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
 import { normalizeRepo } from '~/usecase/util/orch';
@@ -126,6 +129,7 @@ const ProjectView = () => {
   const agents = React.useSyncExternalStore(subscribeAgentStatuses, getAgentStatuses);
 
   const handleShowWorkerRef = React.useRef<(req: ShowWorkerRequest) => void>(() => {});
+  const handleShowAgentRef = React.useRef<(req: ShowAgentRequest) => void>(() => {});
 
   React.useEffect(() => {
     const unsubBoard = onOrchBoardRequest(({ runId }) => addOrchBoard(runId));
@@ -136,8 +140,19 @@ const ProjectView = () => {
       requestTileRestartOnMount(tileId, command);
       addTerminal(cwd || undefined, undefined, undefined, tileId);
     });
-    return () => { unsubBoard(); unsubWorker(); unsubDiff(); unsubNewBoard(); unsubOpenTerm(); };
+    const unsubAgent = onShowAgentRequest((req) => handleShowAgentRef.current(req));
+    return () => { unsubBoard(); unsubWorker(); unsubDiff(); unsubNewBoard(); unsubOpenTerm(); unsubAgent(); };
   }, [addOrchBoard, openDiff, addTerminal]);
+
+  const [agentDialog, setAgentDialog] = React.useState<{ agent?: PersistentAgent; cwd: string } | null>(null);
+
+  const handleShowAgent = ({ tileId, cwd }: ShowAgentRequest) => {
+    if (tiles.some((t) => t.id === tileId)) { activateTile(tileId); return; }
+    pendingFocusTileId = tileId;
+    addTerminal(cwd || undefined, undefined, undefined, tileId);
+    patchTile(tileId, { agentId: tileId.replace(/^agent-/, '') });
+  };
+  handleShowAgentRef.current = handleShowAgent;
 
   const [hasDocker, setHasDocker] = React.useState(false);
   const [draggingTab, setDraggingTab] = React.useState<DraggingTabState | null>(null);
@@ -744,7 +759,9 @@ const ProjectView = () => {
     reorderFrameOp: reorderFrameGroups,
     sleepTileOp: sleepTile,
     patchTileOp: patchTile,
-    onTileMovedOp: redockMovedTile
+    onTileMovedOp: redockMovedTile,
+    onNewAgent: (cwd?: string) => setAgentDialog({ cwd: cwd ?? activeProject ?? '' }),
+    onEditAgent: (agent: PersistentAgent) => setAgentDialog({ agent, cwd: agent.cwd })
   });
 
   const projectActionsWithBoards = React.useMemo(() => ({
@@ -1000,6 +1017,17 @@ const ProjectView = () => {
           repo={newBoard.repo}
           onClose={() => setNewBoard(null)}
           onCreated={handleNewBoardCreated}
+        />
+      )}
+
+      {agentDialog && (
+        <AgentDialog
+          agent={agentDialog.agent}
+          defaultCwd={agentDialog.cwd}
+          onClose={() => setAgentDialog(null)}
+          onSaved={() => setAgentDialog(null)}
+
+          onFolderPick={openFolderPicker}
         />
       )}
 

@@ -22,6 +22,7 @@ import { getPref, setPref } from '~/usecase/util/prefs';
 import { getSetting } from '~/adapter/settings/settings.client';
 import { restTarget } from '~/usecase/util/zoomUtils';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
+import { isHeadlessTile } from '~/usecase/util/agents';
 import { linkNote, unlinkNote, deleteNote, linkTerm, unlinkTerm } from '~/adapter/notes/notes.client';
 import { settleRect, settleOffset, computeDragSnap, computeResizeSnap } from '~/usecase/util/magneticSnap';
 import { termName, noteLinkTitle } from '~/usecase/util/noteLink';
@@ -355,7 +356,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     });
   }, [cellW]);
 
-  const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd' | 'orchWorker'>, at?: { x: number; y: number }) => {
+  const placeTerm = React.useCallback((seed: Pick<Tile, 'id' | 'cwd' | 'orchWorker' | 'agentId'>, at?: { x: number; y: number }) => {
     setView((v) => {
       const p = at ?? mouseRef.current;
       const cx = p ? p.x : (window.innerWidth / 2 - v.x) / v.k;
@@ -444,6 +445,11 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
       placeGroupedTerm(id, cwd, group, orchWorker);
     },
     [placeTerm, placeGroupedTerm]
+  );
+
+  const openAgentTile = React.useCallback(
+    (id: string, cwd: string, agentId: string) => placeTerm({ id, cwd, agentId }),
+    [placeTerm]
   );
 
   const addRunView = React.useCallback((srcId: string, cwd: string, sessionId: string, cmd: string) => {
@@ -632,7 +638,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
   const closeTile = React.useCallback((id: string) => {
     clearAlert(id);
     const closing = tilesRef.current.find((t) => t.id === id);
-    const isWorker = closing?.type === 'term' && Boolean(closing.orchWorker || closing.runId);
+    const isWorker = closing?.type === 'term' && (isHeadlessTile(closing) || Boolean(closing.runId));
     if (closing && !closing.runCwd && !isWorker) {
       const ws = wsIdRef.current;
       saveClosed(ws, [...loadClosed(ws), closing]);
@@ -1247,6 +1253,7 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     onWheel,
     addTile,
     openRemoteTile,
+    openAgentTile,
     addCode,
     addEditor,
     addRunView,

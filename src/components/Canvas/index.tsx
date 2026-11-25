@@ -49,6 +49,9 @@ import { isDirty, requestSave, requestFind, dispatchSave, subscribeDirty, reques
 import { requestTileRestartOnMount } from '~/usecase/util/tileRestart';
 import { onOpenTerminalRequest } from '~/usecase/util/openTerminalRequest';
 import { type ShowWorkerRequest, onOrchBoardRequest, onOrchDiffRequest, onShowWorkerRequest, onNewBoardRequest, getProjectLastBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
+import { type ShowAgentRequest, onShowAgentRequest } from '~/usecase/util/agentRequest';
+import AgentDialog from '~/components/commons/AgentDialog';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 import { coordinatorActions, useOrchRuns } from '~/usecase/hooks/useOrchCoordinator';
 import { tileBoardProject, frameBoards, orphanBoards } from '~/usecase/util/boardProject';
 import { useTidyAI } from '~/usecase/hooks/useTidyAI';
@@ -124,6 +127,7 @@ const Canvas = () => {
     noteRenderDefault,
     addTile,
     openRemoteTile,
+    openAgentTile,
     addCode,
     addEditor,
     addRunView,
@@ -181,6 +185,7 @@ const Canvas = () => {
   } = useCanvas({ seed: activeState, wsId: activeId, tabId: activeTabId, onPersist: saveActiveState });
 
   const handleShowWorkerRef = React.useRef<(req: ShowWorkerRequest) => void>(() => {});
+  const handleShowAgentRef = React.useRef<(req: ShowAgentRequest) => void>(() => {});
 
   React.useEffect(() => {
     const unsubBoard = onOrchBoardRequest(({ runId, nearTileId }) => addOrchBoard(runId, nearTileId));
@@ -197,8 +202,18 @@ const Canvas = () => {
       requestTileRestartOnMount(tileId, command);
       openRemoteTile(tileId, cwd ?? '');
     });
-    return () => { unsubBoard(); unsubWorker(); unsubNewBoard(); unsubOpenTerm(); };
+    const unsubAgent = onShowAgentRequest((req) => handleShowAgentRef.current(req));
+    return () => { unsubBoard(); unsubWorker(); unsubNewBoard(); unsubOpenTerm(); unsubAgent(); };
   }, [addOrchBoard, openRemoteTile]);
+
+  const [agentDialog, setAgentDialog] = React.useState<{ agent?: PersistentAgent; cwd: string } | null>(null);
+
+  const handleShowAgent = ({ tileId, cwd }: ShowAgentRequest) => {
+    if (tiles.some((t) => t.id === tileId)) { activateAndClear(tileId); return; }
+    pendingFocusTileId = tileId;
+    openAgentTile(tileId, cwd, tileId.replace(/^agent-/, ''));
+  };
+  handleShowAgentRef.current = handleShowAgent;
 
   const [menu, setMenu] = React.useState<Menu | null>(null);
   const alerts = React.useSyncExternalStore(subscribeAlerts, getAlerts);
@@ -1122,7 +1137,9 @@ const Canvas = () => {
     reorderProjectOp: reorderProjects,
     reorderFrameOp: reorderFrameGroups,
     sleepTileOp: sleepTile,
-    patchTileOp: patchTile
+    patchTileOp: patchTile,
+    onNewAgent: (cwd?: string) => setAgentDialog({ cwd: cwd ?? '' }),
+    onEditAgent: (agent: PersistentAgent) => setAgentDialog({ agent, cwd: agent.cwd })
   });
 
   const boards = React.useMemo(() => ({
@@ -1532,6 +1549,16 @@ const Canvas = () => {
           repo={newBoard.repo}
           onClose={() => setNewBoard(null)}
           onCreated={handleNewBoardCreated}
+        />
+      )}
+      {agentDialog && (
+        <AgentDialog
+          agent={agentDialog.agent}
+          defaultCwd={agentDialog.cwd}
+          onClose={() => setAgentDialog(null)}
+          onSaved={() => setAgentDialog(null)}
+
+          onFolderPick={openFolderPicker}
         />
       )}
     </div>

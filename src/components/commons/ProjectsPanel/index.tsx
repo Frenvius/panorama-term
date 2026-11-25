@@ -49,6 +49,7 @@ import { writeClipboard } from '~/adapter/clipboard/clipboard.client';
 import { projectName } from '~/usecase/util/projectLayout';
 import { tileStatus } from '~/usecase/util/tileStatus';
 import { getTileActivity, subscribeTileActivity } from '~/usecase/util/tileActivity';
+import AgentsGroup from '~/components/commons/ProjectsPanel/AgentsGroup';
 
 const SORT_KEY = 'panorama:projectsSort';
 const COLLAPSED_KEY = 'panorama:projectsCollapsed';
@@ -754,6 +755,7 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
 
   const orphanRuns = liveBoards(actions.orphanRuns ?? [], now).filter((s) => !needle || `${s.run.title} ${s.run.repo}`.toLowerCase().includes(needle));
   const otherBoardsOpen = Boolean(needle) || collapsed.has('other-boards:expanded');
+  const agentsOpen = Boolean(needle) || !collapsed.has('agents:collapsed');
   const isEmpty = groups.length === 0 && orphanRuns.length === 0;
   const terminateCount = terminateGroup ? terminateGroup.tiles.filter((t) => t.type === 'term').length : 0;
 
@@ -884,6 +886,13 @@ const ProjectsPanel = ({ groups, activeTileId, activeGroupKey, recentProjects, s
       </div>
 
       <div className={styles.body} {...bodyHandlers}>
+        <AgentsGroup
+          isOpen={agentsOpen}
+          onToggle={() => toggleCollapsed('agents:collapsed')}
+          activeProject={groups.find((g) => g.key === activeGroupKey)?.path ?? null}
+          onNewAgent={(cwd) => actions.onNewAgent?.(cwd)}
+          onEditAgent={(agent) => actions.onEditAgent?.(agent)}
+        />
         {orphanRuns.length > 0 && (
           <div className={styles.groupBlock}>
             <div className={styles.groupRow} onClick={() => toggleCollapsed('other-boards:expanded')}>

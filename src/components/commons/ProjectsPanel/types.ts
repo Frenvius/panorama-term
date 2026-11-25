@@ -4,6 +4,7 @@ import type { RunSummary } from '~/domain/interfaces/orch.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import type { DropPlace } from '~/usecase/util/projectOrder';
 import type { TidyState } from '~/usecase/hooks/useTidyAI';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 export interface ProjectsPanelSignals {
   alerts: Map<string, NotifyKind>;
@@ -37,6 +38,8 @@ export interface ProjectsPanelActions {
   onNewBoard?: (group: ProjectGroup) => void;
   allRuns?: RunSummary[];
   orphanRuns?: RunSummary[];
+  onNewAgent?: (cwd?: string) => void;
+  onEditAgent?: (agent: PersistentAgent) => void;
 }
 
 export interface ProjectsPanelProps {

@@ -17,6 +17,7 @@ import { placeTileInFrame } from '~/usecase/util/frameLayout';
 import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
+import { isHeadlessTile } from '~/usecase/util/agents';
 import { toStored, toRuntime } from '~/usecase/util/workspaceCanvas';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { unlinkNote, deleteNote, unlinkTerm } from '~/adapter/notes/notes.client';
@@ -1055,7 +1056,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
     (id: string) => {
       clearAlert(id);
       const closing = tilesRef.current.find((t) => t.id === id);
-      const isWorker = closing?.type === 'term' && Boolean(closing.orchWorker || closing.runId);
+      const isWorker = closing?.type === 'term' && (isHeadlessTile(closing) || Boolean(closing.runId));
       if (closing && !closing.runCwd && !isWorker) {
         const ws = wsIdRef.current;
         saveClosed(ws, [...loadClosed(ws), closing]);

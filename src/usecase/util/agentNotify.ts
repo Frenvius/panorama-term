@@ -2,8 +2,10 @@ import type { AgentEvent } from '~/domain/interfaces/pty.interface';
 import type { NotifyKind } from '~/domain/interfaces/notify.interface';
 import type { Tile } from '~/domain/interfaces/workspace.interface';
 
+import { isHeadlessTile } from '~/usecase/util/agents';
+
 export const muteWorkerNotifications = (tile: Tile | undefined): boolean =>
-  tile?.type === 'term' && Boolean(tile.orchWorker || tile.runId);
+  tile?.type === 'term' && (isHeadlessTile(tile) || Boolean(tile.runId));
 
 const AGENT_EVENT_GRACE_MS = 5000;
 const NOTIFY_IDLE_GRACE_MS = 10000;

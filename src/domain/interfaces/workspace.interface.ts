@@ -30,6 +30,7 @@ export interface Tile {
   dormant?: boolean;
   runCwd?: string;
   orchWorker?: boolean;
+  agentId?: string;
   renderOnly?: boolean;
   tabClosed?: boolean;
   linkedTo?: string[];

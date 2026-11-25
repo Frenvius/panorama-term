@@ -1,11 +1,12 @@
 import type { Tile } from '~/domain/interfaces/workspace.interface';
 
 import { showToast } from '~/usecase/util/toasts';
+import { isHeadlessTile } from '~/usecase/util/agents';
 import { getAgentStatuses } from '~/usecase/util/agentStatus';
 import { isTerminalBusy } from '~/adapter/pty/sidecar.client';
 
 export const canSleep = (tile: Tile): boolean =>
-  tile.type === 'term' && !tile.runCwd && !tile.runId && !tile.orchWorker && !tile.ptySessionId;
+  tile.type === 'term' && !tile.runCwd && !tile.runId && !isHeadlessTile(tile) && !tile.ptySessionId;
 
 export const hasSleepableTerminal = (tiles: Tile[]): boolean => tiles.some((t) => canSleep(t) && !t.dormant);
 

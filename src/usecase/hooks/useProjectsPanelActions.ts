@@ -2,6 +2,7 @@ import type { Frame, Tile } from '~/domain/interfaces/workspace.interface';
 import type { ProjectGroup } from '~/domain/interfaces/projectGroup.interface';
 import type { GroupOps } from '~/usecase/util/projectGroupActions';
 import type { ProjectsPanelActions } from '~/components/commons/ProjectsPanel/types';
+import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import React from 'react';
 
@@ -32,6 +33,8 @@ export interface UseProjectsPanelActionsOpts {
   sleepTileOp: (id: string) => void;
   patchTileOp: (id: string, patch: Partial<Tile>) => void;
   onTileMovedOp?: (id: string) => void;
+  onNewAgent?: (cwd?: string) => void;
+  onEditAgent?: (agent: PersistentAgent) => void;
 }
 
 export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): ProjectsPanelActions => {
@@ -124,6 +127,9 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
     group.tiles.filter((t) => t.type === 'term').forEach((t) => ref.current.closeTileOp(t.id));
   }, []);
 
+  const onNewAgent = React.useCallback((cwd?: string) => ref.current.onNewAgent?.(cwd), []);
+  const onEditAgent = React.useCallback((agent: PersistentAgent) => ref.current.onEditAgent?.(agent), []);
+
   return React.useMemo(
     () => ({
       onStopTerminals,
@@ -145,7 +151,9 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onSetFolder,
       onRemoveProject: hasRemoveProject ? onRemoveProject : undefined,
       onReorderProject,
-      onReorderFrame
+      onReorderFrame,
+      onNewAgent,
+      onEditAgent
     }),
     [
       hasRemoveProject,
@@ -153,9 +161,11 @@ export const useProjectsPanelActions = (opts: UseProjectsPanelActionsOpts): Proj
       onAddProject,
       onCloseTile,
       onDeleteFrame,
+      onEditAgent,
       onFixFrame,
       onMoveTileIntoFrame,
       onMoveTileToGroup,
+      onNewAgent,
       onNewFrame,
       onNewNote,
       onNewTerminal,

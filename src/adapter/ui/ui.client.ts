@@ -10,9 +10,15 @@ type TileWakeHandler = (tileId: string) => void;
 type OrchChangedHandler = (runId: string) => void;
 type ConnectHandler = () => void;
 type AppUpdateHandler = () => void;
+type AgentChangedHandler = () => void;
 
 interface OrchSub {
   onChanged: OrchChangedHandler;
+  onConnect: ConnectHandler;
+}
+
+interface AgentSub {
+  onChanged: AgentChangedHandler;
   onConnect: ConnectHandler;
 }
 
@@ -21,12 +27,13 @@ const tileWakeSubs = new Set<TileWakeHandler>();
 const orchSubs = new Set<OrchSub>();
 const orchNotifySubs = new Set<(event: OrchNotification) => void>();
 const appUpdateSubs = new Set<AppUpdateHandler>();
+const agentSubs = new Set<AgentSub>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
 const totalSubs = (): number =>
-  tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size + appUpdateSubs.size;
+  tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size + appUpdateSubs.size + agentSubs.size;
 
 const dispatch = (data: string): void => {
   let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string };
@@ -45,6 +52,8 @@ const dispatch = (data: string): void => {
     for (const fn of orchNotifySubs) fn(msg as unknown as OrchNotification);
   } else if (msg.t === 'app.update') {
     for (const fn of appUpdateSubs) fn();
+  } else if (msg.t === 'agents.changed') {
+    for (const sub of agentSubs) sub.onChanged();
   }
 };
 
@@ -62,6 +71,7 @@ const connect = (): void => {
   ws = new WebSocket(`${SIDECAR_WS}/ui`);
   ws.onopen = () => {
     for (const sub of orchSubs) sub.onConnect();
+    for (const sub of agentSubs) sub.onConnect();
   };
   ws.onmessage = (e) => {
     if (typeof e.data === 'string') dispatch(e.data);
@@ -117,6 +127,16 @@ export const watchAppUpdateRequests = (onUpdate: AppUpdateHandler): (() => void)
   ensureConnected();
   return () => {
     appUpdateSubs.delete(onUpdate);
+    maybeClose();
+  };
+};
+
+export const watchAgentEvents = (onChanged: AgentChangedHandler, onConnect: ConnectHandler): (() => void) => {
+  const sub: AgentSub = { onChanged, onConnect };
+  agentSubs.add(sub);
+  ensureConnected();
+  return () => {
+    agentSubs.delete(sub);
     maybeClose();
   };
 };
