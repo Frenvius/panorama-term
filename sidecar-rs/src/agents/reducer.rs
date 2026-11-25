@@ -8,6 +8,7 @@ use crate::agents::model::*;
 pub const RESTART_WINDOW_MS: u64 = 10 * 60 * 1000;
 pub const RESTART_MAX: usize = 3;
 
+const EXIT_DETAIL_MAX: usize = 400;
 const EXIT_REASONS: &[&str] = &["session_gone", "shell_returned", "resume_failed"];
 const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user"];
 
@@ -71,7 +72,7 @@ pub enum Cmd {
     Update { id: String, patch: AgentPatch, known_profiles: Vec<String>, at: u64 },
     Start { id: String, at: u64, live: bool, resume_id: Option<String> },
     Stop { id: String, at: u64, by: String, force: bool, crashed: bool },
-    Exit { id: String, at: u64, reason: String, code: Option<i32> },
+    Exit { id: String, at: u64, reason: String, code: Option<i32>, detail: Option<String> },
     Restart { id: String, at: u64 },
     BindSession { id: String, agent: String, session_id: String, at: u64 },
     SessionClear { id: String, at: u64, reason: String },
@@ -193,12 +194,13 @@ impl State {
                 }
                 Ok(Some(("agent-stop", json!({ "id": id, "at": at, "by": by, "force": force, "crashed": crashed }))))
             }
-            Cmd::Exit { id, at, reason, code } => {
+            Cmd::Exit { id, at, reason, code, detail } => {
                 self.get(id)?;
                 if !EXIT_REASONS.contains(&reason.as_str()) {
                     return Err(bad(format!("unknown exit reason {reason}")));
                 }
-                Ok(Some(("agent-exit", json!({ "id": id, "at": at, "reason": reason, "code": code }))))
+                let detail: Option<String> = detail.as_deref().map(|d| d.chars().take(EXIT_DETAIL_MAX).collect());
+                Ok(Some(("agent-exit", json!({ "id": id, "at": at, "reason": reason, "code": code, "detail": detail }))))
             }
             Cmd::Restart { id, at } => {
                 let agent = self.get(id)?;
@@ -264,6 +266,7 @@ impl State {
                     at,
                     reason: data["reason"].as_str().unwrap_or_default().into(),
                     code: data["code"].as_i64().map(|c| c as i32),
+                    detail: data["detail"].as_str().map(str::to_string),
                 });
             }
             "agent-restart" => {
@@ -448,9 +451,9 @@ pub(crate) mod tests {
         let mut state = State::default();
         create(&mut state, "a1", "rev");
         commit(&mut state, Cmd::Start { id: "a1".into(), at: 1, live: false, resume_id: None }).unwrap();
-        commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "shell_returned".into(), code: Some(1) }).unwrap();
-        assert_eq!(state.agents["a1"].last_exit, Some(Exit { at: 2, reason: "shell_returned".into(), code: Some(1) }));
-        assert!(commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "bogus".into(), code: None }).is_err());
+        commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "shell_returned".into(), code: Some(1), detail: Some("x".repeat(500)) }).unwrap();
+        assert_eq!(state.agents["a1"].last_exit, Some(Exit { at: 2, reason: "shell_returned".into(), code: Some(1), detail: Some("x".repeat(EXIT_DETAIL_MAX)) }));
+        assert!(commit(&mut state, Cmd::Exit { id: "a1".into(), at: 2, reason: "bogus".into(), code: None, detail: None }).is_err());
         commit(&mut state, Cmd::Stop { id: "a1".into(), at: 3, by: "brain".into(), force: true, crashed: true }).unwrap();
         assert!(state.agents["a1"].crashed);
         assert_eq!(state.agents["a1"].desired, Desired::Stopped);
@@ -501,7 +504,7 @@ pub(crate) mod tests {
         record(&mut live, Cmd::Create { agent: agent("a1", "rev"), known_profiles: profiles() });
         record(&mut live, Cmd::Start { id: "a1".into(), at: 2, live: false, resume_id: None });
         record(&mut live, Cmd::BindSession { id: "a1".into(), agent: "claude".into(), session_id: "s1".into(), at: 3 });
-        record(&mut live, Cmd::Exit { id: "a1".into(), at: 4, reason: "session_gone".into(), code: None });
+        record(&mut live, Cmd::Exit { id: "a1".into(), at: 4, reason: "session_gone".into(), code: None, detail: None });
         record(&mut live, Cmd::Restart { id: "a1".into(), at: 5 });
         record(&mut live, Cmd::Update { id: "a1".into(), patch: AgentPatch { instructions: Some("new".into()), ..Default::default() }, known_profiles: profiles(), at: 6 });
         let mut replayed = State::default();

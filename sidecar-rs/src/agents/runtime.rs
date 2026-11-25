@@ -109,23 +109,25 @@ async fn run_start(id: String) {
         return;
     }
     crate::ui::broadcast_agents_changed(&id);
+    let tile = crate::agents::model::tile_id(&id);
     let mut result = launch_agent(&id, false).await;
     if let Err(LaunchError::ResumeFailed(detail)) = &result {
-        eprintln!("[agents] {id}: resume failed, starting fresh: {detail}");
-        record_resume_failure(&id);
+        record_resume_failure(&id, Some(detail));
+        stop_session(&tile).await;
         result = launch_agent(&id, true).await;
     }
     guard(starting()).remove(&id);
     if let Err(LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) = result {
-        eprintln!("[agents] {id}: launch failed: {detail}");
-        on_agent_gone(&id, "shell_returned").await;
+        stop_session(&tile).await;
+        on_agent_gone(&id, "shell_returned", Some(&detail)).await;
     }
     crate::ui::broadcast_agents_changed(&id);
 }
 
-fn record_resume_failure(id: &str) {
+fn record_resume_failure(id: &str, detail: Option<&str>) {
     let at = unix_ms();
-    let _ = commit_cmd(id, Cmd::Exit { id: id.into(), at, reason: "resume_failed".into(), code: None });
+    let detail = detail.map(str::to_string);
+    let _ = commit_cmd(id, Cmd::Exit { id: id.into(), at, reason: "resume_failed".into(), code: None, detail });
     let _ = commit_cmd(id, Cmd::SessionClear { id: id.into(), at, reason: "resume_failed".into() });
 }
 
@@ -320,17 +322,19 @@ pub fn forget(id: &str, tile_id: &str) {
     guard(quiet_states()).remove(tile_id);
 }
 
-async fn on_agent_gone(id: &str, reason: &str) {
+async fn on_agent_gone(id: &str, reason: &str, detail: Option<&str>) {
     let Some(agent) = agent_snapshot(id) else { return };
     if agent.desired != Desired::Running {
         return;
     }
     let at = unix_ms();
+    stop_session(&agent.tile_id()).await;
     let watch = guard(watches()).remove(id).unwrap_or_default();
     if resume_failed(&watch, Instant::now()) {
-        record_resume_failure(id);
+        record_resume_failure(id, detail);
     } else {
-        let _ = commit_cmd(id, Cmd::Exit { id: id.into(), at, reason: reason.into(), code: None });
+        let detail = detail.map(str::to_string);
+        let _ = commit_cmd(id, Cmd::Exit { id: id.into(), at, reason: reason.into(), code: None, detail });
     }
     match crash_action(&agent.restarts, at) {
         CrashAction::RestartAfter(delay) if commit_cmd(id, Cmd::Restart { id: id.into(), at }).is_ok() => {
@@ -436,8 +440,8 @@ async fn supervision_tick() {
             assess(live, at_shell, watch, since_start)
         };
         match finding {
-            Some(Finding::SessionGone) => on_agent_gone(&agent.id, "session_gone").await,
-            Some(Finding::ShellReturned) => on_agent_gone(&agent.id, "shell_returned").await,
+            Some(Finding::SessionGone) => on_agent_gone(&agent.id, "session_gone", None).await,
+            Some(Finding::ShellReturned) => on_agent_gone(&agent.id, "shell_returned", None).await,
             None if agent.native_session.is_none() => try_capture_session(&agent.id).await,
             None => {}
         }

@@ -31,6 +31,8 @@ pub struct Exit {
     pub reason: String,
     #[serde(default)]
     pub code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 fn default_true() -> bool { true }

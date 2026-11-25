@@ -21,6 +21,7 @@ const STARTUP_ANSWER_MAX_SENDS: u8 = 3;
 const NUDGE_COOLDOWN_S: u64 = 30;
 const EXITED_SHELL_POLLS: u8 = 6;
 const EXITED_MIN_WAIT_S: u64 = 2;
+const EXITED_UNSEEN_WAIT_S: u64 = 15;
 const ARGV_EARLY_EXIT_WATCH_S: u64 = 15;
 pub(crate) const WORKER_COLS: u16 = 120;
 pub(crate) const WORKER_ROWS: u16 = 30;
@@ -419,8 +420,22 @@ async fn send_keys(session: &std::sync::Arc<crate::Session>, keys: &str) {
     }
 }
 
-fn exited_during_startup(shell_polls: u8, since_launch: Duration) -> bool {
-    shell_polls >= EXITED_SHELL_POLLS && since_launch >= Duration::from_secs(EXITED_MIN_WAIT_S)
+#[derive(Default)]
+struct ShellWatch {
+    polls: u8,
+    seen_agent: bool,
+}
+
+impl ShellWatch {
+    fn observe(&mut self, at_shell: bool) {
+        self.polls = if at_shell { self.polls.saturating_add(1) } else { 0 };
+        self.seen_agent |= !at_shell;
+    }
+
+    fn exited(&self, since_launch: Duration) -> bool {
+        let min_wait = if self.seen_agent { EXITED_MIN_WAIT_S } else { EXITED_UNSEEN_WAIT_S };
+        self.polls >= EXITED_SHELL_POLLS && since_launch >= Duration::from_secs(min_wait)
+    }
 }
 
 fn exited_error(tile_id: &str) -> String {
@@ -456,7 +471,7 @@ async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), Stri
     let mut last_activity = Instant::now();
     let mut last_snapshot_len = 0usize;
     let mut answer_sends = vec![0u8; profile.startup_answers.len()];
-    let mut shell_polls = 0u8;
+    let mut shell = ShellWatch::default();
 
     while Instant::now() < deadline {
         let snapshot_len = host_handle().snapshot(tile_id).len();
@@ -471,8 +486,8 @@ async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), Stri
             last_activity = Instant::now();
         }
 
-        shell_polls = if agent_back_at_shell(tile_id) { shell_polls.saturating_add(1) } else { 0 };
-        if exited_during_startup(shell_polls, Instant::now().duration_since(launch_time)) {
+        shell.observe(agent_back_at_shell(tile_id));
+        if shell.exited(Instant::now().duration_since(launch_time)) {
             return Err(exited_error(tile_id));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -486,7 +501,7 @@ pub(crate) async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resum
     let mut last_activity = Instant::now();
     let mut last_snapshot_len = 0usize;
     let mut answer_sends = vec![0u8; profile.startup_answers.len()];
-    let mut shell_polls = 0u8;
+    let mut shell = ShellWatch::default();
 
     loop {
         if Instant::now() >= deadline {
@@ -524,8 +539,8 @@ pub(crate) async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resum
         }
 
         let since_launch = Instant::now().duration_since(launch_time);
-        shell_polls = if agent_back_at_shell(tile_id) { shell_polls.saturating_add(1) } else { 0 };
-        if exited_during_startup(shell_polls, since_launch) {
+        shell.observe(agent_back_at_shell(tile_id));
+        if shell.exited(since_launch) {
             return Err(exited_error(tile_id));
         }
         if bound && profile.ready_signal == ReadySignal::Quiet
@@ -708,10 +723,17 @@ mod tests {
     #[test]
     fn early_exit_needs_polls_and_min_wait() {
         let late = Duration::from_secs(EXITED_MIN_WAIT_S);
-        assert!(exited_during_startup(EXITED_SHELL_POLLS, late));
-        assert!(!exited_during_startup(EXITED_SHELL_POLLS - 1, late));
-        assert!(!exited_during_startup(EXITED_SHELL_POLLS, Duration::from_secs(EXITED_MIN_WAIT_S - 1)));
-        assert!(!exited_during_startup(0, Duration::from_secs(60)));
+        let watch = |polls: u8, seen_agent: bool| ShellWatch { polls, seen_agent };
+        assert!(watch(EXITED_SHELL_POLLS, true).exited(late));
+        assert!(!watch(EXITED_SHELL_POLLS - 1, true).exited(late));
+        assert!(!watch(EXITED_SHELL_POLLS, true).exited(Duration::from_secs(EXITED_MIN_WAIT_S - 1)));
+        assert!(!watch(0, true).exited(Duration::from_secs(60)));
+        assert!(!watch(EXITED_SHELL_POLLS, false).exited(late), "the CLI has not shown up yet");
+        assert!(watch(EXITED_SHELL_POLLS, false).exited(Duration::from_secs(EXITED_UNSEEN_WAIT_S)));
+        let mut seen = ShellWatch::default();
+        seen.observe(false);
+        for _ in 0..EXITED_SHELL_POLLS { seen.observe(true); }
+        assert!(seen.exited(late));
     }
 
     #[test]
