@@ -3522,6 +3522,13 @@ fn split_quoted_program(cmd: &str) -> Option<(&str, &str)> {
     cmd.strip_prefix('"')?.split_once('"')
 }
 
+// A program's file name without extension, splitting on both separators: settings written on Windows
+// hold `\\` paths, which `Path` does not split elsewhere.
+fn program_stem(prog: &str) -> &str {
+    let name = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
+    name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+}
+
 fn strip_claude_hooks(
     json: &mut serde_json::Value,
     exe: &str,
@@ -3529,14 +3536,7 @@ fn strip_claude_hooks(
     exists: impl Fn(&Path) -> bool,
 ) -> bool {
     // entries from other builds are kept unless their sidecar binary is gone, since the CLI then errors on every hook
-    let owned_program = |prog: &str| {
-        prog == exe
-            || (!exists(Path::new(prog))
-                && Path::new(prog)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s.eq_ignore_ascii_case("sidecar")))
-    };
+    let owned_program = |prog: &str| prog == exe || (!exists(Path::new(prog)) && program_stem(prog).eq_ignore_ascii_case("sidecar"));
     let ours = |cmd: &str| {
         split_quoted_program(cmd).is_some_and(|(prog, rest)| {
             owned_program(prog) && (rest == " record-agent" || rest.starts_with(" emit-event "))
@@ -6654,7 +6654,7 @@ mod tests {
         dim, resize_parser, view_shift, AtomicUsize,
         agent_event_body, agent_event_ws_msg, agent_state_ws_msg, decode_osc52, default_status_line, diff_lines, is_claude_event,
         codex_hook_state, codex_launch_args, history, is_launchable, original_codex, merge_agent_state, merge_plugin_dirs, sanitize_event_text, seal_restored_screen, splice_saved_history, status_ws_msg,
-        strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
+        program_stem, strip_claude_hooks, strip_mod_owned, utf8_valid_len, Arc, AtomicBool, CwdSink, Ordering, Path, RunLog, DA1_RESPONSE, OSC_BG_RESPONSE, OSC_FG_RESPONSE,
         SCROLLBACK_LINES, render_disk_row, DEFAULT_FG,
     };
 
@@ -6754,6 +6754,13 @@ mod tests {
         });
         assert!(!strip_claude_hooks(&mut json, "C:\\dev\\sidecar.exe", None, |_| true));
         assert_eq!(json["statusLine"]["command"], "\"C:\\rel\\sidecar.exe\" statusline");
+    }
+
+    #[test]
+    fn program_stem_splits_both_separators() {
+        assert_eq!(program_stem("C:\\old\\sidecar.exe"), "sidecar");
+        assert_eq!(program_stem("/opt/panorama/sidecar"), "sidecar");
+        assert_eq!(program_stem("sidecar"), "sidecar");
     }
 
     #[test]
