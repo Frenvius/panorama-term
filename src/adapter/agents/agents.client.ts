@@ -1,4 +1,4 @@
-import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
+import type { AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -79,3 +79,47 @@ export const startAgent = (id: string, fresh?: boolean): Promise<{ agent: Persis
 
 export const stopAgent = (id: string, force?: boolean): Promise<{ agent: PersistentAgent }> =>
   post('stop', force === true ? { id, force: true } : { id });
+
+export type RecipientStatus =
+  | 'running'
+  | 'auto_started'
+  | 'crashed'
+  | 'stopped_loop_guarded'
+  | 'stopped_rate_limited';
+
+export interface SendMessageOpts {
+  to: string;
+  text: string;
+  expectsReply?: boolean;
+}
+
+export const sendMessage = (
+  opts: SendMessageOpts,
+): Promise<{ message: AgentMessage; recipientStatus: RecipientStatus; queuedAhead: number; text: string }> =>
+  post('send', opts);
+
+export const replyMessage = (
+  to: string,
+  text: string,
+): Promise<{ message: AgentMessage; text: string }> =>
+  post('reply', { to, text });
+
+export interface ListMessagesOpts {
+  agent?: string;
+  party?: 'user';
+  thread?: string;
+  status?: MessageStatus;
+  pending?: boolean;
+  limit?: number;
+}
+
+export const listMessages = (
+  opts: ListMessagesOpts,
+): Promise<{ messages: AgentMessage[]; userUnread: number }> =>
+  post('messages', opts);
+
+export const readMessage = (id: string): Promise<{ message: AgentMessage }> =>
+  post('read', { id });
+
+export const markRead = (ids: string[]): Promise<void> =>
+  post<Record<string, never>>('mark-read', { ids }).then(() => undefined);

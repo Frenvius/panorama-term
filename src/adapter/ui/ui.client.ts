@@ -11,6 +11,7 @@ type OrchChangedHandler = (runId: string) => void;
 type ConnectHandler = () => void;
 type AppUpdateHandler = () => void;
 type AgentChangedHandler = () => void;
+type AgentMailHandler = (parties: string[]) => void;
 
 interface OrchSub {
   onChanged: OrchChangedHandler;
@@ -22,21 +23,27 @@ interface AgentSub {
   onConnect: ConnectHandler;
 }
 
+interface AgentMailSub {
+  onMail: AgentMailHandler;
+  onConnect: ConnectHandler;
+}
+
 const tileOpenSubs = new Set<TileOpenHandler>();
 const tileWakeSubs = new Set<TileWakeHandler>();
 const orchSubs = new Set<OrchSub>();
 const orchNotifySubs = new Set<(event: OrchNotification) => void>();
 const appUpdateSubs = new Set<AppUpdateHandler>();
 const agentSubs = new Set<AgentSub>();
+const agentMailSubs = new Set<AgentMailSub>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
 const totalSubs = (): number =>
-  tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size + appUpdateSubs.size + agentSubs.size;
+  tileOpenSubs.size + tileWakeSubs.size + orchSubs.size + orchNotifySubs.size + appUpdateSubs.size + agentSubs.size + agentMailSubs.size;
 
 const dispatch = (data: string): void => {
-  let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string };
+  let msg: { t: string; tileId?: string; cwd?: string; group?: { id: string; title: string }; runId?: string; parties?: string[] };
   try {
     msg = JSON.parse(data) as typeof msg;
   } catch {
@@ -54,6 +61,9 @@ const dispatch = (data: string): void => {
     for (const fn of appUpdateSubs) fn();
   } else if (msg.t === 'agents.changed') {
     for (const sub of agentSubs) sub.onChanged();
+  } else if (msg.t === 'agents.mail') {
+    const parties = msg.parties ?? [];
+    for (const sub of agentMailSubs) sub.onMail(parties);
   }
 };
 
@@ -72,6 +82,7 @@ const connect = (): void => {
   ws.onopen = () => {
     for (const sub of orchSubs) sub.onConnect();
     for (const sub of agentSubs) sub.onConnect();
+    for (const sub of agentMailSubs) sub.onConnect();
   };
   ws.onmessage = (e) => {
     if (typeof e.data === 'string') dispatch(e.data);
@@ -137,6 +148,16 @@ export const watchAgentEvents = (onChanged: AgentChangedHandler, onConnect: Conn
   ensureConnected();
   return () => {
     agentSubs.delete(sub);
+    maybeClose();
+  };
+};
+
+export const watchAgentMail = (onMail: AgentMailHandler, onConnect: ConnectHandler): (() => void) => {
+  const sub: AgentMailSub = { onMail, onConnect };
+  agentMailSubs.add(sub);
+  ensureConnected();
+  return () => {
+    agentMailSubs.delete(sub);
     maybeClose();
   };
 };

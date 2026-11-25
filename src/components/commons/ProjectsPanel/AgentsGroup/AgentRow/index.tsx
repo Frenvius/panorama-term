@@ -2,6 +2,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import React from 'react';
+import { Clock } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
@@ -12,6 +13,7 @@ import { requestShowAgent } from '~/usecase/util/agentRequest';
 import { startAgent, stopAgent } from '~/adapter/agents/agents.client';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { statusToDotKind, isNotResumable, needsForceStop } from '~/usecase/util/agents';
+import AgentMessages from '~/components/commons/ProjectsPanel/AgentsGroup/AgentMessages';
 
 const SHOW_WHEN_LIVE_MS = 120_000;
 
@@ -32,6 +34,9 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [showWhenLive, setShowWhenLive] = React.useState(false);
   const [confirmRestart, setConfirmRestart] = React.useState(false);
+  const [showMessages, setShowMessages] = React.useState(false);
+  const [messagesAnchor, setMessagesAnchor] = React.useState<DOMRect | null>(null);
+  const rowRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!showWhenLive) return undefined;
@@ -106,6 +111,14 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
     onDelete();
   };
 
+  const handleOpenMessages = () => {
+    setMenu(null);
+    if (rowRef.current) setMessagesAnchor(rowRef.current.getBoundingClientRect());
+    setShowMessages(true);
+  };
+
+  const handleCloseMessages = () => setShowMessages(false);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -118,12 +131,15 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   if (agent.live) menuItems.push({ label: forceOnly ? 'Force stop' : 'Stop', onSelect: handleStop, danger: forceOnly });
   if (agent.live) menuItems.push({ label: 'Restart (new session)...', onSelect: handleRestartRequest });
   menuItems.push('separator');
+  menuItems.push({ label: 'Messages...', onSelect: handleOpenMessages });
+  menuItems.push('separator');
   menuItems.push({ label: 'Edit...', onSelect: handleEdit });
   menuItems.push({ label: 'Delete...', onSelect: handleDelete, danger: true });
 
   return (
     <>
       <div
+        ref={rowRef}
         className={styles.row}
         role="button"
         tabIndex={0}
@@ -139,6 +155,17 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
         {showProject && <span className={styles.project}>{projectName(agent.project!)}</span>}
         {isNotResumable(agent) && <span className={styles.chip}>not resumable</span>}
         {restartNeeded && <span className={styles.chip}>restart to apply</span>}
+        {agent.startedBy && (
+          <span className={styles.chip} title={agent.startedBy}>started by message</span>
+        )}
+        {agent.awaitingReplies > 0 && (
+          <span className={styles.awaitIcon} title={`awaiting ${agent.awaitingReplies} ${agent.awaitingReplies === 1 ? 'reply' : 'replies'}`}>
+            <Clock size={10} strokeWidth={2} />
+          </span>
+        )}
+        {agent.queued > 0 && (
+          <span className={styles.queuedBadge}>{agent.queued} queued</span>
+        )}
       </div>
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={handleCloseMenu} items={menuItems} />
@@ -152,6 +179,9 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
           onConfirm={handleRestartConfirm}
           onCancel={handleRestartCancel}
         />
+      )}
+      {showMessages && messagesAnchor && (
+        <AgentMessages agent={agent} anchorRect={messagesAnchor} onClose={handleCloseMessages} />
       )}
     </>
   );

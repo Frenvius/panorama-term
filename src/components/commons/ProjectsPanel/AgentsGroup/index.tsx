@@ -4,6 +4,7 @@ import React from 'react';
 import { Plus, ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react';
 
 import AgentRow from './AgentRow';
+import UserInboxRow from './UserInboxRow';
 import styles from './styles.module.scss';
 import { sortAgents } from '~/usecase/util/agents';
 import { deleteAgent } from '~/adapter/agents/agents.client';
@@ -67,6 +68,7 @@ const AgentsGroup = ({ isOpen, onToggle, activeProject, onNewAgent, onEditAgent 
         </div>
         {isOpen && (
           <div className={styles.rows}>
+            <UserInboxRow />
             {sorted.map((agent) => (
               <AgentRow
                 key={agent.id}

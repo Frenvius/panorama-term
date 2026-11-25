@@ -23,6 +23,8 @@ const baseAgent = (overrides: Partial<PersistentAgent> = {}): PersistentAgent =>
   createdAt: 0,
   updatedAt: 0,
   lastStartedAt: null,
+  queued: 0,
+  awaitingReplies: 0,
   tileId: 'agent-a0000001',
   status: 'stopped',
   live: false,

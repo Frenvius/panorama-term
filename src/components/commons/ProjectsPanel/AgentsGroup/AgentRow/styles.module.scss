@@ -80,3 +80,21 @@
   flex: none;
   white-space: nowrap;
 }
+
+.awaitIcon {
+  display: flex;
+  align-items: center;
+  flex: none;
+  color: #e0a33e;
+  cursor: default;
+}
+
+.queuedBadge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--hover-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+  flex: none;
+  white-space: nowrap;
+}

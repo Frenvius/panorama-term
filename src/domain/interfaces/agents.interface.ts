@@ -42,4 +42,37 @@ export interface PersistentAgent extends AgentLive {
   createdAt: number;
   updatedAt: number;
   lastStartedAt: number | null;
+  queued: number;
+  awaitingReplies: number;
+  startedBy?: string;
+}
+
+export type Party =
+  | { kind: 'agent'; id: string }
+  | { kind: 'tile'; id: string }
+  | { kind: 'user' };
+
+export type MessageStatus = 'queued' | 'delivered' | 'dropped' | 'failed';
+
+export interface AgentMessage {
+  id: string;
+  from: Party;
+  to: Party;
+  fromName: string;
+  fromLabel: string;
+  toLabel: string;
+  text: string;
+  expectsReply: boolean;
+  replyTo: string | null;
+  thread: string;
+  hops: number;
+  at: number;
+  seq: number;
+  status: MessageStatus;
+  deliveredAt: number | null;
+  repliedBy: string | null;
+  reason: string | null;
+  read: boolean;
+  notice: boolean;
+  truncated?: boolean;
 }
