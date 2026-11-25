@@ -147,30 +147,67 @@ pub fn spawn_start(id: String) {
     }
 }
 
+trait StartBackend {
+    fn live(&self, tile: &str) -> bool;
+    async fn cli_running(&self, tile: &str) -> bool;
+    async fn stop_session(&self, tile: &str) -> bool;
+    async fn list_sessions(&self, exe: &str, cwd: &str) -> Option<HashSet<String>>;
+    async fn ensure_session(&self, params: &crate::Params) -> Result<(), String>;
+    async fn settle(&self);
+    fn send(&self, tile: &str, text: &str) -> Result<(), String>;
+    async fn wait_ready(&self, tile: &str, profile: &Profile, resume_id: Option<&str>) -> Result<(), String>;
+    async fn after_fresh_start(&self, agent: &Agent, profile: &Profile);
+    async fn capture_session(&self, id: &str);
+    fn respawn(&self, id: &str);
+}
+
+struct LiveBackend;
+
+impl StartBackend for LiveBackend {
+    fn live(&self, tile: &str) -> bool { crate::lookup_live(tile).is_some() }
+    async fn cli_running(&self, tile: &str) -> bool { cli_running(tile) }
+    async fn stop_session(&self, tile: &str) -> bool { stop_session(tile).await }
+    async fn list_sessions(&self, exe: &str, cwd: &str) -> Option<HashSet<String>> { list_sessions(exe, cwd).await }
+    async fn ensure_session(&self, params: &crate::Params) -> Result<(), String> { crate::get_or_create(params).await.map(|_| ()) }
+    async fn settle(&self) { tokio::time::sleep(Duration::from_millis(worker::SHELL_SETTLE_MS)).await }
+    fn send(&self, tile: &str, text: &str) -> Result<(), String> { crate::send_to_tile(tile, text) }
+    async fn wait_ready(&self, tile: &str, profile: &Profile, resume_id: Option<&str>) -> Result<(), String> {
+        worker::wait_for_agent_ready(tile, profile, resume_id).await
+    }
+    async fn after_fresh_start(&self, agent: &Agent, profile: &Profile) {
+        crate::agents::context::after_fresh_start(agent, profile).await
+    }
+    async fn capture_session(&self, id: &str) { try_capture_session(id).await }
+    fn respawn(&self, id: &str) { spawn_start(id.to_string()) }
+}
+
 async fn run_start(id: String) {
+    run_start_with(&LiveBackend, id).await
+}
+
+async fn run_start_with<B: StartBackend>(backend: &B, id: String) {
     if !guard(starting()).insert(id.clone()) {
         return;
     }
     crate::ui::broadcast_agents_changed(&id);
     let tile = crate::agents::model::tile_id(&id);
-    let mut result = launch_agent(&id, false).await;
+    let mut result = launch_agent(backend, &id, false).await;
     if let Err(err @ LaunchError::ResumeFailed(detail)) = &result {
         if failure_action(err, desired_of(&id)) == FailureAction::RetryFresh {
             record_resume_failure(&id, Some(detail));
-            stop_session(&tile).await;
-            result = launch_agent(&id, true).await;
+            backend.stop_session(&tile).await;
+            result = launch_agent(backend, &id, true).await;
         }
     }
     guard(starting()).remove(&id);
     if let Err(err) = result {
         match (failure_action(&err, desired_of(&id)), err) {
-            (FailureAction::Ignore, _) => {
-                if desired_of(&id) != Desired::Running {
-                    stop_session(&tile).await;
-                }
+            (FailureAction::Ignore, _) if desired_of(&id) != Desired::Running => {
+                backend.stop_session(&tile).await;
             }
+            (FailureAction::Ignore, _) => {}
             (_, LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) => {
-                stop_session(&tile).await;
+                backend.stop_session(&tile).await;
                 on_agent_gone(&id, "shell_returned", Some(&detail)).await;
             }
             (_, LaunchError::Cancelled) => {}
@@ -200,15 +237,16 @@ fn cli_running(tile_id: &str) -> bool {
         .is_some_and(|fg| fg != crate::shell_name_for(&s)))
 }
 
-async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
+async fn launch_agent<B: StartBackend>(backend: &B, id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     let Some(agent) = agent_snapshot(id) else { return Ok(()) };
     if agent.desired != Desired::Running {
         return Ok(());
     }
     let tile = agent.tile_id();
-    match session_plan(crate::lookup_live(&tile).is_some(), cli_running(&tile)) {
+    let live = backend.live(&tile);
+    match session_plan(live, live && backend.cli_running(&tile).await) {
         SessionPlan::KeepRunning => return Ok(()),
-        SessionPlan::Recreate => { stop_session(&tile).await; }
+        SessionPlan::Recreate => { backend.stop_session(&tile).await; }
         SessionPlan::Create => {}
     }
     let Some((profile, base)) = find_agent_profile(&agent) else {
@@ -234,7 +272,7 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     });
 
     if resume_id.is_none() && needs_list_capture(&profile.exe) {
-        let before = list_sessions(&profile.exe, &agent.cwd).await.unwrap_or_default();
+        let before = backend.list_sessions(&profile.exe, &agent.cwd).await.unwrap_or_default();
         guard(captures()).insert(id.to_string(), Capture { before, attempts: 0 });
         checkpoint(id)?;
     }
@@ -255,9 +293,9 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
         remote: false,
         extra_env: env,
     };
-    crate::get_or_create(&params).await.map_err(LaunchError::Failed)?;
+    backend.ensure_session(&params).await.map_err(LaunchError::Failed)?;
     checkpoint(id)?;
-    tokio::time::sleep(Duration::from_millis(worker::SHELL_SETTLE_MS)).await;
+    backend.settle().await;
     checkpoint(id)?;
     if profile.exe == "agy" {
         crate::orch::agy::ensure_trusted_workspace(&agent.cwd);
@@ -268,8 +306,8 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     guard(watches()).insert(id.to_string(), Watch {
         launched_at: Some(Instant::now()), resumed: resume_id.is_some(), ever_live: true, shell_ticks: 0,
     });
-    crate::send_to_tile(&tile, &command).map_err(LaunchError::Failed)?;
-    if let Err(e) = worker::wait_for_agent_ready(&tile, &profile, resume_id.as_deref()).await {
+    backend.send(&tile, &command).map_err(LaunchError::Failed)?;
+    if let Err(e) = backend.wait_ready(&tile, &profile, resume_id.as_deref()).await {
         return Err(match resume_id {
             Some(_) => LaunchError::ResumeFailed(e),
             None => LaunchError::Failed(e),
@@ -277,12 +315,11 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     }
     checkpoint(id)?;
     if resume_id.is_none() {
-        crate::agents::context::after_fresh_start(&agent, &profile).await;
+        backend.after_fresh_start(&agent, &profile).await;
     }
-    try_capture_session(id).await;
+    backend.capture_session(id).await;
     Ok(())
 }
-
 fn needs_list_capture(exe: &str) -> bool {
     matches!(exe, "kimi" | "opencode")
 }
@@ -598,6 +635,121 @@ mod tests {
         assert_eq!(backoff(1), Some(Duration::from_secs(30)));
         assert_eq!(backoff(2), Some(Duration::from_secs(120)));
         assert_eq!(backoff(3), None);
+    }
+
+    struct FakeBackend {
+        agent_id: String,
+        calls: Mutex<Vec<&'static str>>,
+        live: bool,
+        cli_running: bool,
+        stop_at: Option<&'static str>,
+        wait_result: Result<(), String>,
+    }
+
+    impl FakeBackend {
+        fn new(agent_id: &str, stop_at: Option<&'static str>) -> Self {
+            Self { agent_id: agent_id.into(), calls: Mutex::new(vec![]), live: false, cli_running: false, stop_at, wait_result: Ok(()) }
+        }
+
+        fn step(&self, name: &'static str) -> bool {
+            self.calls.lock().unwrap().push(name);
+            let stop_here = self.stop_at == Some(name);
+            if stop_here {
+                let cmd = Cmd::Stop { id: self.agent_id.clone(), at: unix_ms(), by: "user".into(), force: true, crashed: false };
+                assert!(commit_cmd(&self.agent_id, cmd).is_ok());
+            }
+            stop_here
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl StartBackend for FakeBackend {
+        fn live(&self, _: &str) -> bool { self.live }
+        async fn cli_running(&self, _: &str) -> bool { self.step("cli_running"); self.cli_running }
+        async fn stop_session(&self, _: &str) -> bool { self.step("stop_session"); true }
+        async fn list_sessions(&self, _: &str, _: &str) -> Option<HashSet<String>> { self.step("list"); Some(HashSet::new()) }
+        async fn ensure_session(&self, _: &crate::Params) -> Result<(), String> { self.step("ensure"); Ok(()) }
+        async fn settle(&self) { self.step("settle"); }
+        fn send(&self, _: &str, _: &str) -> Result<(), String> { self.step("send"); Ok(()) }
+        async fn wait_ready(&self, _: &str, _: &Profile, _: Option<&str>) -> Result<(), String> {
+            let killed = self.step("wait") && self.wait_result.is_err();
+            if killed { Err("terminal killed".into()) } else { Ok(()) }
+        }
+        async fn after_fresh_start(&self, _: &Agent, _: &Profile) { self.step("after_fresh"); }
+        async fn capture_session(&self, _: &str) { self.step("capture"); }
+        fn respawn(&self, _: &str) { self.step("respawn"); }
+    }
+
+    fn running_kimi_agent(tag: &str, session: Option<&str>) -> String {
+        crate::orch::tests::f12_test_home();
+        let id = format!("a{}{:06}", &tag[..1], unix_ms() % 1_000_000);
+        let mut agent = crate::agents::reducer::tests::agent(&id, tag);
+        agent.profile = "kimi".into();
+        agent.model = None;
+        agent.desired = Desired::Running;
+        agent.native_session = session.map(|s| crate::agents::model::NativeSession { agent: "kimi".into(), id: s.into(), bound_at: 1, model: None });
+        lock().agents.insert(id.clone(), agent);
+        id
+    }
+
+    fn finish(id: &str) -> Agent {
+        let agent = lock().agents.remove(id).unwrap();
+        forget(id, &agent.tile_id());
+        if let Some(base) = crate::panorama_dir() {
+            let _ = store::remove_agent_dir(&base, id);
+        }
+        agent
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_start_stopped_while_resuming_keeps_the_native_session() {
+        let id = running_kimi_agent("resume", Some("session_keep"));
+        let backend = FakeBackend { wait_result: Err("killed".into()), ..FakeBackend::new(&id, Some("wait")) };
+        run_start_with(&backend, id.clone()).await;
+        let agent = finish(&id);
+        let calls = backend.calls();
+        assert_eq!(agent.desired, Desired::Stopped);
+        assert_eq!(agent.native_session.map(|s| s.id).as_deref(), Some("session_keep"), "{calls:?}");
+        assert_eq!(agent.last_exit, None, "{calls:?}");
+        assert_eq!(calls.iter().filter(|c| **c == "ensure").count(), 1, "no fresh retry: {calls:?}");
+        assert_eq!(calls.last(), Some(&"stop_session"), "{calls:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_start_stopped_after_each_await_stops_before_the_next_step() {
+        for (stop_at, forbidden) in [("list", "ensure"), ("ensure", "settle"), ("settle", "send"), ("wait", "after_fresh")] {
+            let id = running_kimi_agent("fresh", None);
+            let backend = FakeBackend::new(&id, Some(stop_at));
+            run_start_with(&backend, id.clone()).await;
+            let agent = finish(&id);
+            let calls = backend.calls();
+            assert!(!calls.contains(&forbidden), "stop at {stop_at}: {calls:?}");
+            assert_eq!(calls.last(), Some(&"stop_session"), "stop at {stop_at} kills the terminal: {calls:?}");
+            assert!(!calls.contains(&"respawn"), "stop at {stop_at}: {calls:?}");
+            assert_eq!(agent.desired, Desired::Stopped, "stop at {stop_at}");
+            assert_eq!(agent.last_exit, None, "stop at {stop_at}: {calls:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_start_replaces_a_plain_shell_under_the_agent_tile() {
+        let id = running_kimi_agent("shell", None);
+        let backend = FakeBackend { live: true, cli_running: false, ..FakeBackend::new(&id, None) };
+        run_start_with(&backend, id.clone()).await;
+        finish(&id);
+        let calls = backend.calls();
+        let stop = calls.iter().position(|c| *c == "stop_session").expect("plain shell is stopped");
+        let ensure = calls.iter().position(|c| *c == "ensure").expect("a new session is created");
+        assert!(stop < ensure, "{calls:?}");
+
+        let id = running_kimi_agent("keep", None);
+        let backend = FakeBackend { live: true, cli_running: true, ..FakeBackend::new(&id, None) };
+        run_start_with(&backend, id.clone()).await;
+        finish(&id);
+        assert_eq!(backend.calls(), vec!["cli_running"], "a running CLI is kept");
     }
 
     #[test]
