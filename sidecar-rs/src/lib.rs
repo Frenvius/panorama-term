@@ -2205,6 +2205,9 @@ fn handle_agent_status(body: &[u8]) {
             tile_id
         }
     };
+    if v.get("status").and_then(|s| s.as_str()) == Some("busy") {
+        clear_client_pending(&tile_id);
+    }
     let from_mod = v.get("source").and_then(|s| s.as_str()) == Some("mod");
     let from_codex = v.get("source").and_then(|s| s.as_str()) == Some("codex-hook");
     let from_agy = v.get("source").and_then(|s| s.as_str()) == Some("agy-hook");
@@ -5158,6 +5161,12 @@ pub(crate) fn tile_bracketed_paste(tile_id: &str) -> bool {
     live_target(tile_id).is_ok_and(|t| t.bracketed())
 }
 
+pub(crate) fn clear_client_pending(tile_id: &str) {
+    if let Some(entry) = client_inputs().lock().unwrap_or_else(|e| e.into_inner()).get_mut(tile_id) {
+        entry.pending = 0;
+    }
+}
+
 pub(crate) fn client_input(tile_id: &str) -> ClientInput {
     client_inputs().lock().unwrap_or_else(|e| e.into_inner()).get(tile_id).copied().unwrap_or_default()
 }
@@ -5217,6 +5226,15 @@ mod paste_tests {
         let t = FakeTerminal { queue_hint: true, ..FakeTerminal::new(false) };
         assert_eq!(paste_confirmed(&t, "queued text").await, Ok(Confirm::Submitted));
         assert!(t.writes.lock().unwrap().contains(&"\t".to_string()));
+    }
+
+    #[test]
+    fn a_busy_turn_clears_input_typed_into_a_menu() {
+        let tile = "paste-test-menu";
+        note_client_input(tile, "1");
+        assert_eq!(client_input(tile).pending, 1);
+        handle_agent_status(serde_json::json!({ "tileId": tile, "source": "mod", "status": "busy" }).to_string().as_bytes());
+        assert_eq!(client_input(tile).pending, 0);
     }
 
     #[test]

@@ -144,6 +144,16 @@ pub fn init() {
             eprintln!("[agents] skip mail event {}: {e}", record.seq);
         }
     }
+    let waiting: Vec<Party> = state.mailbox.messages.values()
+        .filter(|m| m.status == MsgStatus::Queued && m.to != Party::User)
+        .map(|m| m.to.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    drop(state);
+    for party in waiting {
+        crate::agents::delivery::kick(&party);
+    }
 }
 
 fn parties_of(cmd: &MailCmd, mailbox: &Mailbox) -> Vec<Party> {
@@ -268,8 +278,20 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
             }
         }
     }
+    if message.to == Party::User {
+        if let Err(e) = commit_mail(MailCmd::Deliver { ids: vec![message.id.clone()], at: now }) {
+            eprintln!("[agents] panel delivery of {}: {}", message.id, e.message);
+        }
+    }
     crate::agents::delivery::kick(&message.to);
     Ok((message, decision))
+}
+
+fn reply_hint(from: &Party) -> &'static str {
+    match from {
+        Party::User => " The reply will appear in Messages.",
+        _ => " End your turn now; the reply will be typed here when it arrives.",
+    }
 }
 
 fn recipient_note(decision: &StartDecision) -> &'static str {
@@ -311,7 +333,7 @@ pub fn handle_send(v: &Value) -> String {
             let ahead = with_mailbox(|mb| mb.queue_for(&message.to).len().saturating_sub(1));
             let mut line = format!("Sent {} to {to_name}.", message.id);
             if expects_reply {
-                line.push_str(" End your turn now; the reply will be typed here when it arrives.");
+                line.push_str(reply_hint(&message.from));
             }
             line.push_str(recipient_note(&decision));
             ok_resp(json!({ "message": message, "recipientStatus": decision_name(&decision), "queuedAhead": ahead, "text": line }))
@@ -393,7 +415,10 @@ pub fn handle_read(v: &Value) -> String {
 
 pub fn handle_mark_read(v: &Value) -> String {
     let ids: Vec<String> = v["ids"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-    let unread: Vec<String> = with_mailbox(|mb| ids.iter().filter(|id| mb.messages.get(*id).is_some_and(|m| !m.read)).cloned().collect());
+    let unread: Vec<String> = with_mailbox(|mb| ids.iter()
+        .filter(|id| mb.messages.get(*id).is_some_and(|m| !m.read && m.to == Party::User))
+        .cloned()
+        .collect());
     if unread.is_empty() {
         return ok_resp(json!({}));
     }
@@ -525,6 +550,28 @@ mod tests {
         assert_eq!(r["recipientStatus"], "stopped_rate_limited", "one unit left, an auto-start needs two: {r}");
         let r = reply_of(handle_send(&json!({ "to": busy_name, "text": "over", "fromAgent": from })));
         assert_eq!(r["error"]["code"], "rate_limited", "{r}");
+    }
+    #[test]
+    fn mail_to_the_user_is_delivered_to_the_panel_at_once() {
+        let (from, _) = make_agent("u", Desired::Running, false);
+        let r = reply_of(handle_send(&json!({ "to": "user", "text": "done", "fromAgent": from })));
+        let id = r["message"]["id"].as_str().unwrap().to_string();
+        with_mailbox(|mb| {
+            assert_eq!(mb.messages[&id].status, MsgStatus::Delivered);
+            assert!(!mb.messages[&id].read);
+        });
+    }
+    #[test]
+    fn mark_read_ignores_messages_not_addressed_to_the_user() {
+        let (agent_id, agent_name) = make_agent("h", Desired::Running, false);
+        let to_user = reply_of(handle_send(&json!({ "to": "user", "text": "for you", "fromAgent": agent_id })));
+        let from_user = reply_of(handle_send(&json!({ "to": agent_name, "text": "from you", "expectsReply": true })));
+        assert!(from_user["text"].as_str().unwrap().contains("appear in Messages"), "{from_user}");
+        let ids = [to_user["message"]["id"].clone(), from_user["message"]["id"].clone()];
+        let r = reply_of(handle_mark_read(&json!({ "ids": ids })));
+        assert_eq!(r["ok"], true, "{r}");
+        let id = to_user["message"]["id"].as_str().unwrap().to_string();
+        with_mailbox(|mb| assert!(mb.messages[&id].read));
     }
     #[test]
     fn send_never_auto_starts_a_crashed_agent() {

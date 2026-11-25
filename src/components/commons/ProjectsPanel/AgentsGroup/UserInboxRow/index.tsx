@@ -30,7 +30,7 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
   const popRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    const unread = messages.filter((m) => !m.read).map((m) => m.id);
+    const unread = messages.filter((m) => m.to.kind === 'user' && !m.read).map((m) => m.id);
     if (unread.length > 0) {
       markRead(unread)
         .then(() => refreshMessages(PARTY))

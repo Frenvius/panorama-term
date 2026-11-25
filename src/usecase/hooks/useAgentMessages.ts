@@ -23,7 +23,9 @@ const stores = new Map<string, PartyStore>();
 const subscribeFns = new Map<string, (fn: () => void) => () => void>();
 const snapshotFns = new Map<string, () => MessagesState>();
 
-const emptyState = (): MessagesState => ({ messages: [], userUnread: 0, error: null });
+const EMPTY_STATE: MessagesState = { messages: [], userUnread: 0, error: null };
+
+const emptyState = (): MessagesState => ({ ...EMPTY_STATE });
 
 const notify = (key: string): void => {
   const s = stores.get(key);
@@ -103,7 +105,7 @@ const getSubscribeFn = (key: string): (fn: () => void) => () => void => {
 };
 
 const getSnapshotFn = (key: string): () => MessagesState => {
-  if (!snapshotFns.has(key)) snapshotFns.set(key, () => stores.get(key)?.state ?? emptyState());
+  if (!snapshotFns.has(key)) snapshotFns.set(key, () => stores.get(key)?.state ?? EMPTY_STATE);
   return snapshotFns.get(key)!;
 };
 
