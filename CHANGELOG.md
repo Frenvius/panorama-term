@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.18]
+
+### Added
+- Projects panel: tiles have Rename, Stop and Terminate in their context menu, and projects have Terminate all (with confirmation) next to Stop terminals.
+- Panel tabs can be reordered by dragging them, and dragged onto another panel or split zone.
+- Orchestration settings let you pick the reasoning effort for each model in a role chain.
+- Orchestration can link or copy ignored files into worker worktrees, run a task in place in the main checkout, and run a single plan end to end with `orch exec`.
+
+### Changed
+- The tab menu's Close tab is now called Stop for terminals.
+- The source control panel follows the selected tile's repository, even when its folder is outside the project.
+- Closing a note tab hides it instead of deleting it.
+
+### Fixed
+- Orchestration now detects when Codex hits its usage limit and moves the task to the next model, and stops sending new work to an account once 90% of its limit is used.
+
 ## [0.4.17]
 
 ### Changed
