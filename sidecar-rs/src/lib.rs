@@ -1543,6 +1543,7 @@ fn bind_agent_session(tile_id: &str, body: &str) {
     obj.insert("tileId".into(), tile_id.into());
     let _ = write_binding_rec(&path, &rec);
     orch::on_native_session_bound(tile_id, agent, session_id, v["cwd"].as_str());
+    agents::on_native_session_bound(tile_id, agent, session_id);
 }
 
 fn seed_agent_binding(tile_id: &str, agent: &str, cwd: &str) {
@@ -2239,6 +2240,9 @@ fn handle_agent_status(body: &[u8]) {
             }
             if ns != "waiting" && prev == Some("waiting") {
                 orch::on_agent_resumed(&tile_id);
+            }
+            if prev != Some(ns.as_str()) {
+                agents::on_status(&tile_id);
             }
         }
     }
@@ -4229,6 +4233,9 @@ fn run_consumer_loop(
                         if let Some(msg) = agent_state_ws_msg(&body) {
                             remember_agent_state(&s, &msg);
                             outgoing.push(msg);
+                            if s.tile_id.starts_with("agent-") {
+                                agents::on_status(&s.tile_id);
+                            }
                         }
                     }
                     for (title, body) in p.callbacks_mut().take_notifies() {

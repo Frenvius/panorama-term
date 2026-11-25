@@ -268,6 +268,24 @@ fn provider_to_profile(provider: &crate::orch::settings::OrchProvider) -> Profil
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeStyle {
+    Subcommand(&'static str),
+    Flag(&'static str),
+}
+
+pub fn resume_style(exe: &str) -> Option<ResumeStyle> {
+    Some(match exe {
+        "claude" => ResumeStyle::Flag("--resume"),
+        "codex" => ResumeStyle::Subcommand("resume"),
+        "opencode" => ResumeStyle::Flag("-s"),
+        "kimi" => ResumeStyle::Flag("-S"),
+        "agy" => ResumeStyle::Flag("--conversation"),
+        "pi" => ResumeStyle::Flag("--session"),
+        _ => return None,
+    })
+}
+
 pub fn find_profile<'a>(profiles: &'a [Profile], id: &str) -> Option<&'a Profile> {
     profiles.iter().find(|p| p.id == id)
 }

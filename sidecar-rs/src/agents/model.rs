@@ -20,6 +20,8 @@ pub struct NativeSession {
     pub id: String,
     #[serde(default)]
     pub bound_at: u64,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -277,6 +277,7 @@ impl State {
                     agent: data["agent"].as_str().unwrap_or_default().into(),
                     id: data["sessionId"].as_str().unwrap_or_default().into(),
                     bound_at: at,
+                    model: agent.model.clone(),
                 });
             }
             "agent-session-clear" => agent.native_session = None,

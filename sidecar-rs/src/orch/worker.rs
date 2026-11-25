@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use crate::orch::model::{Effort, Task, Dispatch};
 use crate::orch::profiles::{
-    BriefDelivery, Profile, ReadySignal, brief_pointer_prompt, build_command_line, codex_permission_args, pinned_env_args, quote_arg,
-    tokens_to_command,
+    BriefDelivery, Profile, ReadySignal, ResumeStyle, brief_pointer_prompt, build_command_line, codex_permission_args, pinned_env_args,
+    quote_arg, resume_style, tokens_to_command,
 };
 use crate::{Params, get_or_create, send_to_tile, host_handle, sessions, lookup_live, cached_agent_state};
 use crate::ui::{broadcast_grouped_tile_open, TileGroup};
 
-const SHELL_SETTLE_MS: u64 = 800;
+pub(crate) const SHELL_SETTLE_MS: u64 = 800;
 const AGENT_READY_IDLE_TIMEOUT_S: u64 = 90;
 const AGENT_QUIET_WAIT_S: u64 = 4;
 const AGENT_QUIET_DURATION_S: u64 = 3;
@@ -22,8 +22,8 @@ const NUDGE_COOLDOWN_S: u64 = 30;
 const EXITED_SHELL_POLLS: u8 = 6;
 const EXITED_MIN_WAIT_S: u64 = 2;
 const ARGV_EARLY_EXIT_WATCH_S: u64 = 15;
-const WORKER_COLS: u16 = 120;
-const WORKER_ROWS: u16 = 30;
+pub(crate) const WORKER_COLS: u16 = 120;
+pub(crate) const WORKER_ROWS: u16 = 30;
 
 fn nudge_times() -> &'static Mutex<HashMap<String, Instant>> {
     static MAP: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
@@ -229,7 +229,7 @@ pub fn write_brief(input: BriefInput) -> Result<PathBuf, String> {
     Ok(brief_path)
 }
 
-pub(super) fn pin_native_home(exe: &str, tile_id: &str, env: &mut Vec<(String, String)>) -> Option<String> {
+pub(crate) fn pin_native_home(exe: &str, tile_id: &str, env: &mut Vec<(String, String)>) -> Option<String> {
     let key = match exe {
         "claude" => "CLAUDE_CONFIG_DIR",
         "codex" => "CODEX_HOME",
@@ -253,7 +253,7 @@ pub(super) fn pin_native_home(exe: &str, tile_id: &str, env: &mut Vec<(String, S
     Some(home)
 }
 
-pub(super) fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
@@ -310,7 +310,29 @@ pub async fn spawn_worker(launch: WorkerLaunch<'_>) -> Result<(), String> {
 
 fn worker_command(launch: &WorkerLaunch<'_>, cli: &str, pinned_env: &[(String, String)]) -> String {
     let WorkerLaunch { profile, model, effort, settings_path, resume_id, brief_path, .. } = launch;
-    let mut tokens: Vec<String> = build_command_line(profile, *model, *effort)
+    let prompt = (resume_id.is_none() && profile.brief_delivery == BriefDelivery::ArgvPointer)
+        .then(|| brief_pointer_prompt(brief_path));
+    launch_command(LaunchCommand {
+        profile, model: *model, effort: *effort, settings_path: settings_path.as_deref(),
+        resume_id: *resume_id, pinned_env, cli, prompt: prompt.as_deref(),
+    })
+}
+
+pub(crate) struct LaunchCommand<'a> {
+    pub profile: &'a Profile,
+    pub model: Option<&'a str>,
+    pub effort: Option<Effort>,
+    pub settings_path: Option<&'a str>,
+    pub resume_id: Option<&'a str>,
+    pub pinned_env: &'a [(String, String)],
+    pub cli: &'a str,
+    pub prompt: Option<&'a str>,
+}
+
+pub(crate) fn launch_command(input: LaunchCommand<'_>) -> String {
+    let LaunchCommand { profile, model, effort, settings_path, resume_id, pinned_env, cli, prompt } = input;
+    let resume = resume_id.zip(resume_style(&profile.exe));
+    let mut tokens: Vec<String> = build_command_line(profile, model, effort)
         .into_iter()
         .map(|t| t.replace(CLI_PLACEHOLDER, cli))
         .collect();
@@ -318,12 +340,12 @@ fn worker_command(launch: &WorkerLaunch<'_>, cli: &str, pinned_env: &[(String, S
         let flags = codex_permission_args(&codex_help());
         tokens.splice(1..1, flags);
     }
-    if let Some(sp) = settings_path.as_ref().filter(|_| profile.exe == "claude") {
+    if let Some(sp) = settings_path.filter(|_| profile.exe == "claude") {
         tokens.push("--settings".to_string());
-        tokens.push(sp.clone());
+        tokens.push(sp.to_string());
     }
-    if resume_id.is_some() && profile.exe == "codex" {
-        tokens.insert(1, "resume".into());
+    if let Some((_, ResumeStyle::Subcommand(sub))) = resume {
+        tokens.insert(1, sub.into());
     }
     let mut command = tokens_to_command(&tokens);
     if profile.pin_env_via_config {
@@ -332,15 +354,13 @@ fn worker_command(launch: &WorkerLaunch<'_>, cli: &str, pinned_env: &[(String, S
             command.push_str(&arg);
         }
     }
-    if let Some(id) = resume_id {
-        if profile.exe == "claude" {
-            command.push_str(" --resume");
-        }
-        command.push(' ');
-        command.push_str(id);
-    } else if profile.brief_delivery == BriefDelivery::ArgvPointer {
-        command.push(' ');
-        command.push_str(&quote_arg(&brief_pointer_prompt(brief_path), cfg!(windows)));
+    match resume {
+        Some((id, ResumeStyle::Flag(flag))) => command.push_str(&format!(" {flag} {id}")),
+        Some((id, ResumeStyle::Subcommand(_))) => command.push_str(&format!(" {id}")),
+        None => if let Some(text) = prompt {
+            command.push(' ');
+            command.push_str(&quote_arg(text, cfg!(windows)));
+        },
     }
     command
 }
@@ -375,7 +395,7 @@ fn probe_codex_help() -> String {
     }
 }
 
-fn agent_back_at_shell(tile_id: &str) -> bool {
+pub(crate) fn agent_back_at_shell(tile_id: &str) -> bool {
     let Some(session) = sessions().lock().unwrap().get(tile_id).cloned() else { return false };
     if crate::session_pid(&session) == 0 {
         return false;
@@ -460,7 +480,7 @@ async fn watch_argv_startup(tile_id: &str, profile: &Profile) -> Result<(), Stri
     Ok(())
 }
 
-async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resume_id: Option<&str>) -> Result<(), String> {
+pub(crate) async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resume_id: Option<&str>) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(AGENT_READY_IDLE_TIMEOUT_S);
     let launch_time = Instant::now();
     let mut last_activity = Instant::now();
@@ -489,7 +509,7 @@ async fn wait_for_agent_ready(tile_id: &str, profile: &Profile, resume_id: Optio
             continue;
         }
 
-        let bound = resume_id.is_none_or(|id| {
+        let bound = resume_id.filter(|_| matches!(profile.exe.as_str(), "claude" | "codex")).is_none_or(|id| {
             crate::read_binding_rec(tile_id).is_some_and(|binding|
                 binding["agent"] == profile.exe && binding["agentSessionId"] == id)
         });

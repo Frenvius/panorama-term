@@ -45,6 +45,10 @@ pub(crate) fn broadcast_orch_changed(run_id: &str) {
     send_event(json!({ "t": "orch.changed", "runId": run_id }));
 }
 
+pub(crate) fn has_subscribers() -> bool {
+    channel().receiver_count() > 0
+}
+
 pub(crate) fn broadcast_agents_changed(agent_id: &str) {
     send_event(json!({ "t": "agents.changed", "agentId": agent_id }));
 }

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "session_260442e5-eb8a-464d-8dc3-90de3673712c",
+    "title": "install two skills",
+    "lastPrompt": "install two skills",
+    "workDir": "D:/workspace/projects/example",
+    "sessionDir": "C:/Users/me/.kimi-code/sessions/wd_example_b92ebe7f4f06/session_260442e5-eb8a-464d-8dc3-90de3673712c",
+    "createdAt": 1788556818314,
+    "updatedAt": 1788557225518,
+    "archived": false,
+    "metadata": {},
+    "lastTurnReason": "completed"
+  },
+  {
+    "id": "session_7104bb38-7a37-40b5-8ed9-a6a423c63328",
+    "title": "read the global specs",
+    "lastPrompt": "read the global specs",
+    "workDir": "D:/workspace/projects/example",
+    "sessionDir": "C:/Users/me/.kimi-code/sessions/wd_example_b92ebe7f4f06/session_7104bb38-7a37-40b5-8ed9-a6a423c63328",
+    "createdAt": 1788556773814,
+    "updatedAt": 1788556809426,
+    "archived": false,
+    "metadata": {},
+    "lastTurnReason": "completed"
+  }
+]

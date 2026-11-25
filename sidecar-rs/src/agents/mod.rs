@@ -1,6 +1,8 @@
 pub mod cli;
+mod launch;
 mod model;
 mod reducer;
+mod runtime;
 mod store;
 
 use std::sync::{Mutex, OnceLock};
@@ -98,6 +100,7 @@ fn commit_cmd(agent_id: &str, cmd: Cmd) -> Result<Option<(String, Value)>, Commi
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     store::load_all(&mut lock(), &base);
+    runtime::restore_all();
 }
 
 pub async fn handle(command: &str, body: &[u8]) -> String {
@@ -108,8 +111,77 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "show" => handle_show(&v),
         "update" => handle_update(&v),
         "delete" => handle_delete(&v),
+        "start" => handle_start(&v),
+        "stop" => handle_stop(&v).await,
         _ => err_resp("bad_request", "unknown command"),
     }
+}
+
+pub(crate) fn is_agent_tile(tile_id: &str) -> bool {
+    model::agent_id_from_tile(tile_id).is_some_and(|id| lock().agents.contains_key(id))
+}
+
+pub(crate) fn on_native_session_bound(tile_id: &str, agent: &str, session_id: &str) {
+    let Some(id) = model::agent_id_from_tile(tile_id) else { return };
+    if !lock().agents.contains_key(id) {
+        return;
+    }
+    runtime::bind_session(id, launch::session_cli(agent), session_id);
+}
+
+pub(crate) fn on_status(tile_id: &str) {
+    if let Some(id) = model::agent_id_from_tile(tile_id).filter(|_| is_agent_tile(tile_id)) {
+        runtime::status_touched(id);
+    }
+}
+
+fn start_agent(id: &str) -> Result<(), CommitError> {
+    let live = crate::lookup_live(&model::tile_id(id)).is_some();
+    let started = commit_cmd(id, Cmd::Start { id: id.into(), at: unix_ms(), live, resume_id: None })?;
+    if started.is_some() || !live {
+        runtime::spawn_start(id.to_string());
+    }
+    Ok(())
+}
+
+fn handle_start(v: &Value) -> String {
+    let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
+    if v.get("fresh").and_then(Value::as_bool) == Some(true) {
+        if crate::lookup_live(&model::tile_id(&id)).is_some() {
+            return err_resp("conflict", "agent is live; stop it before a fresh start");
+        }
+        let cmd = Cmd::SessionClear { id: id.clone(), at: unix_ms(), reason: "user".into() };
+        if let Err(e) = commit_cmd(&id, cmd) {
+            return e.resp();
+        }
+    }
+    if let Err(e) = start_agent(&id) {
+        return e.resp();
+    }
+    let live = crate::lookup_live(&model::tile_id(&id)).is_some();
+    ok_resp(json!({ "agent": agent_json(&id, false), "live": live }))
+}
+
+async fn handle_stop(v: &Value) -> String {
+    let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
+    let force = v.get("force").and_then(Value::as_bool) == Some(true);
+    let Some(agent) = lock().agents.get(&id).cloned() else { return err_resp("not_found", "agent not found") };
+    let status = live_view(&agent).status;
+    if matches!(status, LiveStatus::Busy | LiveStatus::Waiting) && !force {
+        return err_resp("conflict", "agent busy; use force to stop it");
+    }
+    let cmd = Cmd::Stop { id: id.clone(), at: unix_ms(), by: "user".into(), force, crashed: false };
+    if let Err(e) = commit_cmd(&id, cmd) {
+        return e.resp();
+    }
+    let tile = agent.tile_id();
+    let stopped = runtime::stop_session(&tile).await;
+    runtime::forget(&id, &tile);
+    crate::ui::broadcast_agents_changed(&id);
+    if !stopped {
+        return err_resp("io", "terminal did not exit in time");
+    }
+    ok_resp(json!({ "agent": agent_json(&id, false) }))
 }
 
 fn known_profiles() -> Vec<String> {
@@ -170,8 +242,14 @@ fn handle_create(v: &Value) -> String {
         last_started_at: None,
     };
     let id = agent.id.clone();
+    let auto_start = agent.auto_start;
     if let Err(e) = commit_cmd(&id, Cmd::Create { agent, known_profiles: known_profiles() }) {
         return e.resp();
+    }
+    if auto_start {
+        if let Err(e) = start_agent(&id) {
+            return e.resp();
+        }
     }
     ok_resp(json!({ "agent": agent_json(&id, true) }))
 }
@@ -190,11 +268,15 @@ fn live_view(agent: &Agent) -> AgentLive {
         _ => None,
     });
     let live = session.is_some();
-    let (status, status_source) = match (live, hook_status) {
-        (true, Some(status)) => (status, StatusSource::Hook),
-        (true, None) => (LiveStatus::Idle, StatusSource::None),
-        (false, _) if agent.crashed => (LiveStatus::Crashed, StatusSource::None),
-        (false, _) => (LiveStatus::Stopped, StatusSource::None),
+    let quiet = runtime::quiet_status(&tile_id);
+    let (status, status_source) = match (live, hook_status, quiet) {
+        _ if runtime::is_starting(&agent.id) => (LiveStatus::Starting, StatusSource::None),
+        (true, Some(status), _) => (status, StatusSource::Hook),
+        (true, None, Some(status)) => (status, StatusSource::Quiet),
+        (true, None, None) => (LiveStatus::Idle, StatusSource::None),
+        (false, ..) if agent.crashed => (LiveStatus::Crashed, StatusSource::None),
+        (false, ..) if agent.desired == Desired::Running => (LiveStatus::Starting, StatusSource::None),
+        (false, ..) => (LiveStatus::Stopped, StatusSource::None),
     };
     AgentLive {
         tile_id,
@@ -296,6 +378,7 @@ fn handle_delete(v: &Value) -> String {
         guard.agents.remove(&id);
         guard.seqs.remove(&id);
     }
+    runtime::forget(&id, &tile);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }
