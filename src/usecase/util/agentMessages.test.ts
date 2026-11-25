@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 
 import type { AgentMessage, Party } from '~/domain/interfaces/agents.interface';
 
-import { messageDirection, messagePreview, statusChipKind, countUnread } from '~/usecase/util/agentMessages';
+import { messageDirection, messagePreview, statusChipKind, countUnread, clampToViewport } from '~/usecase/util/agentMessages';
 
 const userParty: Party = { kind: 'user' };
 const agentParty = (id: string): Party => ({ kind: 'agent', id });
@@ -89,5 +89,15 @@ describe('countUnread', () => {
 
   it('returns 0 for empty list', () => {
     expect(countUnread([])).toBe(0);
+  });
+});
+
+describe('clampToViewport', () => {
+  it('keeps a popover inside the window', () => {
+    const viewport = { width: 1000, height: 600 };
+    const size = { width: 360, height: 480 };
+    expect(clampToViewport(900, 500, size, viewport)).toEqual({ left: 632, top: 112 });
+    expect(clampToViewport(100, 50, size, viewport)).toEqual({ left: 100, top: 50 });
+    expect(clampToViewport(-20, -5, size, viewport)).toEqual({ left: 8, top: 8 });
   });
 });

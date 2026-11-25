@@ -6,11 +6,12 @@ import { X, Inbox, ArrowDown, ArrowUp } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
-import { markRead, replyMessage } from '~/adapter/agents/agents.client';
+import { markAllRead, replyMessage } from '~/adapter/agents/agents.client';
 import { useAgentMessages, refreshMessages } from '~/usecase/hooks/useAgentMessages';
-import { messageDirection, messagePreview, statusChipKind } from '~/usecase/util/agentMessages';
+import { messageDirection, messagePreview, statusChipKind, clampToViewport } from '~/usecase/util/agentMessages';
 
 const PARTY = 'user';
+const POPOVER_SIZE = { width: 360, height: 480 };
 
 const formatTime = (at: number): string => {
   const d = new Date(at);
@@ -30,9 +31,9 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
   const popRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    const unread = messages.filter((m) => m.to.kind === 'user' && !m.read).map((m) => m.id);
-    if (unread.length > 0) {
-      markRead(unread)
+    const hasUnread = messages.some((m) => m.to.kind === 'user' && !m.read);
+    if (hasUnread) {
+      markAllRead()
         .then(() => refreshMessages(PARTY))
         .catch(() => undefined);
     }
@@ -84,9 +85,18 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
     }
   };
 
-  const style: React.CSSProperties = {
-    top: anchorRect.bottom + 4,
-    left: anchorRect.left,
+  const style: React.CSSProperties = clampToViewport(
+    anchorRect.left,
+    anchorRect.bottom + 4,
+    POPOVER_SIZE,
+    { width: window.innerWidth, height: window.innerHeight }
+  );
+
+  const handleRowKey = (e: React.KeyboardEvent, msgId: string) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleExpandRow(msgId);
+    }
   };
 
   return ReactDOM.createPortal(
@@ -111,7 +121,14 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
 
           return (
             <div key={msg.id} className={rowCls}>
-              <div className={styles.msgTop} onClick={() => handleExpandRow(msg.id)}>
+              <div
+                className={styles.msgTop}
+                role="button"
+                tabIndex={0}
+                aria-expanded={isExpanded}
+                onClick={() => handleExpandRow(msg.id)}
+                onKeyDown={(e) => handleRowKey(e, msg.id)}
+              >
                 <div className={styles.msgMeta}>
                   <span className={styles.arrow}>
                     {dir === 'in' ? <ArrowDown size={10} strokeWidth={2.5} /> : <ArrowUp size={10} strokeWidth={2.5} />}

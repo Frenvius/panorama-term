@@ -123,3 +123,6 @@ export const readMessage = (id: string): Promise<{ message: AgentMessage }> =>
 
 export const markRead = (ids: string[]): Promise<void> =>
   post<Record<string, never>>('mark-read', { ids }).then(() => undefined);
+
+export const markAllRead = (): Promise<void> =>
+  post<Record<string, never>>('mark-read', { all: true }).then(() => undefined);

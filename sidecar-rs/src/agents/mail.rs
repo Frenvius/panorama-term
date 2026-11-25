@@ -221,7 +221,7 @@ impl Mailbox {
         if m.expects_reply {
             let open = self.messages.values().filter(|o| o.from == m.from && o.to == m.to && pending_reply(o)).count();
             if open >= PAIR_PENDING_MAX {
-                return Err(MailError::new("conflict", format!("{PAIR_PENDING_MAX} replies already pending from this recipient")));
+                return Err(MailError::new("pair_limit", format!("{PAIR_PENDING_MAX} replies already pending from this recipient")));
             }
         }
         Ok(())
@@ -346,7 +346,7 @@ pub(crate) mod tests {
             send(&mut mb, Message { expects_reply: true, ..msg(&format!("q{i}"), agent("a"), agent("b")) }).unwrap();
         }
         let err = send(&mut mb, Message { expects_reply: true, ..msg("q9", agent("a"), agent("b")) }).unwrap_err();
-        assert_eq!(err.code, "conflict");
+        assert_eq!(err.code, "pair_limit");
         send(&mut mb, Message { expects_reply: true, ..msg("other", agent("a"), agent("c")) }).unwrap();
         send(&mut mb, msg("no-reply", agent("a"), agent("b"))).unwrap();
         assert_eq!(mb.awaiting_replies(&agent("a")), PAIR_PENDING_MAX + 1);

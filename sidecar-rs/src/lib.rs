@@ -5177,7 +5177,7 @@ pub(crate) fn pending_after(pending: i64, data: &str) -> i64 {
     let mut chars = data.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
-            '\r' | '\n' | '\x03' | '\x15' => pending = 0,
+            '\r' | '\n' | '\x03' | '\x15' | '\x17' => pending = 0,
             '\x7f' | '\x08' => pending = (pending - 1).max(0),
             '\x1b' => {
                 if chars.peek() == Some(&'[') || chars.peek() == Some(&'O') {
@@ -5185,6 +5185,8 @@ pub(crate) fn pending_after(pending: i64, data: &str) -> i64 {
                     while let Some(c) = chars.next() {
                         if c.is_ascii_alphabetic() || c == '~' { break; }
                     }
+                } else {
+                    pending = 0;
                 }
             }
             c if c.is_control() => {}
@@ -5345,6 +5347,9 @@ mod paste_tests {
         assert_eq!(pending_after(0, "\x1b[A\x1b[B"), 0, "arrows are not text");
         assert_eq!(pending_after(0, "\x1b[200~pasted\x1b[201~"), 6);
         assert_eq!(pending_after(4, "\x03"), 0);
+        assert_eq!(pending_after(4, "\x1b"), 0, "Esc alone clears or cancels the line");
+        assert_eq!(pending_after(4, "\x17"), 0, "Ctrl+W is treated as a clear");
+        assert_eq!(pending_after(4, "\x1b[D"), 4, "cursor keys keep the text");
     }
 }
 pub(crate) fn write_input(s: &Arc<Session>, d: &str) {

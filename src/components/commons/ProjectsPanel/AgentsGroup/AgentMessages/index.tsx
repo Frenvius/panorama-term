@@ -8,7 +8,7 @@ import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
 import { useAgentMessages } from '~/usecase/hooks/useAgentMessages';
 import { readMessage, sendMessage } from '~/adapter/agents/agents.client';
-import { messageDirection, messagePreview, statusChipKind } from '~/usecase/util/agentMessages';
+import { messageDirection, messagePreview, statusChipKind, clampToViewport } from '~/usecase/util/agentMessages';
 
 interface AgentMessagesProps {
   agent: PersistentAgent;
@@ -89,9 +89,18 @@ const AgentMessages = ({ agent, anchorRect, onClose }: AgentMessagesProps) => {
     setText(e.target.value);
   };
 
-  const style: React.CSSProperties = {
-    top: anchorRect.top,
-    left: anchorRect.right + 8,
+  const style: React.CSSProperties = clampToViewport(
+    anchorRect.right + 8,
+    anchorRect.top,
+    { width: 360, height: 520 },
+    { width: window.innerWidth, height: window.innerHeight }
+  );
+
+  const handleRowKey = (e: React.KeyboardEvent, msg: AgentMessage) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleExpandRow(msg);
+    }
   };
 
   return ReactDOM.createPortal(
@@ -114,7 +123,14 @@ const AgentMessages = ({ agent, anchorRect, onClose }: AgentMessagesProps) => {
           const rowCls = [styles.msgRow, msg.notice && styles.muted].filter(Boolean).join(' ');
 
           return (
-            <div key={msg.id} className={rowCls} onClick={() => handleExpandRow(msg)}>
+            <div
+                key={msg.id}
+                className={rowCls}
+                role="button"
+                tabIndex={0}
+                onClick={() => handleExpandRow(msg)}
+                onKeyDown={(e) => handleRowKey(e, msg)}
+              >
               <div className={styles.msgMeta}>
                 <span className={styles.arrow}>
                   {dir === 'in' ? <ArrowDown size={10} strokeWidth={2.5} /> : <ArrowUp size={10} strokeWidth={2.5} />}

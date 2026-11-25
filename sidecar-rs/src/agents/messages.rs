@@ -104,6 +104,20 @@ impl RateWindow {
         Ok(())
     }
 
+    pub fn try_reserve(&mut self, now: u64, units: usize) -> Result<(), u64> {
+        self.check(now, units)?;
+        self.record(now, units);
+        Ok(())
+    }
+
+    pub fn release(&mut self, now: u64, units: usize) {
+        for _ in 0..units {
+            if let Some(pos) = self.times.iter().rposition(|t| *t == now) {
+                self.times.remove(pos);
+            }
+        }
+    }
+
     pub fn record(&mut self, now: u64, units: usize) {
         while self.times.front().is_some_and(|t| now.saturating_sub(*t) >= HOUR_MS) {
             self.times.pop_front();
@@ -119,6 +133,7 @@ pub enum StartDecision {
     Crashed,
     LoopGuarded,
     RateLimited,
+    StartFailed,
 }
 
 pub fn start_decision(agent: &Agent, thread_limited: bool, rate_allows_start: bool) -> StartDecision {
@@ -152,6 +167,7 @@ pub fn init() {
             eprintln!("[agents] skip mail event {}: {e}", record.seq);
         }
     }
+    *guard(rates()) = rebuild_rates(&state.mailbox, unix_ms());
     let waiting: Vec<Party> = state.mailbox.messages.values()
         .filter(|m| m.status == MsgStatus::Queued && m.to != Party::User)
         .map(|m| m.to.clone())
@@ -246,7 +262,29 @@ struct Outgoing {
 }
 
 fn guard_hit(code: &str) -> bool {
-    matches!(code, "rejected" | "conflict" | "rate_limited")
+    matches!(code, "rejected" | "pair_limit" | "rate_limited")
+}
+
+fn reserve(sender: &str, now: u64, units: usize) -> Result<(), u64> {
+    guard(rates()).entry(sender.to_string()).or_default().try_reserve(now, units)
+}
+
+fn release(sender: &str, now: u64, units: usize) {
+    if let Some(window) = guard(rates()).get_mut(sender) {
+        window.release(now, units);
+    }
+}
+
+pub(crate) fn rebuild_rates(mailbox: &Mailbox, now: u64) -> HashMap<String, RateWindow> {
+    let mut windows: HashMap<String, RateWindow> = HashMap::new();
+    let mut recent: Vec<&Message> = mailbox.messages.values()
+        .filter(|m| !m.notice && now.saturating_sub(m.at) < HOUR_MS)
+        .collect();
+    recent.sort_by_key(|m| m.at);
+    for m in recent {
+        windows.entry(m.from.key()).or_default().record(m.at, 1);
+    }
+    windows
 }
 
 fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecision), String> {
@@ -260,7 +298,7 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
             guard(limited_threads()).insert(thread.clone());
         }
     };
-    if let Err(retry_ms) = guard(rates()).entry(sender_key.clone()).or_default().check(now, 1) {
+    if let Err(retry_ms) = reserve(&sender_key, now, 1) {
         mark_limited("rate_limited");
         return Err(err_resp("rate_limited", &format!("send limit {RATE_PER_MINUTE}/min, {RATE_PER_HOUR}/hour; retry in {}s", retry_ms.div_ceil(1000))));
     }
@@ -270,22 +308,24 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
         delivered_at: None, replied_by: None, reason: None, read: false, notice: false,
     };
     if let Err(e) = commit_mail(MailCmd::Send { message: message.clone(), recipient_exists: true }) {
+        release(&sender_key, now, 1);
         mark_limited(e.code);
         return Err(mail_err(e));
     }
-    let rate_allows_start = guard(rates()).get(&sender_key).is_none_or(|w| w.check(now, 2).is_ok());
-    let decision = recipient.as_ref()
-        .map(|agent| start_decision(agent, thread_limited, rate_allows_start))
+    let wanted = recipient.as_ref()
+        .map(|agent| start_decision(agent, thread_limited, true))
         .unwrap_or(StartDecision::Running);
-    let units = if decision == StartDecision::AutoStart { 2 } else { 1 };
-    guard(rates()).entry(sender_key).or_default().record(now, units);
-    if decision == StartDecision::AutoStart {
-        if let Some(agent) = &recipient {
-            if let Err(e) = crate::agents::start_agent(&agent.id, Some(format!("message {}", message.id))) {
-                eprintln!("[agents] auto-start of {} failed: {}", agent.name, e.message);
-            }
+    let decision = match wanted {
+        StartDecision::AutoStart if reserve(&sender_key, now, 1).is_err() => StartDecision::RateLimited,
+        other => other,
+    };
+    let decision = match (&decision, &recipient) {
+        (StartDecision::AutoStart, Some(agent)) => {
+            let started = crate::agents::start_agent(&agent.id, Some(format!("message {}", message.id)));
+            start_outcome(started.map_err(|e| e.message), || release(&sender_key, now, 1))
         }
-    }
+        _ => decision,
+    };
     if message.to == Party::User {
         if let Err(e) = commit_mail(MailCmd::Deliver { ids: vec![message.id.clone()], at: now }) {
             eprintln!("[agents] panel delivery of {}: {}", message.id, e.message);
@@ -309,6 +349,7 @@ fn recipient_note(decision: &StartDecision) -> &'static str {
         StartDecision::Crashed => " It is crashed and will not start by itself; the message waits until the user starts it.",
         StartDecision::LoopGuarded => " It is stopped and this thread hit a loop limit, so it was not started; the message waits.",
         StartDecision::RateLimited => " It is stopped and the send limit leaves no room to start it; the message waits.",
+        StartDecision::StartFailed => " It is stopped and could not be started; the message waits until it starts.",
     }
 }
 
@@ -319,11 +360,23 @@ fn decision_name(decision: &StartDecision) -> &'static str {
         StartDecision::Crashed => "crashed",
         StartDecision::LoopGuarded => "stopped_loop_guarded",
         StartDecision::RateLimited => "stopped_rate_limited",
+        StartDecision::StartFailed => "stopped_start_failed",
     }
 }
 
 pub(crate) fn inherited_thread(from: &Party) -> Option<(String, u8)> {
     cause_of(&from.key()).map(|c| (c.thread, c.hops.saturating_add(1)))
+}
+
+pub(crate) fn start_outcome(started: Result<(), String>, refund: impl FnOnce()) -> StartDecision {
+    match started {
+        Ok(()) => StartDecision::AutoStart,
+        Err(e) => {
+            eprintln!("[agents] auto-start failed: {e}");
+            refund();
+            StartDecision::StartFailed
+        }
+    }
 }
 
 pub fn handle_send(v: &Value) -> String {
@@ -426,10 +479,11 @@ pub fn handle_read(v: &Value) -> String {
 }
 
 pub fn handle_mark_read(v: &Value) -> String {
+    let all = v.get("all").and_then(Value::as_bool) == Some(true);
     let ids: Vec<String> = v["ids"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-    let unread: Vec<String> = with_mailbox(|mb| ids.iter()
-        .filter(|id| mb.messages.get(*id).is_some_and(|m| !m.read && m.to == Party::User))
-        .cloned()
+    let unread: Vec<String> = with_mailbox(|mb| mb.messages.values()
+        .filter(|m| !m.read && m.to == Party::User && (all || ids.contains(&m.id)))
+        .map(|m| m.id.clone())
         .collect());
     if unread.is_empty() {
         return ok_resp(json!({}));
@@ -584,6 +638,74 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         let id = to_user["message"]["id"].as_str().unwrap().to_string();
         with_mailbox(|mb| assert!(mb.messages[&id].read));
+    }
+    #[test]
+    fn concurrent_sends_at_the_rate_edge_never_exceed_the_limit() {
+        let (from, _) = make_agent("z", Desired::Running, false);
+        let (_, to_name) = make_agent("y", Desired::Running, false);
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(12));
+        let handles: Vec<_> = (0..12).map(|i| {
+            let (gate, from, to_name) = (gate.clone(), from.clone(), to_name.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                reply_of(handle_send(&json!({ "to": to_name, "text": format!("n{i}"), "fromAgent": from })))["ok"] == true
+            })
+        }).collect();
+        let sent = handles.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(sent, RATE_PER_MINUTE);
+    }
+
+    #[test]
+    fn a_duplicate_reply_does_not_mark_the_thread_as_a_loop() {
+        let (asker, asker_name) = make_agent("e", Desired::Running, false);
+        let (helper, _) = make_agent("f", Desired::Running, false);
+        let (_, sleeper) = make_agent("g", Desired::Stopped, false);
+        let helper_name = lock().agents[&helper].name.clone();
+        let ask = reply_of(handle_send(&json!({ "to": helper_name, "text": "q", "expectsReply": true, "fromAgent": asker })));
+        let ask_id = ask["message"]["id"].as_str().unwrap().to_string();
+        let thread = ask["message"]["thread"].as_str().unwrap().to_string();
+        assert_eq!(reply_of(handle_reply(&json!({ "to": ask_id, "text": "a", "fromAgent": helper })))["ok"], true);
+        let again = reply_of(handle_reply(&json!({ "to": ask_id, "text": "a again", "fromAgent": helper })));
+        assert_eq!(again["error"]["code"], "conflict");
+        set_cause(&Party::Agent { id: helper.clone() }.key(), &thread, 1);
+        let wake = reply_of(handle_send(&json!({ "to": sleeper, "text": "join us", "fromAgent": helper })));
+        assert_eq!(wake["recipientStatus"], "auto_started", "{wake}");
+        let _ = asker_name;
+    }
+    #[test]
+    fn the_rate_window_is_rebuilt_from_the_log() {
+        let now = 50 * HOUR_MS;
+        let mut mb = Mailbox::default();
+        for i in 0..RATE_PER_MINUTE {
+            let m = Message { at: now - 1_000 - i as u64, ..crate::agents::mail::tests::msg(&format!("r{i}"), Party::Agent { id: "ax".into() }, Party::User) };
+            mb.messages.insert(m.id.clone(), m);
+        }
+        let old = Message { at: now - 2 * HOUR_MS, ..crate::agents::mail::tests::msg("old", Party::Agent { id: "ay".into() }, Party::User) };
+        mb.messages.insert(old.id.clone(), old);
+        let windows = rebuild_rates(&mb, now);
+        assert!(windows["agent:ax"].check(now, 1).is_err());
+        assert!(!windows.contains_key("agent:ay"), "older than an hour");
+    }
+
+    #[test]
+    fn a_failed_auto_start_is_reported_and_refunded() {
+        let mut refunded = false;
+        assert_eq!(start_outcome(Err("io".into()), || refunded = true), StartDecision::StartFailed);
+        assert!(refunded);
+        let mut refunded = false;
+        assert_eq!(start_outcome(Ok(()), || refunded = true), StartDecision::AutoStart);
+        assert!(!refunded);
+        assert_eq!(decision_name(&StartDecision::StartFailed), "stopped_start_failed");
+    }
+
+    #[test]
+    fn mark_read_all_clears_every_unread_message_to_the_user() {
+        let (from, _) = make_agent("k", Desired::Running, false);
+        for i in 0..3 {
+            reply_of(handle_send(&json!({ "to": "user", "text": format!("note {i}"), "fromAgent": from })));
+        }
+        assert_eq!(reply_of(handle_mark_read(&json!({ "all": true })))["ok"], true);
+        assert_eq!(with_mailbox(|mb| mb.unread_for(&Party::User)), 0);
     }
     #[test]
     fn send_never_auto_starts_a_crashed_agent() {

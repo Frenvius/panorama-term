@@ -10,6 +10,7 @@ use crate::{ClientInput, Confirm};
 
 pub const TYPING_QUIET_MS: u64 = 10_000;
 pub const RETRY_MS: u64 = 5_000;
+pub const PENDING_STALE_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
@@ -35,7 +36,7 @@ pub fn readiness(view: &View, input: ClientInput, now: u64) -> Readiness {
     if since_input < TYPING_QUIET_MS {
         return Readiness::WaitTyping(TYPING_QUIET_MS - since_input);
     }
-    if input.pending > 0 {
+    if input.pending > 0 && since_input < PENDING_STALE_MS {
         return Readiness::WaitTyping(RETRY_MS);
     }
     Readiness::Ready
@@ -63,6 +64,19 @@ fn in_flight() -> &'static Mutex<HashSet<String>> {
 fn stuck_once() -> &'static Mutex<HashSet<String>> {
     static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     SET.get_or_init(Default::default)
+}
+
+fn retry_pending() -> &'static Mutex<HashSet<String>> {
+    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+pub(crate) fn claim_retry(key: &str) -> bool {
+    guard(retry_pending()).insert(key.to_string())
+}
+
+pub(crate) fn release_retry(key: &str) {
+    guard(retry_pending()).remove(key);
 }
 
 fn guard<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
@@ -239,9 +253,13 @@ impl DeliveryBackend for LiveBackend {
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String> { crate::paste_to_locked_tile(tile, text).await }
     async fn clear(&self, tile: &str) { crate::clear_tile_input(tile).await }
     fn retry_later(&self, party: &Party, delay_ms: u64) {
+        if !claim_retry(&party.key()) {
+            return;
+        }
         let party = party.clone();
         crate::agents::runtime::spawn_background(async move {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            release_retry(&party.key());
             kick(&party);
         });
     }
@@ -387,7 +405,7 @@ mod tests {
         let mut fake = Fake::idle("agent-x");
         fake.input = ClientInput { last_ms: fake.now - 4_000, pending: 0 };
         assert_eq!(drain(&fake, &to).await, Outcome::Waiting(6_000));
-        fake.input = ClientInput { last_ms: fake.now - 60_000, pending: 3 };
+        fake.input = ClientInput { last_ms: fake.now - 30_000, pending: 3 };
         assert_eq!(drain(&fake, &to).await, Outcome::Waiting(RETRY_MS));
         assert!(fake.pasted.lock().unwrap().is_empty());
         assert_eq!(status_of(&ids[0]), MsgStatus::Queued);
@@ -510,6 +528,24 @@ mod tests {
         assert_eq!(drain(&fake, &to).await, Outcome::StuckRetry);
         assert_eq!(drain(&fake, &to).await, Outcome::Failed(ids.clone()));
         assert_eq!(with_mailbox(|mb| mb.messages[&ids[0]].reason.clone()).as_deref(), Some("unconfirmed"));
+    }
+
+    #[test]
+    fn a_half_typed_line_stops_blocking_after_a_minute() {
+        let view = View { tile: "t".into(), live: true, starting: false, status: LiveStatus::Idle, source: StatusSource::Hook };
+        let now = 10_000_000;
+        assert_eq!(readiness(&view, ClientInput { last_ms: now - 30_000, pending: 3 }, now), Readiness::WaitTyping(RETRY_MS));
+        assert_eq!(readiness(&view, ClientInput { last_ms: now - PENDING_STALE_MS - 1, pending: 3 }, now), Readiness::Ready);
+    }
+
+    #[test]
+    fn one_retry_timer_per_party() {
+        let key = format!("agent:retry{}", crate::agents::unix_ms());
+        assert!(claim_retry(&key));
+        assert!(!claim_retry(&key), "a second kick does not start another timer");
+        release_retry(&key);
+        assert!(claim_retry(&key));
+        release_retry(&key);
     }
 
     #[test]
