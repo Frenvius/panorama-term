@@ -361,7 +361,7 @@ fn clean_line(line: &str) -> String {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c != '\u{1b}' {
-            out.push(c);
+            out.push(straight_quote(c));
             continue;
         }
         if chars.peek() == Some(&'[') {
@@ -374,6 +374,14 @@ fn clean_line(line: &str) -> String {
         }
     }
     out
+}
+
+fn straight_quote(c: char) -> char {
+    match c {
+        '\u{2018}' | '\u{2019}' | '\u{02bc}' => '\'',
+        '\u{201c}' | '\u{201d}' => '"',
+        _ => c,
+    }
 }
 
 fn classify_reason_code(reason_code: &str) -> Classification {
@@ -972,6 +980,27 @@ mod tests {
         assert_eq!(model.class, FailureClass::QuotaExhausted);
         assert_eq!(model.scope, Scope::Model);
         assert_eq!(model.reset_at, Some(utc_ms(2026, 11, 22, 18, 15)));
+    }
+
+    #[test]
+    fn codex_usage_limit_with_curly_apostrophe_under_switch_prompt() {
+        let got = quick(
+            "codex",
+            &[
+                "⚠ Heads up, you have less than 10% of your 5h limit left. Run /status for a breakdown.",
+                "■ You\u{2019}ve hit your usage limit. Try again at 3:15 PM.",
+                "",
+                "  Approaching rate limits",
+                "  Switch to gpt-6-luna for lower credit usage?",
+                "› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.",
+                "  2. Keep current model",
+                "  3. Keep current model (never show again)  Hide future rate limit reminders about switching models",
+                "  enter select · esc back",
+            ],
+        );
+        assert_eq!(got.class, FailureClass::QuotaExhausted);
+        assert_eq!(got.scope, Scope::Account);
+        assert_eq!(got.reset_at, Some(utc_ms(2026, 11, 22, 18, 15)));
     }
 
     #[test]

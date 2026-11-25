@@ -4,6 +4,7 @@ use crate::orch::model::FailureClass;
 
 pub const BACKOFF_STEPS_MS: [i64; 3] = [2 * 60_000, 10 * 60_000, 30 * 60_000];
 pub const USAGE_SNAPSHOT_SOURCE: &str = "usage-snapshot";
+pub const USAGE_RESERVE_PERCENT: f64 = 90.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -265,7 +266,7 @@ impl CandidateStates {
         if report.windows.is_empty() {
             return;
         }
-        let exhausted: Vec<&UsageWindow> = report.windows.iter().filter(|w| w.used >= 100.0).collect();
+        let exhausted: Vec<&UsageWindow> = report.windows.iter().filter(|w| w.used >= USAGE_RESERVE_PERCENT).collect();
         if exhausted.is_empty() {
             self.clear_usage_snapshot(&report.agent, &report.account_id);
             return;
@@ -491,14 +492,25 @@ mod tests {
     }
 
     #[test]
-    fn usage_report_below_100_clears_only_snapshot_entries() {
+    fn usage_report_reserve_blocks_before_100() {
+        let mut states = CandidateStates::default();
+        states.apply_usage_report(&report(vec![(89.9, Some(NOW + 1))]), NOW);
+        assert!(states.entries(NOW).is_empty());
+        states.apply_usage_report(&report(vec![(90.0, Some(NOW + 5000))]), NOW);
+        let st = states.lookup(&key("claude", None), NOW);
+        assert_eq!(st.state, CandidateStatus::QuotaExhausted);
+        assert_eq!(st.until, Some(NOW + 5000));
+    }
+
+    #[test]
+    fn usage_report_below_reserve_clears_only_snapshot_entries() {
         let mut states = CandidateStates::default();
         states.apply_usage_report(&report(vec![(100.0, Some(NOW + 5000))]), NOW);
         mark(&mut states, &key("claude", Some("opus")), FailureClass::RateLimited, Some(NOW + 9000), NOW);
         let classifier_quota = CandidateKey { agent: "claude".into(), model: None, account: Some("other".into()) };
         mark(&mut states, &classifier_quota, FailureClass::QuotaExhausted, None, NOW);
         assert_eq!(states.entries(NOW).len(), 3);
-        states.apply_usage_report(&report(vec![(10.0, Some(NOW + 5000)), (99.9, None)]), NOW + 1);
+        states.apply_usage_report(&report(vec![(10.0, Some(NOW + 5000)), (89.9, None)]), NOW + 1);
         let left = states.entries(NOW + 1);
         assert_eq!(left.len(), 2);
         assert!(left.iter().all(|e| e.state.source == "classifier"));
