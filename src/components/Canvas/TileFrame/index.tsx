@@ -967,6 +967,7 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
               <GridTerminal
                 sessionId={tile.ptySessionId}
                 readOnly={runView}
+                attachOnly={Boolean(tile.agentId)}
                 cwd={runView ? tile.runCwd : tile.cwd}
                 onCwd={onCwd}
                 onOscTitle={onOscTitle}

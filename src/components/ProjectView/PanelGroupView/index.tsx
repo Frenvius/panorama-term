@@ -517,6 +517,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
                 <GridTerminal
                   sessionId={termTile.ptySessionId}
                   readOnly={runView}
+                  attachOnly={Boolean(termTile.agentId)}
                   cwd={runView ? termTile.runCwd : termTile.cwd}
                   onCwd={handlers.onCwd}
                   onOscTitle={handlers.onOscTitle}

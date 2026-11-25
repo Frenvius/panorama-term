@@ -96,6 +96,49 @@ fn find_agent_profile(agent: &Agent) -> Option<(Profile, std::path::PathBuf)> {
 pub enum LaunchError {
     ResumeFailed(String),
     Failed(String),
+    Cancelled,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FailureAction {
+    Ignore,
+    RetryFresh,
+    Crash,
+}
+
+pub fn failure_action(err: &LaunchError, desired: Desired) -> FailureAction {
+    match err {
+        _ if desired != Desired::Running => FailureAction::Ignore,
+        LaunchError::Cancelled => FailureAction::Ignore,
+        LaunchError::ResumeFailed(_) => FailureAction::RetryFresh,
+        LaunchError::Failed(_) => FailureAction::Crash,
+    }
+}
+
+fn checkpoint(id: &str) -> Result<(), LaunchError> {
+    match agent_snapshot(id) {
+        Some(agent) if agent.desired == Desired::Running => Ok(()),
+        _ => Err(LaunchError::Cancelled),
+    }
+}
+
+fn desired_of(id: &str) -> Desired {
+    agent_snapshot(id).map_or(Desired::Stopped, |a| a.desired)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionPlan {
+    KeepRunning,
+    Recreate,
+    Create,
+}
+
+pub fn session_plan(live: bool, cli_running: bool) -> SessionPlan {
+    match (live, cli_running) {
+        (true, true) => SessionPlan::KeepRunning,
+        (true, false) => SessionPlan::Recreate,
+        (false, _) => SessionPlan::Create,
+    }
 }
 
 pub fn spawn_start(id: String) {
@@ -111,15 +154,27 @@ async fn run_start(id: String) {
     crate::ui::broadcast_agents_changed(&id);
     let tile = crate::agents::model::tile_id(&id);
     let mut result = launch_agent(&id, false).await;
-    if let Err(LaunchError::ResumeFailed(detail)) = &result {
-        record_resume_failure(&id, Some(detail));
-        stop_session(&tile).await;
-        result = launch_agent(&id, true).await;
+    if let Err(err @ LaunchError::ResumeFailed(detail)) = &result {
+        if failure_action(err, desired_of(&id)) == FailureAction::RetryFresh {
+            record_resume_failure(&id, Some(detail));
+            stop_session(&tile).await;
+            result = launch_agent(&id, true).await;
+        }
     }
     guard(starting()).remove(&id);
-    if let Err(LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) = result {
-        stop_session(&tile).await;
-        on_agent_gone(&id, "shell_returned", Some(&detail)).await;
+    if let Err(err) = result {
+        match (failure_action(&err, desired_of(&id)), err) {
+            (FailureAction::Ignore, _) => {
+                if desired_of(&id) != Desired::Running {
+                    stop_session(&tile).await;
+                }
+            }
+            (_, LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) => {
+                stop_session(&tile).await;
+                on_agent_gone(&id, "shell_returned", Some(&detail)).await;
+            }
+            (_, LaunchError::Cancelled) => {}
+        }
     }
     crate::ui::broadcast_agents_changed(&id);
 }
@@ -151,8 +206,10 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
         return Ok(());
     }
     let tile = agent.tile_id();
-    if cli_running(&tile) {
-        return Ok(());
+    match session_plan(crate::lookup_live(&tile).is_some(), cli_running(&tile)) {
+        SessionPlan::KeepRunning => return Ok(()),
+        SessionPlan::Recreate => { stop_session(&tile).await; }
+        SessionPlan::Create => {}
     }
     let Some((profile, base)) = find_agent_profile(&agent) else {
         return Err(LaunchError::Failed(format!("unknown profile {}", agent.profile)));
@@ -179,6 +236,7 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
     if resume_id.is_none() && needs_list_capture(&profile.exe) {
         let before = list_sessions(&profile.exe, &agent.cwd).await.unwrap_or_default();
         guard(captures()).insert(id.to_string(), Capture { before, attempts: 0 });
+        checkpoint(id)?;
     }
 
     let params = crate::Params {
@@ -198,7 +256,9 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
         extra_env: env,
     };
     crate::get_or_create(&params).await.map_err(LaunchError::Failed)?;
+    checkpoint(id)?;
     tokio::time::sleep(Duration::from_millis(worker::SHELL_SETTLE_MS)).await;
+    checkpoint(id)?;
     if profile.exe == "agy" {
         crate::orch::agy::ensure_trusted_workspace(&agent.cwd);
     }
@@ -215,6 +275,7 @@ async fn launch_agent(id: &str, force_fresh: bool) -> Result<(), LaunchError> {
             None => LaunchError::Failed(e),
         });
     }
+    checkpoint(id)?;
     if resume_id.is_none() {
         crate::agents::context::after_fresh_start(&agent, &profile).await;
     }
@@ -530,6 +591,40 @@ mod tests {
         assert_eq!(backoff(1), Some(Duration::from_secs(30)));
         assert_eq!(backoff(2), Some(Duration::from_secs(120)));
         assert_eq!(backoff(3), None);
+    }
+
+    #[test]
+    fn a_stop_during_start_never_records_a_failure() {
+        let resume = LaunchError::ResumeFailed("killed".into());
+        let failed = LaunchError::Failed("killed".into());
+        assert_eq!(failure_action(&resume, Desired::Stopped), FailureAction::Ignore);
+        assert_eq!(failure_action(&failed, Desired::Stopped), FailureAction::Ignore);
+        assert_eq!(failure_action(&LaunchError::Cancelled, Desired::Running), FailureAction::Ignore);
+        assert_eq!(failure_action(&resume, Desired::Running), FailureAction::RetryFresh);
+        assert_eq!(failure_action(&failed, Desired::Running), FailureAction::Crash);
+    }
+
+    #[test]
+    fn launch_checkpoint_cancels_once_the_agent_is_stopped() {
+        let id = format!("ackpt{}", unix_ms() % 1_000_000);
+        let mut agent = crate::agents::reducer::tests::agent(&id, "ckpt");
+        agent.desired = Desired::Running;
+        lock().agents.insert(id.clone(), agent);
+        let running = checkpoint(&id);
+        lock().agents.get_mut(&id).unwrap().desired = Desired::Stopped;
+        let stopped = checkpoint(&id);
+        lock().agents.remove(&id);
+        let gone = checkpoint(&id);
+        assert_eq!(running, Ok(()));
+        assert_eq!(stopped, Err(LaunchError::Cancelled));
+        assert_eq!(gone, Err(LaunchError::Cancelled));
+    }
+
+    #[test]
+    fn a_plain_shell_under_the_agent_tile_is_recreated() {
+        assert_eq!(session_plan(true, true), SessionPlan::KeepRunning);
+        assert_eq!(session_plan(true, false), SessionPlan::Recreate);
+        assert_eq!(session_plan(false, false), SessionPlan::Create);
     }
 
     #[test]

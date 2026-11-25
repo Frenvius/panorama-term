@@ -35,6 +35,7 @@ interface GridTerminalProps {
   tileId: string;
   sessionId?: string;
   readOnly?: boolean;
+  attachOnly?: boolean;
   cwd?: string;
   cols: number;
   rows: number;
@@ -219,7 +220,7 @@ const rowHtml = (line: string, attrs: Uint32Array, r: number, nCols: number): st
   return html;
 };
 
-const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, visible, elevated, restart, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
+const GridTerminal = ({ tileId, sessionId, readOnly, attachOnly, cwd, cols, rows, active, visible, elevated, restart, onCwd, onOscTitle, onAgentActive, onClaudeStatus, onClaudeDiff, onProgress, onContextMenu }: GridTerminalProps) => {
   const [resume, setResume] = React.useState<ResumeTarget | null>(null);
   const [searchKey, setSearchKey] = React.useState<number | null>(null);
   const matchesRef = React.useRef<SearchMatch[]>([]);
@@ -442,7 +443,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
           rows: rowsRef.current,
           target: readOnly ? undefined : target,
           elevated: elevatedRef.current,
-          attach: readOnly,
+          attach: readOnly || attachOnly,
           idleCompact
         },
         {
@@ -532,7 +533,7 @@ const GridTerminal = ({ tileId, sessionId, readOnly, cwd, cols, rows, active, vi
       if (frameRef.current) rememberFrame(sessionKey, frameRef.current);
       frameRef.current = null;
     };
-  }, [tileId, sessionId, readOnly, cwd, draw]);
+  }, [tileId, sessionId, readOnly, attachOnly, cwd, draw]);
 
   React.useEffect(() => {
     const ws = wsRef.current;
