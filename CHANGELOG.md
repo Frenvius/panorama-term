@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.19]
+
+### Added
+- The mobile app lists tiles grouped like the desktop Projects panel (frames, project folders, loose tiles), including notes, editors and other non-terminal tiles.
+- Renaming a tile on the desktop now shows the new name on the phone, and file tiles can be opened from the phone.
+- `panorama-cli app update` checks for, installs and restarts into the latest version from a terminal; `panorama-cli app version` prints the running version.
+
 ## [0.4.18]
 
 ### Added
