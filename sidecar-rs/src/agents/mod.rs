@@ -195,7 +195,7 @@ fn stop_refusal(live: &AgentLive, force: bool) -> Option<&'static str> {
     }
     match (live.status, live.status_source) {
         (LiveStatus::Busy | LiveStatus::Waiting, _) => Some("agent busy; use force to stop it"),
-        (LiveStatus::Idle, StatusSource::None) if live.live => Some("agent status unknown; use force to stop it"),
+        (LiveStatus::Idle, StatusSource::None) if live.live => Some("agent status unknown (no status source yet); use force to stop it"),
         _ => None,
     }
 }

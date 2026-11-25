@@ -9,8 +9,8 @@ import { agentActions } from '~/usecase/hooks/useAgents';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { projectName } from '~/usecase/util/projectLayout';
 import { requestShowAgent } from '~/usecase/util/agentRequest';
-import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { startAgent, stopAgent } from '~/adapter/agents/agents.client';
+import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { statusToDotKind, isNotResumable, needsForceStop } from '~/usecase/util/agents';
 
 const SHOW_WHEN_LIVE_MS = 120_000;

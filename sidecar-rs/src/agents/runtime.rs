@@ -163,9 +163,17 @@ trait StartBackend {
 
 struct LiveBackend;
 
+const FOREGROUND_RECHECK: Duration = Duration::from_millis(300);
+
 impl StartBackend for LiveBackend {
     fn live(&self, tile: &str) -> bool { crate::lookup_live(tile).is_some() }
-    async fn cli_running(&self, tile: &str) -> bool { cli_running(tile) }
+    async fn cli_running(&self, tile: &str) -> bool {
+        if cli_running(tile) {
+            return true;
+        }
+        tokio::time::sleep(FOREGROUND_RECHECK).await;
+        cli_running(tile)
+    }
     async fn stop_session(&self, tile: &str) -> bool { stop_session(tile).await }
     async fn list_sessions(&self, exe: &str, cwd: &str) -> Option<HashSet<String>> { list_sessions(exe, cwd).await }
     async fn ensure_session(&self, params: &crate::Params) -> Result<(), String> { crate::get_or_create(params).await.map(|_| ()) }
@@ -205,7 +213,7 @@ async fn run_start_with<B: StartBackend>(backend: &B, id: String) {
             (FailureAction::Ignore, _) if desired_of(&id) != Desired::Running => {
                 backend.stop_session(&tile).await;
             }
-            (FailureAction::Ignore, _) => {}
+            (FailureAction::Ignore, _) => backend.respawn(&id),
             (_, LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) => {
                 backend.stop_session(&tile).await;
                 on_agent_gone(&id, "shell_returned", Some(&detail)).await;
@@ -604,9 +612,6 @@ async fn quiet_loop() {
 }
 
 pub fn status_touched(agent_id: &str) {
-    if agent_snapshot(agent_id).is_none() {
-        return;
-    }
     static PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let pending = PENDING.get_or_init(Default::default);
     if !guard(pending).insert(agent_id.to_string()) {
@@ -614,14 +619,15 @@ pub fn status_touched(agent_id: &str) {
     }
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         guard(pending).remove(agent_id);
-        crate::ui::broadcast_agents_changed(agent_id);
         return;
     };
     let id = agent_id.to_string();
     handle.spawn(async move {
         tokio::time::sleep(STATUS_DEBOUNCE).await;
         guard(pending).remove(&id);
-        crate::ui::broadcast_agents_changed(&id);
+        if agent_snapshot(&id).is_some() {
+            crate::ui::broadcast_agents_changed(&id);
+        }
     });
 }
 
