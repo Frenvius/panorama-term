@@ -141,6 +141,21 @@ pub fn session_plan(live: bool, cli_running: bool) -> SessionPlan {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum FinishAction {
+    StopSession,
+    Respawn,
+    Crash(String),
+}
+
+pub fn finish_action(err: LaunchError, desired: Desired) -> FinishAction {
+    match err {
+        _ if desired != Desired::Running => FinishAction::StopSession,
+        LaunchError::Cancelled => FinishAction::Respawn,
+        LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail) => FinishAction::Crash(detail),
+    }
+}
+
 pub fn spawn_start(id: String) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(run_start(id));
@@ -209,16 +224,13 @@ async fn run_start_with<B: StartBackend>(backend: &B, id: String) {
     }
     guard(starting()).remove(&id);
     if let Err(err) = result {
-        match (failure_action(&err, desired_of(&id)), err) {
-            (FailureAction::Ignore, _) if desired_of(&id) != Desired::Running => {
-                backend.stop_session(&tile).await;
-            }
-            (FailureAction::Ignore, _) => backend.respawn(&id),
-            (_, LaunchError::Failed(detail) | LaunchError::ResumeFailed(detail)) => {
+        match finish_action(err, desired_of(&id)) {
+            FinishAction::StopSession => { backend.stop_session(&tile).await; }
+            FinishAction::Respawn => backend.respawn(&id),
+            FinishAction::Crash(detail) => {
                 backend.stop_session(&tile).await;
                 on_agent_gone(&id, "shell_returned", Some(&detail)).await;
             }
-            (_, LaunchError::Cancelled) => {}
         }
     }
     crate::ui::broadcast_agents_changed(&id);
@@ -763,6 +775,15 @@ mod tests {
         run_start_with(&backend, id.clone()).await;
         finish(&id);
         assert_eq!(backend.calls(), vec!["cli_running"], "a running CLI is kept");
+    }
+
+    #[test]
+    fn finish_restarts_a_start_cancelled_while_the_agent_is_wanted_again() {
+        assert_eq!(finish_action(LaunchError::Cancelled, Desired::Running), FinishAction::Respawn);
+        assert_eq!(finish_action(LaunchError::Cancelled, Desired::Stopped), FinishAction::StopSession);
+        assert_eq!(finish_action(LaunchError::Failed("x".into()), Desired::Stopped), FinishAction::StopSession);
+        assert_eq!(finish_action(LaunchError::ResumeFailed("x".into()), Desired::Stopped), FinishAction::StopSession);
+        assert_eq!(finish_action(LaunchError::Failed("x".into()), Desired::Running), FinishAction::Crash("x".into()));
     }
 
     #[test]
