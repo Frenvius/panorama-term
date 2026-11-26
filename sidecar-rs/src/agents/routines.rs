@@ -1010,7 +1010,9 @@ pub(crate) fn summary_for(agent_id: &str) -> Value {
         let mine: Vec<&Routine> = s.routines.values().filter(|r| r.agent_id == agent_id).collect();
         let enabled: Vec<&&Routine> = mine.iter().filter(|r| r.active()).collect();
         let next = enabled.iter().filter_map(|r| next_run_local(r, unix_ms())).min();
-        json!({ "count": mine.len(), "enabled": enabled.len(), "nextRunLocal": next })
+        let last_at = mine.iter().flat_map(|r| s.runs_of(&r.id).map(|x| x.ended_at.or(x.delivered_at).unwrap_or(x.fired_at))
+            .chain(s.skips.get(&r.id).into_iter().flatten().map(|k| k.at))).max();
+        json!({ "count": mine.len(), "enabled": enabled.len(), "nextRunLocal": next, "lastAt": last_at })
     })
 }
 

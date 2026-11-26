@@ -24,6 +24,7 @@ export const waitTooltip = (waits: AgentWaitSummary[], now: number): string => {
 export const startedByLabel = (startedBy: string): string => {
   if (startedBy.startsWith('wait ')) return 'started by wait';
   if (startedBy.startsWith('orch ')) return 'started by board';
+  if (startedBy.startsWith('routine ')) return 'started by routine';
   return 'started by message';
 };
 

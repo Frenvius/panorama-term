@@ -48,7 +48,7 @@ export interface PersistentAgent extends AgentLive {
   coordinates?: string[];
   canCoordinate?: boolean;
   waits?: AgentWaitSummary[];
-  routines?: { count: number; enabled: number; nextRunLocal: string | null };
+  routines?: { count: number; enabled: number; nextRunLocal: string | null; lastAt: number | null };
 }
 
 export type RoutineOutcome = 'reported' | 'no_update' | 'failed' | 'timeout' | 'skipped';

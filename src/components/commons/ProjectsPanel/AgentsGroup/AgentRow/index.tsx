@@ -186,7 +186,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
           </span>
         )}
         {(agent.routines?.enabled ?? 0) > 0 && (
-          <span className={styles.waitIcon} title={agent.routines?.nextRunLocal ? `next routine run ` : 'routines enabled'}>
+          <span className={styles.waitIcon} title={agent.routines?.nextRunLocal ? `next routine run ${agent.routines.nextRunLocal}` : 'routines enabled'}>
             <AlarmClock size={10} strokeWidth={2} />
           </span>
         )}

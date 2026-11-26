@@ -40,6 +40,7 @@ describe('startedByLabel', () => {
   it('names what started the agent', () => {
     expect(startedByLabel('wait w123')).toBe('started by wait');
     expect(startedByLabel('orch r6un')).toBe('started by board');
+    expect(startedByLabel('routine rt3k2a')).toBe('started by routine');
     expect(startedByLabel('message m1')).toBe('started by message');
   });
 });
