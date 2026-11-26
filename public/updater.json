@@ -1,23 +1,23 @@
 {
-  "version": "0.4.20",
-  "notes": "### Added\n- Off-LAN pairing: a phone or another desktop can pair over the internet through the relay, without being on the same network as the host.\n- Persistent agents: run named agents that keep their session, resume natively and restart after a crash, all managed from the Projects panel.\n- Routines: schedule recurring instructions for an agent, with a webhook token, fresh sessions per run, file guards and cost caps.\n- Agent messaging: agents send and reply to each other and coordinate boards, with a user inbox, queue badges and agent status in the panel.\n- Session rollover: long agent sessions roll over with a handoff turn and carry per-agent memories across sessions.\n- Agent UI: memories popover, renew session, and context and rollover chips.\n\n### Fixed\n- Agent reliability: safer starts and stops under races, session and tile recovery, routine cleanup, and hardened handling of pasted text and forged headers.\n\n### Performance\n- Lighter worker MCP load and compacted orchestration run output.",
-  "pub_date": "2026-11-26T15:04:47Z",
+  "version": "0.4.21",
+  "notes": "### Performance\n- Remote host over the relay is much smoother: the host sends terminal frames at a steadier rate and uses more of the available relay bandwidth, removing the lag where typed text appeared slowly.",
+  "pub_date": "2026-11-26T20:43:31Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNMREkyRjk4c2xSUFhIamhyTHhyWHNRQkgycStsRjB4QmkwQ0V3MzNHZi9hb1lvcUhCMnpXVnpsOTd4M2dVcTcrUkhoNFVwZEdWeTVlWFl6akFRbndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1MTgzCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMAoxTEtDZ2FYVGtLRUIzQVFuZkJlODdQNzhLSHN2TEx6OVluMnpoVC9FZmsxajJSdGxMSEg0a1ViQnlwQ0lFTVNsS0dvZitkUjlYUnNMUXZUd1I1MTNCQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.21/Panorama_0.4.21_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtETXFQRW5pa05GeTlsNm4vd1lxc1dDenBlQzVWRVdpZi92aXFSWnMzaW1EREE1WnAza1h4cEhBR2IwUW9qeDdvTmFZSFhncW5TTnVxVHdndjRKNXdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzI1NjExCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMQpaTUVmcENjUk5QbXFBdy9RaHZEcjdYRzdDVk1FR1o3T0kzQ200VTNRWnk1eHZYTnhkS1ErNlFrQThVVXErWTVqS3EwellhUW8yWDhBOXRBUHdtSHRCZz09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGg3NWNyVzNSU3ZCWVlaa1hsZnZOYmFwZGkxSkl2c0pWQ3k1VE84Tnh0MW1JMFhPWi9pZ1ZacmxRVUdOdGNUM1NqaVp0dU9GL1V2SDYwb0dNdVZ4MkFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1MjczCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMApyU2NndVF3K1VEMHJmSXFGcktkeTU3NWFyT1RLU3BjWHZvb1BjaG05NTFqMGRxbVp2R1RTWWVTWVpNVjhtU2NwMGJnamh0Zmd2eHBCSzFQQ0thaEhEdz09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.21/Panorama_0.4.21_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGxGSURkM280dU1LcEhwRE1MMS9WSW1BLzVvcm5GaWhiOWg1Y3AxRU95ZWVuU1pzVVBzQ0U2THlCVUp4OVptWkM4czYreFBhZVFING90UVQ3SXVzd2dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzI1NzAyCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMQptbWt5UFhoWm1ZQ1p6U0ZyT0ZrY3AxYys3TFAvTlFWaDRzbzZjZEdnTFF5eGJ4T2Z2V3pZeU1wbE55YzhXTVVSVXFXMzRDQ2RacU94Vjc4RTlNTzVBUT09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9rNXo4WHZTN3pPWDc2WHBJSFFONDBmb2dPU3VIMVhiUVMwT0hDQURGaFNMQmZ3aWo2TCswZE10b0FrTWFwdGE5TkJLQUN3SXZ3SEhydWlzcG5WRFFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1Mjc4CWZpbGU6UGFub3JhbWFfMC40LjIwX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC40LjIwClFZUHhQVFVKTzVhVGEvSkVGMDZyZUhxVzBGSkYxT29VYW9Qb0JpY2NsYlYxeURLc1Z3VmRNRU9vVllTZVRiNDlrQmlYYlFZUTdtQ3dubGtZa0JTd0NRPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.21/Panorama_0.4.21_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGo2V000RlZyZlNjUkRyb0syNlJMVC9XSVBzenhXSDRwK1lwNk05MEQwT0JCdmdkQWY2Q2owUmVTYUZKYVVlWGxseGVFS0pxbllDRWdxSGlDMW9WdndBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzI1NjIyCWZpbGU6UGFub3JhbWFfMC40LjIxX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC40LjIxCnIvbFdNcmVSWURrWHFyYnRTZHVkY212VnpWdTBHQndGNWd0aEdsajQ5VUV1SVlXa3dBM3lnTy9yVjhvQlVUa2xSNVIxTVhSdEpkLzVLcGM5ZGRPQ0R3PT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNEd1BrcTJsc1h1enN4NmlVRHJxdjlLcXhTV0VidVl1clEvL1NHSXU5bmxnNzEzZ0tzVTYxaXVBK2p0QlVNZUZqRkh6bjU5cFhkTEZHSzRqbkhpRGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1NDU5CWZpbGU6UGFub3JhbWFfMC40LjIwX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjQuMjAKNHRHMi8vaEVETTlBUThxN1FnRWUvZXFVU1ZIT0ZpRVRuQ0o0aU9hMHdsa3N0MUI5UUxTeWhYOXdIcG1BWW5MTXhiUTRIbDdBUFRVRzh4SUFVVTNnQnc9PQo="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.21/Panorama_0.4.21_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtaaWZhUlBMUElPTmcvQVJTMUJ4Y3NGVkNqdHhHRmlyK0U2OXl2U05qM2NZMjdvalBEUmNxb0hMR2RINmFoVCtVWG82cW1lR29IRytPWHVOWG45QXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzI1NzQ4CWZpbGU6UGFub3JhbWFfMC40LjIxX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjQuMjEKdmRnRStQY0RWRTcrMnZFcm12bkh5R2l5NEtvcXlEOU1QNVVwRUU0SDVLcWlWRW5PYnpkNUFvZExSOHVoTS9kdXRERVA2NVR3RmtHcTBiMGt0aWk1Q1E9PQo="
     }
   }
 }
