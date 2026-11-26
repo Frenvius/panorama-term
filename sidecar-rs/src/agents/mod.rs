@@ -111,6 +111,7 @@ fn commit_cmd(agent_id: &str, cmd: Cmd) -> Result<Option<(String, Value)>, Commi
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     store::load_all(&mut lock(), &base);
+    memory::init();
     messages::init();
     waits::init();
     routines::init();
@@ -173,6 +174,12 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "routine-report" => routines::handle_report(&v),
         "routine-token" => routines::handle_token(&v),
         "routine-payload" => routines::handle_payload(&v),
+        "memory" => memory::handle_list(&v),
+        "memory-remember" => memory::handle_remember(&v),
+        "memory-edit" => memory::handle_edit(&v),
+        "memory-set" => memory::handle_set(&v),
+        "memory-forget" => memory::handle_forget(&v),
+        "memory-search" => memory::handle_search(&v),
         "compact" => tokio::task::spawn_blocking(move || compact::handle_compact(&v)).await.unwrap_or_else(|_| err_resp("io", "compaction failed")),
         _ => err_resp("bad_request", "unknown command"),
     }
@@ -562,6 +569,7 @@ fn merge_live(agent: &Agent, full: bool) -> Value {
         obj.insert("awaitingReplies".into(), awaiting.into());
         obj.insert("coordinates".into(), crate::orch::runs_coordinated_by(&agent.tile_id()).into());
         obj.insert("routines".into(), routines::summary_for(&agent.id));
+        obj.insert("memory".into(), memory::summary_for(&agent.id));
         obj.insert("canCoordinate".into(), (profile_exe(&agent.profile).as_deref() == Some(COORDINATOR_EXE)).into());
         obj.insert("waits".into(), waits::open_waits_json(&mail::Party::Agent { id: agent.id.clone() }));
     }
@@ -653,6 +661,7 @@ fn handle_delete(v: &Value) -> String {
     waits::cancel_for(&mail::Party::Agent { id: id.clone() }, "agent_deleted");
     detach_coordinator(tile.clone());
     routines::on_agent_deleted(&id);
+    memory::on_agent_deleted(&id);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }

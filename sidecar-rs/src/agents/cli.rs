@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate|compact> [args] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate|compact|memory|routine> [args] [--flags] [--json]";
 const PREVIEW_CHARS: usize = 40;
 
 #[derive(Debug, Default)]
@@ -396,9 +396,94 @@ fn routine_main(args: &[String]) -> ! {
     std::process::exit(0);
 }
 
+const MEMORY_USAGE: &str = "usage: panorama-cli agent memory <remember|edit|set|forget|search|list> [args] [--essential|--searchable] [--agent <name>] [--json]";
+
+fn parse_memory(args: &[String], env: &CliEnv) -> Result<(String, Map<String, Value>), String> {
+    let sub = args.first().ok_or(MEMORY_USAGE)?;
+    let (route, positional, flags): (&str, &[&str], &str) = match sub.as_str() {
+        "remember" => ("memory-remember", &["text"], "essential agent"),
+        "edit" => ("memory-edit", &["id", "text"], "agent"),
+        "set" => ("memory-set", &["id"], "essential searchable agent"),
+        "forget" => ("memory-forget", &["id"], "agent"),
+        "search" => ("memory-search", &["query"], "agent"),
+        "list" => ("memory", &[], "essential agent"),
+        _ => return Err(MEMORY_USAGE.into()),
+    };
+    let mut body = Map::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        let Some(flag) = arg.strip_prefix("--") else {
+            words.push(arg.clone());
+            i += 1;
+            continue;
+        };
+        if !flags.split_whitespace().any(|f| f == flag) {
+            return Err(format!("unknown flag --{flag} for memory {sub}"));
+        }
+        match flag {
+            "essential" | "searchable" => {
+                body.insert("essential".into(), (flag == "essential").into());
+                i += 1;
+            }
+            _ => {
+                let raw = args.get(i + 1).ok_or_else(|| format!("--{flag} requires a value"))?;
+                body.insert(flag.into(), raw.clone().into());
+                i += 2;
+            }
+        }
+    }
+    let last = positional.len().saturating_sub(1);
+    for (n, field) in positional.iter().enumerate() {
+        let value = if n == last { words[n.min(words.len())..].join(" ") } else { words.get(n).cloned().unwrap_or_default() };
+        if value.trim().is_empty() {
+            return Err(format!("memory {sub} requires {field}"));
+        }
+        body.insert((*field).into(), value.into());
+    }
+    if positional.is_empty() && !words.is_empty() {
+        return Err(format!("unexpected argument {}", words[0]));
+    }
+    if sub == "set" && !body.contains_key("essential") {
+        return Err("memory set requires --essential or --searchable".into());
+    }
+    if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+    if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+    if env.worker { body.insert("worker".into(), true.into()); }
+    Ok((route.to_string(), body))
+}
+
+fn memory_main(args: &[String]) -> ! {
+    let json = args.iter().any(|a| a == "--json");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let (route, body) = parse_memory(&args, &CliEnv::from_process()).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    let text_body = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+    let response = http_post(crate::port(), &format!("/agents/{route}"), &text_body, 15_000)
+        .unwrap_or_else(|e| exit_with(&format!("brain unreachable: {e}"), EXIT_UNREACHABLE));
+    let text = parse_response_body(&response);
+    let v: Value = serde_json::from_str(text).unwrap_or_else(|_| exit_with("unexpected response", EXIT_UNREACHABLE));
+    if v["ok"].as_bool() != Some(true) {
+        exit_with(&format!("{}: {}", v["error"]["code"].as_str().unwrap_or("error"), v["error"]["message"].as_str().unwrap_or("")), EXIT_API);
+    }
+    if json {
+        println!("{text}");
+    } else if let Some(lines) = v["lines"].as_array() {
+        if lines.is_empty() {
+            println!("No memories found.");
+        }
+        lines.iter().filter_map(Value::as_str).for_each(|l| println!("{l}"));
+    } else {
+        println!("{}", v["text"].as_str().unwrap_or(""));
+    }
+    std::process::exit(0);
+}
+
 pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
-    if args.first().map(String::as_str) == Some("routine") {
+    if args.first().map(String::as_str) == Some("memory") {
+        memory_main(&args[1..]);
+    }    if args.first().map(String::as_str) == Some("routine") {
         routine_main(&args[1..]);
     }
     let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
@@ -591,5 +676,25 @@ mod tests {
         assert_eq!(list_line(&agent), "rev  idle  claude:haiku  D:/repo");
         let bare = serde_json::json!({"name":"rev","status":"stopped","profile":"kimi"});
         assert_eq!(list_line(&bare), "rev  stopped  kimi  -");
+    }
+
+    #[test]
+    fn memory_commands_parse_with_the_caller_from_env() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false };
+        let (route, body) = parse_memory(&args(&["remember", "Reply", "in", "Portuguese.", "--essential"]), &env).unwrap();
+        assert_eq!(route, "memory-remember");
+        assert_eq!((body["text"].as_str(), body["essential"].as_bool(), body["fromAgent"].as_str()), (Some("Reply in Portuguese."), Some(true), Some("a1")));
+        assert!(!body.contains_key("by"), "by is set by the brain");
+        let (route, body) = parse_memory(&args(&["set", "m1", "--searchable"]), &env).unwrap();
+        assert_eq!((route.as_str(), body["essential"].as_bool()), ("memory-set", Some(false)));
+        let (_, body) = parse_memory(&args(&["search", "deploy", "staging"]), &env).unwrap();
+        assert_eq!(body["query"], "deploy staging");
+        let (_, body) = parse_memory(&args(&["edit", "m1", "new", "text"]), &env).unwrap();
+        assert_eq!((body["id"].as_str(), body["text"].as_str()), (Some("m1"), Some("new text")));
+        assert!(parse_memory(&args(&["set", "m1"]), &env).is_err());
+        assert!(parse_memory(&args(&["remember"]), &env).is_err());
+        assert!(parse_memory(&args(&["remember", "x", "--by", "user"]), &env).is_err());
+        assert!(parse_memory(&args(&["list", "extra"]), &env).is_err());
     }
 }

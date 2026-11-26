@@ -4345,6 +4345,25 @@ fn spawn_sem() -> Arc<tokio::sync::Semaphore> {
         .clone()
 }
 
+#[cfg(test)]
+pub(crate) fn insert_test_session(tile_id: &str) -> Arc<Session> {
+    let session = Arc::new(Session {
+        tile_id: tile_id.into(), shell: String::new(), pid: 0,
+        parser: Mutex::new(vt100::Parser::new_with_callbacks(dim(24), dim(80), 0, CwdSink::default())),
+        dirty: AtomicU64::new(0), parsed_total: AtomicU64::new(0), flushed_total: AtomicU64::new(0),
+        main_dirty: AtomicBool::new(false), main_history: Mutex::new(Vec::new()), exited: AtomicBool::new(false),
+        kill_pending: AtomicBool::new(false),
+        visible: AtomicBool::new(false), clients: Mutex::new(Vec::new()),
+        size_ownership: Mutex::new(SizeOwnership::default()), cols: AtomicU16::new(80), rows: AtomicU16::new(24),
+        scrollback: AtomicUsize::new(0), grow_pad: AtomicUsize::new(0), cwd: Mutex::new(None), agent_cwd: Mutex::new(None), cwd_dirty: AtomicU64::new(0),
+        branch: Mutex::new(None), cmd: Mutex::new(None), clipboard: Mutex::new(None), clipboard_dirty: AtomicU64::new(0),
+        title: Mutex::new(None), title_dirty: AtomicU64::new(0), events: Mutex::new(Vec::new()),
+        agent_state: Mutex::new(serde_json::Map::new()), mod_session: Mutex::new(None),
+        focused: Arc::new(AtomicBool::new(false)), focus_reporting: Arc::new(AtomicBool::new(false)), kimi: AtomicBool::new(false), run: None,
+    });
+    sessions().lock().unwrap().insert(tile_id.to_string(), session.clone());
+    session
+}
 pub(crate) fn lookup_live(tile_id: &str) -> Option<Arc<Session>> {
     let map = sessions().lock().unwrap();
     map.get(tile_id)

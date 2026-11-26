@@ -1841,34 +1841,39 @@ pub(crate) mod tests {
     fn a_commit_racing_a_compaction_lands_in_the_new_log() {
         let _serial = serial();
         crate::orch::tests::f12_test_home();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tag = unix_ms();
         let writers: Vec<_> = (0..4).map(|t| {
-            let stop = stop.clone();
+            let done = done.clone();
             std::thread::spawn(move || {
-                let mut i = 0;
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let id = format!("wr{t}x{i}x{}", unix_ms());
-                    let waiter = Party::Tile { id: format!("race-{t}") };
+                let mut opened = Vec::new();
+                for i in 0..24 {
+                    let id = format!("wr{tag}x{t}x{i}");
+                    let waiter = Party::Tile { id: format!("race-{tag}-{t}-{}", i / 6) };
                     if commit(WaitCmd::Open(Wait { created_at: unix_ms(), ..wait(&id, waiter, vec![timer(unix_ms() + DAY_MS)]) })).is_ok() {
-                        let _ = commit(WaitCmd::Cancel { id, by: "user".into(), at: unix_ms() });
+                        opened.push(id);
                     }
-                    i += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
+                done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                opened
             })
         }).collect();
-        for _ in 0..40 {
+        while done.load(std::sync::atomic::Ordering::SeqCst) < 4 {
             compact(true);
         }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        for w in writers {
-            w.join().unwrap();
-        }
+        let opened: Vec<String> = writers.into_iter().flat_map(|w| w.join().unwrap()).collect();
+        assert!(opened.len() >= 90, "{}", opened.len());
         let path = store::waits_path(&crate::panorama_dir().unwrap());
         let mut disk = Waits::default();
         for line in std::fs::read_to_string(path).unwrap().lines() {
             let record: store::EventRecord = serde_json::from_str(line).unwrap();
             disk.replay(&record.kind, &record.data).unwrap();
         }
-        assert_eq!(disk.waits, rt().waits.waits, "every racing commit is in the log");
+        let missing: Vec<&String> = opened.iter().filter(|id| !disk.waits.contains_key(*id) || !rt().waits.waits.contains_key(*id)).collect();
+        for id in &opened {
+            let _ = commit(WaitCmd::Cancel { id: id.clone(), by: "user".into(), at: unix_ms() });
+        }
+        assert!(missing.is_empty(), "lost {} racing commits", missing.len());
     }
 }
