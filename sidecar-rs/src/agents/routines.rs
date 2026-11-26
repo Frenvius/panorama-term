@@ -2233,7 +2233,9 @@ pub(crate) mod tests {
         assert!(!crate::agents::runtime::quiet_mail(&agent));
         let id = create(&name, json!({}));
         handle_run(&json!({ "id": id, "userCap": cap() }), None);
+        commit_mail(MailCmd::Deliver { ids: vec![message_id(&id, 1)], at: unix_ms() }).unwrap();
         on_delivered(&[message_id(&id, 1)], unix_ms(), unix_ms());
+        assert!(!crate::agents::delivery::has_mail(&Party::Agent { id: agent.clone() }), "no mail left in the queue");
         assert!(crate::agents::runtime::quiet_mail(&agent), "delivered and open: keep reading the screen");
     }
     #[test]
