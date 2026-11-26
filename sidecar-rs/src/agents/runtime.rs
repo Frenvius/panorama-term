@@ -605,8 +605,7 @@ async fn quiet_loop() {
         interval.tick().await;
         let ui = crate::ui::has_subscribers();
         for (id, tile, ready_text, hook) in quiet_targets() {
-            let mail = crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: id.clone() })
-                || crate::agents::routines::awaiting_turn(&id);
+            let mail = quiet_mail(&id);
             if !quiet_wanted(hook, ui, mail, !hook_status_known(&tile)) {
                 continue;
             }
@@ -677,6 +676,11 @@ fn plain_quiet_targets() -> Vec<(String, Option<String>)> {
             plain_ready_text(&binding, &profiles).map(|ready| (t, ready))
         })
         .collect()
+}
+
+pub(crate) fn quiet_mail(agent_id: &str) -> bool {
+    crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: agent_id.to_string() })
+        || crate::agents::routines::awaiting_turn(agent_id)
 }
 
 pub fn quiet_wanted(hook: bool, ui: bool, mail: bool, hook_missing: bool) -> bool {

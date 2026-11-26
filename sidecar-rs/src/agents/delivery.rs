@@ -171,7 +171,7 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
             if prefix.is_some() {
                 backend.prefix_delivered(party);
             }
-            crate::agents::routines::on_delivered(&batch.ids, backend.now());
+            crate::agents::routines::on_delivered(&batch.ids, paste_started, backend.now());
             for m in queue.iter().filter(|m| batch.ids.contains(&m.id) && m.kind.as_deref() == Some(crate::agents::mail::KIND_ORCH)) {
                 if let Some(run) = m.key.as_deref().and_then(crate::agents::mail::orch_run) {
                     backend.orch_delivered(run);

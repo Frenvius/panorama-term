@@ -149,6 +149,10 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
     }
 }
 
+pub(crate) fn ui_user_cap() -> &'static str {
+    routine_hook::user_cap_for_ui()
+}
+
 pub(crate) const HOOK_PAYLOAD_MAX: usize = routine_hook::PAYLOAD_MAX_BYTES;
 pub(crate) const HOOK_TOKEN_HEADER: &str = routine_hook::TOKEN_HEADER;
 
@@ -636,23 +640,65 @@ pub fn fresh_ready(status: LiveStatus, source: StatusSource, typed_ms_ago: u64) 
     status == LiveStatus::Idle && source != StatusSource::None && typed_ms_ago >= delivery::TYPING_QUIET_MS
 }
 
-pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str) {
+#[derive(Debug, PartialEq, Eq)]
+pub enum FreshOutcome {
+    Ready,
+    Abandoned,
+    Busy,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FreshStep {
+    Wait,
+    Restart,
+    Abandon,
+    GiveUp,
+}
+
+pub fn fresh_step(wanted: bool, ready: bool, attempts: u32) -> FreshStep {
+    if !wanted {
+        FreshStep::Abandon
+    } else if ready {
+        FreshStep::Restart
+    } else if attempts >= FRESH_WAIT_MAX {
+        FreshStep::GiveUp
+    } else {
+        FreshStep::Wait
+    }
+}
+
+fn fresh_ready_now(agent_id: &str) -> Option<bool> {
     let tile = model::tile_id(agent_id);
-    for _ in 0..FRESH_WAIT_MAX {
-        let Some(agent) = lock().agents.get(agent_id).cloned() else { return };
-        let live = live_view(&agent);
-        let typed = unix_ms().saturating_sub(crate::client_input(&tile).last_ms);
-        if !live.live || fresh_ready(live.status, live.status_source, typed) {
-            break;
+    let agent = lock().agents.get(agent_id).cloned()?;
+    let live = live_view(&agent);
+    let typed = unix_ms().saturating_sub(crate::client_input(&tile).last_ms);
+    Some(!live.live || fresh_ready(live.status, live.status_source, typed))
+}
+
+pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str, wanted: impl Fn() -> bool) -> FreshOutcome {
+    let tile = model::tile_id(agent_id);
+    let mut attempts = 0;
+    loop {
+        let Some(ready) = fresh_ready_now(agent_id) else { return FreshOutcome::Abandoned };
+        match fresh_step(wanted(), ready, attempts) {
+            FreshStep::Abandon => return FreshOutcome::Abandoned,
+            FreshStep::GiveUp => return FreshOutcome::Busy,
+            FreshStep::Wait => {
+                attempts += 1;
+                tokio::time::sleep(FRESH_POLL).await;
+            }
+            FreshStep::Restart => break,
         }
-        tokio::time::sleep(FRESH_POLL).await;
     }
     if crate::lookup_live(&tile).is_some() {
         if commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "brain".into(), force: false, crashed: false }).is_err() {
-            return;
+            return FreshOutcome::Abandoned;
         }
         runtime::stop_session(&tile).await;
         runtime::forget(agent_id, &tile);
+    }
+    if !wanted() {
+        return FreshOutcome::Abandoned;
     }
     if let Err(e) = commit_cmd(agent_id, Cmd::SessionClear { id: agent_id.into(), at: unix_ms(), reason: "routine".into() }) {
         eprintln!("[routines] fresh session for {agent_id}: {}", e.message);
@@ -660,8 +706,8 @@ pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str) {
     if let Err(e) = start_agent(agent_id, Some(format!("routine {routine}"))) {
         eprintln!("[routines] fresh start of {agent_id}: {}", e.message);
     }
+    FreshOutcome::Ready
 }
-
 async fn orch_call(command: &str, body: Value) -> Result<Value, String> {
     let text = crate::orch::handle(command, body.to_string().as_bytes()).await;
     let v: Value = serde_json::from_str(&text).unwrap_or_default();

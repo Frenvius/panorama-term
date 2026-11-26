@@ -117,6 +117,10 @@ fn send_event(event: serde_json::Value) {
 pub async fn serve(ws: WebSocketStream<TcpStream>) {
     let mut events = channel().subscribe();
     let (mut tx, mut rx) = ws.split();
+    let cap = json!({ "t": "ui.capability", "token": crate::agents::ui_user_cap() }).to_string();
+    if tx.send(Message::Text(cap)).await.is_err() {
+        return;
+    }
     loop {
         tokio::select! {
             evt = events.recv() => match evt {

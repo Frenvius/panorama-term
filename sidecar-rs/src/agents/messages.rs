@@ -205,6 +205,19 @@ fn parties_of(cmd: &MailCmd, mailbox: &Mailbox) -> Vec<Party> {
 }
 
 pub(crate) fn commit_mail(cmd: MailCmd) -> Result<Value, MailError> {
+    let closed = match &cmd {
+        MailCmd::Fail { id, .. } if id.starts_with('u') => Some((id.clone(), true)),
+        MailCmd::Drop { id, .. } if id.starts_with('u') => Some((id.clone(), false)),
+        _ => None,
+    };
+    let data = commit_mail_inner(cmd)?;
+    if let Some((id, failed)) = closed {
+        crate::agents::routines::on_message_closed(&id, failed);
+    }
+    Ok(data)
+}
+
+fn commit_mail_inner(cmd: MailCmd) -> Result<Value, MailError> {
     let io = |message: String| MailError { code: "io", message };
     let (parties, data) = {
         let mut state = mail_lock();

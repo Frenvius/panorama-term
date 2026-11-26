@@ -395,7 +395,8 @@ pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
     if args.first().map(String::as_str) == Some("routine") {
         routine_main(&args[1..]);
-    }    let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    }
+    let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
     let body = serde_json::to_string(&parsed.body).unwrap_or_else(|_| "{}".into());
     let path = format!("/agents/{}", route(&parsed.command, &parsed.body));
     let response = http_post(crate::port(), &path, &body, 15_000)

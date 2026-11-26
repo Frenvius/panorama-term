@@ -133,9 +133,28 @@ pub fn payload_text(run_id: &str, payload: &str, cli: &str) -> String {
     format!("{PAYLOAD_LABEL}\n{} ...\nRead all: {cli} agent routine payload {run_id}", cut(&clean, PAYLOAD_PREVIEW_BYTES).trim_end())
 }
 
-pub(crate) fn payload_block(run_id: &str, routine: &str, payload: &str) -> String {
+pub(crate) fn save_payload(run_id: &str, routine: &str, payload: &str) {
     store_payload(run_id, routine, payload);
-    payload_text(run_id, payload, &crate::panorama_cli_path())
+}
+
+fn user_cap() -> &'static str {
+    static CAP: OnceLock<String> = OnceLock::new();
+    CAP.get_or_init(new_token)
+}
+
+pub(crate) fn user_cap_for_ui() -> &'static str {
+    user_cap()
+}
+
+pub(crate) fn user_cap_matches(presented: &str) -> bool {
+    digests_equal(&digest(user_cap()), &digest(presented))
+}
+
+const COALESCE_GAP_MS: u64 = 10_000;
+
+fn last_coalesce() -> &'static Mutex<HashMap<String, u64>> {
+    static MAP: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    MAP.get_or_init(Default::default)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -191,7 +210,8 @@ fn refused_recently(routine: &str, now: u64, record: bool) -> bool {
 
 pub(crate) fn handle_hook(routine: &str, token: Option<&str>, origin: bool, body: &[u8]) -> HookAnswer {
     let now = crate::agents::unix_ms();
-    if refused_recently(routine, now, false) {
+    let valid = token.is_some_and(|t| token_matches(routine, t));
+    if !valid && refused_recently(routine, now, false) {
         return HookAnswer::TooMany;
     }
     let refuse = |answer: HookAnswer| {
@@ -201,11 +221,16 @@ pub(crate) fn handle_hook(routine: &str, token: Option<&str>, origin: bool, body
     if origin {
         return refuse(HookAnswer::Forbidden);
     }
-    let Some(r) = crate::agents::routines::with_routines(|s| s.routines.get(routine).cloned()) else {
-        return refuse(HookAnswer::NotFound);
-    };
-    if r.trigger != crate::agents::routines::Trigger::Hook || !token.is_some_and(|t| token_matches(routine, t)) {
+    let hook = crate::agents::routines::with_routines(|s| s.routines.get(routine).map(|r| r.trigger == crate::agents::routines::Trigger::Hook));
+    if hook != Some(true) || !valid {
         return refuse(HookAnswer::Unauthorized);
+    }
+    {
+        let mut map = last_coalesce().lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, at| now.saturating_sub(*at) < COALESCE_GAP_MS);
+        if map.contains_key(routine) {
+            return HookAnswer::Skipped("coalesced".into());
+        }
     }
     if body.len() > PAYLOAD_MAX_BYTES {
         return refuse(HookAnswer::TooLarge);
@@ -216,8 +241,8 @@ pub(crate) fn handle_hook(routine: &str, token: Option<&str>, origin: bool, body
             Some(run) => HookAnswer::Accepted(run.to_string()),
             None => {
                 let reason = v["skipped"].as_str().unwrap_or("skipped").to_string();
-                if reason != "coalesced" {
-                    refused_recently(routine, now, true);
+                if reason == "coalesced" {
+                    last_coalesce().lock().unwrap_or_else(|e| e.into_inner()).insert(routine.to_string(), now);
                 }
                 HookAnswer::Skipped(reason)
             }
@@ -241,7 +266,7 @@ mod tests {
         let id = format!("ah{tag}{:08}", nanos % 100_000_000);
         let name = format!("h{tag}-{}", &id[3..]);
         crate::agents::insert_test_agent(&id, &name);
-        let r = reply(crate::agents::routines::handle_create(&json!({ "agent": name, "name": "Build hook", "text": "Look at the build.", "hook": true, "overlap": overlap })));
+        let r = reply(crate::agents::routines::handle_create(&json!({ "agent": name, "name": "Build hook", "text": "Look at the build.", "hook": true, "overlap": overlap, "userCap": crate::agents::routines::tests::cap() })));
         (r["routine"]["id"].as_str().unwrap().to_string(), r["token"].as_str().unwrap().to_string())
     }
 
@@ -254,11 +279,24 @@ mod tests {
         assert_eq!(handle_hook(&id, Some(&token), true, b""), HookAnswer::Forbidden, "a browser origin is refused");
         assert!(matches!(handle_hook(&id, Some(&token), false, b"build 412 failed"), HookAnswer::Accepted(_)));
         assert!(digests_equal(&digest("a"), &digest("a")) && !digests_equal(&digest("a"), &digest("b")) && !digests_equal("ab", "abc"));
-        let rotated = reply(crate::agents::routines::handle_token(&json!({ "id": id })))["token"].as_str().unwrap().to_string();
+        let rotated = reply(crate::agents::routines::handle_token(&json!({ "id": id, "userCap": crate::agents::routines::tests::cap() })))["token"].as_str().unwrap().to_string();
         assert!(!token_matches(&id, &token), "the old token stops working");
         assert!(token_matches(&id, &rotated));
         let stored = std::fs::read_to_string(tokens_path().unwrap()).unwrap();
         assert!(!stored.contains(&rotated), "only a digest is stored");
+    }
+
+    #[test]
+    fn repeated_coalesced_calls_write_nothing_for_ten_seconds() {
+        let (id, token) = hook_routine("e", "queue");
+        assert!(matches!(handle_hook(&id, Some(&token), false, b""), HookAnswer::Accepted(_)));
+        assert_eq!(handle_hook(&id, Some(&token), false, b""), HookAnswer::Skipped("coalesced".into()));
+        let skips = || crate::agents::routines::with_routines(|s| s.skips.get(&id).map(|l| l.len()).unwrap_or(0));
+        let before = skips();
+        for _ in 0..5 {
+            assert_eq!(handle_hook(&id, Some(&token), false, b""), HookAnswer::Skipped("coalesced".into()));
+        }
+        assert_eq!(skips(), before, "no log record per call");
     }
 
     #[test]
@@ -292,12 +330,13 @@ mod tests {
         for _ in 0..REFUSED_PER_MINUTE {
             handle_hook(&id, Some("bad"), false, b"");
         }
-        assert_eq!(handle_hook(&id, Some(&token), false, b""), HookAnswer::TooMany, "even a good token waits after 20 refusals");
+        assert_eq!(handle_hook(&id, Some("bad"), false, b""), HookAnswer::TooMany, "bad tokens are rate limited");
+        assert_eq!(handle_hook(&id, Some(&token), false, b""), HookAnswer::Skipped("coalesced".into()), "a valid token is never locked out");
         let (manual, _) = {
             let (id2, _) = hook_routine("d", "skip");
             (id2, ())
         };
-        assert_eq!(handle_hook("rtnothere", Some("x"), false, b""), HookAnswer::NotFound);
+        assert_eq!(handle_hook("rtnothere", Some("x"), false, b""), HookAnswer::Unauthorized, "an unknown id looks like a bad token");
         assert_eq!(handle_hook(&manual, None, false, b""), HookAnswer::Unauthorized);
         assert_eq!(HookAnswer::Accepted("r-1".into()).status().0, 202);
         assert_eq!(HookAnswer::Skipped("overlap".into()).status().0, 409);

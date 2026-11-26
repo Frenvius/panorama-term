@@ -6474,7 +6474,12 @@ async fn handle_conn(mut stream: TcpStream) {
         let len = headers.get("content-length").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
         let mut req_body = vec![0u8; len.min(agents::HOOK_PAYLOAD_MAX + 1)];
         if len > 0 && len <= agents::HOOK_PAYLOAD_MAX {
-            let _ = stream.read_exact(&mut req_body).await;
+            let read = tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut req_body)).await;
+            if !matches!(read, Ok(Ok(_))) {
+                let r = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(r.as_bytes()).await;
+                return;
+            }
         }
         let token = headers.get(agents::HOOK_TOKEN_HEADER).cloned();
         let (status, text, body) = agents::routine_hook_http(method == "POST", routine, token.as_deref(), origin.is_some(), len, &req_body);
