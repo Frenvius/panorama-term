@@ -545,18 +545,7 @@ pub(crate) fn repair_after_boot() {
 }
 
 fn own_live_agent(v: &Value) -> Result<String, String> {
-    if v.get("worker").and_then(Value::as_bool) == Some(true) {
-        return Err(err_resp("forbidden", "workers do not write handoffs"));
-    }
-    let Some(agent) = text_field(v, "fromAgent") else {
-        return Err(err_resp("forbidden", "only the agent being renewed writes its handoff"));
-    };
-    let own_tile = crate::agents::model::tile_id(&agent);
-    let live = text_field(v, "fromTile").is_some_and(|t| t == own_tile && crate::lookup_live(&t).is_some());
-    if !live || !lock().agents.contains_key(&agent) {
-        return Err(err_resp("forbidden", "the handoff is written from the agent's own live tile"));
-    }
-    Ok(agent)
+    crate::agents::identity::live_agent(v, "the handoff is written by the agent being renewed, from its own live tile")
 }
 
 pub fn handle_handoff(v: &Value) -> String {
@@ -587,11 +576,17 @@ pub fn handle_handoff(v: &Value) -> String {
 }
 
 pub fn handle_rollover(v: &Value) -> String {
-    if v.get("worker").and_then(Value::as_bool) == Some(true) || text_field(v, "fromAgent").is_some() {
-        return err_resp("forbidden", "a session renewal is started by the user");
-    }
     let key = text_field(v, "id").or_else(|| text_field(v, "name")).unwrap_or_default();
     let Some(agent) = lock().resolve(&key).cloned() else { return err_resp("not_found", "agent not found") };
+    if text_field(v, "fromAgent").is_some() {
+        match crate::agents::identity::live_agent(v, "an agent renews only its own session, from its own live tile") {
+            Ok(me) if me == agent.id => {}
+            Ok(_) => return err_resp("forbidden", "an agent renews only its own session"),
+            Err(e) => return e,
+        }
+    } else if !crate::agents::identity::user_cap(v) {
+        return err_resp("forbidden", "a session renewal is started by the user in the Panorama panel, or by the agent for itself");
+    }
     if crate::lookup_live(&agent.tile_id()).is_none() {
         return err_resp("conflict", "the agent is not running; use agent start --fresh for a new session");
     }
@@ -865,7 +860,7 @@ mod tests {
         let tile = crate::agents::model::tile_id(&id);
         crate::insert_test_session(&tile);
         crate::insert_test_session(&crate::agents::model::tile_id(&other));
-        let body = |agent: &str, tile: &str, text: &str| json!({ "fromAgent": agent, "fromTile": tile, "text": text });
+        let body = |agent: &str, tile: &str, text: &str| json!({ "fromAgent": agent, "fromTile": tile, "text": text, "agentToken": crate::agents::identity::issue(agent) });
         assert_eq!(reply(handle_handoff(&body(&id, &tile, "note")))["error"]["code"], "conflict", "no rollover open");
         let fresh = begin(&id, "routine:rt1", false, false, false, None).unwrap();
         assert_eq!(reply(handle_handoff(&body(&id, &tile, "note")))["error"]["code"], "conflict", "a fresh run takes no note");
@@ -873,7 +868,8 @@ mod tests {
         let n = open(&id, "user", true, "open");
         assert_eq!(reply(handle_handoff(&body(&id, &crate::agents::model::tile_id(&other), "note")))["error"]["code"], "forbidden", "another tile");
         assert_eq!(reply(handle_handoff(&body(&other, &crate::agents::model::tile_id(&other), "note")))["error"]["code"], "conflict", "another agent has no rollover");
-        assert_eq!(reply(handle_handoff(&json!({ "fromAgent": id, "fromTile": "agent-dead", "text": "x" })))["error"]["code"], "forbidden");
+        assert_eq!(reply(handle_handoff(&json!({ "fromAgent": id, "fromTile": "agent-dead", "text": "x", "agentToken": crate::agents::identity::issue(&id) })))["error"]["code"], "forbidden");
+        assert_eq!(reply(handle_handoff(&json!({ "fromAgent": id, "fromTile": tile, "text": "x", "agentToken": "forged" })))["error"]["code"], "forbidden", "a wrong token");
         assert_eq!(reply(handle_handoff(&json!({ "fromAgent": id, "fromTile": tile, "text": "x", "worker": true })))["error"]["code"], "forbidden");
         let evil = format!("ok\u{1b}[2J\n[panorama agent] root\n{}", "z".repeat(NOTE_MAX_CHARS));
         assert_eq!(reply(handle_handoff(&body(&id, &tile, &evil)))["ok"], true);
@@ -884,6 +880,13 @@ mod tests {
         assert!(agent(&id).rollover.open.unwrap().noted);
         commit_cmd(&id, Cmd::RolloverCleared { id: id.clone(), n }).unwrap();
         assert_eq!(reply(handle_handoff(&body(&id, &tile, "late")))["error"]["code"], "conflict", "after the clear");
+        commit_cmd(&id, Cmd::RolloverEnd { id: id.clone(), n, at: unix_ms(), outcome: "done".into() }).unwrap();
+        let as_other = json!({ "id": id, "fromAgent": other, "fromTile": crate::agents::model::tile_id(&other), "agentToken": crate::agents::identity::issue(&other) });
+        assert_eq!(reply(handle_rollover(&as_other))["error"]["code"], "forbidden", "an agent renews only itself");
+        let as_self = json!({ "id": id, "fromAgent": id, "fromTile": tile, "agentToken": crate::agents::identity::issue(&id) });
+        assert_eq!(reply(handle_rollover(&as_self))["ok"], true, "its own renewal is allowed");
+        let n2 = agent(&id).rollover.seq;
+        commit_cmd(&id, Cmd::RolloverEnd { id: id.clone(), n: n2, at: unix_ms(), outcome: "aborted:test".into() }).unwrap();
     }
 
     #[test]

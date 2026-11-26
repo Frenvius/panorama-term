@@ -122,12 +122,18 @@ fn send_event(event: serde_json::Value) {
     }
 }
 
-pub async fn serve(ws: WebSocketStream<TcpStream>) {
+pub(crate) fn capability_message(origin: Option<&str>) -> Option<String> {
+    let trusted = origin.is_some_and(|o| crate::local_origins::LOCAL_ORIGINS.contains(&o));
+    trusted.then(|| json!({ "t": "ui.capability", "token": crate::agents::ui_user_cap() }).to_string())
+}
+
+pub async fn serve(ws: WebSocketStream<TcpStream>, origin: Option<String>) {
     let mut events = channel().subscribe();
     let (mut tx, mut rx) = ws.split();
-    let cap = json!({ "t": "ui.capability", "token": crate::agents::ui_user_cap() }).to_string();
-    if tx.send(Message::Text(cap)).await.is_err() {
-        return;
+    if let Some(cap) = capability_message(origin.as_deref()) {
+        if tx.send(Message::Text(cap)).await.is_err() {
+            return;
+        }
     }
     loop {
         tokio::select! {

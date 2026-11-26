@@ -141,8 +141,7 @@ pub fn start() {
 }
 
 pub fn handle_compact(v: &Value) -> String {
-    let from_env = ["fromAgent", "fromTile"].iter().any(|k| v.get(*k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()));
-    if from_env || v.get("worker").and_then(Value::as_bool) == Some(true) {
+    if !crate::agents::identity::user_cap(v) {
         return err_resp("forbidden", "compaction is run by the user");
     }
     let sizes = compact_all(true);

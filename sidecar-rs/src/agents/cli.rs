@@ -10,12 +10,13 @@ struct CliEnv {
     agent: Option<String>,
     tile: Option<String>,
     worker: bool,
+    token: Option<String>,
 }
 
 impl CliEnv {
     fn from_process() -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        Self { agent: var("PANORAMA_AGENT_ID"), tile: var("PANORAMA_TILE_ID"), worker: var("PANORAMA_DISPATCH_ID").is_some() }
+        Self { agent: var("PANORAMA_AGENT_ID"), tile: var("PANORAMA_TILE_ID"), worker: var("PANORAMA_DISPATCH_ID").is_some(), token: var("PANORAMA_AGENT_TOKEN") }
     }
 }
 const EXIT_USAGE: i32 = 2;
@@ -178,6 +179,7 @@ where
             return Err(format!("{command} requires a recipient and a text (or --file)"));
         }
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
         if env.worker { body.insert("worker".into(), true.into()); }
     } else if matches!(command.as_str(), "wait" | "waits") {
@@ -192,6 +194,7 @@ where
             body.insert("mine".into(), true.into());
         }
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
         if env.worker { body.insert("worker".into(), true.into()); }
     } else if command == "coordinate" {
@@ -208,10 +211,12 @@ where
             return Err("rollover requires an agent name".into());
         }
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
         if env.worker { body.insert("worker".into(), true.into()); }
     } else if command == "compact" {
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
         if env.worker { body.insert("worker".into(), true.into()); }
     } else if command == "read" && !body.contains_key("id") {
@@ -380,6 +385,7 @@ where
         return Err("routine create requires --text or --file".into());
     }
     if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
     if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
     if env.worker { body.insert("worker".into(), true.into()); }
     Ok((route.to_string(), body))
@@ -482,6 +488,7 @@ fn parse_memory(args: &[String], env: &CliEnv) -> Result<(String, Map<String, Va
         return Err("memory set requires --essential or --searchable".into());
     }
     if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(token) = &env.token { body.insert("agentToken".into(), token.clone().into()); }
     if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
     if env.worker { body.insert("worker".into(), true.into()); }
     Ok((route.to_string(), body))
@@ -573,7 +580,7 @@ mod tests {
 
     #[test]
     fn send_takes_recipient_and_text_and_the_sender_from_env() {
-        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false };
+        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false, token: None };
         let p = parse_with(&["send", "rev", "hello there", "--expects-reply"], &env).unwrap();
         assert_eq!(Value::Object(p.body), serde_json::json!({
             "to": "rev", "text": "hello there", "expectsReply": true, "fromAgent": "a1234567", "fromTile": "agent-a1234567",
@@ -603,7 +610,7 @@ mod tests {
 
     #[test]
     fn wait_collects_targets_and_cancels_through_its_own_route() {
-        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false };
+        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false, token: None };
         let p = parse_with(&["wait", "--on", "in:2m", "--on", "session:build@D:/x", "--timeout", "30m", "--note", "fix build"], &env).unwrap();
         assert_eq!(Value::Object(p.body.clone()), serde_json::json!({
             "on": ["in:2m", "session:build@D:/x"], "timeoutMs": 1_800_000, "note": "fix build", "fromAgent": "a1234567", "fromTile": "agent-a1234567",
@@ -714,7 +721,7 @@ mod tests {
     #[test]
     fn memory_commands_parse_with_the_caller_from_env() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false };
+        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false, token: None };
         let (route, body) = parse_memory(&args(&["remember", "Reply", "in", "Portuguese.", "--essential"]), &env).unwrap();
         assert_eq!(route, "memory-remember");
         assert_eq!((body["text"].as_str(), body["essential"].as_bool(), body["fromAgent"].as_str()), (Some("Reply in Portuguese."), Some(true), Some("a1")));
@@ -733,7 +740,7 @@ mod tests {
 
     #[test]
     fn rollover_commands_parse() {
-        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false };
+        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false, token: None };
         let reader = |p: &str| -> Result<String, String> { Ok(format!("file:{p}")) };
         let parse_args_with = |a: &[&str], env: &CliEnv, r: &dyn Fn(&str) -> Result<String, String>| parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), env, r);
         let h = parse_args_with(&["handoff", "Working on the parser."], &env, &reader).unwrap();

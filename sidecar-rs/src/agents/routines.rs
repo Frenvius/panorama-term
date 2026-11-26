@@ -1562,8 +1562,7 @@ pub fn handle_report(v: &Value) -> String {
     let Some((routine, run)) = with_routines(|s| s.routines.get(&id).cloned().zip(s.run(&id, n).cloned())) else {
         return err_resp("not_found", &format!("run {raw} not found"));
     };
-    let (sender, _) = crate::agents::messages::sender_from(v);
-    if sender.agent_id() != Some(routine.agent_id.as_str()) {
+    if crate::agents::identity::token_matches(v).as_deref() != Some(routine.agent_id.as_str()) {
         return err_resp("forbidden", "only the routine's agent reports on its runs");
     }
     if !run.open() {
@@ -1910,16 +1909,16 @@ pub(crate) mod tests {
         let id = create(&name, json!({}));
         handle_run(&json!({ "id": id, "userCap": cap() }), None);
         let rid = run_id(&id, 1);
-        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "x", "fromAgent": other })))["error"]["code"], "forbidden");
+        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "x", "fromAgent": other, "agentToken": crate::agents::identity::issue(&other) })))["error"]["code"], "forbidden");
         assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "x" })))["error"]["code"], "forbidden", "the user does not report runs");
-        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "Build 412 is red.", "fromAgent": agent })))["ok"], true);
+        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "Build 412 is red.", "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })))["ok"], true);
         assert_eq!(run_of(&id, 1).outcome.as_deref(), Some("reported"));
         let mail = user_mail(&id);
         assert_eq!(mail.len(), 1);
         assert_eq!((mail[0].text.as_str(), mail[0].kind.as_deref(), mail[0].status), ("Build 412 is red.", Some(KIND_ROUTINE), MsgStatus::Delivered));
-        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "again", "fromAgent": agent })))["error"]["code"], "conflict");
+        assert_eq!(reply(handle_report(&json!({ "runId": rid, "text": "again", "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })))["error"]["code"], "conflict");
         commit(later_fire(&id, 10)).unwrap();
-        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 2), "failed": true, "text": "disk full", "fromAgent": agent })))["ok"], true);
+        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 2), "failed": true, "text": "disk full", "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })))["ok"], true);
         assert_eq!(run_of(&id, 2).outcome.as_deref(), Some("failed"));
         assert!(user_mail(&id).iter().any(|m| m.text.contains("failed: disk full")));
     }
@@ -2011,7 +2010,7 @@ pub(crate) mod tests {
         let id = create(&name, json!({}));
         for n in 1..=3u32 {
             commit(later_fire(&id, u64::from(n) * 10)).unwrap();
-            reply(handle_report(&json!({ "runId": run_id(&id, n), "failed": true, "text": "boom", "fromAgent": agent })));
+            reply(handle_report(&json!({ "runId": run_id(&id, n), "failed": true, "text": "boom", "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })));
         }
         assert_eq!(with_routines(|s| s.routines[&id].paused_reason.clone()).as_deref(), Some("failures"));
         assert_eq!(user_mail(&id).iter().filter(|m| m.text.contains("was paused")).count(), 1);
@@ -2145,10 +2144,10 @@ pub(crate) mod tests {
         let (agent, name) = test_agent("r", Desired::Running, false);
         let id = create(&name, json!({ "reportTo": "none" }));
         handle_run(&json!({ "id": id, "userCap": cap() }), None);
-        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 1), "noUpdate": true, "fromAgent": agent })))["ok"], true);
+        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 1), "noUpdate": true, "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })))["ok"], true);
         assert_eq!(run_of(&id, 1).outcome.as_deref(), Some("no_update"));
         commit(later_fire(&id, 10)).unwrap();
-        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 2), "text": "kept in history", "fromAgent": agent })))["ok"], true);
+        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 2), "text": "kept in history", "fromAgent": agent, "agentToken": crate::agents::identity::issue(&agent) })))["ok"], true);
         assert!(user_mail(&id).is_empty(), "--report-to none keeps reports in the history");
     }
 

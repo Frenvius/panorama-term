@@ -429,14 +429,8 @@ fn caller(v: &Value) -> Result<Caller, String> {
     if v.get("worker").and_then(Value::as_bool) == Some(true) {
         return Err(err_resp("forbidden", "workers do not use memories"));
     }
-    if let Some(agent) = text_field(v, "fromAgent") {
-        let known = lock().agents.contains_key(&agent);
-        let own_tile = crate::agents::model::tile_id(&agent);
-        let live = text_field(v, "fromTile").is_some_and(|t| t == own_tile && crate::lookup_live(&t).is_some());
-        if !known || !live {
-            return Err(err_resp("forbidden", "memories are managed from the agent's own live tile"));
-        }
-        return Ok(Caller::Agent(agent));
+    if text_field(v, "fromAgent").is_some() {
+        return crate::agents::identity::live_agent(v, "memories are managed from the agent's own live tile").map(Caller::Agent);
     }
     let from_tile = text_field(v, "fromTile").is_some();
     let cap = v.get("userCap").and_then(Value::as_str).is_some_and(crate::agents::routine_hook::user_cap_matches);
@@ -686,7 +680,7 @@ pub(crate) mod tests {
     }
 
     fn from(id: &str, extra: Value) -> Value {
-        let mut v = json!({ "fromAgent": id, "fromTile": crate::agents::model::tile_id(id) });
+        let mut v = json!({ "fromAgent": id, "fromTile": crate::agents::model::tile_id(id), "agentToken": crate::agents::identity::issue(id) });
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
             o.extend(e.clone());
         }
@@ -712,6 +706,11 @@ pub(crate) mod tests {
             assert_eq!(r["ok"], false, "{r}");
         }
         assert_eq!(with_memories(&a, |m| m.list.len()), 1);
+        let b_token = crate::agents::identity::issue(&b);
+        let forged = json!({ "fromAgent": a, "fromTile": crate::agents::model::tile_id(&a), "agentToken": b_token, "id": id });
+        assert_eq!(reply(handle_forget(&forged))["error"]["code"], "forbidden", "B cannot pass as A without A's token");
+        let no_token = json!({ "fromAgent": a, "fromTile": crate::agents::model::tile_id(&a), "id": id });
+        assert_eq!(reply(handle_list(&no_token))["error"]["code"], "forbidden");
         assert_eq!(reply(handle_remember(&from(&dead, json!({ "text": "x" }))))["error"]["code"], "forbidden", "dead tile");
         let other_tile = json!({ "fromAgent": a, "fromTile": crate::agents::model::tile_id(&b), "text": "x" });
         assert_eq!(reply(handle_remember(&other_tile))["error"]["code"], "forbidden", "another agent's tile");

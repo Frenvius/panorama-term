@@ -6024,8 +6024,9 @@ async fn handle_conn(mut stream: TcpStream) {
         if !mobile::origin_allowed(origin) {
             return;
         }
+        let origin = origin.map(str::to_string);
         if let Some(ws) = accept_ws(stream, &headers).await {
-            ui::serve(ws).await;
+            ui::serve(ws, origin).await;
         }
         return;
     }

@@ -3,6 +3,7 @@ mod compact;
 mod context;
 mod delivery;
 mod envelope;
+mod identity;
 mod launch;
 mod mail;
 mod memory;
@@ -643,6 +644,9 @@ fn needs_restart(before: &Agent, after: &Agent) -> bool {
 }
 
 fn handle_update(v: &Value) -> String {
+    if v.get("rolloverAt").is_some() && !identity::user_cap(v) {
+        return err_resp("forbidden", "the renewal threshold is set by the user in the Panorama panel");
+    }
     let id = match resolve_id(v) { Ok(id) => id, Err(e) => return e };
     let patch = match patch_from_body(v) { Ok(p) => p, Err(e) => return e };
     let before = lock().agents.get(&id).cloned();
@@ -684,6 +688,7 @@ fn handle_delete(v: &Value) -> String {
     routines::on_agent_deleted(&id);
     memory::on_agent_deleted(&id);
     rollover::forget(&id);
+    identity::forget(&id);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }
@@ -772,6 +777,11 @@ async fn handle_coordinate(v: &Value) -> String {
     crate::ui::broadcast_agents_changed(&agent.id);
     let text = if on { format!("{} now coordinates {run}.", agent.name) } else { format!("{} no longer coordinates {run}.", agent.name) };
     ok_resp(json!({ "coordinates": runs, "text": text }))
+}
+
+#[cfg(test)]
+pub(crate) fn handle_update_for_test(v: &Value) -> String {
+    handle_update(v)
 }
 
 #[cfg(test)]

@@ -71,7 +71,7 @@ export interface UpdateAgentOpts {
 }
 
 export const updateAgent = (opts: UpdateAgentOpts): Promise<{ agent: PersistentAgent; restartNeeded: boolean }> =>
-  post('update', opts);
+  post('update', { ...opts, userCap: getUserCap() });
 
 export const deleteAgent = (id: string): Promise<void> =>
   post<Record<string, never>>('delete', { id }).then(() => undefined);
@@ -178,4 +178,4 @@ export const forgetMemory = (agent: string, id: string): Promise<{ text: string;
   post('memory-forget', { agent, id, userCap: getUserCap() });
 
 export const renewSession = (id: string): Promise<{ n: number; text: string }> =>
-  post('rollover', { id });
+  post('rollover', { id, userCap: getUserCap() });

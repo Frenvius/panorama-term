@@ -281,6 +281,7 @@ async fn launch_agent<B: StartBackend>(backend: &B, id: &str, force_fresh: bool)
             .map(str::to_string)
     };
     env.push(("PANORAMA_AGENT_ID".into(), agent.id.clone()));
+    env.push(("PANORAMA_AGENT_TOKEN".into(), crate::agents::identity::issue(&agent.id)));
     env.push(("PANORAMA_AGENT_NAME".into(), agent.name.clone()));
     let cli = crate::panorama_cli_path();
     let mut pinned = env.clone();
