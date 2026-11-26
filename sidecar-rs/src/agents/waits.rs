@@ -757,6 +757,14 @@ fn timeout_summary(wait: &Wait) -> String {
     format!("timed out after {span}; still waiting on {}.", on.join(", "))
 }
 
+fn prune_exit_codes() {
+    let watched: HashSet<String> = with_waits(|w| w.open().flat_map(|w| w.targets.iter()).filter_map(|t| match t {
+        Target::Session { session, .. } => Some(session.clone()),
+        _ => None,
+    }).collect());
+    rt().exit_codes.retain(|k, _| watched.contains(k));
+}
+
 pub(crate) fn tick_once(now: u64, ask_host: bool) {
     let (open, codes) = {
         let st = rt();
@@ -774,6 +782,7 @@ pub(crate) fn tick_once(now: u64, ask_host: bool) {
             }
         }
     }
+    prune_exit_codes();
 }
 
 async fn tick_loop() {
@@ -1440,6 +1449,8 @@ pub(crate) mod tests {
         assert_eq!(status(&id), WaitStatus::Open, "an unknown session is not an exit");
         on_session_exit(&session, Some(3));
         assert_eq!(message(&wake_id(&id)).unwrap().text, "terminal exited 3.");
+        tick_once(unix_ms(), false);
+        assert!(!rt().exit_codes.contains_key(&session), "no open wait watches it any more");
     }
 
     #[test]
