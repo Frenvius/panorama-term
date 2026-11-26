@@ -5840,7 +5840,7 @@ async fn handle_ws(ws: WebSocketStream<TcpStream>, params: Params) {
     let mut seen_title = 0;
     let mut seen_clipboard = session.clipboard_dirty.load(Ordering::Relaxed);
     let mut tick =
-        tokio::time::interval(Duration::from_millis(if params.remote { 10 } else { 60 }));
+        tokio::time::interval(Duration::from_millis(if params.remote { 50 } else { 60 }));
     let mut claude = ClaudeTracker::default();
     let mut claude_tick = tokio::time::interval(Duration::from_millis(800));
     let mut last_frame = tokio::time::Instant::now();

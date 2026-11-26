@@ -1564,7 +1564,7 @@ async fn before_deadline<T>(deadline: tokio::time::Instant, future: impl std::fu
 }
 
 async fn serve(mut tx: Tx, mut rx: Rx, mut chan: Channel, device_id: String, relay: bool) {
-    let mut pacer = relay.then(|| pacer::Pacer::new(640_000, 256 * 1024));
+    let mut pacer = relay.then(|| pacer::Pacer::new(950_000, 256 * 1024));
     static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let session_id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let desktop = desktop_allowed(&device_id);
