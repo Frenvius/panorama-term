@@ -1890,6 +1890,31 @@ pub(crate) mod tests {
         assert_eq!(user_mail(&id).iter().filter(|m| m.text.contains("cost")).count(), 1);
     }
     #[test]
+    fn a_no_update_report_posts_nothing_and_other_targets_get_no_user_mail() {
+        let _s = serial();
+        let (agent, name) = test_agent("r", Desired::Running, false);
+        let id = create(&name, json!({ "reportTo": "none" }));
+        handle_run(&json!({ "id": id }), None);
+        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 1), "noUpdate": true, "fromAgent": agent })))["ok"], true);
+        assert_eq!(run_of(&id, 1).outcome.as_deref(), Some("no_update"));
+        commit(later_fire(&id, 10)).unwrap();
+        assert_eq!(reply(handle_report(&json!({ "runId": run_id(&id, 2), "text": "kept in history", "fromAgent": agent })))["ok"], true);
+        assert!(user_mail(&id).is_empty(), "--report-to none keeps reports in the history");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleting_the_agent_deletes_its_routines() {
+        let (agent, name, id) = {
+            let _s = serial();
+            let (agent, name) = test_agent("s", Desired::Stopped, false);
+            let id = create(&name, json!({}));
+            (agent, name, id)
+        };
+        let deleted = reply(crate::agents::handle("delete", json!({ "name": name }).to_string().as_bytes()).await);
+        assert_eq!(deleted["ok"], true, "{deleted}");
+        assert!(with_routines(|s| !s.routines.contains_key(&id)), "{agent}");
+    }
+    #[test]
     fn names_are_single_line_plain_text() {
         assert!(valid_name("Morning check").is_ok());
         for bad in ["", "a\nb", "[panorama routine rt1 run 1] x", "[PANORAMA x", "a\u{202e}b", &"n".repeat(61)] {
