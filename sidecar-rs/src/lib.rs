@@ -222,7 +222,8 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                         consumers.get(&key).map(|tx| tx.send(ConsumerMsg::Exit { code }).is_ok())
                                     };
                                     if attached != Some(true) {
-                                        agents::on_session_exit(&key, code, is_plain_session_key(&key));
+                                        let plain = is_plain_session_key(&key);
+                                        std::thread::spawn(move || agents::on_session_exit(&key, code, plain));
                                     }
                                 } else if ev["kind"] == "killed" {
                                     let key = ev["key"].as_str().unwrap_or("");
@@ -232,7 +233,8 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                         mark_killed(&s);
                                         s.kill_pending.store(false, Ordering::Release);
                                     }
-                                    agents::on_session_exit(key, None, is_plain_session_key(key));
+                                    let (key, plain) = (key.to_string(), is_plain_session_key(key));
+                                    std::thread::spawn(move || agents::on_session_exit(&key, None, plain));
                                 }
                             }
                         }
