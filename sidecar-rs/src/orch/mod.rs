@@ -8,6 +8,7 @@ mod plan;
 mod usage;
 mod routing;
 mod wiring;
+pub(crate) use wiring::local_offset_min;
 pub(crate) mod agy;
 pub(crate) mod cli_env;
 mod model_catalog;

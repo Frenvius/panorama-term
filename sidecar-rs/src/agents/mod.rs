@@ -7,7 +7,10 @@ mod mail;
 mod messages;
 mod model;
 mod reducer;
+mod routine_hook;
+mod routines;
 mod runtime;
+mod schedule;
 mod store;
 mod waits;
 
@@ -108,6 +111,7 @@ pub fn init() {
     store::load_all(&mut lock(), &base);
     messages::init();
     waits::init();
+    routines::init();
     runtime::restore_all();
 }
 
@@ -130,8 +134,41 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "waits" => waits::handle_waits(&v),
         "wait-cancel" => waits::handle_wait_cancel(&v),
         "coordinate" => handle_coordinate(&v).await,
+        "routines" => routines::handle_list(&v),
+        "routine-create" => routines::handle_create(&v),
+        "routine-update" => routines::handle_update(&v),
+        "routine-enable" => routines::handle_enable(&v, true),
+        "routine-disable" => routines::handle_enable(&v, false),
+        "routine-delete" => routines::handle_delete(&v),
+        "routine-run" => routines::handle_run(&v, text_field(&v, "payload")),
+        "routine-runs" => routines::handle_runs(&v),
+        "routine-report" => routines::handle_report(&v),
+        "routine-token" => routines::handle_token(&v),
+        "routine-payload" => routines::handle_payload(&v),
         _ => err_resp("bad_request", "unknown command"),
     }
+}
+
+pub(crate) const HOOK_PAYLOAD_MAX: usize = routine_hook::PAYLOAD_MAX_BYTES;
+pub(crate) const HOOK_TOKEN_HEADER: &str = routine_hook::TOKEN_HEADER;
+
+pub(crate) fn routine_hook_http(post: bool, routine: &str, token: Option<&str>, origin: bool, len: usize, body: &[u8]) -> (u16, &'static str, String) {
+    let answer = if !post {
+        routine_hook::HookAnswer::NotFound
+    } else if len > HOOK_PAYLOAD_MAX {
+        routine_hook::HookAnswer::TooLarge
+    } else {
+        routine_hook::handle_hook(routine, token, origin, body)
+    };
+    let (status, text) = answer.status();
+    (status, text, answer.body())
+}
+
+pub(crate) fn spawn_background_checked<F>(future: F) -> bool
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    runtime::spawn_checked(future)
 }
 
 pub(crate) fn spawn_background<F>(future: F)
@@ -491,6 +528,7 @@ fn merge_live(agent: &Agent, full: bool) -> Value {
         obj.insert("queued".into(), queued.into());
         obj.insert("awaitingReplies".into(), awaiting.into());
         obj.insert("coordinates".into(), crate::orch::runs_coordinated_by(&agent.tile_id()).into());
+        obj.insert("routines".into(), routines::summary_for(&agent.id));
         obj.insert("canCoordinate".into(), (profile_exe(&agent.profile).as_deref() == Some(COORDINATOR_EXE)).into());
         obj.insert("waits".into(), waits::open_waits_json(&mail::Party::Agent { id: agent.id.clone() }));
     }
@@ -581,6 +619,7 @@ fn handle_delete(v: &Value) -> String {
     messages::on_agent_deleted(&id, &name);
     waits::cancel_for(&mail::Party::Agent { id: id.clone() }, "agent_deleted");
     detach_coordinator(tile.clone());
+    routines::on_agent_deleted(&id);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }
@@ -589,6 +628,39 @@ fn handle_delete(v: &Value) -> String {
 }
 
 pub(crate) const COORDINATOR_EXE: &str = "claude";
+
+const FRESH_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+const FRESH_WAIT_MAX: u32 = 720;
+
+pub fn fresh_ready(status: LiveStatus, source: StatusSource, typed_ms_ago: u64) -> bool {
+    status == LiveStatus::Idle && source != StatusSource::None && typed_ms_ago >= delivery::TYPING_QUIET_MS
+}
+
+pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str) {
+    let tile = model::tile_id(agent_id);
+    for _ in 0..FRESH_WAIT_MAX {
+        let Some(agent) = lock().agents.get(agent_id).cloned() else { return };
+        let live = live_view(&agent);
+        let typed = unix_ms().saturating_sub(crate::client_input(&tile).last_ms);
+        if !live.live || fresh_ready(live.status, live.status_source, typed) {
+            break;
+        }
+        tokio::time::sleep(FRESH_POLL).await;
+    }
+    if crate::lookup_live(&tile).is_some() {
+        if commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "routine".into(), force: false, crashed: false }).is_err() {
+            return;
+        }
+        runtime::stop_session(&tile).await;
+        runtime::forget(agent_id, &tile);
+    }
+    if let Err(e) = commit_cmd(agent_id, Cmd::SessionClear { id: agent_id.into(), at: unix_ms(), reason: "routine".into() }) {
+        eprintln!("[routines] fresh session for {agent_id}: {}", e.message);
+    }
+    if let Err(e) = start_agent(agent_id, Some(format!("routine {routine}"))) {
+        eprintln!("[routines] fresh start of {agent_id}: {}", e.message);
+    }
+}
 
 async fn orch_call(command: &str, body: Value) -> Result<Value, String> {
     let text = crate::orch::handle(command, body.to_string().as_bytes()).await;

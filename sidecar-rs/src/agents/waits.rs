@@ -680,6 +680,13 @@ pub(crate) fn check_target(target: &Target, now: u64, ask_host: bool, exit_codes
     }
 }
 
+pub(crate) fn if_changed_target(path: &str) -> Result<crate::agents::routines::IfChanged, String> {
+    if !local_disk_path(path) || !std::path::Path::new(path).is_absolute() {
+        return Err("--if-changed needs an absolute path on a local disk (no network or device paths)".into());
+    }
+    Ok(crate::agents::routines::IfChanged { path: path.to_string(), stat: file_stat(path) })
+}
+
 pub fn local_disk_path(path: &str) -> bool {
     let b = path.as_bytes();
     let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
@@ -700,10 +707,18 @@ fn file_cache_get(path: &str) -> Option<Option<FileStat>> {
 }
 
 fn watched_files() -> Vec<String> {
-    with_waits(|w| w.open().flat_map(|w| w.targets.iter()).filter_map(|t| match t {
+    let mut paths: Vec<String> = with_waits(|w| w.open().flat_map(|w| w.targets.iter()).filter_map(|t| match t {
         Target::File { path, .. } => Some(path.clone()),
         _ => None,
-    }).collect())
+    }).collect());
+    paths.extend(crate::agents::routines::watched_paths());
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+pub(crate) fn cached_stat(path: &str) -> Option<Option<FileStat>> {
+    file_cache_get(path)
 }
 
 fn keep_cached(paths: &[String]) {
@@ -794,6 +809,7 @@ async fn tick_loop() {
         let ask_host = n % HOST_CHECK_TICKS == 0;
         let _ = tokio::task::spawn_blocking(move || {
             tick_once(unix_ms(), ask_host);
+            crate::agents::routines::tick_once(unix_ms());
             close_stale_tiles(unix_ms());
         }).await;
     }

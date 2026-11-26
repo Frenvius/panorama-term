@@ -243,9 +243,153 @@ fn exit_with(message: &str, code: i32) -> ! {
     std::process::exit(code);
 }
 
+const ROUTINE_USAGE: &str = "usage: panorama-cli agent routine <create|list|show|update|enable|disable|delete|run|report|token|payload> ...";
+
+fn routine_flag(flag: &str) -> Option<(&'static str, &'static str)> {
+    Some(match flag {
+        "name" => ("name", "text"),
+        "at" => ("at", "text"),
+        "days" => ("days", "text"),
+        "cron" => ("cron", "text"),
+        "every" => ("every", "text"),
+        "hook" => ("hook", "bool"),
+        "manual" => ("manual", "bool"),
+        "text" => ("text", "text"),
+        "file" => ("text", "file"),
+        "missed" => ("missed", "text"),
+        "catch-up-window" => ("catchUpWindowMs", "dur"),
+        "overlap" => ("overlap", "text"),
+        "fresh" => ("fresh", "bool"),
+        "keep-session" => ("fresh", "false"),
+        "report-to" => ("reportTo", "text"),
+        "max-per-day" => ("maxPerDay", "int"),
+        "max-cost-day" => ("maxCostDay", "float"),
+        "run-timeout" => ("runTimeoutMs", "dur"),
+        "if-changed" => ("ifChanged", "text"),
+        "disabled" => ("disabled", "bool"),
+        "runs" => ("limit", "int"),
+        "payload-file" => ("payload", "file"),
+        "no-update" => ("noUpdate", "bool"),
+        "failed" => ("failed", "bool"),
+        "rotate" => ("rotate", "bool"),
+        _ => return None,
+    })
+}
+
+fn routine_shape(sub: &str) -> Option<(&'static str, &'static [&'static str], &'static str)> {
+    Some(match sub {
+        "create" => ("routine-create", &["agent"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session report-to max-per-day max-cost-day run-timeout if-changed disabled"),
+        "update" => ("routine-update", &["id"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session report-to max-per-day max-cost-day run-timeout if-changed"),
+        "list" => ("routines", &["agent"], ""),
+        "show" => ("routine-runs", &["id"], "runs"),
+        "enable" => ("routine-enable", &["id"], ""),
+        "disable" => ("routine-disable", &["id"], ""),
+        "delete" => ("routine-delete", &["id"], ""),
+        "run" => ("routine-run", &["id"], "payload-file"),
+        "report" => ("routine-report", &["runId", "text"], "no-update failed"),
+        "token" => ("routine-token", &["id"], "rotate"),
+        "payload" => ("routine-payload", &["runId"], ""),
+        _ => return None,
+    })
+}
+
+fn parse_routine<R>(args: &[String], env: &CliEnv, read_file: R) -> Result<(String, Map<String, Value>), String>
+where
+    R: Fn(&str) -> Result<String, String>,
+{
+    let sub = args.first().ok_or(ROUTINE_USAGE)?;
+    let (route, positional, allowed) = routine_shape(sub).ok_or(ROUTINE_USAGE)?;
+    let mut body = Map::new();
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        let Some(flag) = arg.strip_prefix("--") else {
+            let field = positional.iter().find(|f| !body.contains_key(**f)).ok_or_else(|| format!("unexpected argument {arg}"))?;
+            body.insert((*field).into(), arg.clone().into());
+            i += 1;
+            continue;
+        };
+        if !allowed.split_whitespace().any(|f| f == flag) {
+            return Err(format!("unknown flag --{flag} for routine {sub}"));
+        }
+        let (field, kind) = routine_flag(flag).ok_or_else(|| format!("unknown flag --{flag}"))?;
+        if kind == "bool" || kind == "false" {
+            body.insert(field.into(), (kind == "bool").into());
+            i += 1;
+            continue;
+        }
+        let raw = args.get(i + 1).ok_or_else(|| format!("--{flag} requires a value"))?;
+        let value: Value = match kind {
+            "file" => read_file(raw)?.into(),
+            "int" => raw.parse::<u64>().map_err(|_| format!("--{flag} requires a number"))?.into(),
+            "float" => raw.parse::<f64>().map_err(|_| format!("--{flag} requires a number"))?.into(),
+            "dur" => crate::agents::waits::parse_duration(raw).ok_or_else(|| format!("--{flag} takes a duration like 30m or 12h"))?.into(),
+            _ => raw.clone().into(),
+        };
+        body.insert(field.into(), value);
+        i += 2;
+    }
+    let needed: &[&str] = match sub.as_str() {
+        "list" => &[],
+        "report" => &["runId"],
+        "create" => &["agent", "name"],
+        _ => &[positional[0]],
+    };
+    if let Some(missing) = needed.iter().find(|f| !body.contains_key(**f)) {
+        return Err(format!("routine {sub} requires {missing}"));
+    }
+    if sub == "create" && !body.contains_key("text") {
+        return Err("routine create requires --text or --file".into());
+    }
+    if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+    if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+    if env.worker { body.insert("worker".into(), true.into()); }
+    Ok((route.to_string(), body))
+}
+
+fn routine_line(r: &Value) -> String {
+    let s = |k: &str| r[k].as_str().unwrap_or("-").to_string();
+    let state = if r["pausedReason"].is_string() { format!("paused ({})", s("pausedReason")) } else if r["enabled"] == true { "on".into() } else { "off".into() };
+    let last = r["last"]["outcome"].as_str().unwrap_or("-");
+    format!("{}  {}  {}  {}  next {}  last {}", s("id"), s("name"), s("triggerText"), state, s("nextRunLocal"), last)
+}
+
+fn routine_main(args: &[String]) -> ! {
+    let (route, body) = parse_routine(args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    let text_body = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+    let response = http_post(crate::port(), &format!("/agents/{route}"), &text_body, 15_000)
+        .unwrap_or_else(|e| exit_with(&format!("brain unreachable: {e}"), EXIT_UNREACHABLE));
+    let text = parse_response_body(&response);
+    let v: Value = serde_json::from_str(text).unwrap_or_else(|_| exit_with("unexpected response", EXIT_UNREACHABLE));
+    if v["ok"].as_bool() != Some(true) {
+        exit_with(&format!("{}: {}", v["error"]["code"].as_str().unwrap_or("error"), v["error"]["message"].as_str().unwrap_or("")), EXIT_API);
+    }
+    match route.as_str() {
+        "routines" => v["routines"].as_array().into_iter().flatten().for_each(|r| println!("{}", routine_line(r))),
+        "routine-create" | "routine-update" | "routine-enable" | "routine-disable" => {
+            println!("{}", routine_line(&v["routine"]));
+            if let Some(token) = v["token"].as_str() {
+                println!("Webhook token (shown once): {token}");
+            }
+        }
+        "routine-token" => println!("Webhook token (shown once): {}", v["token"].as_str().unwrap_or("")),
+        "routine-run" => match v["runId"].as_str() {
+            Some(run) => println!("Started run {run}."),
+            None => println!("Skipped: {}", v["skipped"].as_str().unwrap_or("")),
+        },
+        "routine-report" => println!("{}", v["text"].as_str().unwrap_or("")),
+        "routine-payload" => println!("{}", v["payload"].as_str().unwrap_or("")),
+        "routine-delete" => println!("Deleted."),
+        _ => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string())),
+    }
+    std::process::exit(0);
+}
+
 pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
-    let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    if args.first().map(String::as_str) == Some("routine") {
+        routine_main(&args[1..]);
+    }    let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
     let body = serde_json::to_string(&parsed.body).unwrap_or_else(|_| "{}".into());
     let path = format!("/agents/{}", route(&parsed.command, &parsed.body));
     let response = http_post(crate::port(), &path, &body, 15_000)
@@ -346,6 +490,27 @@ mod tests {
         assert!(parse(&["waits", "--all"]).unwrap().body.get("mine").is_none());
         let worker = CliEnv { tile: Some("t1".into()), worker: true, ..Default::default() };
         assert_eq!(parse_with(&["wait", "--on", "in:2m"], &worker).unwrap().body["worker"], true);
+    }
+
+    #[test]
+    fn routine_commands_parse() {
+        let user = CliEnv::default();
+        let read = |p: &str| if p == "inst.md" { Ok("from file".to_string()) } else { Err("missing".to_string()) };
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (route, body) = parse_routine(&args(&["create", "k", "--name", "Check", "--at", "08:30", "--days", "mon-fri", "--file", "inst.md", "--overlap", "queue", "--run-timeout", "30m", "--max-per-day", "4", "--fresh"]), &user, read).unwrap();
+        assert_eq!(route, "routine-create");
+        assert_eq!(Value::Object(body), serde_json::json!({
+            "agent": "k", "name": "Check", "at": "08:30", "days": "mon-fri", "text": "from file", "overlap": "queue", "runTimeoutMs": 1_800_000, "maxPerDay": 4, "fresh": true,
+        }));
+        let (route, body) = parse_routine(&args(&["report", "rt1-3", "--failed", "disk full"]), &CliEnv { agent: Some("a1".into()), ..Default::default() }, read).unwrap();
+        assert_eq!(route, "routine-report");
+        assert_eq!(Value::Object(body), serde_json::json!({ "runId": "rt1-3", "failed": true, "text": "disk full", "fromAgent": "a1" }));
+        assert_eq!(parse_routine(&args(&["list"]), &user, read).unwrap().0, "routines");
+        assert_eq!(parse_routine(&args(&["show", "rt1", "--runs", "5"]), &user, read).unwrap().1["limit"], 5);
+        assert!(parse_routine(&args(&["create", "k", "--name", "x"]), &user, read).is_err(), "needs a text");
+        assert!(parse_routine(&args(&["run"]), &user, read).is_err());
+        assert!(parse_routine(&args(&["enable", "rt1", "--fresh"]), &user, read).is_err());
+        assert!(parse_routine(&args(&["nope"]), &user, read).is_err());
     }
 
     #[test]

@@ -72,6 +72,22 @@ pub(crate) fn broadcast_agents_waits(party: &str) {
     });
 }
 
+pub(crate) fn broadcast_agents_routines() {
+    static PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let sent_later = crate::agents::spawn_background_checked(async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        PENDING.store(false, std::sync::atomic::Ordering::Release);
+        send_event(json!({ "t": "agents.routines" }));
+    });
+    if !sent_later {
+        PENDING.store(false, std::sync::atomic::Ordering::Release);
+        send_event(json!({ "t": "agents.routines" }));
+    }
+}
+
 pub(crate) fn broadcast_agents_changed(agent_id: &str) {
     send_event(json!({ "t": "agents.changed", "agentId": agent_id }));
 }

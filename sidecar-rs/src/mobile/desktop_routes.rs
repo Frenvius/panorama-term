@@ -23,6 +23,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_routine_hook_is_never_reachable_through_the_tunnel() {
+        assert!(!allowed("POST", "/agents/routine-hook/rt123456", false));
+        assert!(!allowed("POST", "/agents/routine-create", false));
+    }
+
+    #[test]
     fn allows_only_frontend_routes_and_their_transports() {
         for path in ["/ui", "/pty?tileId=x"] {
             assert!(allowed("GET", path, true));

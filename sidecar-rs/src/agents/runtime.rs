@@ -708,6 +708,19 @@ where
     }
 }
 
+pub fn spawn_checked<F>(future: F) -> bool
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current().ok().or_else(|| RUNTIME.get().cloned()) {
+        Some(handle) => {
+            handle.spawn(future);
+            true
+        }
+        None => false,
+    }
+}
+
 static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 
 pub fn remember_runtime(handle: tokio::runtime::Handle) {

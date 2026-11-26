@@ -91,6 +91,7 @@ pub(crate) fn note_status(key: &str, busy: bool, idle: bool) {
         guard(busy_marks()).insert(key.to_string(), unix_ms());
     }
     crate::agents::waits::on_party_status(key, busy, idle);
+    crate::agents::routines::on_party_status(key, busy, idle);
     let mut map = guard(causes());
     let Some(cause) = map.get_mut(key) else { return };
     if busy {
@@ -392,6 +393,18 @@ fn decision_name(decision: &StartDecision) -> &'static str {
     }
 }
 
+pub(crate) fn send_from_agent(from_id: &str, to_id: &str, text: &str, thread: &str) -> Result<(), String> {
+    let from = Party::Agent { id: from_id.to_string() };
+    let from_name = party_name(&from);
+    let recipient = lock().agents.get(to_id).cloned();
+    let out = Outgoing {
+        from, from_name, to: Party::Agent { id: to_id.to_string() }, text: text.to_string(), expects_reply: false, reply_to: None,
+        thread: Some((thread.to_string(), 0)),
+    };
+    post(out, recipient).map(|_| ()).map_err(|resp| serde_json::from_str::<Value>(&resp).ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string)).unwrap_or(resp))
+}
+
 pub(crate) fn inherited_thread(from: &Party) -> Option<(String, u8)> {
     cause_of(&from.key()).map(|c| (c.thread, c.hops.saturating_add(1)))
 }
@@ -464,6 +477,9 @@ fn compact(m: &Message) -> Value {
     v["truncated"] = (m.text.chars().count() > PREVIEW_CHARS).into();
     v["fromLabel"] = m.from_name.clone().into();
     v["toLabel"] = party_name(&m.to).into();
+    if let Some(id) = m.key.as_deref().and_then(|k| k.strip_prefix("routine:")).and_then(|k| k.split(':').next()) {
+        v["routineName"] = crate::agents::routines::name_of(id).into();
+    }
     v
 }
 

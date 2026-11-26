@@ -31,6 +31,10 @@ pub fn header(m: &Message) -> String {
         let run = m.key.as_deref().and_then(crate::agents::mail::orch_run).unwrap_or("");
         return format!("[panorama orch {run}]");
     }
+    if m.kind.as_deref() == Some(crate::agents::routines::KIND_ROUTINE) && m.from == crate::agents::mail::Party::Brain {
+        let (id, n) = crate::agents::routines::parse_run_id(&m.id).unwrap_or_default();
+        return format!("[panorama routine {id} run {n}] {}", crate::agents::context::one_line(&m.from_name));
+    }
     if m.kind.as_deref() == Some(crate::agents::mail::KIND_EVENT) {
         return format!("[panorama event {}]", m.id.strip_prefix('e').unwrap_or(&m.id));
     }

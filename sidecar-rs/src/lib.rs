@@ -5129,6 +5129,10 @@ impl PasteTarget for TileTarget {
     }
 }
 
+pub(crate) fn is_format_char(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
 pub(crate) fn sanitize_paste(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -6463,6 +6467,22 @@ async fn handle_conn(mut stream: TcpStream) {
             );
             let _ = stream.write_all(resp.as_bytes()).await;
         }
+        return;
+    }
+
+    if let Some(routine) = path_only.strip_prefix("/agents/routine-hook/") {
+        let len = headers.get("content-length").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        let mut req_body = vec![0u8; len.min(agents::HOOK_PAYLOAD_MAX + 1)];
+        if len > 0 && len <= agents::HOOK_PAYLOAD_MAX {
+            let _ = stream.read_exact(&mut req_body).await;
+        }
+        let token = headers.get(agents::HOOK_TOKEN_HEADER).cloned();
+        let (status, text, body) = agents::routine_hook_http(method == "POST", routine, token.as_deref(), origin.is_some(), len, &req_body);
+        let resp = format!(
+            "HTTP/1.1 {status} {text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
         return;
     }
 
