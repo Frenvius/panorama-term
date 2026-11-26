@@ -520,6 +520,7 @@ pub fn init() {
     }
     repair_unsent_wakes();
     crate::agents::runtime::spawn_background(tick_loop());
+    crate::agents::runtime::spawn_background(file_poll_loop());
 }
 
 pub(crate) fn unsent_wakes(waits: &Waits, has_message: impl Fn(&str) -> bool) -> Vec<(Wait, String)> {
@@ -675,8 +676,62 @@ pub(crate) fn check_target(target: &Target, now: u64, ask_host: bool, exit_codes
         },
         Target::Run { run, after } => crate::orch::wait_run_event(run, *after),
         Target::Task { run, task } => crate::orch::wait_task_event(run, task),
-        Target::File { path, stat } if ask_host => file_summary(path, *stat, file_stat(path)),
-        Target::File { .. } => None,
+        Target::File { path, stat } => file_cache_get(path).and_then(|now| file_summary(path, *stat, now)),
+    }
+}
+
+pub fn local_disk_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    let unix = b.first() == Some(&b'/') && b.get(1) != Some(&b'/') && b.get(1) != Some(&b'\\');
+    drive || unix
+}
+
+const FILE_POLL: Duration = Duration::from_secs(5);
+const FILE_STAT_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn file_cache() -> &'static Mutex<HashMap<String, Option<FileStat>>> {
+    static MAP: OnceLock<Mutex<HashMap<String, Option<FileStat>>>> = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+fn file_cache_get(path: &str) -> Option<Option<FileStat>> {
+    file_cache().lock().unwrap_or_else(|e| e.into_inner()).get(path).copied()
+}
+
+fn watched_files() -> Vec<String> {
+    with_waits(|w| w.open().flat_map(|w| w.targets.iter()).filter_map(|t| match t {
+        Target::File { path, .. } => Some(path.clone()),
+        _ => None,
+    }).collect())
+}
+
+fn keep_cached(paths: &[String]) {
+    file_cache().lock().unwrap_or_else(|e| e.into_inner()).retain(|p, _| paths.contains(p));
+}
+
+#[cfg(test)]
+pub(crate) fn poll_files_once() {
+    let paths = watched_files();
+    keep_cached(&paths);
+    for path in paths {
+        let stat = file_stat(&path);
+        file_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(path, stat);
+    }
+}
+
+async fn file_poll_loop() {
+    let mut interval = tokio::time::interval(FILE_POLL);
+    loop {
+        interval.tick().await;
+        let paths = watched_files();
+        keep_cached(&paths);
+        for path in paths {
+            let p = path.clone();
+            if let Ok(Ok(stat)) = tokio::time::timeout(FILE_STAT_TIMEOUT, tokio::task::spawn_blocking(move || file_stat(&p))).await {
+                file_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(path, stat);
+            }
+        }
     }
 }
 
@@ -909,8 +964,8 @@ fn resolve(spec: Spec, waiter: &Party) -> Result<Target, WaitError> {
             Ok(Target::Task { run, task })
         }
         Spec::File(path) => {
-            if !std::path::Path::new(&path).is_absolute() {
-                return Err(werr("bad_request", "file: needs an absolute path"));
+            if !local_disk_path(&path) || !std::path::Path::new(&path).is_absolute() {
+                return Err(werr("bad_request", "file: needs an absolute path on a local disk (no network or device paths)"));
             }
             let stat = file_stat(&path);
             Ok(Target::File { path, stat })
@@ -1578,7 +1633,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_file_wait_polls_only_on_the_slow_tick_and_fires_on_change() {
+    fn a_file_wait_fires_from_the_poller_cache_not_from_the_tick() {
         let _serial = serial();
         let (me, _) = test_agent("fa", Desired::Running, false);
         let dir = std::env::temp_dir().join(format!("panorama-wait-{}", unix_ms()));
@@ -1589,11 +1644,25 @@ pub(crate) mod tests {
         assert_eq!(relative["error"]["code"], "bad_request");
         let id = reply(handle_wait(&json!({ "on": [format!("file:{path}")], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
         std::fs::write(&file, "hi").unwrap();
-        tick_once(unix_ms(), false);
-        assert_eq!(status(&id), WaitStatus::Open, "files are polled on the slow tick only");
         tick_once(unix_ms(), true);
+        assert_eq!(status(&id), WaitStatus::Open, "the tick never stats files itself");
+        poll_files_once();
+        tick_once(unix_ms(), false);
         assert!(message(&wake_id(&id)).unwrap().text.starts_with("file appeared:"));
         std::fs::remove_dir_all(&dir).ok();
+        for remote in ["file://h/s/x", "file:\\\\h\\s\\x", "file:\\\\.\\pipe\\x", "file:\\\\?\\C:\\x", "file:\\\\?\\UNC\\h\\s"] {
+            assert_eq!(reply(handle_wait(&json!({ "on": [remote], "fromAgent": me })))["error"]["code"], "bad_request", "{remote}");
+        }
+    }
+
+    #[test]
+    fn only_local_disk_paths_are_watched() {
+        for ok in ["C:\\x\\y.txt", "d:/x", "/home/x"] {
+            assert!(local_disk_path(ok), "{ok}");
+        }
+        for bad in ["//host/share/x", "\\\\host\\share\\x", "\\\\.\\pipe\\x", "\\\\?\\C:\\x", "\\\\?\\UNC\\h\\s", "/\\host", "x.txt", "C:x"] {
+            assert!(!local_disk_path(bad), "{bad}");
+        }
     }
 
     #[test]
