@@ -59,7 +59,7 @@ const dispatch = (data: string): void => {
     for (const fn of orchNotifySubs) fn(msg as unknown as OrchNotification);
   } else if (msg.t === 'app.update') {
     for (const fn of appUpdateSubs) fn();
-  } else if (msg.t === 'agents.changed' || msg.t === 'agents.waits') {
+  } else if (msg.t === 'agents.changed' || msg.t === 'agents.waits' || msg.t === 'agents.routines') {
     for (const sub of agentSubs) sub.onChanged();
   } else if (msg.t === 'agents.mail') {
     const parties = msg.parties ?? [];

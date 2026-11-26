@@ -48,6 +48,55 @@ export interface PersistentAgent extends AgentLive {
   coordinates?: string[];
   canCoordinate?: boolean;
   waits?: AgentWaitSummary[];
+  routines?: { count: number; enabled: number; nextRunLocal: string | null };
+}
+
+export type RoutineOutcome = 'reported' | 'no_update' | 'failed' | 'timeout' | 'skipped';
+
+export type RoutineTrigger =
+  | { kind: 'cron'; expr: string }
+  | { kind: 'every'; ms: number; anchor: number }
+  | { kind: 'hook' }
+  | { kind: 'manual' };
+
+export interface Routine {
+  id: string;
+  agentId: string;
+  agentName: string | null;
+  name: string;
+  instruction: string;
+  trigger: RoutineTrigger;
+  triggerText: string;
+  enabled: boolean;
+  pausedReason: string | null;
+  missed: 'catchUp' | 'skip';
+  overlap: 'skip' | 'queue';
+  session: 'keep' | 'fresh';
+  reportTo: { kind: 'user' } | { kind: 'agent'; id: string } | { kind: 'none' };
+  maxPerDay: number;
+  maxCostDay: number | null;
+  runTimeoutMs: number;
+  nextRunLocal: string | null;
+  last: { outcome: RoutineOutcome | null; at: number | null; summary?: string | null; reason?: string } | null;
+}
+
+export interface RoutineRun {
+  routineId: string;
+  n: number;
+  firedAt: number;
+  trigger: string;
+  deliveredAt: number | null;
+  endedAt: number | null;
+  outcome: RoutineOutcome | null;
+  summary: string | null;
+  costUsd: number | null;
+}
+
+export interface RoutineSkip {
+  routineId: string;
+  at: number;
+  reason: string;
+  count: number;
 }
 
 export interface AgentWaitSummary {
@@ -98,7 +147,8 @@ export interface AgentMessage {
   reason: string | null;
   read: boolean;
   notice: boolean;
-  kind?: 'event' | 'orch';
+  kind?: 'event' | 'orch' | 'routine';
+  routineName?: string | null;
   key?: string;
   truncated?: boolean;
 }

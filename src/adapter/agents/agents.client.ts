@@ -1,4 +1,4 @@
-import type { AgentWait, AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
+import type { Routine, AgentWait, RoutineRun, RoutineSkip, AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -132,6 +132,30 @@ export const cancelWait = (id: string): Promise<void> =>
 
 export const coordinateRun = (agent: string, runId: string, on: boolean): Promise<{ coordinates: string[]; text: string }> =>
   post('coordinate', { agent, runId, on });
+
+export const listRoutines = (agent: string): Promise<{ routines: Routine[] }> =>
+  post('routines', { agent });
+
+export const createRoutine = (body: Record<string, unknown>): Promise<{ routine: Routine; token?: string }> =>
+  post('routine-create', body);
+
+export const updateRoutine = (body: Record<string, unknown>): Promise<{ routine: Routine }> =>
+  post('routine-update', body);
+
+export const setRoutineEnabled = (id: string, on: boolean): Promise<{ routine: Routine }> =>
+  post(on ? 'routine-enable' : 'routine-disable', { id });
+
+export const deleteRoutine = (id: string): Promise<void> =>
+  post<Record<string, never>>('routine-delete', { id }).then(() => undefined);
+
+export const runRoutine = (id: string): Promise<{ runId?: string; skipped?: string }> =>
+  post('routine-run', { id });
+
+export const routineRuns = (id: string, limit: number): Promise<{ runs: RoutineRun[]; skips: RoutineSkip[] }> =>
+  post('routine-runs', { id, limit });
+
+export const rotateRoutineToken = (id: string): Promise<{ token: string }> =>
+  post('routine-token', { id, rotate: true });
 
 export const markAllRead = (uptoSeq: number): Promise<void> =>
   post<Record<string, never>>('mark-read', { all: true, uptoSeq }).then(() => undefined);

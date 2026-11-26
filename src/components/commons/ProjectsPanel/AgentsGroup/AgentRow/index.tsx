@@ -2,7 +2,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import React from 'react';
-import { Clock, Hourglass } from 'lucide-react';
+import { Clock, Hourglass, AlarmClock } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
@@ -15,6 +15,7 @@ import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { startedByLabel, waitTooltip } from '~/usecase/util/agentWaits';
 import AgentWaits from '~/components/commons/ProjectsPanel/AgentsGroup/AgentWaits';
 import { statusToDotKind, isNotResumable, needsForceStop } from '~/usecase/util/agents';
+import AgentRoutines from '~/components/commons/ProjectsPanel/AgentsGroup/AgentRoutines';
 import AgentMessages from '~/components/commons/ProjectsPanel/AgentsGroup/AgentMessages';
 
 const SHOW_WHEN_LIVE_MS = 120_000;
@@ -39,6 +40,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   const [showMessages, setShowMessages] = React.useState(false);
   const [messagesAnchor, setMessagesAnchor] = React.useState<DOMRect | null>(null);
   const [waitsAnchor, setWaitsAnchor] = React.useState<DOMRect | null>(null);
+  const [routinesAnchor, setRoutinesAnchor] = React.useState<DOMRect | null>(null);
   const rowRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -130,6 +132,13 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
 
   const handleCloseWaits = () => setWaitsAnchor(null);
 
+  const handleOpenRoutines = () => {
+    setMenu(null);
+    if (rowRef.current) setRoutinesAnchor(rowRef.current.getBoundingClientRect());
+  };
+
+  const handleCloseRoutines = () => setRoutinesAnchor(null);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -144,6 +153,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   menuItems.push('separator');
   menuItems.push({ label: 'Messages...', onSelect: handleOpenMessages });
   menuItems.push({ label: 'Waits...', onSelect: handleOpenWaits });
+  menuItems.push({ label: 'Routines...', onSelect: handleOpenRoutines });
   menuItems.push('separator');
   menuItems.push({ label: 'Edit...', onSelect: handleEdit });
   menuItems.push({ label: 'Delete...', onSelect: handleDelete, danger: true });
@@ -175,6 +185,11 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
             <Clock size={10} strokeWidth={2} />
           </span>
         )}
+        {(agent.routines?.enabled ?? 0) > 0 && (
+          <span className={styles.waitIcon} title={agent.routines?.nextRunLocal ? `next routine run ` : 'routines enabled'}>
+            <AlarmClock size={10} strokeWidth={2} />
+          </span>
+        )}
         {waits.length > 0 && (
           <span className={styles.waitIcon} title={waitTooltip(waits, Date.now())}>
             <Hourglass size={10} strokeWidth={2} />
@@ -196,6 +211,9 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
           onConfirm={handleRestartConfirm}
           onCancel={handleRestartCancel}
         />
+      )}
+      {routinesAnchor && (
+        <AgentRoutines agent={agent} anchorRect={routinesAnchor} onClose={handleCloseRoutines} />
       )}
       {waitsAnchor && (
         <AgentWaits agent={agent} anchorRect={waitsAnchor} onClose={handleCloseWaits} />

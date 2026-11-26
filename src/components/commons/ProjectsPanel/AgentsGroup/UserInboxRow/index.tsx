@@ -135,6 +135,7 @@ const InboxPopover = ({ messages, anchorRect, onClose }: InboxPopoverProps) => {
                   </span>
                   <span className={styles.peer}>{peer}</span>
                   <span className={styles.chip} data-chip={chip}>{chip}</span>
+                  {msg.kind === 'routine' && <span className={styles.chip}>routine: {msg.routineName ?? 'deleted'}</span>}
                   {msg.expectsReply && !isAnswered && <span className={styles.replyExpected}>reply expected</span>}
                   {isAnswered && <span className={styles.answered}>answered</span>}
                   <span className={styles.time}>{formatTime(msg.at)}</span>
