@@ -31,6 +31,7 @@ pub const CLOCK_JUMP_MS: u64 = 2 * MINUTE_MS;
 pub const BOOT_DELAY_MS: u64 = 30_000;
 pub const SPACING_MS: u64 = schedule::MIN_SPACING_MS;
 const BUSY_SLACK_MS: u64 = 5_000;
+const REPAIR_AFTER_MS: u64 = 10_000;
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 const MISSED_SCAN_MAX: u32 = 10_000;
 
@@ -941,12 +942,10 @@ fn handle_missed(r: &Routine, now: u64, offset_min: i32, count: u32, first: u64,
 }
 
 pub(crate) fn settle_after_boot() {
-    let missing: Vec<Run> = with_routines(|s| s.runs.values().flatten().filter(|r| r.open() && r.delivered_at.is_none()).cloned().collect());
+    let settled = unix_ms().saturating_sub(REPAIR_AFTER_MS);
+    let missing: Vec<Run> = with_routines(|s| s.runs.values().flatten().filter(|r| r.open() && r.delivered_at.is_none() && r.fired_at < settled).cloned().collect());
     for run in missing {
-        let mid = message_id(&run.routine_id, run.n);
-        if !with_mailbox(|mb| mb.messages.contains_key(&mid)) {
-            send_run(&run, None);
-        }
+        send_run(&run, None);
     }
     let delivered: Vec<(Run, String)> = with_routines(|s| s.runs.values().flatten()
         .filter(|r| r.open() && r.delivered_at.is_some())
@@ -1609,16 +1608,25 @@ pub(crate) mod tests {
         let _s = serial();
         let (_, name) = test_agent("a", Desired::Running, false);
         let id = create(&name, json!({}));
-        assert_eq!(reply(handle_run(&json!({ "id": id }), None))["runId"], run_id(&id, 1));
-        let m = msg(&message_id(&id, 1)).expect("queued");
+        let old = Cmd::Fire(FireCmd { id: id.clone(), due: 0, trigger: "manual".into(), at: unix_ms() - 20 * MINUTE_MS, crashed: false, start: false, note: None, next_due: None, unchanged: false, stat: None });
+        commit(old).unwrap();
+        assert!(msg(&message_id(&id, 1)).is_none(), "the brain stopped between the two writes");
+        commit(Cmd::Fire(FireCmd { id: id.clone(), due: 0, trigger: "manual".into(), at: unix_ms() - 5_000, crashed: false, start: false, note: None, next_due: None, unchanged: false, stat: None })).ok();
+        settle_after_boot();
+        settle_after_boot();
+        assert_eq!(with_mailbox(|mb| mb.messages.keys().filter(|k| **k == message_id(&id, 1)).count()), 1);
+        let m = msg(&message_id(&id, 1)).unwrap();
         assert_eq!((m.from.clone(), m.kind.as_deref(), m.hops), (Party::Brain, Some(KIND_ROUTINE), 0));
         assert_eq!(crate::agents::envelope::header(&m), format!("[panorama routine {id} run 1] Check"));
         commit(Cmd::End { id: id.clone(), n: 1, at: unix_ms(), outcome: "no_update".into(), summary: None, cost: None, stopped_by_user: false }).unwrap();
-        commit(later_fire(&id, 10)).unwrap();
-        assert!(msg(&message_id(&id, 2)).is_none(), "the brain stopped between the two writes");
+        let fresh = reply(handle_run(&json!({ "id": id }), None));
+        assert!(fresh["runId"].is_string(), "{fresh}");
+        let n = with_routines(|s| s.routines[&id].run_seq);
+        commit(Cmd::End { id: id.clone(), n, at: unix_ms(), outcome: "no_update".into(), summary: None, cost: None, stopped_by_user: false }).unwrap();
+        commit(Cmd::Fire(FireCmd { id: id.clone(), due: 0, trigger: "hook".into(), at: unix_ms() + 6 * MINUTE_MS, crashed: false, start: false, note: None, next_due: None, unchanged: false, stat: None })).ok();
+        assert!(run_of(&id, n + 1).open());
         settle_after_boot();
-        settle_after_boot();
-        assert_eq!(with_mailbox(|mb| mb.messages.keys().filter(|k| **k == message_id(&id, 2)).count()), 1);
+        assert!(msg(&message_id(&id, n + 1)).is_none(), "a run fired a moment ago is still being sent by its own fire");
     }
 
     #[test]

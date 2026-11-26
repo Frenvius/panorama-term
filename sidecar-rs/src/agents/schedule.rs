@@ -64,9 +64,6 @@ pub fn parse_cron(expr: &str) -> Result<Cron, String> {
     if parts.len() != 5 {
         return Err("cron needs 5 fields: minute hour day month weekday".into());
     }
-    if expr.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '*' | ',' | '-' | '/' | ' '))) {
-        return Err("cron allows digits, * , - / and day or month names only".into());
-    }
     let (minutes, _) = field(parts[0], 0, 59, &[], 0)?;
     let (hours, _) = field(parts[1], 0, 23, &[], 0)?;
     let (doms, dom_any) = field(parts[2], 1, 31, &[], 0)?;
