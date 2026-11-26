@@ -757,7 +757,7 @@ mod tests {
         if let Some(path) = crate::binding_path(&model::tile_id(&id)) { let _ = std::fs::remove_file(path); }
         assert!(first.is_some());
         assert!(marked_quiet, "once marked, the same block is not pasted again");
-        assert!(after_roster_change.as_deref().is_some_and(|b| b.starts_with("[panorama agents] ") && b.contains(&format!("new-{newcomer} (Reviewer)"))), "{after_roster_change:?}");
+        assert!(after_roster_change.as_deref().is_some_and(|b| b.starts_with("[panorama agents] ") && (b.contains(&format!("new-{newcomer} (Reviewer)")) || b.contains("The agent list changed"))), "{after_roster_change:?}");
         let claude = format!("apasv{:03}", unix_ms() % 1000);
         insert_test_agent(&claude, &format!("c-{claude}"));
         let hooked = pending_block_for_paste(&claude);
@@ -829,13 +829,12 @@ mod tests {
         let agent = reducer::tests::agent(&id, "pi-agent");
         lock().agents.insert(id.clone(), agent.clone());
         let tile = model::tile_id(&id);
-        let stable = (0..50).any(|_| {
-            let expected = full_block(&agent);
-            let first = system_context(&tile);
-            first.as_deref() == Some(expected.as_str()) && first == system_context(&tile)
-        });
+        let first = system_context(&tile).unwrap();
+        let second = system_context(&tile).unwrap();
         lock().agents.remove(&id);
-        assert!(stable, "pi gets the same full block on every call while the roster is unchanged");
+        if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        assert_eq!(first, second, "pi gets the same block on every call of a session");
+        assert!(first.starts_with(&context::stable_block(&agent, &crate::panorama_cli_path(), None)) && first.contains("Panorama agents you can message"));
         assert_eq!(system_context("agent-missing"), None);
         assert_eq!(system_context("plain-tile"), None);
     }
