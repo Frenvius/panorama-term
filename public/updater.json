@@ -1,23 +1,23 @@
 {
-  "version": "0.4.19",
-  "notes": "### Added\n- The mobile app lists tiles grouped like the desktop Projects panel (frames, project folders, loose tiles), including notes, editors and other non-terminal tiles.\n- Renaming a tile on the desktop now shows the new name on the phone, and file tiles can be opened from the phone.\n- `panorama-cli app update` checks for, installs and restarts into the latest version from a terminal; `panorama-cli app version` prints the running version.",
-  "pub_date": "2026-11-25T03:21:20Z",
+  "version": "0.4.20",
+  "notes": "### Added\n- Off-LAN pairing: a phone or another desktop can pair over the internet through the relay, without being on the same network as the host.\n- Persistent agents: run named agents that keep their session, resume natively and restart after a crash, all managed from the Projects panel.\n- Routines: schedule recurring instructions for an agent, with a webhook token, fresh sessions per run, file guards and cost caps.\n- Agent messaging: agents send and reply to each other and coordinate boards, with a user inbox, queue badges and agent status in the panel.\n- Session rollover: long agent sessions roll over with a handoff turn and carry per-agent memories across sessions.\n- Agent UI: memories popover, renew session, and context and rollover chips.\n\n### Fixed\n- Agent reliability: safer starts and stops under races, session and tile recovery, routine cleanup, and hardened handling of pasted text and forged headers.\n\n### Performance\n- Lighter worker MCP load and compacted orchestration run output.",
+  "pub_date": "2026-11-26T15:04:47Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.19/Panorama_0.4.19_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG1CcmtGS1dURXVSYXRQMnNWcnVCN2ZWbTNTTUY1TlRjdG1UUUlLTFFrb1ZqRDJYMVdyZ3FGdzJFdjJxeHV4cytEYkxpTmRyaXA3L3hRMFNwQkt5WkFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTc2Njg4CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4xOQpneHA3RG9VTkRxR3Q1ZWpULzBmL0UvZ3R5Rm9LeTExR2VMYVVYQWZIRDVoN2FYUnd3Sm81dEpZMXJLKzhFaHJNVHJvU1BNUXMzc0RHby9SVFJMdVlEUT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNMREkyRjk4c2xSUFhIamhyTHhyWHNRQkgycStsRjB4QmkwQ0V3MzNHZi9hb1lvcUhCMnpXVnpsOTd4M2dVcTcrUkhoNFVwZEdWeTVlWFl6akFRbndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1MTgzCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMAoxTEtDZ2FYVGtLRUIzQVFuZkJlODdQNzhLSHN2TEx6OVluMnpoVC9FZmsxajJSdGxMSEg0a1ViQnlwQ0lFTVNsS0dvZitkUjlYUnNMUXZUd1I1MTNCQT09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.19/Panorama_0.4.19_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGtYYkNZSFNMdzZXNnpFV0ZyRGpSV0ErVkNpVXU0OVBTeXdObHRCMUV6WkkyR3RBdUNaSjBqZGF3YnlQYjF2ZS93MWVOZ05SRWhoRUg3RTN0NFd2Z2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTc2Nzc0CWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4xOQpmdm5ackQzVHdpTnBIMklsYXVtTkhCakNOcGJrT2swM2R1OThkMGZoR1c1MWdnNXVTcGhPeW9RKzdDVVRSaXhxeUhpR3puOCsrTUduTmZJY3ltWktEQT09Cg=="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVGg3NWNyVzNSU3ZCWVlaa1hsZnZOYmFwZGkxSkl2c0pWQ3k1VE84Tnh0MW1JMFhPWi9pZ1ZacmxRVUdOdGNUM1NqaVp0dU9GL1V2SDYwb0dNdVZ4MkFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1MjczCWZpbGU6UGFub3JhbWEuYXBwLnRhci5negl2ZXJzaW9uOjAuNC4yMApyU2NndVF3K1VEMHJmSXFGcktkeTU3NWFyT1RLU3BjWHZvb1BjaG05NTFqMGRxbVp2R1RTWWVTWVpNVjhtU2NwMGJnamh0Zmd2eHBCSzFQQ0thaEhEdz09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.19/Panorama_0.4.19_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG16ekE5czFGbzAycWZITGVlQnhnVzEzdlNoMmUrVkZxUU56NmtFQlFnTzVWWmNLMm5adGhrWTMyMDZRcGoweTVHVkNFNTYvT2xETzVtMlBvb0RNK1E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTc2NzE1CWZpbGU6UGFub3JhbWFfMC40LjE5X2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC40LjE5CjlCNXdEM0Z0eTdKZW1ERjR6TTc1RWhscWExSGJEVU4rcS8rL3FDOUtKSFBjSy9oK0p5R1Ntak5kUWJJU2ZoYlZhWVZrYWdVZHA5clVsdVdROW9ENEFBPT0K"
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9rNXo4WHZTN3pPWDc2WHBJSFFONDBmb2dPU3VIMVhiUVMwT0hDQURGaFNMQmZ3aWo2TCswZE10b0FrTWFwdGE5TkJLQUN3SXZ3SEhydWlzcG5WRFFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1Mjc4CWZpbGU6UGFub3JhbWFfMC40LjIwX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC40LjIwClFZUHhQVFVKTzVhVGEvSkVGMDZyZUhxVzBGSkYxT29VYW9Qb0JpY2NsYlYxeURLc1Z3VmRNRU9vVllTZVRiNDlrQmlYYlFZUTdtQ3dubGtZa0JTd0NRPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.19/Panorama_0.4.19_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVG9Jai9rTjN6S2ZFdXpJYVdzOElMVUZVejY0SUlsbjBGVFNOd2J5OTlLT05FT01GcTV5cXBjWURYeXFTZVNvdlZHOHpCWXZ4VDg2QWNvNmxBRG1LT0FzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTc2ODU3CWZpbGU6UGFub3JhbWFfMC40LjE5X3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjQuMTkKUEhnSld5RkFxWjcxMzZud0NQdk92MmRjbkU0WVlmSEdTRVBRM3ZWVExFOExUemkrYkIzenhIejNwTkwzOXNJeU5VSVIxYlEyMXRaamExaGl4WUI2Q2c9PQo="
+      "url": "https://github.com/Frenvius/panorama-term/releases/download/v0.4.20/Panorama_0.4.20_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNzArQ1N1YUxFVHNEd1BrcTJsc1h1enN4NmlVRHJxdjlLcXhTV0VidVl1clEvL1NHSXU5bmxnNzEzZ0tzVTYxaXVBK2p0QlVNZUZqRkh6bjU5cFhkTEZHSzRqbkhpRGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA1NDU5CWZpbGU6UGFub3JhbWFfMC40LjIwX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjQuMjAKNHRHMi8vaEVETTlBUThxN1FnRWUvZXFVU1ZIT0ZpRVRuQ0o0aU9hMHdsa3N0MUI5UUxTeWhYOXdIcG1BWW5MTXhiUTRIbDdBUFRVRzh4SUFVVTNnQnc9PQo="
     }
   }
 }
