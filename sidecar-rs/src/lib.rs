@@ -3093,7 +3093,7 @@ fn handle_agent_hook(tile_id: &str, event: &str, body: &[u8]) -> String {
     }
     if event == "prompt-submit" {
         if agents::is_agent_tile(tile_id) {
-            return agents::prompt_context(tile_id, &field("session_id"), orch::orch_context(tile_id)).unwrap_or_default();
+            return agents::prompt_context(tile_id, &field("session_id"), orch::orch_agent_context(tile_id)).unwrap_or_default();
         }
         return prompt_context(tile_id, &field("cwd"));
     }

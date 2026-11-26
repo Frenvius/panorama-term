@@ -165,8 +165,14 @@ fn roster_for(agent_id: &str) -> Vec<context::RosterEntry> {
         .collect()
 }
 
+pub(crate) fn block_parts(agent: &Agent) -> (String, Vec<context::RosterEntry>) {
+    (context::stable_block(agent, &crate::panorama_cli_path(), None), roster_for(&agent.id))
+}
+
+#[cfg(test)]
 pub(crate) fn full_block(agent: &Agent) -> String {
-    context::with_roster(&context::agent_block(agent), &roster_for(&agent.id), &crate::panorama_cli_path())
+    let (stable, roster) = block_parts(agent);
+    context::with_roster(&stable, &roster, &crate::panorama_cli_path())
 }
 
 fn agent_for_tile(tile_id: &str) -> Option<Agent> {
@@ -174,18 +180,25 @@ fn agent_for_tile(tile_id: &str) -> Option<Agent> {
     lock().agents.get(id).cloned()
 }
 
-pub(crate) fn prompt_context(tile_id: &str, session_id: &str, extra: Option<String>) -> Option<String> {
+pub(crate) fn prompt_context(tile_id: &str, session_id: &str, orch: Option<String>) -> Option<String> {
     let agent = agent_for_tile(tile_id)?;
-    let mut block = full_block(&agent);
-    if let Some(extra) = extra.filter(|e| !e.is_empty()) {
-        block.push_str("\n\n");
-        block.push_str(&extra);
+    let cli = crate::panorama_cli_path();
+    let stable = context::stable_block(&agent, &cli, orch.as_deref());
+    context::prompt_block(stable, &roster_for(&agent.id), &cli, tile_id, session_id)
+}
+
+fn session_key(agent: &Agent) -> String {
+    match &agent.native_session {
+        Some(s) => s.id.clone(),
+        None => format!("launch-{}", agent.last_started_at.unwrap_or(0)),
     }
-    context::prompt_block(block, tile_id, session_id)
 }
 
 pub(crate) fn system_context(tile_id: &str) -> Option<String> {
-    agent_for_tile(tile_id).map(|agent| full_block(&agent))
+    let agent = agent_for_tile(tile_id)?;
+    let (stable, roster) = block_parts(&agent);
+    let frozen = context::frozen_roster(tile_id, &session_key(&agent), &roster);
+    Some(context::with_roster(&stable, &frozen, &crate::panorama_cli_path()))
 }
 
 pub(crate) fn on_compact(tile_id: &str) {
@@ -211,13 +224,14 @@ pub(crate) fn pending_block_for_paste(agent_id: &str) -> Option<String> {
     if context::has_context_hook(&profile_exe(&agent.profile)?) {
         return None;
     }
-    let block = full_block(&agent);
-    (context::pasted_hash(&agent.tile_id()).as_deref() != Some(context::block_hash(&block).as_str())).then_some(block)
+    let (stable, roster) = block_parts(&agent);
+    context::paste_prefix(&stable, &roster, &crate::panorama_cli_path(), &agent.tile_id())
 }
 
 pub(crate) fn mark_block_pasted(agent_id: &str) {
     let Some(agent) = lock().agents.get(agent_id).cloned() else { return };
-    context::set_pasted_hash(&agent.tile_id(), &context::block_hash(&full_block(&agent)));
+    let (stable, roster) = block_parts(&agent);
+    context::set_pasted(&agent.tile_id(), &stable, &roster);
 }
 
 pub(crate) fn quiet_busy(tile_id: &str) -> bool {
@@ -643,9 +657,11 @@ mod tests {
         insert_test_agent(&other, &format!("peer-{other}"));
         let agent = lock().agents[&me].clone();
         let block = full_block(&agent);
+        let roster = roster_for(&me);
         remove_test_agent(&me);
         remove_test_agent(&other);
-        assert!(block.contains(&format!("- peer-{other}: Reviewer")), "{block}");
+        assert!(roster.iter().any(|e| e.name == format!("peer-{other}") && e.title == "Reviewer"), "{roster:?}");
+        assert!(!roster.iter().any(|e| e.name == format!("me-{me}")), "{roster:?}");
         assert!(!block.contains(&format!("- me-{me}")), "{block}");
         assert!(block.contains("agent send <name>"));
     }
@@ -671,7 +687,7 @@ mod tests {
         if let Some(path) = crate::binding_path(&model::tile_id(&id)) { let _ = std::fs::remove_file(path); }
         assert!(first.is_some());
         assert!(marked_quiet, "once marked, the same block is not pasted again");
-        assert!(after_roster_change.is_some_and(|b| b.contains(&format!("- new-{newcomer}"))));
+        assert!(after_roster_change.as_deref().is_some_and(|b| b.starts_with("[panorama agents] ") && b.contains(&format!("new-{newcomer} (Reviewer)"))), "{after_roster_change:?}");
         let claude = format!("apasv{:03}", unix_ms() % 1000);
         insert_test_agent(&claude, &format!("c-{claude}"));
         let hooked = pending_block_for_paste(&claude);
@@ -687,6 +703,56 @@ mod tests {
         on_tile_status(&tile, "idle");
         assert!(messages::cause_of(&key).is_none());
     }
+    #[test]
+    fn pi_keeps_the_roster_of_its_session_until_the_session_changes() {
+        crate::orch::tests::f12_test_home();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let id = format!("apif{:08}", nanos % 100_000_000);
+        let mut agent = reducer::tests::agent(&id, &format!("pi-{id}"));
+        agent.native_session = Some(model::NativeSession { agent: "pi".into(), id: format!("s1-{id}"), bound_at: 1, model: None });
+        lock().agents.insert(id.clone(), agent);
+        let tile = model::tile_id(&id);
+        let before = system_context(&tile).unwrap();
+        let newcomer = format!("apig{:08}", nanos % 100_000_000);
+        insert_test_agent(&newcomer, &format!("late-{newcomer}"));
+        let same_session = system_context(&tile).unwrap();
+        lock().agents.get_mut(&id).unwrap().native_session = Some(model::NativeSession { agent: "pi".into(), id: format!("s2-{id}"), bound_at: 2, model: None });
+        let next_session = system_context(&tile).unwrap();
+        remove_test_agent(&newcomer);
+        remove_test_agent(&id);
+        if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        assert_eq!(before, same_session, "a roster edit does not change pi's system context mid-session");
+        assert!(next_session.contains(&format!("late-{newcomer}")), "a new session sees the new roster");
+    }
+
+    #[test]
+    fn a_coordinator_agent_gets_its_rules_once_and_a_roster_edit_as_one_line() {
+        crate::orch::tests::f12_test_home();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let id = format!("apco{:08}", nanos % 100_000_000);
+        insert_test_agent(&id, &format!("co-{id}"));
+        let tile = model::tile_id(&id);
+        let rules = Some("[Panorama] Orchestrate mode is ON (rules)".to_string());
+        let first = prompt_context(&tile, "sess-1", rules.clone());
+        let second = prompt_context(&tile, "sess-1", rules.clone());
+        let newcomer = format!("apcp{:08}", nanos % 100_000_000);
+        insert_test_agent(&newcomer, &format!("rev-{newcomer}"));
+        let delta = prompt_context(&tile, "sess-1", rules.clone());
+        let after_delta = prompt_context(&tile, "sess-1", rules.clone());
+        let new_session = prompt_context(&tile, "sess-2", rules.clone());
+        remove_test_agent(&newcomer);
+        remove_test_agent(&id);
+        if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        let first = first.unwrap();
+        assert!(first.contains("Orchestrate mode is ON") && first.contains("Panorama agents you can message"), "{first}");
+        let only_delta = |out: &Option<String>| out.as_deref().is_none_or(|o| o.starts_with("[panorama agents] ") && !o.contains("Orchestrate"));
+        assert!(only_delta(&second), "once per session: {second:?}");
+        let delta = delta.unwrap();
+        assert!(delta.starts_with("[panorama agents] ") && delta.contains(&format!("rev-{newcomer}")) && !delta.contains("Orchestrate"), "{delta}");
+        assert!(only_delta(&after_delta) && !after_delta.as_deref().unwrap_or("").contains(&format!("rev-{newcomer}")), "{after_delta:?}");
+        assert!(new_session.unwrap().contains("Orchestrate mode is ON"));
+    }
+
     #[test]
     fn system_context_returns_the_full_block_on_every_call() {
         let id = format!("apisys{}", unix_ms() % 100_000);

@@ -5663,9 +5663,19 @@ async fn handle_ai_tidy(body: &[u8]) -> String {
 }
 
 pub fn orch_context(tile_id: &str) -> Option<String> {
+    orch_text(tile_id, false)
+}
+
+pub fn orch_agent_context(tile_id: &str) -> Option<String> {
+    orch_text(tile_id, true)
+}
+
+const AGENT_BOARDS_LINE: &str = "Board status reaches you in [panorama orch ...] messages when a decision is needed; read the details with the command they give, then end your turn.";
+
+fn orch_text(tile_id: &str, agent: bool) -> Option<String> {
     let in_set = coordinators().lock().unwrap_or_else(|e| e.into_inner()).contains(tile_id);
     if in_set {
-        return coordinator_block(tile_id);
+        return if agent { coordinator_rules(AGENT_BOARDS_LINE) } else { coordinator_block(tile_id) };
     }
     let is_worker = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -5739,21 +5749,8 @@ pub(crate) fn worker_tiles() -> HashMap<String, WorkerTile> {
     result.into_iter().map(|(k, (_, v))| (k, v)).collect()
 }
 
-fn coordinator_block(tile_id: &str) -> Option<String> {
-    let cli = crate::panorama_cli_path();
-    let Some(base) = crate::panorama_dir() else { return None };
-    let s = settings::load(&base);
-    let roles_line = format!(
-        "Roles (pass --role on task-create; the brain picks the agent): \
-         explore={}; implement={}; test={}; review={}; mechanical={}",
-        chain_display(&s.roles.explore),
-        chain_display(&s.roles.implement),
-        chain_display(&s.roles.test),
-        chain_display(&s.roles.review),
-        chain_display(&s.roles.mechanical),
-    );
-
-    let board_lines: Vec<String> = {
+pub(crate) fn board_lines(tile_id: &str) -> Vec<String> {
+    {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let mut boards: Vec<_> = guard.runs.values()
             .filter(|e| {
@@ -5791,14 +5788,33 @@ fn coordinator_block(tile_id: &str) -> Option<String> {
                 e.run.title, e.run.id, running, review, queued_str, needs_you_str
             )
         }).collect()
-    };
+    }
+}
 
+fn coordinator_block(tile_id: &str) -> Option<String> {
+    let cli = crate::panorama_cli_path();
+    let board_lines = board_lines(tile_id);
     let boards_block = if board_lines.is_empty() {
         format!("No active boards yet. Create one with {cli} orch run-create, or the user may create boards from the UI.")
     } else {
         board_lines.join("\n")
     };
+    coordinator_rules(&boards_block)
+}
 
+fn coordinator_rules(boards_block: &str) -> Option<String> {
+    let cli = crate::panorama_cli_path();
+    let base = crate::panorama_dir()?;
+    let s = settings::load(&base);
+    let roles_line = format!(
+        "Roles (pass --role on task-create; the brain picks the agent): \
+         explore={}; implement={}; test={}; review={}; mechanical={}",
+        chain_display(&s.roles.explore),
+        chain_display(&s.roles.implement),
+        chain_display(&s.roles.test),
+        chain_display(&s.roles.review),
+        chain_display(&s.roles.mechanical),
+    );
     Some(format!(
         "[Panorama] Orchestrate mode is ON in this terminal. You are the coordinator of a multi-agent run, not the implementer.\n\
          - If the `panorama:orchestrate` skill is not loaded in this conversation yet, load it with the Skill tool and follow it.\n\
@@ -7368,6 +7384,32 @@ pub(crate) mod tests {
             assert!(ctx.contains("F8 test run"), "missing run title: {ctx}");
             assert!(ctx.contains("running"), "missing board summary: {ctx}");
         }
+    }
+
+    #[test]
+    fn an_agent_coordinator_context_has_the_rules_but_no_board_counts() {
+        f12_test_home();
+        let tile = format!("agent-coordctx{}", unix_ms());
+        let run_id = format!("r-agctx-{}", unix_ms());
+        coordinators().lock().unwrap_or_else(|e| e.into_inner()).insert(tile.clone());
+        let before = orch_agent_context(&tile).expect("rules");
+        {
+            let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+            let cmd = Cmd::RunCreate {
+                id: run_id.clone(), title: "Agent board".into(), repo: "/tmp".into(), base_ref: None, base_sha: None,
+                setup: None, coordinator_tile: Some(tile.clone()), limits: Limits::default(), now: unix_ms(),
+            };
+            if let ApplyResult::Ok(k, d) = guard.apply(&cmd) {
+                guard.replay(&k, &d).expect("replay");
+            }
+        }
+        let after = orch_agent_context(&tile).expect("rules");
+        let plain = orch_context(&tile).expect("plain block");
+        coordinators().lock().unwrap_or_else(|e| e.into_inner()).remove(&tile);
+        assert_eq!(before, after, "a board change keeps the agent block hash");
+        assert!(after.contains("Orchestrate mode is ON") && after.contains("Roles") && after.contains("[panorama orch"), "{after}");
+        assert!(!after.contains(&run_id) && !after.contains("No active boards"), "{after}");
+        assert!(plain.contains(&run_id), "plain coordinator tiles keep their board lines: {plain}");
     }
 
     #[test]
