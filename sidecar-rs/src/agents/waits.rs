@@ -883,7 +883,25 @@ pub(crate) fn orch_fingerprint(agent_id: &str, run: &str) -> u32 {
 pub enum OrchWake {
     Skipped,
     Coalesced(String),
+    Deferred(u64),
     Sent(String),
+}
+
+pub const ORCH_MIN_GAP_MS: u64 = 60_000;
+
+fn orch_recheck_later(agent_id: &str, run: &str, delay_ms: u64) {
+    static PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let pending = PENDING.get_or_init(Default::default);
+    let key = orch_base(agent_id, run);
+    if !pending.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
+        return;
+    }
+    let (run, tile) = (run.to_string(), crate::agents::model::tile_id(agent_id));
+    crate::agents::runtime::spawn_background(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        crate::orch::recheck_coordinator(&run, &tile);
+    });
 }
 
 pub(crate) fn orch_wake(agent_id: &str, run: &str, top: u32, text: &str) -> OrchWake {
@@ -901,6 +919,15 @@ pub(crate) fn orch_wake(agent_id: &str, run: &str, top: u32, text: &str) -> Orch
             Ok(_) => return OrchWake::Coalesced(id),
             Err(e) => eprintln!("[waits] orch update {id}: {}", e.message),
         }
+    }
+    let now = unix_ms();
+    let last = with_mailbox(|mb| mb.messages.values()
+        .filter(|m| m.to == party && m.key.as_deref().is_some_and(|k| k.starts_with(base.as_str())))
+        .filter_map(|m| m.delivered_at)
+        .max());
+    if let Some(gap) = last.map(|at| now.saturating_sub(at)).filter(|g| *g < ORCH_MIN_GAP_MS) {
+        orch_recheck_later(agent_id, run, ORCH_MIN_GAP_MS - gap);
+        return OrchWake::Deferred(ORCH_MIN_GAP_MS - gap);
     }
     let id = format!("o{}", &gen_wait_id()[1..]);
     let message = Message {
@@ -1537,6 +1564,21 @@ pub(crate) mod tests {
         commit_mail(MailCmd::Deliver { ids: vec![mail[0].id.clone()], at: unix_ms() }).unwrap();
         crate::orch::recheck_coordinator(&run, &tile);
         assert_eq!(orch_mail(&agent).len(), 1, "idle without an ack does not wake again");
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        assert_eq!(orch_mail(&agent).len(), 1, "a newer decision within a minute of the last wake waits");
+        let top = crate::orch::wait_run_baseline(&run).unwrap();
+        assert!(matches!(orch_wake(&agent, &run, top + 1, "x"), OrchWake::Deferred(ms) if ms <= ORCH_MIN_GAP_MS));
+    }
+
+    #[test]
+    fn a_newer_decision_after_the_gap_wakes_the_coordinator_again() {
+        let _serial = serial();
+        let (agent, tile, run) = coordinated_run("ck", Desired::Running, false, false);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        let first = orch_mail(&agent);
+        commit_mail(MailCmd::Deliver { ids: vec![first[0].id.clone()], at: unix_ms() - ORCH_MIN_GAP_MS - 1 }).unwrap();
         crate::orch::tests::inject_coordinator_note(&run);
         crate::orch::recheck_coordinator(&run, &tile);
         assert_eq!(orch_mail(&agent).len(), 2, "a newer decision wakes it");
