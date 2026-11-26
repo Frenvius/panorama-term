@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.21]
+
+### Performance
+- Remote host over the relay is much smoother: the host sends terminal frames at a steadier rate and uses more of the available relay bandwidth, removing the lag where typed text appeared slowly.
+
 ## [0.4.20]
 
 ### Added
