@@ -9,6 +9,8 @@ export const isRemote = (): boolean => remote;
 export const hostCommands = new Set([
   'read_dir',
   'read_text_file',
+  'read_file_tail',
+  'home_dir',
   'read_file_bytes',
   'write_text_file',
   'create_entry',

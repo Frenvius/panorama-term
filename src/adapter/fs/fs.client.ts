@@ -14,7 +14,8 @@ export const readDir = (path: string): Promise<DirEntry[]> => {
   return isRemote() ? result : result.catch(() => [] as DirEntry[]);
 };
 
-export const homeDir = (): Promise<string> => tauriHomeDir().catch(() => '');
+// A remote client reads the host's files, so it needs the host's home.
+export const homeDir = (): Promise<string> => (isRemote() ? invoke<string>('home_dir') : tauriHomeDir()).catch(() => '');
 
 export const readTextFile =(path: string): Promise<string> => invoke<string>('read_text_file', { path });
 
