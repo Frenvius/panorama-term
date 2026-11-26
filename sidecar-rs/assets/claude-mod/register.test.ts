@@ -101,4 +101,27 @@ describe('background tasks in the Claude mod', () => {
     expect(row('subagents', 'a1')).toBeUndefined();
     expect(row('endedAgents', 'a1')).toEqual(expect.objectContaining({ type: 'Explore', status: 'failed' }));
   });
+
+  test('a task stopped with TaskStop ends as killed, and the Stop hook keeps it so', async () => {
+    await toolCall({ tool: 'Monitor', tool_use_id: 'c6', command: 'tail -F log' }, async () => ({ result: { taskId: 'm6' } }));
+    await toolCall({ tool: 'TaskStop', tool_use_id: 'c7', task_id: 'm6' }, async () => ({}));
+    expect(row('shells', 'm6')).toBeUndefined();
+    expect(row('endedShells', 'm6').status).toBe('killed');
+    await handlers.get('classic.Stop')!($, { background_tasks: [] }, async () => ({}));
+    expect(row('endedShells', 'm6').status).toBe('killed');
+  });
+
+  test('a subagent that handed back ends though it waits to be resumed', async () => {
+    agents = async () => [{ id: 'a2', type: 'general-purpose', description: 'count', status: 'running', taskStatus: 'running' }];
+    await toolCall({ tool: 'Bash', tool_use_id: 'r4', agentId: 'a2', command: 'ls' }, async () => ({}));
+    await Bun.sleep(0);
+    expect(row('subagents', 'a2')).toBeDefined();
+    agents = async () => [
+      { id: 'a2', type: 'general-purpose', description: 'count', status: 'waiting', taskStatus: 'completed' }
+    ];
+    await toolCall({ tool: 'Read', tool_use_id: 'r5', agentId: 'other', file_path: '/z' }, async () => ({}));
+    await Bun.sleep(0);
+    expect(row('subagents', 'a2')).toBeUndefined();
+    expect(row('endedAgents', 'a2').status).toBe('completed');
+  });
 });

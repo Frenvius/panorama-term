@@ -176,8 +176,11 @@ async function listAgents($: EngineInterface): Promise<AgentInfo[] | undefined> 
   }
 }
 
+// A subagent that handed back waits to be resumed (`waiting`) though its task already ended.
+const isActive = (a: AgentInfo) => ACTIVE_AGENT.has(a.status) && !AGENT_ENDS.has(a.taskStatus)
+
 async function agentsActive($: EngineInterface, except?: string) {
-  return (await listAgents($))?.some(a => a.id !== except && ACTIVE_AGENT.has(a.status)) ?? false
+  return (await listAgents($))?.some(a => a.id !== except && isActive(a)) ?? false
 }
 
 function recordEnd<T>(ended: Map<string, T>, key: string, row: T) {
@@ -190,7 +193,7 @@ async function reportSubagents($: EngineInterface) {
   const now = Date.now()
   const all = await listAgents($)
   if (!all) return
-  const agents = all.filter(a => ACTIVE_AGENT.has(a.status))
+  const agents = all.filter(isActive)
   for (const a of agents) if (!subagentStart.has(a.id)) subagentStart.set(a.id, now)
   for (const [id, row] of [...agentRows]) {
     if (agents.some(a => a.id === id)) continue
@@ -622,7 +625,10 @@ export const register: Register = (on) => {
     // A foreground call the model moved to the background goes on as a shell under the same row.
     const tracked = !denied && trackShell(e as Parameters<typeof trackShell>[0], result, call)
     if (call && !tracked) endShell(call, denied ? 'killed' : 'isError' in result && result.isError ? 'failed' : 'completed')
-    if (call || tracked) await reportShells($)
+    // A stopped task gets no task message, and the Stop hook's list does not say how it ended.
+    const stopped = e.tool === 'TaskStop' && !denied && !('isError' in result && result.isError) && (input.task_id ?? input.shell_id)
+    if (typeof stopped === 'string') endShell(stopped, 'killed')
+    if (call || tracked || stopped) await reportShells($)
     return result
   })
 
