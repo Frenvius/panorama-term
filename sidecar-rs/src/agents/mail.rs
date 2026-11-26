@@ -14,6 +14,7 @@ pub enum Party {
     Agent { id: String },
     Tile { id: String },
     User,
+    Brain,
 }
 
 impl Party {
@@ -22,6 +23,7 @@ impl Party {
             Party::Agent { id } => format!("agent:{id}"),
             Party::Tile { id } => format!("tile:{id}"),
             Party::User => "user".into(),
+            Party::Brain => "brain".into(),
         }
     }
 
@@ -73,6 +75,18 @@ pub struct Message {
     pub read: bool,
     #[serde(default)]
     pub notice: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+pub const KIND_EVENT: &str = "event";
+
+impl Message {
+    pub fn from_brain(&self) -> bool {
+        self.from == Party::Brain
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +107,7 @@ pub enum MailCmd {
     Fail { id: String, at: u64, reason: String },
     Drop { id: String, at: u64, reason: String },
     Read { ids: Vec<String>, at: u64 },
+    Update { id: String, text: String, at: u64 },
 }
 
 #[derive(Debug, Default)]
@@ -166,6 +181,16 @@ impl Mailbox {
                 }
                 Ok(("msg-read", json!({ "ids": ids, "at": at })))
             }
+            MailCmd::Update { id, text, at } => {
+                let m = self.queued(id)?;
+                if !m.from_brain() {
+                    return Err(MailError::new("bad_request", "only brain messages are updated"));
+                }
+                if text.trim().is_empty() || text.len() > TEXT_MAX_BYTES {
+                    return Err(MailError::new("bad_request", "bad text"));
+                }
+                Ok(("msg-update", json!({ "id": id, "text": text, "at": at })))
+            }
         }
     }
 
@@ -205,6 +230,9 @@ impl Mailbox {
         if let Some(parent_id) = &m.reply_to {
             let parent = self.messages.get(parent_id)
                 .ok_or_else(|| MailError::new("not_found", format!("message {parent_id} not found")))?;
+            if parent.from_brain() {
+                return Err(MailError::new("not_replyable", format!("{parent_id} is an event; act on it instead of replying")));
+            }
             if !parent.expects_reply {
                 return Err(MailError::new("rejected", format!("{parent_id} does not expect a reply")));
             }
@@ -263,6 +291,12 @@ impl Mailbox {
                     }
                 }
             }
+            "msg-update" => {
+                let id = data["id"].as_str().ok_or("missing id")?;
+                if let (Some(m), Some(text)) = (self.messages.get_mut(id), data["text"].as_str()) {
+                    m.text = text.to_string();
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -281,7 +315,7 @@ pub(crate) mod tests {
         Message {
             id: id.into(), from, to, from_name: "x".into(), text: "hi".into(), expects_reply: false,
             reply_to: None, thread: id.into(), hops: 0, at: 1, seq: 0, status: MsgStatus::Queued,
-            delivered_at: None, replied_by: None, reason: None, read: false, notice: false,
+            delivered_at: None, replied_by: None, reason: None, read: false, notice: false, kind: None, key: None,
         }
     }
 
@@ -391,6 +425,24 @@ pub(crate) mod tests {
         send(&mut mb, msg("m2", agent("a"), agent("c"))).unwrap();
         let err = mb.apply(&MailCmd::Deliver { ids: vec!["m1".into(), "m2".into()], at: 1 }).unwrap_err();
         assert_eq!(err.code, "bad_request");
+    }
+
+    #[test]
+    fn brain_events_cannot_be_replied_to_and_only_they_are_updated() {
+        let mut mb = Mailbox::default();
+        let event = Message { kind: Some(KIND_EVENT.into()), ..msg("ew1", Party::Brain, agent("a")) };
+        send(&mut mb, event).unwrap();
+        let reply = Message { reply_to: Some("ew1".into()), thread: "ew1".into(), hops: 1, ..msg("r1", agent("a"), Party::Brain) };
+        assert_eq!(send(&mut mb, reply).unwrap_err().code, "not_replyable");
+        let (kind, data) = mb.apply(&MailCmd::Update { id: "ew1".into(), text: "newer".into(), at: 2 }).unwrap();
+        mb.replay(kind, &data).unwrap();
+        assert_eq!(mb.messages["ew1"].text, "newer");
+        send(&mut mb, msg("m2", agent("b"), agent("a"))).unwrap();
+        assert_eq!(mb.apply(&MailCmd::Update { id: "m2".into(), text: "x".into(), at: 3 }).unwrap_err().code, "bad_request");
+        let (kind, data) = mb.apply(&MailCmd::Deliver { ids: vec!["ew1".into()], at: 4 }).unwrap();
+        mb.replay(kind, &data).unwrap();
+        assert_eq!(mb.apply(&MailCmd::Update { id: "ew1".into(), text: "late".into(), at: 5 }).unwrap_err().code, "conflict", "only while queued");
+        assert_eq!(serde_json::to_value(Party::Brain).unwrap(), json!({ "kind": "brain" }));
     }
 
     #[test]

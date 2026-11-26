@@ -11,6 +11,10 @@ pub fn messages_path(base: &Path) -> PathBuf {
     agents_dir(base).join("messages").join("events.jsonl")
 }
 
+pub fn waits_path(base: &Path) -> PathBuf {
+    agents_dir(base).join("waits").join("events.jsonl")
+}
+
 pub fn agent_dir(base: &Path, agent_id: &str) -> PathBuf {
     agents_dir(base).join(agent_id)
 }

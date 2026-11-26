@@ -9,6 +9,7 @@ mod model;
 mod reducer;
 mod runtime;
 mod store;
+mod waits;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -106,6 +107,7 @@ pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     store::load_all(&mut lock(), &base);
     messages::init();
+    waits::init();
     runtime::restore_all();
 }
 
@@ -124,8 +126,18 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "messages" => messages::handle_messages(&v),
         "read" => messages::handle_read(&v),
         "mark-read" => messages::handle_mark_read(&v),
+        "wait" => waits::handle_wait(&v),
+        "waits" => waits::handle_waits(&v),
+        "wait-cancel" => waits::handle_wait_cancel(&v),
         _ => err_resp("bad_request", "unknown command"),
     }
+}
+
+pub(crate) fn spawn_background<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    runtime::spawn_background(future);
 }
 
 pub(crate) fn is_agent_tile(tile_id: &str) -> bool {
@@ -217,6 +229,42 @@ pub(crate) fn on_tile_status(tile_id: &str, status: &str) {
         let key = mail::Party::Tile { id: tile_id.to_string() }.key();
         messages::note_status(&key, status == "busy", status == "idle");
     }
+}
+
+pub(crate) fn on_session_exit(session: &str, code: Option<u32>, plain: bool) {
+    waits::on_session_exit(session, code);
+    if !plain || session.starts_with("agent-") {
+        return;
+    }
+    if code.is_some() {
+        on_tile_closed(session);
+        return;
+    }
+    let tile = session.to_string();
+    runtime::spawn_background(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let gone = tokio::task::spawn_blocking({ let t = tile.clone(); move || crate::lookup_live(&t).is_none() && crate::host_session_alive(&t) == Some(false) }).await;
+        if matches!(gone, Ok(true)) {
+            on_tile_closed(&tile);
+        }
+    });
+}
+
+fn guard_closed() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn tile_closed(tile_id: &str) -> bool {
+    guard_closed().contains(tile_id)
+}
+
+pub(crate) fn on_tile_closed(tile_id: &str) {
+    let party = mail::Party::Tile { id: tile_id.to_string() };
+    let label = format!("terminal {}", tile_id.chars().take(8).collect::<String>());
+    guard_closed().insert(tile_id.to_string());
+    messages::drop_queued_for(&party, "tile_closed", &format!("{label} was closed"), true);
+    waits::cancel_for(&party, "tile_closed");
 }
 
 pub(crate) fn on_tile_idle(tile_id: &str) {
@@ -492,6 +540,7 @@ fn handle_delete(v: &Value) -> String {
     };
     runtime::forget(&id, &tile);
     messages::on_agent_deleted(&id, &name);
+    waits::cancel_for(&mail::Party::Agent { id: id.clone() }, "agent_deleted");
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }

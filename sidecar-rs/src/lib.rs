@@ -4307,6 +4307,7 @@ fn run_consumer_loop(
                 if s.run.is_none() {
                     forget_session(&s);
                 }
+                agents::on_session_exit(&s.tile_id, code, s.run.is_none());
                 return;
             }
             Err(_) => {
@@ -4316,6 +4317,7 @@ fn run_consumer_loop(
                 if s.run.is_none() {
                     forget_session(&s);
                 }
+                agents::on_session_exit(&s.tile_id, None, s.run.is_none());
                 return;
             }
         }
@@ -4601,6 +4603,69 @@ pub(crate) fn run_stop(s: &Arc<Session>) {
         }
         kill_session(&s);
     });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeSession {
+    Running { ready: Option<String> },
+    Exited { code: Option<u32>, stopped_by_user: bool, last_line: String, cmd: String },
+    Gone,
+    Unknown,
+}
+
+pub(crate) fn wait_session_resolve(kind: Option<&str>, tile_or_cwd: &str) -> Option<(String, u32)> {
+    let session = match kind {
+        Some(kind) => run_lookup(kind, None, Some(tile_or_cwd))?,
+        None => sessions().lock().unwrap().get(tile_or_cwd).cloned()?,
+    };
+    Some((session.tile_id.clone(), session.pid))
+}
+
+pub(crate) fn wait_session_probe(key: &str, pid: Option<u32>, ask_host: bool) -> ProbeSession {
+    let session = sessions().lock().unwrap().get(key).cloned();
+    match session {
+        Some(s) if pid.is_none_or(|p| p == s.pid) => {
+            let Some(run) = &s.run else {
+                return if s.exited.load(Ordering::Relaxed) {
+                    ProbeSession::Exited { code: None, stopped_by_user: false, last_line: String::new(), cmd: String::new() }
+                } else {
+                    ProbeSession::Running { ready: None }
+                };
+            };
+            let (last_line, ready) = {
+                let log = run.log.lock().unwrap_or_else(|e| e.into_inner());
+                (log.last_line.clone(), log.ready_reason(run.started))
+            };
+            if s.exited.load(Ordering::Relaxed) {
+                ProbeSession::Exited {
+                    code: *run.exit.lock().unwrap_or_else(|e| e.into_inner()),
+                    stopped_by_user: run.stopped_by_user.load(Ordering::Relaxed),
+                    last_line,
+                    cmd: run.cmd.clone(),
+                }
+            } else {
+                ProbeSession::Running { ready }
+            }
+        }
+        Some(_) => ProbeSession::Gone,
+        None if !ask_host => ProbeSession::Unknown,
+        None => match host_session_alive(key) {
+            Some(true) => ProbeSession::Running { ready: None },
+            Some(false) => ProbeSession::Gone,
+            None => ProbeSession::Unknown,
+        },
+    }
+}
+
+pub(crate) fn host_session_alive(key: &str) -> Option<bool> {
+    let reply = host_handle().rpc_raw(serde_json::json!({ "op": "list" })).ok()?;
+    let sessions = reply["sessions"].as_array()?;
+    Some(sessions.iter().any(|s| s["key"].as_str() == Some(key) && s["alive"].as_bool() == Some(true)))
+}
+
+pub(crate) fn run_logs_hint(kind: &str, cwd: &str) -> String {
+    let kq = if kind == "build" { "&kind=build" } else { "" };
+    format!("curl \"http://127.0.0.1:{}/run/logs?cwd={}{kq}&tail=50\"", port(), urlenc(cwd))
 }
 
 pub(crate) fn run_status_json(target: Option<Arc<Session>>) -> String {

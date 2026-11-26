@@ -627,7 +627,55 @@ async fn quiet_loop() {
                 status_settled(&id);
             }
         }
+        for (tile, ready_text) in plain_quiet_targets() {
+            if crate::lookup_live(&tile).is_none() {
+                guard(quiet_states()).remove(&tile);
+                continue;
+            }
+            let screen = worker::capture_worker_screen(&tile, 40);
+            let ready_visible = ready_text.as_deref().is_none_or(|t| screen.contains(t));
+            let settled = {
+                let mut map = guard(quiet_states());
+                let next = quiet_step(map.get(&tile), &screen, Instant::now(), ready_visible);
+                let changed = map.get(&tile).is_none_or(|p| p.status != next.status);
+                let status = next.status;
+                map.insert(tile.clone(), next);
+                changed.then_some(status)
+            };
+            if let Some(status) = settled {
+                let party = crate::agents::mail::Party::Tile { id: tile.clone() };
+                crate::agents::messages::note_status(&party.key(), status == LiveStatus::Busy, status == LiveStatus::Idle);
+                if status == LiveStatus::Idle {
+                    crate::agents::delivery::kick(&party);
+                }
+            }
+        }
     }
+}
+
+pub fn plain_ready_text(binding: &serde_json::Value, profiles: &[Profile]) -> Option<Option<String>> {
+    let cli = binding["agent"].as_str()?;
+    let profile = profiles.iter().find(|p| p.exe == cli || p.id == cli)?;
+    Some(profile.ready_text.clone())
+}
+
+fn plain_quiet_targets() -> Vec<(String, Option<String>)> {
+    let tiles: std::collections::BTreeSet<String> = crate::agents::messages::with_mailbox(|mb| mb.messages.values()
+        .filter(|m| m.status == crate::agents::mail::MsgStatus::Queued)
+        .filter_map(|m| match &m.to { crate::agents::mail::Party::Tile { id } => Some(id.clone()), _ => None })
+        .collect());
+    if tiles.is_empty() {
+        return vec![];
+    }
+    let Some(base) = crate::panorama_dir() else { return vec![] };
+    let profiles = load_profiles(&base);
+    tiles.into_iter()
+        .filter(|t| !hook_status_known(t))
+        .filter_map(|t| {
+            let binding = crate::read_binding_rec(&t)?;
+            plain_ready_text(&binding, &profiles).map(|ready| (t, ready))
+        })
+        .collect()
 }
 
 pub fn quiet_wanted(hook: bool, ui: bool, mail: bool, hook_missing: bool) -> bool {
@@ -688,7 +736,7 @@ pub fn status_touched(agent_id: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -927,6 +975,18 @@ mod tests {
         let moved = quiet_step(Some(&still), "b", t0 + Duration::from_secs(5), true);
         assert_eq!(moved.status, LiveStatus::Busy);
         assert_eq!(moved.changed_at, t0 + Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_plain_tile_gets_the_quiet_detector_only_when_its_binding_names_a_known_cli() {
+        let profiles: Vec<Profile> = vec![serde_json::from_value(serde_json::json!({ "id": "claude", "exe": "claude", "readyText": "? for shortcuts" })).unwrap()];
+        assert_eq!(plain_ready_text(&serde_json::json!({ "agent": "claude" }), &profiles), Some(Some("? for shortcuts".into())));
+        assert_eq!(plain_ready_text(&serde_json::json!({ "agent": "mystery" }), &profiles), None);
+        assert_eq!(plain_ready_text(&serde_json::json!({}), &profiles), None);
+    }
+
+    pub(crate) fn set_quiet(tile: &str, status: LiveStatus) {
+        guard(quiet_states()).insert(tile.into(), QuietState { screen: String::new(), changed_at: Instant::now(), status });
     }
 
     #[test]

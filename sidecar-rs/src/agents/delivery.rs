@@ -247,7 +247,10 @@ fn tile_view(tile: &str) -> View {
         Some("idle") => (LiveStatus::Idle, StatusSource::Hook),
         Some("busy") => (LiveStatus::Busy, StatusSource::Hook),
         Some("waiting") => (LiveStatus::Waiting, StatusSource::Hook),
-        _ => (LiveStatus::Idle, StatusSource::None),
+        _ => match crate::agents::runtime::quiet_status(tile) {
+            Some(status) => (status, StatusSource::Quiet),
+            None => (LiveStatus::Idle, StatusSource::None),
+        },
     };
     View { tile: tile.to_string(), live: session.is_some(), starting: false, status, source }
 }
@@ -257,7 +260,7 @@ impl DeliveryBackend for LiveBackend {
         match party {
             Party::Agent { id } => crate::agents::delivery_view(id),
             Party::Tile { id } => Some(tile_view(id)),
-            Party::User => None,
+            Party::User | Party::Brain => None,
         }
     }
     fn input(&self, tile: &str) -> ClientInput { crate::client_input(tile) }
@@ -289,8 +292,27 @@ impl DeliveryBackend for LiveBackend {
     }
 }
 
+pub fn settle_for(m: &Message) -> u64 {
+    if m.from_brain() { crate::agents::waits::SETTLE_MS } else { 0 }
+}
+
+pub fn kick_for(m: &Message) {
+    match settle_for(m) {
+        0 => kick(&m.to),
+        ms => kick_after(&m.to, ms),
+    }
+}
+
+pub fn kick_after(party: &Party, delay_ms: u64) {
+    let party = party.clone();
+    crate::agents::runtime::spawn_background(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        kick(&party);
+    });
+}
+
 pub fn kick(party: &Party) {
-    if *party == Party::User || !has_mail(party) {
+    if matches!(party, Party::User | Party::Brain) || !has_mail(party) {
         return;
     }
     let party = party.clone();
@@ -602,6 +624,22 @@ mod tests {
         release_retry(&key);
         assert!(claim_retry(&key));
         release_retry(&key);
+    }
+
+    #[test]
+    fn a_plain_tile_without_hook_status_uses_the_quiet_detector() {
+        let tile = format!("tile-quiet-{}", crate::agents::unix_ms());
+        assert_eq!(tile_view(&tile).source, StatusSource::None);
+        crate::agents::runtime::tests::set_quiet(&tile, LiveStatus::Idle);
+        let view = tile_view(&tile);
+        assert_eq!((view.status, view.source), (LiveStatus::Idle, StatusSource::Quiet));
+    }
+
+    #[test]
+    fn brain_messages_settle_before_delivery_and_mail_does_not() {
+        let event = Message { kind: Some(crate::agents::mail::KIND_EVENT.into()), ..msg("e1", Party::Brain, Party::User) };
+        assert_eq!(settle_for(&event), crate::agents::waits::SETTLE_MS);
+        assert_eq!(settle_for(&msg("m1", Party::User, Party::User)), 0);
     }
 
     #[test]

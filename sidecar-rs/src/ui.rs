@@ -53,6 +53,25 @@ pub(crate) fn broadcast_agents_mail(parties: &[String]) {
     send_event(json!({ "t": "agents.mail", "parties": parties }));
 }
 
+pub(crate) fn broadcast_agents_waits(party: &str) {
+    static PENDING: OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> = OnceLock::new();
+    let pending = PENDING.get_or_init(Default::default);
+    let first = {
+        let mut set = pending.lock().unwrap_or_else(|e| e.into_inner());
+        let first = set.is_empty();
+        set.insert(party.to_string());
+        first
+    };
+    if !first {
+        return;
+    }
+    crate::agents::spawn_background(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let parties: Vec<String> = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner())).into_iter().collect();
+        send_event(json!({ "t": "agents.waits", "parties": parties }));
+    });
+}
+
 pub(crate) fn broadcast_agents_changed(agent_id: &str) {
     send_event(json!({ "t": "agents.changed", "agentId": agent_id }));
 }

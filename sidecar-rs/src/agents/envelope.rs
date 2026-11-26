@@ -27,6 +27,9 @@ pub fn header(m: &Message) -> String {
     if m.notice {
         return "[panorama notice]".into();
     }
+    if m.kind.as_deref() == Some(crate::agents::mail::KIND_EVENT) {
+        return format!("[panorama event {}]", m.id.strip_prefix('e').unwrap_or(&m.id));
+    }
     let suffix = match (&m.reply_to, m.expects_reply) {
         (Some(parent), _) => format!(", reply to {parent}"),
         (None, true) => ", reply expected".into(),

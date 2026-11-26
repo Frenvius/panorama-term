@@ -90,6 +90,7 @@ pub(crate) fn note_status(key: &str, busy: bool, idle: bool) {
     if busy {
         guard(busy_marks()).insert(key.to_string(), unix_ms());
     }
+    crate::agents::waits::on_party_status(key, busy, idle);
     let mut map = guard(causes());
     let Some(cause) = map.get_mut(key) else { return };
     if busy {
@@ -198,7 +199,7 @@ fn parties_of(cmd: &MailCmd, mailbox: &Mailbox) -> Vec<Party> {
     match cmd {
         MailCmd::Send { message, .. } => vec![message.from.clone(), message.to.clone()],
         MailCmd::Deliver { ids, .. } | MailCmd::Read { ids, .. } => ids.iter().flat_map(|id| of(id)).collect(),
-        MailCmd::Fail { id, .. } | MailCmd::Drop { id, .. } => of(id),
+        MailCmd::Fail { id, .. } | MailCmd::Drop { id, .. } | MailCmd::Update { id, .. } => of(id),
     }
 }
 
@@ -235,7 +236,7 @@ fn mail_err(e: MailError) -> String {
     err_resp(e.code, &e.message)
 }
 
-fn sender_from(v: &Value) -> (Party, String) {
+pub(crate) fn sender_from(v: &Value) -> (Party, String) {
     let agents = lock();
     if let Some(agent) = text_field(v, "fromAgent").and_then(|id| agents.agents.get(&id).cloned()) {
         return (Party::Agent { id: agent.id }, agent.name);
@@ -253,6 +254,7 @@ fn party_name(party: &Party) -> String {
         Party::Agent { id } => lock().agents.get(id).map(|a| a.name.clone()).unwrap_or_else(|| id.clone()),
         Party::Tile { id } => format!("terminal {}", id.chars().take(8).collect::<String>()),
         Party::User => "user".into(),
+        Party::Brain => "panorama".into(),
     }
 }
 
@@ -313,6 +315,11 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
     let id = gen_message_id();
     let (thread, hops) = out.thread.clone().unwrap_or_else(|| (id.clone(), 0));
     let sender_key = out.from.key();
+    if let Party::Tile { id } = &out.to {
+        if crate::agents::tile_closed(id) {
+            return Err(err_resp("tile_closed", &format!("terminal {} was closed", id.chars().take(8).collect::<String>())));
+        }
+    }
     let thread_limited = guard(limited_threads()).contains(&thread);
     let mark_limited = |code: &str| {
         if guard_hit(code) {
@@ -326,7 +333,7 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
     let message = Message {
         id, from: out.from, to: out.to, from_name: out.from_name, text: out.text, expects_reply: out.expects_reply,
         reply_to: out.reply_to, thread: thread.clone(), hops, at: now, seq: 0, status: MsgStatus::Queued,
-        delivered_at: None, replied_by: None, reason: None, read: false, notice: false,
+        delivered_at: None, replied_by: None, reason: None, read: false, notice: false, kind: None, key: None,
     };
     if let Err(e) = commit_mail(MailCmd::Send { message: message.clone(), recipient_exists: true }) {
         release(&sender_key, now, 1);
@@ -352,7 +359,7 @@ fn post(out: Outgoing, recipient: Option<Agent>) -> Result<(Message, StartDecisi
             eprintln!("[agents] panel delivery of {}: {}", message.id, e.message);
         }
     }
-    crate::agents::delivery::kick(&message.to);
+    crate::agents::delivery::kick_for(&message);
     Ok((message, decision))
 }
 
@@ -522,19 +529,23 @@ pub(crate) fn mail_counts(agent_id: &str) -> (usize, usize) {
 }
 
 pub(crate) fn on_agent_deleted(agent_id: &str, name: &str) {
-    let party = Party::Agent { id: agent_id.to_string() };
+    drop_queued_for(&Party::Agent { id: agent_id.to_string() }, "recipient_deleted", &format!("agent {name} was deleted"), false);
+}
+
+pub(crate) fn drop_queued_for(party: &Party, reason: &str, why: &str, notify_any: bool) {
+    let party = party.clone();
     let queued: Vec<Message> = with_mailbox(|mb| mb.queue_for(&party).into_iter().cloned().collect());
     for m in queued {
-        if let Err(e) = commit_mail(MailCmd::Drop { id: m.id.clone(), at: unix_ms(), reason: "recipient_deleted".into() }) {
+        if let Err(e) = commit_mail(MailCmd::Drop { id: m.id.clone(), at: unix_ms(), reason: reason.into() }) {
             eprintln!("[agents] drop {}: {}", m.id, e.message);
             continue;
         }
-        if m.expects_reply && m.from != Party::User {
+        if (m.expects_reply || notify_any) && !matches!(m.from, Party::User | Party::Brain) {
             let notice = Message {
                 id: gen_message_id(), from: Party::User, to: m.from.clone(), from_name: "panorama".into(),
-                text: format!("{} to {name} was dropped: agent deleted.", m.id), expects_reply: false, reply_to: None,
+                text: format!("{} was dropped: {why}.", m.id), expects_reply: false, reply_to: None,
                 thread: m.thread.clone(), hops: m.hops, at: unix_ms(), seq: 0, status: MsgStatus::Queued,
-                delivered_at: None, replied_by: None, reason: None, read: false, notice: true,
+                delivered_at: None, replied_by: None, reason: None, read: false, notice: true, kind: None, key: None,
             };
             let to = notice.to.clone();
             match commit_mail(MailCmd::Send { message: notice, recipient_exists: true }) {
@@ -828,7 +839,7 @@ mod tests {
             assert_eq!(mb.messages[plain_id].status, MsgStatus::Dropped);
             let notices: Vec<&Message> = mb.queue_for(&Party::Agent { id: from.clone() }).into_iter().filter(|m| m.notice).collect();
             assert_eq!(notices.len(), 1, "only the expects-reply message produces a notice");
-            assert!(notices[0].text.contains(ask_id) && notices[0].text.contains("agent deleted"));
+            assert!(notices[0].text.contains(ask_id) && notices[0].text.contains("was deleted"));
         });
     }
     #[test]

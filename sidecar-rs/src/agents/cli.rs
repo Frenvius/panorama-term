@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox> [args] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits> [args] [--flags] [--json]";
 const PREVIEW_CHARS: usize = 40;
 
 #[derive(Debug, Default)]
@@ -42,6 +42,8 @@ fn allowed_flags(command: &str) -> Option<&'static str> {
         "reply" => "file",
         "read" => "",
         "inbox" => "pending limit",
+        "wait" => "on timeout note cancel cancel-all",
+        "waits" => "all status",
         _ => return None,
     })
 }
@@ -67,6 +69,13 @@ fn field_for(flag: &str) -> &'static str {
         "file" => "text",
         "pending" => "pending",
         "limit" => "limit",
+        "on" => "on",
+        "timeout" => "timeoutMs",
+        "note" => "note",
+        "cancel" => "id",
+        "cancel-all" => "all",
+        "all" => "all",
+        "status" => "status",
         _ => "",
     }
 }
@@ -81,7 +90,7 @@ fn parse_bool(flag: &str, raw: &str) -> Result<bool, String> {
 
 fn positional_fields(command: &str) -> &'static [&'static str] {
     match command {
-        "create" | "list" => &[],
+        "create" | "list" | "wait" | "waits" => &[],
         "send" | "reply" => &["to", "text"],
         "inbox" => &["agent"],
         _ => &["id"],
@@ -116,7 +125,17 @@ where
             return Err(format!("unknown flag --{flag} for {command}"));
         }
         let field = field_for(flag);
-        if matches!(flag, "fresh" | "force" | "expects-reply" | "pending") {
+        if flag == "on" {
+            let raw = args.get(i + 1).ok_or("--on requires a target")?;
+            if let Some(Value::Array(list)) = body.get_mut("on") {
+                list.push(raw.clone().into());
+            } else {
+                body.insert("on".into(), Value::Array(vec![raw.clone().into()]));
+            }
+            i += 2;
+            continue;
+        }
+        if matches!(flag, "fresh" | "force" | "expects-reply" | "pending" | "cancel-all" | "all") {
             body.insert(field.into(), true.into());
             i += 1;
             continue;
@@ -125,6 +144,7 @@ where
         let value: Value = match flag {
             "auto-start" => parse_bool(flag, raw)?.into(),
             "tail" | "limit" => raw.parse::<u64>().map_err(|_| format!("--{flag} requires a number"))?.into(),
+            "timeout" => crate::agents::waits::parse_duration(raw).ok_or("--timeout takes a duration like 30m or 2h")?.into(),
             "instructions-file" | "file" => read_file(raw)?.into(),
             _ => raw.clone().into(),
         };
@@ -142,6 +162,20 @@ where
     } else if matches!(command.as_str(), "send" | "reply") {
         if !body.contains_key("to") || !body.contains_key("text") {
             return Err(format!("{command} requires a recipient and a text (or --file)"));
+        }
+        if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+        if env.worker { body.insert("worker".into(), true.into()); }
+    } else if matches!(command.as_str(), "wait" | "waits") {
+        let cancel = body.contains_key("id") || body.contains_key("all") && command == "wait";
+        if command == "wait" && !cancel && !body.contains_key("on") {
+            return Err("wait requires --on <target> (or --cancel <waitId> / --cancel-all)".into());
+        }
+        if command == "wait" && cancel && body.contains_key("on") {
+            return Err("use either --on or --cancel".into());
+        }
+        if command == "waits" && body.remove("all").is_none() {
+            body.insert("mine".into(), true.into());
         }
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
@@ -180,8 +214,19 @@ fn message_line(m: &Value) -> String {
     format!("{}  {} -> {}  {}{}  \"{}\"", field("id"), field("fromLabel"), field("toLabel"), field("status"), flag, preview)
 }
 
-fn route(command: &str) -> &str {
-    if command == "inbox" { "messages" } else { command }
+fn route<'a>(command: &'a str, body: &Map<String, Value>) -> &'a str {
+    match command {
+        "inbox" => "messages",
+        "wait" if body.contains_key("id") || body.contains_key("all") => "wait-cancel",
+        _ => command,
+    }
+}
+
+fn wait_line(w: &Value) -> String {
+    let on: Vec<&str> = w["on"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let status = w["status"].as_str().unwrap_or("");
+    let fired = w["fired"]["summary"].as_str().map(|s| format!("  -> {s}")).unwrap_or_default();
+    format!("{}  {status}  {}{fired}", w["id"].as_str().unwrap_or(""), on.join(" | "))
 }
 
 fn exit_with(message: &str, code: i32) -> ! {
@@ -193,7 +238,7 @@ pub fn main() {
     let args: Vec<String> = std::env::args().skip(2).collect();
     let parsed = parse_args(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
     let body = serde_json::to_string(&parsed.body).unwrap_or_else(|_| "{}".into());
-    let path = format!("/agents/{}", route(&parsed.command));
+    let path = format!("/agents/{}", route(&parsed.command, &parsed.body));
     let response = http_post(crate::port(), &path, &body, 15_000)
         .unwrap_or_else(|e| exit_with(&format!("brain unreachable: {e}"), EXIT_UNREACHABLE));
     let text = parse_response_body(&response);
@@ -216,6 +261,9 @@ pub fn main() {
     }
     match parsed.command.as_str() {
         "send" | "reply" => println!("{}", v["text"].as_str().unwrap_or_default()),
+        "wait" if v["cancelled"].is_number() => println!("Cancelled {} wait(s).", v["cancelled"]),
+        "wait" => println!("{}", v["text"].as_str().unwrap_or_default()),
+        "waits" => v["waits"].as_array().into_iter().flatten().for_each(|w| println!("{}", wait_line(w))),
         "inbox" => v["messages"].as_array().into_iter().flatten().for_each(|m| println!("{}", message_line(m))),
         "read" => {
             println!("{}", message_line(&v["message"]));
@@ -264,8 +312,30 @@ mod tests {
         let inbox = parse(&["inbox", "rev", "--pending", "--limit", "5"]).unwrap();
         assert_eq!(Value::Object(inbox.body), serde_json::json!({ "agent": "rev", "pending": true, "limit": 5 }));
         assert!(parse(&["inbox"]).is_ok());
-        assert_eq!(route("inbox"), "messages");
-        assert_eq!(route("send"), "send");
+        assert_eq!(route("inbox", &Map::new()), "messages");
+        assert_eq!(route("send", &Map::new()), "send");
+    }
+
+    #[test]
+    fn wait_collects_targets_and_cancels_through_its_own_route() {
+        let env = CliEnv { agent: Some("a1234567".into()), tile: Some("agent-a1234567".into()), worker: false };
+        let p = parse_with(&["wait", "--on", "in:2m", "--on", "session:build@D:/x", "--timeout", "30m", "--note", "fix build"], &env).unwrap();
+        assert_eq!(Value::Object(p.body.clone()), serde_json::json!({
+            "on": ["in:2m", "session:build@D:/x"], "timeoutMs": 1_800_000, "note": "fix build", "fromAgent": "a1234567", "fromTile": "agent-a1234567",
+        }));
+        assert_eq!(route("wait", &p.body), "wait");
+        let c = parse_with(&["wait", "--cancel", "w123"], &env).unwrap();
+        assert_eq!(c.body["id"], "w123");
+        assert_eq!(route("wait", &c.body), "wait-cancel");
+        let all = parse_with(&["wait", "--cancel-all"], &env).unwrap();
+        assert_eq!(route("wait", &all.body), "wait-cancel");
+        assert!(parse(&["wait"]).is_err());
+        assert!(parse(&["wait", "--on", "in:2m", "--cancel", "w1"]).is_err());
+        assert!(parse(&["wait", "--on", "in:2m", "--timeout", "soon"]).is_err());
+        assert_eq!(parse(&["waits"]).unwrap().body["mine"], true);
+        assert!(parse(&["waits", "--all"]).unwrap().body.get("mine").is_none());
+        let worker = CliEnv { tile: Some("t1".into()), worker: true, ..Default::default() };
+        assert_eq!(parse_with(&["wait", "--on", "in:2m"], &worker).unwrap().body["worker"], true);
     }
 
     #[test]
