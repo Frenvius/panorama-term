@@ -1079,6 +1079,11 @@ pub(crate) mod tests {
         assert_eq!(missing, ["w1"], "w2 has its message, w3 merged into the budget, w4 is open");
     }
 
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn test_agent(tag: &str, desired: Desired, crashed: bool) -> (String, String) {
         crate::orch::tests::f12_test_home();
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -1116,6 +1121,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_target_already_true_answers_inline_and_opens_nothing() {
+        let _serial = serial();
         let (me, _) = test_agent("i", Desired::Running, false);
         let (_, stopped) = test_agent("j", Desired::Stopped, false);
         let r = reply(handle_wait(&json!({ "on": [format!("agent:{stopped}")], "fromAgent": me })));
@@ -1129,6 +1135,7 @@ pub(crate) mod tests {
 
     #[test]
     fn registration_rules() {
+        let _serial = serial();
         let (me, _) = test_agent("k", Desired::Running, false);
         let (_, other) = test_agent("l", Desired::Running, false);
         let worker = reply(handle_wait(&json!({ "on": ["in:2m"], "worker": true, "fromTile": "t1" })));
@@ -1151,6 +1158,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_timeout_wakes_exactly_once_and_a_cancelled_wait_never() {
+        let _serial = serial();
         let (me, _) = test_agent("m", Desired::Running, false);
         let (_, other) = test_agent("n", Desired::Running, false);
         let r = reply(handle_wait(&json!({ "on": [format!("agent:{other}")], "fromAgent": me, "timeoutMs": 1_000 })));
@@ -1170,6 +1178,7 @@ pub(crate) mod tests {
 
     #[test]
     fn only_the_waiter_or_the_user_cancels_a_wait() {
+        let _serial = serial();
         let (me, _) = test_agent("o", Desired::Running, false);
         let (stranger, _) = test_agent("p", Desired::Running, false);
         let id = reply(handle_wait(&json!({ "on": ["in:4m"], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
@@ -1179,6 +1188,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_wake_comes_from_the_brain_on_a_fresh_thread() {
+        let _serial = serial();
         let (me, _) = test_agent("q", Desired::Running, false);
         let party = Party::Agent { id: me.clone() };
         let id = open_direct(&party, vec![timer(unix_ms() + 2 * MINUTE_MS)]);
@@ -1191,6 +1201,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_31st_fire_in_an_hour_merges_into_the_queued_event() {
+        let _serial = serial();
         let (me, _) = test_agent("r", Desired::Running, false);
         let party = Party::Agent { id: me.clone() };
         let mut ids = Vec::new();
@@ -1208,6 +1219,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_stopped_waiter_is_started_by_its_event_and_a_crashed_one_is_not() {
+        let _serial = serial();
         for (tag, crashed) in [("s", false), ("t", true)] {
             let (me, _) = test_agent(tag, Desired::Stopped, crashed);
             let id = open_direct(&Party::Agent { id: me.clone() }, vec![far()]);
@@ -1227,6 +1239,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_agent_target_fires_after_a_busy_then_idle_turn() {
+        let _serial = serial();
         let (me, _) = test_agent("u", Desired::Running, false);
         let (other, other_name) = test_agent("v", Desired::Running, false);
         let id = reply(handle_wait(&json!({ "on": [format!("agent:{other_name}")], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
@@ -1241,6 +1254,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_session_exit_fires_with_its_code() {
+        let _serial = serial();
         let (me, _) = test_agent("x", Desired::Running, false);
         let session = format!("tile-exit-{}", unix_ms());
         let target = Target::Session { spec: session.clone(), ready: false, session: session.clone(), pid: Some(7) };
@@ -1253,6 +1267,7 @@ pub(crate) mod tests {
 
     #[test]
     fn boot_repair_sends_a_missing_wake_once() {
+        let _serial = serial();
         let (me, _) = test_agent("y", Desired::Running, false);
         let id = open_direct(&Party::Agent { id: me }, vec![far()]);
         commit(WaitCmd::Fire { id: id.clone(), fired: Fired { target: Some(0), at: unix_ms(), summary: "timer.".into(), wake: true, started: false } }).unwrap();
@@ -1264,6 +1279,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_closed_tile_loses_its_mail_and_waits_and_refuses_new_mail() {
+        let _serial = serial();
         let (sender, _) = test_agent("z", Desired::Running, false);
         let tile = Party::Tile { id: format!("tile-closed-{}", unix_ms()) };
         let agent = Party::Agent { id: sender.clone() };
