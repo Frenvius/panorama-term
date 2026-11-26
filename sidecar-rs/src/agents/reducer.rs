@@ -11,7 +11,7 @@ pub const RESTART_MAX: usize = 3;
 const EXIT_DETAIL_MAX: usize = 400;
 const MODEL_MAX: usize = 128;
 const EXIT_REASONS: &[&str] = &["session_gone", "shell_returned", "resume_failed"];
-const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user"];
+const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user", "routine"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentError {

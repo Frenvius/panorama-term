@@ -648,7 +648,7 @@ pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str) {
         tokio::time::sleep(FRESH_POLL).await;
     }
     if crate::lookup_live(&tile).is_some() {
-        if commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "routine".into(), force: false, crashed: false }).is_err() {
+        if commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "brain".into(), force: false, crashed: false }).is_err() {
             return;
         }
         runtime::stop_session(&tile).await;

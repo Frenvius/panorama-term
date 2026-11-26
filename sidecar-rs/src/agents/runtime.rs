@@ -605,7 +605,8 @@ async fn quiet_loop() {
         interval.tick().await;
         let ui = crate::ui::has_subscribers();
         for (id, tile, ready_text, hook) in quiet_targets() {
-            let mail = crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: id.clone() });
+            let mail = crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: id.clone() })
+                || crate::agents::routines::awaiting_turn(&id);
             if !quiet_wanted(hook, ui, mail, !hook_status_known(&tile)) {
                 continue;
             }

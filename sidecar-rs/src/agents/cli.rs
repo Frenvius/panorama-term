@@ -355,7 +355,9 @@ fn routine_line(r: &Value) -> String {
 }
 
 fn routine_main(args: &[String]) -> ! {
-    let (route, body) = parse_routine(args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
+    let json = args.iter().any(|a| a == "--json");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let (route, body) = parse_routine(&args, &CliEnv::from_process(), read_file).unwrap_or_else(|e| exit_with(&e, EXIT_USAGE));
     let text_body = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
     let response = http_post(crate::port(), &format!("/agents/{route}"), &text_body, 15_000)
         .unwrap_or_else(|e| exit_with(&format!("brain unreachable: {e}"), EXIT_UNREACHABLE));
@@ -363,6 +365,10 @@ fn routine_main(args: &[String]) -> ! {
     let v: Value = serde_json::from_str(text).unwrap_or_else(|_| exit_with("unexpected response", EXIT_UNREACHABLE));
     if v["ok"].as_bool() != Some(true) {
         exit_with(&format!("{}: {}", v["error"]["code"].as_str().unwrap_or("error"), v["error"]["message"].as_str().unwrap_or("")), EXIT_API);
+    }
+    if json {
+        println!("{text}");
+        std::process::exit(0);
     }
     match route.as_str() {
         "routines" => v["routines"].as_array().into_iter().flatten().for_each(|r| println!("{}", routine_line(r))),
