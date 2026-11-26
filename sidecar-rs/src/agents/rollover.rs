@@ -195,7 +195,8 @@ fn handoff_parts(agent_id: &str, n: u32, noted: bool) -> HandoffParts {
     let hid = handoff_id(agent_id, n);
     let (threads, queued) = with_mailbox(|mb| {
         let mut latest: HashMap<&str, &Message> = HashMap::new();
-        for m in mb.messages.values().filter(|m| (m.to == party || m.from == party) && !m.from_brain() && m.to != Party::Brain) {
+        let notice = |m: &Message| matches!(m.kind.as_deref(), Some(KIND_ROLLOVER) | Some(KIND_HANDOFF));
+        for m in mb.messages.values().filter(|m| (m.to == party || m.from == party) && !m.from_brain() && m.to != Party::Brain && !notice(m)) {
             let e = latest.entry(m.thread.as_str()).or_insert(m);
             if m.seq > e.seq {
                 *e = m;
@@ -746,6 +747,7 @@ mod tests {
         let id = test_agent("f");
         let n = open(&id, "user", true, "open");
         crate::agents::messages::tests_queue(&id, "m-before");
+        notify(&id, "session renewed (60% -> 4%)", true);
         let fake = Fake::new(&id, vec![(true, LiveStatus::Idle), (true, LiveStatus::Busy)], (true, LiveStatus::Idle));
         let outcome = drive(&fake, &id, n, &|| true).await;
         assert_eq!(outcome, "done_no_note");
@@ -759,6 +761,7 @@ mod tests {
         assert_eq!(queue[1].0, "m-before");
         let text = with_mailbox(|mb| mb.messages[&handoff_id(&id, n)].text.clone());
         assert!(text.contains("(no note was written") && text.contains("m-before with user") && text.contains("Queued messages that follow: 1"), "{text}");
+        assert!(!text.contains("session renewed"), "renewal notices are not threads: {text}");
     }
 
     #[tokio::test]

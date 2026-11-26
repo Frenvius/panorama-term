@@ -681,6 +681,7 @@ fn plain_quiet_targets() -> Vec<(String, Option<String>)> {
 pub(crate) fn quiet_mail(agent_id: &str) -> bool {
     crate::agents::delivery::has_mail(&crate::agents::mail::Party::Agent { id: agent_id.to_string() })
         || crate::agents::routines::awaiting_turn(agent_id)
+        || crate::agents::rollover::paused(agent_id)
 }
 
 pub fn quiet_wanted(hook: bool, ui: bool, mail: bool, hook_missing: bool) -> bool {
