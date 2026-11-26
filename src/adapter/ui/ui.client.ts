@@ -37,6 +37,9 @@ const agentSubs = new Set<AgentSub>();
 const agentMailSubs = new Set<AgentMailSub>();
 
 let ws: WebSocket | null = null;
+let userCap = '';
+
+export const getUserCap = (): string => userCap;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
 const totalSubs = (): number =>
@@ -49,7 +52,9 @@ const dispatch = (data: string): void => {
   } catch {
     return;
   }
-  if (msg.t === 'tile.open') {
+  if (msg.t === 'ui.capability') {
+    userCap = (msg as { token?: string }).token ?? '';
+  } else if (msg.t === 'tile.open') {
     for (const fn of tileOpenSubs) fn(msg as TileOpenRequest);
   } else if (msg.t === 'tile.wake') {
     for (const fn of tileWakeSubs) fn(msg.tileId ?? '');
