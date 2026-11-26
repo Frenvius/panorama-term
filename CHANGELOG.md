@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.20]
+
+### Added
+- Off-LAN pairing: a phone or another desktop can pair over the internet through the relay, without being on the same network as the host.
+- Persistent agents: run named agents that keep their session, resume natively and restart after a crash, all managed from the Projects panel.
+- Routines: schedule recurring instructions for an agent, with a webhook token, fresh sessions per run, file guards and cost caps.
+- Agent messaging: agents send and reply to each other and coordinate boards, with a user inbox, queue badges and agent status in the panel.
+- Session rollover: long agent sessions roll over with a handoff turn and carry per-agent memories across sessions.
+- Agent UI: memories popover, renew session, and context and rollover chips.
+
+### Fixed
+- Agent reliability: safer starts and stops under races, session and tile recovery, routine cleanup, and hardened handling of pasted text and forged headers.
+
+### Performance
+- Lighter worker MCP load and compacted orchestration run output.
+
 ## [0.4.19]
 
 ### Added
