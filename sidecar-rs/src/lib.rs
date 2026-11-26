@@ -216,10 +216,13 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                     let key =
                                         ev["key"].as_str().unwrap_or("").to_string();
                                     let code = ev["code"].as_u64().map(|c| c as u32);
-                                    let consumers =
-                                        h.consumers.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(tx) = consumers.get(&key) {
-                                        let _ = tx.send(ConsumerMsg::Exit { code });
+                                    let attached = {
+                                        let consumers =
+                                            h.consumers.lock().unwrap_or_else(|e| e.into_inner());
+                                        consumers.get(&key).map(|tx| tx.send(ConsumerMsg::Exit { code }).is_ok())
+                                    };
+                                    if attached != Some(true) {
+                                        agents::on_session_exit(&key, code, is_plain_session_key(&key));
                                     }
                                 } else if ev["kind"] == "killed" {
                                     let key = ev["key"].as_str().unwrap_or("");
@@ -229,6 +232,7 @@ fn brain_dispatcher(h: &'static HostHandle, mut stream: std::net::TcpStream) {
                                         mark_killed(&s);
                                         s.kill_pending.store(false, Ordering::Release);
                                     }
+                                    agents::on_session_exit(key, None, is_plain_session_key(key));
                                 }
                             }
                         }
@@ -1225,6 +1229,10 @@ fn norm_cwd(cwd: &str) -> String {
         norm = norm.to_lowercase();
     }
     norm
+}
+
+pub(crate) fn is_plain_session_key(key: &str) -> bool {
+    !["run:", "build:"].iter().any(|p| key.starts_with(p))
 }
 
 fn run_key(kind: &str, tile: &str) -> String {
@@ -5046,6 +5054,15 @@ fn input_contains(screen: &str, text: &str) -> bool {
     let tail = text.lines().last().unwrap_or("").trim();
     let suffix: String = tail.chars().rev().take(20).collect::<String>().chars().rev().collect();
     !tail.is_empty() && (input.contains(tail) || (tail.chars().count() > 20 && input.contains(&suffix)))
+}
+
+#[cfg(test)]
+#[test]
+fn run_sessions_are_not_plain_tiles() {
+    assert!(is_plain_session_key("plainf16"));
+    assert!(is_plain_session_key("agent-a1"));
+    assert!(!is_plain_session_key(&run_key("build", "t1")));
+    assert!(!is_plain_session_key(&run_key("run", "t1")));
 }
 
 #[cfg(test)]
