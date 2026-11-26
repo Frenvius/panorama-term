@@ -226,7 +226,28 @@ mod tests {
     }
 
     #[test]
-    fn thresholds() {        let d = dir("size");
+    fn thread_counts_and_open_asks_do_not_grow_forever() {
+        let day = 24 * 3_600_000;
+        let now = 200 * day;
+        let mut mb = Mailbox::default();
+        for i in 0..300 {
+            let mut m = msg(&format!("solo{i}"), agent("a"), agent("b"));
+            m.at = day;
+            mail_step(&mut mb, MailCmd::Send { message: m, recipient_exists: true });
+            mail_step(&mut mb, MailCmd::Deliver { ids: vec![format!("solo{i}")], at: day });
+        }
+        let mut ask = msg("ancient-ask", agent("a"), agent("b"));
+        ask.at = day;
+        ask.expects_reply = true;
+        mail_step(&mut mb, MailCmd::Send { message: ask, recipient_exists: true });
+        mail_step(&mut mb, MailCmd::Deliver { ids: vec!["ancient-ask".into()], at: day });
+        let snap = mb.snapshot(now, &Default::default());
+        assert_eq!(snap["threadBase"].as_object().unwrap().len(), 0, "threads with nothing kept leave no count behind");
+        assert_eq!(snap["messages"].as_array().unwrap().len(), 0, "an ask older than 90 days is pruned");
+    }
+    #[test]
+    fn thresholds() {
+        let d = dir("size");
         let path = d.join("events.jsonl");
         std::fs::write(&path, vec![b'x'; 10]).unwrap();
         assert!(!needs_compaction(&path, MAX_RECORDS));
