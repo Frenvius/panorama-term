@@ -87,6 +87,7 @@ pub enum Cmd {
     SessionClear { id: String, at: u64, reason: String },
     RolloverStart { id: String, at: u64, reason: String, auto: bool, note: bool, handoff: bool, ctx: Option<u8>, run: Option<String> },
     RolloverNote { id: String, n: u32, bytes: usize },
+    RolloverStopping { id: String, n: u32 },
     RolloverCleared { id: String, n: u32 },
     RolloverEnd { id: String, n: u32, at: u64, outcome: String },
     RolloverCtx { id: String, n: u32, ctx_after: u8, threshold: Option<u8> },
@@ -283,15 +284,19 @@ impl State {
                 }))))
             }
             Cmd::RolloverNote { id, n, bytes } => {
-                self.open_rollover(id, *n, "open")?;
+                self.open_rollover(id, *n, &["open"])?;
                 Ok(Some(("agent-rollover-note", json!({ "id": id, "n": n, "bytes": bytes }))))
             }
+            Cmd::RolloverStopping { id, n } => {
+                self.open_rollover(id, *n, &["open"])?;
+                Ok(Some(("agent-rollover-stopping", json!({ "id": id, "n": n }))))
+            }
             Cmd::RolloverCleared { id, n } => {
-                self.open_rollover(id, *n, "open")?;
+                self.open_rollover(id, *n, &["open", "stopping"])?;
                 Ok(Some(("agent-rollover-cleared", json!({ "id": id, "n": n }))))
             }
             Cmd::RolloverEnd { id, n, at, outcome } => {
-                self.open_rollover(id, *n, "")?;
+                self.open_rollover(id, *n, &[])?;
                 Ok(Some(("agent-rollover-end", json!({ "id": id, "n": n, "at": at, "outcome": outcome }))))
             }
             Cmd::RolloverCtx { id, n, ctx_after, threshold } => {
@@ -304,11 +309,11 @@ impl State {
         }
     }
 
-    fn open_rollover(&self, id: &str, n: u32, phase: &str) -> Result<&Rollover, AgentError> {
+    fn open_rollover(&self, id: &str, n: u32, phases: &[&str]) -> Result<&Rollover, AgentError> {
         let open = self.get(id)?.rollover.open.as_ref().filter(|r| r.n == n);
         let open = open.ok_or_else(|| AgentError::new("conflict", "no session renewal is open"))?;
-        if !phase.is_empty() && open.phase != phase {
-            return Err(AgentError::new("conflict", format!("the session renewal is past the {phase} phase")));
+        if !phases.is_empty() && !phases.contains(&open.phase.as_str()) {
+            return Err(AgentError::new("conflict", format!("the session renewal is in its {} phase", open.phase)));
         }
         Ok(open)
     }
@@ -383,6 +388,11 @@ impl State {
             "agent-rollover-note" => {
                 if let Some(open) = agent.rollover.open.as_mut() {
                     open.noted = true;
+                }
+            }
+            "agent-rollover-stopping" => {
+                if let Some(open) = agent.rollover.open.as_mut() {
+                    open.phase = "stopping".into();
                 }
             }
             "agent-rollover-cleared" => {

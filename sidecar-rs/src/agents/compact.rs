@@ -210,8 +210,24 @@ mod tests {
     }
 
     #[test]
-    fn thresholds() {
-        let d = dir("size");
+    fn a_double_rename_failure_never_lets_an_append_shadow_the_backup() {
+        let d = dir("double");
+        let path = d.join("events.jsonl");
+        std::fs::write(&path, "{\"seq\":1,\"at\":1,\"kind\":\"x\",\"data\":{}}\n").unwrap();
+        let both_fail = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from.to_string_lossy().ends_with(".tmp") || from.to_string_lossy().ends_with(".1") { Err(std::io::Error::other("locked")) } else { std::fs::rename(from, to) }
+        };
+        assert!(swap_log_with(&path, &[rec(9)], &both_fail).is_err());
+        assert!(!path.exists() && backup_path(&path).exists(), "the live log is gone, only the backup is left");
+        crate::agents::store::append_event(&path, &rec(2)).unwrap();
+        restore_backup(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"seq\":1") && text.contains("\"seq\":2"), "the history is kept and the new event follows it: {text}");
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn thresholds() {        let d = dir("size");
         let path = d.join("events.jsonl");
         std::fs::write(&path, vec![b'x'; 10]).unwrap();
         assert!(!needs_compaction(&path, MAX_RECORDS));

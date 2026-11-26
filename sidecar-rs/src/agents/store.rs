@@ -1,7 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use crate::agents::reducer::State;
-pub use crate::orch::store::{append_event, EventRecord};
+pub use crate::orch::store::EventRecord;
+
+pub fn append_event(path: &Path, record: &EventRecord) -> Result<(), String> {
+    if !path.exists() && crate::agents::compact::backup_path(path).exists() {
+        crate::agents::compact::restore_backup(path);
+        if !path.exists() {
+            return Err(format!("{} is waiting for its backup to be restored", path.display()));
+        }
+    }
+    crate::orch::store::append_event(path, record)
+}
 
 pub fn agents_dir(base: &Path) -> PathBuf {
     base.join("agents")

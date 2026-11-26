@@ -337,6 +337,9 @@ pub(crate) async fn drive<B: Backend>(b: &B, agent_id: &str, n: u32, wanted: &(d
     if open.phase == "cleared" {
         return finish(b, agent_id, n).await;
     }
+    if open.phase == "stopping" {
+        return clear_and_finish(b, agent_id, n).await;
+    }
     let started = open.started_at.min(b.now());
     let was_live = b.ready(agent_id).live || agent.desired == crate::agents::model::Desired::Running;
     let live = loop {
@@ -410,6 +413,25 @@ pub(crate) async fn drive<B: Backend>(b: &B, agent_id: &str, n: u32, wanted: &(d
         return "aborted:unwanted".into();
     }
     if live {
+        let last = b.ready(agent_id);
+        if last.typed_ms_ago < crate::agents::delivery::TYPING_QUIET_MS {
+            end(agent_id, n, "aborted:user");
+            return "aborted:user".into();
+        }
+        if !last.idle {
+            end(agent_id, n, "aborted:busy");
+            return "aborted:busy".into();
+        }
+    }
+    if let Err(e) = commit_cmd(agent_id, Cmd::RolloverStopping { id: agent_id.into(), n }) {
+        return format!("gone ({})", e.message);
+    }
+    clear_and_finish(b, agent_id, n).await
+}
+
+async fn clear_and_finish<B: Backend>(b: &B, agent_id: &str, n: u32) -> String {
+    let live = b.status(agent_id).0;
+    if live {
         if let Err(e) = commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "brain".into(), force: false, crashed: false }) {
             end(agent_id, n, "failed:stop");
             return format!("failed:stop ({})", e.message);
@@ -423,7 +445,6 @@ pub(crate) async fn drive<B: Backend>(b: &B, agent_id: &str, n: u32, wanted: &(d
     crate::ui::broadcast_agents_rollover(agent_id);
     finish(b, agent_id, n).await
 }
-
 async fn finish<B: Backend>(b: &B, agent_id: &str, n: u32) -> String {
     let Some((_, open)) = open_of(agent_id, n) else { return "gone".into() };
     if open.handoff {
@@ -507,7 +528,7 @@ pub(crate) fn repair_after_boot() {
         .filter_map(|a| a.rollover.open.clone().map(|o| (a.id.clone(), o)))
         .collect();
     for (id, roll) in open {
-        let resume = roll.phase == "cleared" || (roll.reason.starts_with("routine:") && !roll.note);
+        let resume = roll.phase != "open" || (roll.reason.starts_with("routine:") && !roll.note);
         if !resume {
             end(&id, roll.n, "aborted:restart");
             continue;
@@ -710,17 +731,21 @@ mod tests {
         stopped: Mutex<u32>,
         started: Mutex<Vec<String>>,
         start_fails: bool,
+        ready_seq: Mutex<Vec<Ready>>,
     }
 
     impl Fake {
         fn new(agent: &str, script: Vec<(bool, LiveStatus)>, after: (bool, LiveStatus)) -> Self {
-            Self { agent: agent.into(), script: Mutex::new(script), after, deliver_prompt: true, typed_at: 0, stopped: Mutex::new(0), started: Mutex::new(vec![]), start_fails: false }
+            Self { agent: agent.into(), script: Mutex::new(script), after, deliver_prompt: true, typed_at: 0, stopped: Mutex::new(0), started: Mutex::new(vec![]), start_fails: false, ready_seq: Mutex::new(vec![]) }
         }
     }
 
     impl Backend for Fake {
         fn now(&self) -> u64 { unix_ms() }
-        fn ready(&self, _: &str) -> Ready { ready() }
+        fn ready(&self, _: &str) -> Ready {
+            let mut seq = self.ready_seq.lock().unwrap();
+            if seq.is_empty() { ready() } else { seq.remove(0) }
+        }
         fn status(&self, _: &str) -> (bool, LiveStatus) {
             if self.deliver_prompt {
                 let n = lock().agents[&self.agent].rollover.seq;
@@ -914,5 +939,44 @@ mod tests {
         assert_eq!((s2.agents["a1"].rollover.paused.clone(), s2.agents["a1"].rollover.strikes), (None, 0), "rollover-at enables it again");
         assert!(step(&mut s2, Cmd::Update { id: "a1".into(), patch: crate::agents::reducer::AgentPatch { rollover_at: Some(95), ..Default::default() }, known_profiles: vec!["claude".into()], at: t0 }).is_err());
         let _ = Rollover::default();
+    }
+
+    #[tokio::test]
+    async fn a_restart_after_the_stop_resumes_the_clear_and_starts_the_agent_once() {
+        let _serial = serial();
+        for with_clear in [false, true] {
+            let id = test_agent(if with_clear { "q" } else { "p" });
+            let n = open(&id, "user", true, "open");
+            commit_cmd(&id, Cmd::RolloverStopping { id: id.clone(), n }).unwrap();
+            commit_cmd(&id, Cmd::Stop { id: id.clone(), at: unix_ms(), by: "brain".into(), force: false, crashed: false }).unwrap();
+            if with_clear {
+                commit_cmd(&id, Cmd::SessionClear { id: id.clone(), at: unix_ms(), reason: "rollover".into() }).unwrap();
+            }
+            repair_after_boot();
+            for _ in 0..300 {
+                if agent(&id).rollover.open.is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let a = agent(&id);
+            assert_eq!(a.rollover.last.as_ref().map(|l| l.outcome.as_str()), Some("done_no_note"), "with_clear={with_clear}");
+            assert_eq!((a.desired, a.started_by.clone()), (Desired::Running, Some(format!("rollover {n}"))), "the agent is started again");
+            assert!(a.native_session.is_none());
+            repair_after_boot();
+            assert_eq!(with_mailbox(|mb| mb.messages.values().filter(|m| m.id == handoff_id(&id, n)).count()), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_right_before_the_stop_keeps_the_session() {
+        let _serial = serial();
+        let id = test_agent("y");
+        let n = open(&id, "user", true, "open");
+        let fake = Fake::new(&id, vec![(true, LiveStatus::Idle), (true, LiveStatus::Busy)], (true, LiveStatus::Idle));
+        *fake.ready_seq.lock().unwrap() = vec![ready(), ready(), Ready { typed_ms_ago: 500, ..ready() }];
+        assert_eq!(drive(&fake, &id, n, &|| true).await, "aborted:user");
+        assert_eq!(agent(&id).native_session.as_ref().map(|s| s.id.as_str()), Some("s-old"));
+        assert_eq!(*fake.stopped.lock().unwrap(), 0);
     }
 }
