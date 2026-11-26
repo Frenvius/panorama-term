@@ -1,9 +1,11 @@
 pub mod cli;
+mod compact;
 mod context;
 mod delivery;
 mod envelope;
 mod launch;
 mod mail;
+mod memory;
 mod messages;
 mod model;
 mod reducer;
@@ -113,6 +115,32 @@ pub fn init() {
     waits::init();
     routines::init();
     runtime::restore_all();
+    compact::start();
+}
+
+pub(crate) fn compact_agent_logs(force: bool) -> compact::Sizes {
+    let mut total = compact::Sizes::default();
+    let Some(base) = crate::panorama_dir() else { return total };
+    let mut guard = lock();
+    let ids: Vec<String> = guard.agents.keys().cloned().collect();
+    for id in ids {
+        let path = store::events_path(&base, &id);
+        let seq = guard.seqs.get(&id).copied().unwrap_or(0);
+        let since = seq.saturating_sub(guard.snaps.get(&id).copied().unwrap_or(0));
+        if !force && !compact::needs_compaction(&path, since) {
+            total.add(compact::unchanged(&path));
+            continue;
+        }
+        let Ok(data) = serde_json::to_value(&guard.agents[&id]) else { continue };
+        match compact::compact_log(&path, seq, "agent-snapshot", data) {
+            Ok(sizes) => {
+                total.add(sizes);
+                guard.snaps.insert(id, seq);
+            }
+            Err(e) => eprintln!("[compact] agent {id}: {e}"),
+        }
+    }
+    total
 }
 
 pub async fn handle(command: &str, body: &[u8]) -> String {
@@ -145,6 +173,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "routine-report" => routines::handle_report(&v),
         "routine-token" => routines::handle_token(&v),
         "routine-payload" => routines::handle_payload(&v),
+        "compact" => tokio::task::spawn_blocking(move || compact::handle_compact(&v)).await.unwrap_or_else(|_| err_resp("io", "compaction failed")),
         _ => err_resp("bad_request", "unknown command"),
     }
 }

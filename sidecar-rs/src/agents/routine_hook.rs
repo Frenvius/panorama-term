@@ -83,6 +83,16 @@ pub fn forget(routine: &str) {
     }
 }
 
+pub(crate) fn sweep_payloads(keep: &std::collections::HashSet<String>) {
+    let Some(dir) = dir() else { return };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !keep.contains(&name) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn payload_files(routine: &str) -> Vec<PathBuf> {
     let Some(dir) = dir() else { return vec![] };
     let prefix = format!("{routine}-");

@@ -405,6 +405,37 @@ impl Routines {
         }
     }
 
+    pub fn snapshot(&self, now: u64) -> Value {
+        let live = |id: &String| self.routines.contains_key(id);
+        let mut runs: Vec<&Run> = Vec::new();
+        for (_, list) in self.runs.iter().filter(|(id, _)| live(id)) {
+            let ended = list.iter().filter(|r| !r.open()).count();
+            let skip_ended = ended.saturating_sub(HISTORY);
+            let mut seen = 0;
+            for run in list {
+                if !run.open() {
+                    seen += 1;
+                    if seen <= skip_ended {
+                        continue;
+                    }
+                }
+                runs.push(run);
+            }
+        }
+        runs.sort_by_key(|r| (r.routine_id.clone(), r.n));
+        let mut skips: Vec<&Skip> = self.skips.iter().filter(|(id, _)| live(id)).flat_map(|(_, l)| l.iter().rev().take(HISTORY).rev()).collect();
+        skips.sort_by_key(|s| (s.routine_id.clone(), s.at));
+        let starts: BTreeMap<&String, Vec<(u64, u32)>> = self.starts.iter().filter(|(id, _)| live(id))
+            .map(|(id, l)| (id, l.iter().filter(|(at, _)| now.saturating_sub(*at) < DAY_MS).copied().collect()))
+            .collect();
+        let routines: Vec<&Routine> = self.routines.values().collect();
+        json!({ "routines": routines, "runs": runs, "skips": skips, "starts": starts })
+    }
+
+    pub fn run_ids(&self) -> std::collections::HashSet<String> {
+        self.runs.values().flatten().map(|r| run_id(&r.routine_id, r.n)).collect()
+    }
+
     fn push_run(&mut self, run: Run) {
         let list = self.runs.entry(run.routine_id.clone()).or_default();
         list.push_back(run);
@@ -494,6 +525,21 @@ impl Routines {
                 while list.len() > HISTORY {
                     list.pop_front();
                 }
+            }
+            "routines-snapshot" => {
+                let routines: Vec<Routine> = serde_json::from_value(data["routines"].clone()).map_err(|e| e.to_string())?;
+                let runs: Vec<Run> = serde_json::from_value(data["runs"].clone()).map_err(|e| e.to_string())?;
+                let skips: Vec<Skip> = serde_json::from_value(data["skips"].clone()).map_err(|e| e.to_string())?;
+                let starts: HashMap<String, VecDeque<(u64, u32)>> = serde_json::from_value(data["starts"].clone()).unwrap_or_default();
+                *self = Routines::default();
+                self.routines = routines.into_iter().map(|r| (r.id.clone(), r)).collect();
+                for run in runs {
+                    self.runs.entry(run.routine_id.clone()).or_default().push_back(run);
+                }
+                for skip in skips {
+                    self.skips.entry(skip.routine_id.clone()).or_default().push_back(skip);
+                }
+                self.starts = starts;
             }
             "run-deliver" => {
                 let n = data["n"].as_u64().unwrap_or(0) as u32;
@@ -627,6 +673,7 @@ pub fn with_more_triggers(text: &str, extra: u32) -> String {
 struct Runtime {
     state: Routines,
     log_seq: u32,
+    snap_seq: u32,
     booted_at: u64,
     boot_done: bool,
     last_tick: Option<u64>,
@@ -634,7 +681,7 @@ struct Runtime {
 
 fn runtime() -> &'static Mutex<Runtime> {
     static RT: OnceLock<Mutex<Runtime>> = OnceLock::new();
-    RT.get_or_init(|| Mutex::new(Runtime { state: Routines::default(), log_seq: 0, booted_at: unix_ms(), boot_done: false, last_tick: None }))
+    RT.get_or_init(|| Mutex::new(Runtime { state: Routines::default(), log_seq: 0, snap_seq: 0, booted_at: unix_ms(), boot_done: false, last_tick: None }))
 }
 
 fn rt() -> std::sync::MutexGuard<'static, Runtime> {
@@ -668,14 +715,50 @@ fn commit(cmd: Cmd) -> Result<(&'static str, Value), RoutineError> {
     Ok((kind, data))
 }
 
+pub(crate) fn compact(force: bool) -> crate::agents::compact::Sizes {
+    use crate::agents::compact;
+    let Some(base) = crate::panorama_dir() else { return compact::Sizes::default() };
+    let path = store::routines_path(&base);
+    let mut st = rt();
+    if st.log_seq == 0 || (!force && !compact::needs_compaction(&path, st.log_seq - st.snap_seq)) {
+        return compact::unchanged(&path);
+    }
+    let data = st.state.snapshot(unix_ms());
+    let seq = st.log_seq;
+    let sizes = match compact::compact_log(&path, seq, "routines-snapshot", data.clone()) {
+        Ok(sizes) => sizes,
+        Err(e) => {
+            eprintln!("[compact] routines: {e}");
+            return compact::unchanged(&path);
+        }
+    };
+    if let Err(e) = st.state.replay("routines-snapshot", &data) {
+        eprintln!("[compact] routines replay: {e}");
+    }
+    st.snap_seq = seq;
+    let keep = st.state.run_ids();
+    drop(st);
+    crate::agents::routine_hook::sweep_payloads(&keep);
+    sizes
+}
+
+pub(crate) fn message_ids() -> std::collections::HashSet<String> {
+    rt().state.run_ids().into_iter().map(|id| format!("u{id}")).collect()
+}
+
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
-    if let Ok(bytes) = std::fs::read(store::routines_path(&base)) {
+    let path = store::routines_path(&base);
+    crate::agents::compact::restore_backup(&path);
+    if let Ok(bytes) = std::fs::read(&path) {
         let mut st = rt();
         for line in bytes.split(|b| *b == b'\n') {
             let Ok(text) = std::str::from_utf8(line) else { continue };
             let Ok(record) = serde_json::from_str::<store::EventRecord>(text.trim()) else { continue };
             st.log_seq = st.log_seq.max(record.seq);
+            if record.kind == "routines-snapshot" {
+                st.snap_seq = record.seq;
+            }
             if let Err(e) = st.state.replay(&record.kind, &record.data) {
                 eprintln!("[routines] skip event {}: {e}", record.seq);
             }
@@ -2257,5 +2340,101 @@ pub(crate) mod tests {
             step(&mut s, Cmd::Create(routine(&format!("rb{i}"), &format!("b{}", i / 9), Trigger::Manual)));
         }
         assert_eq!(s.apply(&Cmd::Create(routine("rz", "zz", Trigger::Manual))).unwrap_err().code, "limit");
+    }
+
+    fn assert_same_routines(a: &Routines, b: &Routines) {
+        assert_eq!(a.routines, b.routines);
+        let sorted = |m: &HashMap<String, VecDeque<Run>>| m.iter().filter(|(_, l)| !l.is_empty()).map(|(k, l)| (k.clone(), l.iter().cloned().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>();
+        assert_eq!(sorted(&a.runs), sorted(&b.runs));
+        let skips = |m: &HashMap<String, VecDeque<Skip>>| m.iter().filter(|(_, l)| !l.is_empty()).map(|(k, l)| (k.clone(), l.iter().cloned().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>();
+        assert_eq!(skips(&a.skips), skips(&b.skips));
+        let starts = |m: &HashMap<String, VecDeque<(u64, u32)>>| m.iter().filter(|(_, l)| !l.is_empty()).map(|(k, l)| (k.clone(), l.iter().copied().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>();
+        assert_eq!(starts(&a.starts), starts(&b.starts));
+    }
+
+    fn compacted(s: &Routines, now: u64) -> Routines {
+        let mut c = Routines::default();
+        c.replay("routines-snapshot", &s.snapshot(now)).unwrap();
+        c
+    }
+
+    #[test]
+    fn a_routines_snapshot_replays_like_the_full_log() {
+        for seed in 1..12u64 {
+            let mut x = seed;
+            let mut pick = |n: u64| { x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (x >> 33) % n.max(1) };
+            let mut s = Routines::default();
+            for r in ["ra", "rb", "rc"] {
+                step(&mut s, Cmd::Create(Routine { overlap: if pick(2) == 0 { Overlap::Queue } else { Overlap::Skip }, max_per_day: 288, ..routine(r, "a1", Trigger::Manual) }));
+            }
+            let mut at = T0;
+            for _ in 0..80 {
+                at += (pick(20) + 1) * MINUTE_MS;
+                let r = ["ra", "rb", "rc"][pick(3) as usize];
+                let _ = s.apply(&fire_at(r, at)).map(|(k, d)| s.replay(k, &d).unwrap());
+                let open: Vec<u32> = s.runs_of(r).filter(|run| run.open()).map(|run| run.n).collect();
+                if let Some(n) = open.first() {
+                    let cmd = match pick(3) {
+                        0 => Cmd::Deliver { id: r.into(), n: *n, at, paste_at: Some(at), cost_before: Some(0.5) },
+                        1 => end(r, *n, at, ["done", "failed", "no_update"][pick(3) as usize]),
+                        _ => Cmd::Pause { id: r.into(), reason: "x".into() },
+                    };
+                    let _ = s.apply(&cmd).map(|(k, d)| s.replay(k, &d).unwrap());
+                }
+                if pick(10) == 0 {
+                    let _ = s.apply(&Cmd::Enable { id: r.into(), next_due: Some(at) }).map(|(k, d)| s.replay(k, &d).unwrap());
+                }
+            }
+            assert_same_routines(&s, &compacted(&s, at));
+        }
+    }
+
+    #[test]
+    fn budget_spacing_and_the_failure_streak_survive_compaction() {
+        let mut s = Routines::default();
+        step(&mut s, Cmd::Create(Routine { max_per_day: MAX_PER_DAY_CAP, ..routine("rd", "a1", Trigger::Manual) }));
+        step(&mut s, Cmd::Create(Routine { max_per_day: MAX_PER_DAY_CAP, ..routine("re", "a1", Trigger::Manual) }));
+        let mut at = T0;
+        for i in 0..MAX_PER_DAY_CAP {
+            at = T0 + u64::from(i) * 5 * MINUTE_MS;
+            for r in ["rd", "re"] {
+                if s.apply(&fire_at(r, at)).map(|(k, d)| s.replay(k, &d).unwrap()).is_ok() {
+                    let n = s.runs_of(r).last().unwrap().n;
+                    let outcome = if i % 7 < 4 { "done" } else { "failed" };
+                    let _ = s.apply(&end(r, n, at + 1, outcome)).map(|(k, d)| s.replay(k, &d).unwrap());
+                }
+            }
+        }
+        let c = compacted(&s, at + 2);
+        assert_same_routines(&s, &c);
+        for r in ["rd", "re"] {
+            assert_eq!(c.trailing_failures(r), s.trailing_failures(r));
+            assert_eq!(c.day_runs(r, at + 2), s.day_runs(r, at + 2));
+            for later in [at + MINUTE_MS, at + 30 * MINUTE_MS, T0 + DAY_MS + 10 * MINUTE_MS] {
+                assert_eq!(c.apply(&fire_at(r, later)).unwrap(), s.apply(&fire_at(r, later)).unwrap(), "same decision at {later}");
+            }
+        }
+        assert_eq!(c.agent_day_units("a1", at + 2), s.agent_day_units("a1", at + 2));
+        assert_eq!(c.agent_day_units("a1", at + 2), AGENT_DAY_CAP, "the 24 h window is full");
+    }
+
+    #[test]
+    fn compaction_removes_payloads_of_pruned_runs_and_deleted_routines() {
+        let _s = serial();
+        let (_, name) = test_agent("p", Desired::Running, false);
+        let id = create(&name, json!({}));
+        commit(later_fire(&id, 0)).unwrap();
+        let dir = store::routines_path(&crate::panorama_dir().unwrap()).with_file_name("payloads");
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join(run_id(&id, 1));
+        let pruned = dir.join(run_id(&id, 99));
+        let orphan = dir.join("rgone0-1");
+        for f in [&kept, &pruned, &orphan] {
+            std::fs::write(f, "payload").unwrap();
+        }
+        compact(true);
+        assert!(kept.exists(), "a kept run keeps its payload");
+        assert!(!pruned.exists() && !orphan.exists());
+        assert!(rt().state.run(&id, 1).is_some());
     }
 }

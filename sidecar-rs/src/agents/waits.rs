@@ -320,6 +320,17 @@ impl Waits {
             .sum()
     }
 
+    pub fn retained(&self, now: u64) -> Vec<&Wait> {
+        let closed_at = |w: &Wait| w.fired.as_ref().map_or(w.created_at, |f| f.at);
+        let must = |w: &Wait| w.status == WaitStatus::Open || w.fired.as_ref().is_some_and(|f| now.saturating_sub(f.at) < HOUR_MS);
+        let mut kept: Vec<&Wait> = self.waits.values().filter(|w| must(w)).collect();
+        let mut closed: Vec<&Wait> = self.waits.values().filter(|w| !must(w) && now.saturating_sub(closed_at(w)) < CLOSED_KEEP_MS).collect();
+        closed.sort_by_key(|w| std::cmp::Reverse(closed_at(w)));
+        kept.extend(closed.into_iter().take(CLOSED_KEEP_MAX));
+        kept.sort_by_key(|w| (w.created_at, w.id.clone()));
+        kept
+    }
+
     fn open_one(&self, id: &str) -> Result<&Wait, WaitError> {
         let w = self.waits.get(id).ok_or_else(|| werr("not_found", format!("wait {id} not found")))?;
         if w.status != WaitStatus::Open {
@@ -381,6 +392,10 @@ impl Waits {
                     w.status = if kind == "wait-fire" { WaitStatus::Fired } else { WaitStatus::Expired };
                     w.fired = Some(fired);
                 }
+            }
+            "waits-snapshot" => {
+                let list: Vec<Wait> = serde_json::from_value(data["waits"].clone()).map_err(|e| e.to_string())?;
+                self.waits = list.into_iter().map(|w| (w.id.clone(), w)).collect();
             }
             "wait-cancel" => {
                 let id = data["id"].as_str().ok_or("missing id")?;
@@ -449,6 +464,7 @@ pub fn session_summary(spec: &str, ready: bool, probe: &ProbeSession, code_hint:
 struct Runtime {
     waits: Waits,
     log_seq: u32,
+    snap_seq: u32,
     agent_busy: HashSet<String>,
     pending_more: HashMap<String, usize>,
     exit_codes: HashMap<String, Option<u32>>,
@@ -459,7 +475,7 @@ struct Runtime {
 fn runtime() -> &'static Mutex<Runtime> {
     static RT: OnceLock<Mutex<Runtime>> = OnceLock::new();
     RT.get_or_init(|| Mutex::new(Runtime {
-        waits: Waits::default(), log_seq: 0, agent_busy: HashSet::new(), pending_more: HashMap::new(),
+        waits: Waits::default(), log_seq: 0, snap_seq: 0, agent_busy: HashSet::new(), pending_more: HashMap::new(),
         exit_codes: HashMap::new(), booted_at: unix_ms(), closed_checked: false,
     }))
 }
@@ -504,14 +520,49 @@ fn commit(cmd: WaitCmd) -> Result<Value, WaitError> {
     Ok(data)
 }
 
+pub const CLOSED_KEEP_MS: u64 = 7 * 24 * HOUR_MS;
+pub const CLOSED_KEEP_MAX: usize = 200;
+
+pub(crate) fn compact(force: bool) -> crate::agents::compact::Sizes {
+    use crate::agents::compact;
+    let Some(base) = crate::panorama_dir() else { return compact::Sizes::default() };
+    let path = store::waits_path(&base);
+    let mut st = rt();
+    if st.log_seq == 0 || (!force && !compact::needs_compaction(&path, st.log_seq - st.snap_seq)) {
+        return compact::unchanged(&path);
+    }
+    let kept: Vec<Wait> = st.waits.retained(unix_ms()).into_iter().cloned().collect();
+    let seq = st.log_seq;
+    match compact::compact_log(&path, seq, "waits-snapshot", json!({ "waits": &kept })) {
+        Ok(sizes) => {
+            st.waits.waits = kept.into_iter().map(|w| (w.id.clone(), w)).collect();
+            st.snap_seq = seq;
+            sizes
+        }
+        Err(e) => {
+            eprintln!("[compact] waits: {e}");
+            compact::unchanged(&path)
+        }
+    }
+}
+
+pub(crate) fn message_ids() -> HashSet<String> {
+    rt().waits.waits.keys().map(|id| wake_id(id)).collect()
+}
+
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
-    if let Ok(bytes) = std::fs::read(store::waits_path(&base)) {
+    let path = store::waits_path(&base);
+    crate::agents::compact::restore_backup(&path);
+    if let Ok(bytes) = std::fs::read(&path) {
         let mut st = rt();
         for line in bytes.split(|b| *b == b'\n') {
             let Ok(text) = std::str::from_utf8(line) else { continue };
             let Ok(record) = serde_json::from_str::<store::EventRecord>(text.trim()) else { continue };
             st.log_seq = st.log_seq.max(record.seq);
+            if record.kind == "waits-snapshot" {
+                st.snap_seq = record.seq;
+            }
             if let Err(e) = st.waits.replay(&record.kind, &record.data) {
                 eprintln!("[waits] skip event {}: {e}", record.seq);
             }
@@ -1743,5 +1794,81 @@ pub(crate) mod tests {
         assert_eq!(parse_duration("2h"), Some(2 * HOUR_MS));
         assert_eq!(parse_duration("1d"), Some(DAY_MS));
         assert_eq!(parse_duration("x"), None);
+    }
+
+    #[test]
+    fn a_waits_snapshot_replays_like_the_full_log() {
+        for seed in 1..15u64 {
+            let mut full = Waits::default();
+            let mut x = seed;
+            let mut pick = |n: usize| { x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((x >> 33) as usize) % n.max(1) };
+            for i in 0..60 {
+                let id = format!("w{seed}x{i}");
+                let _ = run(&mut full, WaitCmd::Open(Wait { note: format!("n{i}"), ..wait(&id, agent(["a", "b"][pick(2)]), vec![timer(NOW + i)]) }));
+                let ids: Vec<String> = full.waits.keys().cloned().collect();
+                let target = ids[pick(ids.len())].clone();
+                let _ = match pick(4) {
+                    0 => run(&mut full, WaitCmd::Fire { id: target, fired: fired(NOW, pick(2) == 0) }),
+                    1 => run(&mut full, WaitCmd::Expire { id: target, fired: fired(NOW, true) }),
+                    2 => run(&mut full, WaitCmd::Cancel { id: target, by: "user".into(), at: NOW }),
+                    _ => Ok(()),
+                };
+            }
+            let mut compacted = Waits::default();
+            compacted.replay("waits-snapshot", &json!({ "waits": full.retained(NOW) })).unwrap();
+            assert_eq!(compacted.waits, full.waits, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn waits_retention_keeps_open_recent_and_the_wake_budget() {
+        let mut w = Waits::default();
+        let old = NOW - 8 * DAY_MS;
+        for (id, created, status, at) in [("open", old, WaitStatus::Open, None), ("hour", NOW - 1000, WaitStatus::Fired, Some(NOW - 1000)), ("old", old, WaitStatus::Fired, Some(old))] {
+            w.waits.insert(id.into(), Wait { status, fired: at.map(|a| fired(a, true)), created_at: created, ..wait(id, agent("a"), vec![timer(NOW)]) });
+        }
+        for i in 0..(CLOSED_KEEP_MAX + 10) as u64 {
+            let id = format!("c{i:03}");
+            w.waits.insert(id.clone(), Wait { status: WaitStatus::Fired, fired: Some(fired(NOW - 2 * HOUR_MS - i, false)), created_at: NOW - DAY_MS, ..wait(&id, agent("b"), vec![timer(NOW)]) });
+        }
+        let kept: Vec<String> = w.retained(NOW).into_iter().map(|w| w.id.clone()).collect();
+        assert!(kept.contains(&"open".to_string()) && kept.contains(&"hour".to_string()) && !kept.contains(&"old".to_string()));
+        assert_eq!(kept.len(), 2 + CLOSED_KEEP_MAX);
+        assert!(kept.contains(&"c000".to_string()) && !kept.contains(&format!("c{:03}", CLOSED_KEEP_MAX)), "newest closed first");
+    }
+
+    #[test]
+    fn a_commit_racing_a_compaction_lands_in_the_new_log() {
+        let _serial = serial();
+        crate::orch::tests::f12_test_home();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (0..4).map(|t| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut i = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let id = format!("wr{t}x{i}x{}", unix_ms());
+                    let waiter = Party::Tile { id: format!("race-{t}") };
+                    if commit(WaitCmd::Open(Wait { created_at: unix_ms(), ..wait(&id, waiter, vec![timer(unix_ms() + DAY_MS)]) })).is_ok() {
+                        let _ = commit(WaitCmd::Cancel { id, by: "user".into(), at: unix_ms() });
+                    }
+                    i += 1;
+                }
+            })
+        }).collect();
+        for _ in 0..40 {
+            compact(true);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for w in writers {
+            w.join().unwrap();
+        }
+        let path = store::waits_path(&crate::panorama_dir().unwrap());
+        let mut disk = Waits::default();
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let record: store::EventRecord = serde_json::from_str(line).unwrap();
+            disk.replay(&record.kind, &record.data).unwrap();
+        }
+        assert_eq!(disk.waits, rt().waits.waits, "every racing commit is in the log");
     }
 }

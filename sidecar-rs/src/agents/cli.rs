@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate> [args] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate|compact> [args] [--flags] [--json]";
 const PREVIEW_CHARS: usize = 40;
 
 #[derive(Debug, Default)]
@@ -45,6 +45,7 @@ fn allowed_flags(command: &str) -> Option<&'static str> {
         "wait" => "on timeout note cancel cancel-all",
         "waits" => "all status",
         "coordinate" => "run off",
+        "compact" => "",
         _ => return None,
     })
 }
@@ -93,7 +94,7 @@ fn parse_bool(flag: &str, raw: &str) -> Result<bool, String> {
 
 fn positional_fields(command: &str) -> &'static [&'static str] {
     match command {
-        "create" | "list" | "wait" | "waits" => &[],
+        "create" | "list" | "wait" | "waits" | "compact" => &[],
         "send" | "reply" => &["to", "text"],
         "inbox" | "coordinate" => &["agent"],
         _ => &["id"],
@@ -189,6 +190,10 @@ where
         }
         let off = body.remove("off").is_some();
         body.insert("on".into(), (!off).into());
+    } else if command == "compact" {
+        if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+        if env.worker { body.insert("worker".into(), true.into()); }
     } else if command == "read" && !body.contains_key("id") {
         return Err("read requires a message id".into());
     } else if !matches!(command.as_str(), "list" | "inbox" | "read") && !body.contains_key("id") {
@@ -425,6 +430,7 @@ pub fn main() {
         "wait" => println!("{}", v["text"].as_str().unwrap_or_default()),
         "waits" => v["waits"].as_array().into_iter().flatten().for_each(|w| println!("{}", wait_line(w))),
         "coordinate" => println!("{}", v["text"].as_str().unwrap_or_default()),
+        "compact" => println!("Compacted the logs: {} KB -> {} KB", v["before"].as_u64().unwrap_or(0) / 1024, v["after"].as_u64().unwrap_or(0) / 1024),
         "inbox" => v["messages"].as_array().into_iter().flatten().for_each(|m| println!("{}", message_line(m))),
         "read" => {
             println!("{}", message_line(&v["message"]));

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -119,7 +119,11 @@ pub enum MailCmd {
 pub struct Mailbox {
     pub messages: BTreeMap<String, Message>,
     pub seq: u32,
+    pub thread_base: BTreeMap<String, usize>,
 }
+
+pub const MAIL_KEEP_MS: u64 = 30 * 24 * 3_600_000;
+pub const MAIL_KEEP_MAX: usize = 2_000;
 
 fn pending_reply(m: &Message) -> bool {
     m.expects_reply && m.replied_by.is_none() && !matches!(m.status, MsgStatus::Dropped | MsgStatus::Failed)
@@ -143,7 +147,33 @@ impl Mailbox {
     }
 
     pub fn thread_len(&self, thread: &str) -> usize {
-        self.messages.values().filter(|m| m.thread == thread).count()
+        self.thread_base.get(thread).copied().unwrap_or(0) + self.messages.values().filter(|m| m.thread == thread).count()
+    }
+
+    pub fn snapshot(&self, now: u64, referenced: &HashSet<String>) -> Value {
+        let orch_base = |m: &Message| m.key.as_deref().and_then(|k| k.split_once('#')).map(|(b, _)| b.to_string());
+        let mut newest_orch: BTreeMap<String, (u32, String)> = BTreeMap::new();
+        for m in self.messages.values() {
+            if let Some(base) = orch_base(m) {
+                let e = newest_orch.entry(base).or_insert((0, String::new()));
+                if m.seq >= e.0 {
+                    *e = (m.seq, m.id.clone());
+                }
+            }
+        }
+        let pinned: HashSet<&str> = newest_orch.values().map(|(_, id)| id.as_str()).collect();
+        let must = |m: &Message| m.status == MsgStatus::Queued || pending_reply(m) || referenced.contains(&m.id) || pinned.contains(m.id.as_str());
+        let mut kept: Vec<&Message> = self.messages.values().filter(|m| must(m)).collect();
+        let mut recent: Vec<&Message> = self.messages.values().filter(|m| !must(m) && now.saturating_sub(m.at) < MAIL_KEEP_MS).collect();
+        recent.sort_by_key(|m| std::cmp::Reverse(m.seq));
+        kept.extend(recent.into_iter().take(MAIL_KEEP_MAX.saturating_sub(kept.len())));
+        let kept_ids: HashSet<&str> = kept.iter().map(|m| m.id.as_str()).collect();
+        let mut base = self.thread_base.clone();
+        for m in self.messages.values().filter(|m| !kept_ids.contains(m.id.as_str())) {
+            *base.entry(m.thread.clone()).or_default() += 1;
+        }
+        kept.sort_by_key(|m| m.seq);
+        json!({ "seq": self.seq, "messages": kept, "threadBase": base })
     }
 
     pub fn apply(&self, cmd: &MailCmd) -> Result<(&'static str, Value), MailError> {
@@ -295,6 +325,12 @@ impl Mailbox {
                         m.read = true;
                     }
                 }
+            }
+            "mail-snapshot" => {
+                let list: Vec<Message> = serde_json::from_value(data["messages"].clone()).map_err(|e| e.to_string())?;
+                self.messages = list.into_iter().map(|m| (m.id.clone(), m)).collect();
+                self.seq = data["seq"].as_u64().unwrap_or(0) as u32;
+                self.thread_base = serde_json::from_value(data["threadBase"].clone()).unwrap_or_default();
             }
             "msg-update" => {
                 let id = data["id"].as_str().ok_or("missing id")?;

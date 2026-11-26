@@ -83,6 +83,7 @@ pub enum Cmd {
 pub struct State {
     pub agents: BTreeMap<String, Agent>,
     pub seqs: BTreeMap<String, u32>,
+    pub snaps: BTreeMap<String, u32>,
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -247,7 +248,7 @@ impl State {
     }
 
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
-        if kind == "agent-create" {
+        if kind == "agent-create" || kind == "agent-snapshot" {
             let agent: Agent = serde_json::from_value(data.clone()).map_err(|e| e.to_string())?;
             self.agents.insert(agent.id.clone(), agent);
             return Ok(());

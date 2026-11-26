@@ -20,6 +20,7 @@ const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 struct MailState {
     mailbox: Mailbox,
     log_seq: u32,
+    snap_seq: u32,
 }
 
 fn mail() -> &'static Mutex<MailState> {
@@ -171,6 +172,7 @@ fn gen_message_id() -> String {
 pub fn init() {
     let Some(base) = crate::panorama_dir() else { return };
     let path = store::messages_path(&base);
+    crate::agents::compact::restore_backup(&path);
     let Ok(bytes) = std::fs::read(&path) else { return };
     let auto_started = auto_started_by_messages(unix_ms());
     let mut state = mail_lock();
@@ -178,6 +180,9 @@ pub fn init() {
         let Ok(text) = std::str::from_utf8(line) else { continue };
         let Ok(record) = serde_json::from_str::<store::EventRecord>(text.trim()) else { continue };
         state.log_seq = state.log_seq.max(record.seq);
+        if record.kind == "mail-snapshot" {
+            state.snap_seq = record.seq;
+        }
         if let Err(e) = state.mailbox.replay(&record.kind, &record.data) {
             eprintln!("[agents] skip mail event {}: {e}", record.seq);
         }
@@ -192,6 +197,33 @@ pub fn init() {
     drop(state);
     for party in waiting {
         crate::agents::delivery::kick(&party);
+    }
+}
+
+pub(crate) fn compact_mail(force: bool) -> crate::agents::compact::Sizes {
+    use crate::agents::compact;
+    let Some(base) = crate::panorama_dir() else { return compact::Sizes::default() };
+    let path = store::messages_path(&base);
+    let mut referenced: HashSet<String> = crate::agents::waits::message_ids();
+    referenced.extend(crate::agents::routines::message_ids());
+    let mut state = mail_lock();
+    if state.log_seq == 0 || (!force && !compact::needs_compaction(&path, state.log_seq - state.snap_seq)) {
+        return compact::unchanged(&path);
+    }
+    let data = state.mailbox.snapshot(unix_ms(), &referenced);
+    let seq = state.log_seq;
+    match compact::compact_log(&path, seq, "mail-snapshot", data.clone()) {
+        Ok(sizes) => {
+            if let Err(e) = state.mailbox.replay("mail-snapshot", &data) {
+                eprintln!("[compact] mail replay: {e}");
+            }
+            state.snap_seq = seq;
+            sizes
+        }
+        Err(e) => {
+            eprintln!("[compact] mail: {e}");
+            compact::unchanged(&path)
+        }
     }
 }
 

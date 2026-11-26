@@ -51,6 +51,7 @@ pub fn remove_binding(base: &Path, tile_id: &str) -> Result<(), String> {
 pub fn load_into(state: &mut State, path: &Path, agent_id: &str) {
     let Ok(bytes) = std::fs::read(path) else { return };
     let mut last_seq = 0u32;
+    let mut snap_seq = 0u32;
     for (i, chunk) in bytes.split(|&b| b == b'\n').enumerate() {
         let Ok(line) = std::str::from_utf8(chunk) else {
             eprintln!("[agents] skip invalid UTF-8 on line {} in {}", i + 1, path.display());
@@ -61,6 +62,9 @@ pub fn load_into(state: &mut State, path: &Path, agent_id: &str) {
         match serde_json::from_str::<EventRecord>(line) {
             Ok(record) => {
                 last_seq = last_seq.max(record.seq);
+                if record.kind == "agent-snapshot" {
+                    snap_seq = record.seq;
+                }
                 if let Err(e) = state.replay(&record.kind, &record.data) {
                     eprintln!("[agents] skip bad event line {} in {}: {e}", i + 1, path.display());
                 }
@@ -70,6 +74,7 @@ pub fn load_into(state: &mut State, path: &Path, agent_id: &str) {
     }
     if state.agents.contains_key(agent_id) {
         state.seqs.insert(agent_id.to_string(), last_seq);
+        state.snaps.insert(agent_id.to_string(), snap_seq);
     }
 }
 
@@ -86,14 +91,17 @@ pub fn load_all(state: &mut State, base: &Path) {
             eprintln!("[agents] skip directory {id}: not an agent id");
             continue;
         }
+        let path = entry.path().join("events.jsonl");
+        crate::agents::compact::restore_backup(&path);
         let mut loaded = State::default();
-        load_into(&mut loaded, &entry.path().join("events.jsonl"), &id);
+        load_into(&mut loaded, &path, &id);
         if loaded.agents.len() != 1 || !loaded.agents.contains_key(&id) {
             eprintln!("[agents] skip {id}: log does not describe exactly this agent");
             continue;
         }
         state.agents.extend(loaded.agents);
         state.seqs.extend(loaded.seqs);
+        state.snaps.extend(loaded.snaps);
     }
 }
 
