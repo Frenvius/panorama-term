@@ -859,12 +859,14 @@ mod tests {
         insert_test_agent(&newcomer, &format!("late-{newcomer}"));
         let same_session = system_context(&tile).unwrap();
         lock().agents.get_mut(&id).unwrap().native_session = Some(model::NativeSession { agent: "pi".into(), id: format!("s2-{id}"), bound_at: 2, model: None });
-        let next_session = system_context(&tile).unwrap();
+        let _ = system_context(&tile).unwrap();
+        let frozen = crate::read_binding_rec(&tile).map(|r| r["agentRoster"].clone()).unwrap_or_default();
         remove_test_agent(&newcomer);
         remove_test_agent(&id);
         if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
         assert_eq!(before, same_session, "a roster edit does not change pi's system context mid-session");
-        assert!(next_session.contains(&format!("late-{newcomer}")), "a new session sees the new roster");
+        assert_eq!(frozen["sessionId"], format!("s2-{id}"));
+        assert!(frozen["names"].as_array().unwrap().iter().any(|e| e["name"] == format!("late-{newcomer}")), "a new session freezes the new roster");
     }
 
     #[test]
