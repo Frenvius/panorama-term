@@ -2080,11 +2080,7 @@ pub(crate) mod tests {
 
     #[test]
     fn fresh_sessions_wait_for_a_quiet_idle_agent_and_carry_a_short_handoff() {
-        use crate::agents::model::StatusSource;
-        assert!(crate::agents::fresh_ready(LiveStatus::Idle, StatusSource::Hook, 20_000));
-        assert!(!crate::agents::fresh_ready(LiveStatus::Busy, StatusSource::Hook, 20_000), "never stop a busy agent");
-        assert!(!crate::agents::fresh_ready(LiveStatus::Idle, StatusSource::None, 20_000), "nor one with an unknown status");
-        assert!(!crate::agents::fresh_ready(LiveStatus::Idle, StatusSource::Hook, 3_000), "nor one the user is typing in");
+
         let mk = |n: u32, outcome: &str, summary: Option<&str>| Run {
             routine_id: "rf".into(), n, due: 0, fired_at: 0, trigger: "manual".into(), note: None, started: false, delivered_at: Some(1),
             ended_at: Some(2), outcome: Some(outcome.into()), summary: summary.map(str::to_string), paste_at: None, cost_before: None, cost_usd: None,
@@ -2257,15 +2253,6 @@ pub(crate) mod tests {
         assert_eq!(s.apply(&Cmd::SetNext { id: "rn".into(), next_due: Some(T0 + 1) }).unwrap_err().code, "conflict");
         step(&mut s, Cmd::Disable { id: "rn".into() });
         assert!(!s.routines["rn"].enabled && s.routines["rn"].paused_reason.is_some());
-    }
-
-    #[test]
-    fn fresh_steps_never_stop_a_busy_agent_or_an_unwanted_run() {
-        use crate::agents::{fresh_step, FreshStep};
-        assert_eq!(fresh_step(true, true, 0), FreshStep::Restart);
-        assert_eq!(fresh_step(true, false, 3), FreshStep::Wait);
-        assert_eq!(fresh_step(true, false, 720), FreshStep::GiveUp, "still busy at the end of the wait: no stop");
-        assert_eq!(fresh_step(false, true, 0), FreshStep::Abandon, "disabled or ended run: no stop");
     }
 
     #[tokio::test(flavor = "multi_thread")]

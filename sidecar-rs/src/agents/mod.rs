@@ -693,13 +693,6 @@ fn handle_delete(v: &Value) -> String {
 
 pub(crate) const COORDINATOR_EXE: &str = "claude";
 
-const FRESH_POLL: std::time::Duration = std::time::Duration::from_secs(5);
-const FRESH_WAIT_MAX: u32 = 720;
-
-pub fn fresh_ready(status: LiveStatus, source: StatusSource, typed_ms_ago: u64) -> bool {
-    status == LiveStatus::Idle && source != StatusSource::None && typed_ms_ago >= delivery::TYPING_QUIET_MS
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum FreshOutcome {
     Ready,
@@ -708,34 +701,7 @@ pub enum FreshOutcome {
     Failed(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum FreshStep {
-    Wait,
-    Restart,
-    Abandon,
-    GiveUp,
-}
-
-pub fn fresh_step(wanted: bool, ready: bool, attempts: u32) -> FreshStep {
-    if !wanted {
-        FreshStep::Abandon
-    } else if ready {
-        FreshStep::Restart
-    } else if attempts >= FRESH_WAIT_MAX {
-        FreshStep::GiveUp
-    } else {
-        FreshStep::Wait
-    }
-}
-
-fn fresh_ready_now(agent_id: &str) -> Option<bool> {
-    let tile = model::tile_id(agent_id);
-    let agent = lock().agents.get(agent_id).cloned()?;
-    let live = live_view(&agent);
-    let typed = unix_ms().saturating_sub(crate::client_input(&tile).last_ms);
-    Some(!live.live || fresh_ready(live.status, live.status_source, typed))
-}
-
+#[cfg(test)]
 pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str, wanted: impl Fn() -> bool + Send + Sync) -> FreshOutcome {
     renew_for_routine(agent_id, routine, None, None, wanted).await
 }

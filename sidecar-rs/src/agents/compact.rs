@@ -9,6 +9,7 @@ use crate::agents::{err_resp, ok_resp};
 
 pub const MAX_BYTES: u64 = 1024 * 1024;
 pub const MAX_RECORDS: u32 = 5_000;
+pub const SIZE_MIN_RECORDS: u32 = 500;
 pub const CHECK_EVERY: Duration = Duration::from_secs(600);
 const RENAME_TRIES: u32 = 3;
 const RENAME_GAP: Duration = Duration::from_millis(50);
@@ -104,7 +105,7 @@ pub fn file_size(path: &Path) -> u64 {
 }
 
 pub fn needs_compaction(path: &Path, records_since_snapshot: u32) -> bool {
-    file_size(path) > MAX_BYTES || records_since_snapshot > MAX_RECORDS
+    records_since_snapshot > MAX_RECORDS || (records_since_snapshot >= SIZE_MIN_RECORDS && file_size(path) > MAX_BYTES)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +217,8 @@ mod tests {
         assert!(!needs_compaction(&path, MAX_RECORDS));
         assert!(needs_compaction(&path, MAX_RECORDS + 1));
         std::fs::write(&path, vec![b'x'; MAX_BYTES as usize + 1]).unwrap();
-        assert!(needs_compaction(&path, 0));
+        assert!(needs_compaction(&path, SIZE_MIN_RECORDS));
+        assert!(!needs_compaction(&path, SIZE_MIN_RECORDS - 1), "a log that stays big after a compaction is not rewritten again at once");
         std::fs::remove_dir_all(d).ok();
     }
 
