@@ -49,6 +49,54 @@ export interface PersistentAgent extends AgentLive {
   canCoordinate?: boolean;
   waits?: AgentWaitSummary[];
   routines?: { count: number; enabled: number; nextRunLocal: string | null; lastAt: number | null };
+  memory?: { count: number; essentialBytes: number };
+  rollover?: RolloverState;
+}
+
+export interface RolloverOpen {
+  n: number;
+  reason: string;
+  phase: 'open' | 'cleared';
+  startedAt: number;
+  note?: boolean;
+  noted?: boolean;
+  ctxBefore?: number;
+}
+
+export interface RolloverEnd {
+  n: number;
+  outcome: string;
+  at: number;
+  reason?: string;
+  ctxBefore?: number;
+  ctxAfter?: number;
+}
+
+export interface RolloverState {
+  at?: number;
+  open?: RolloverOpen;
+  paused?: string;
+  strikes?: number;
+  seq?: number;
+  last?: RolloverEnd;
+}
+
+export interface AgentMemory {
+  id: string;
+  text: string;
+  essential: boolean;
+  by: 'user' | 'agent';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryUsage {
+  count: number;
+  essentialBytes: number;
+  essentialCount: number;
+  maxBytes: number;
+  maxEntries: number;
+  max: number;
 }
 
 export type RoutineOutcome = 'reported' | 'no_update' | 'failed' | 'timeout' | 'skipped';
@@ -71,7 +119,8 @@ export interface Routine {
   pausedReason: string | null;
   missed: 'catchUp' | 'skip';
   overlap: 'skip' | 'queue';
-  session: 'keep' | 'fresh';
+  session: 'keep' | 'fresh' | 'rollover';
+  rolloverNote?: boolean;
   reportTo: { kind: 'user' } | { kind: 'agent'; id: string } | { kind: 'none' };
   maxPerDay: number;
   maxCostDay: number | null;
@@ -147,7 +196,7 @@ export interface AgentMessage {
   reason: string | null;
   read: boolean;
   notice: boolean;
-  kind?: 'event' | 'orch' | 'routine';
+  kind?: 'event' | 'orch' | 'routine' | 'rollover' | 'handoff';
   routineName?: string | null;
   key?: string;
   truncated?: boolean;

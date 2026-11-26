@@ -7,10 +7,11 @@ import { FolderOpen } from 'lucide-react';
 import styles from './styles.module.scss';
 import Dialog from '~/components/commons/Dialog';
 import { agentActions } from '~/usecase/hooks/useAgents';
-import { useOrchSettings } from '~/usecase/hooks/useOrchSettings';
 import ModelCombobox from '~/components/commons/ModelCombobox';
-import { createAgent, updateAgent } from '~/adapter/agents/agents.client';
+import { useOrchSettings } from '~/usecase/hooks/useOrchSettings';
 import { isValidAgentName, utf8ByteLength } from '~/usecase/util/agents';
+import { createAgent, updateAgent } from '~/adapter/agents/agents.client';
+import { reportsContext, parseRolloverAt, rolloverAtLabel, DEFAULT_ROLLOVER_AT } from '~/usecase/util/agentMemory';
 
 const INSTRUCTION_CAP = 4096;
 
@@ -42,6 +43,7 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
   const [cwd, setCwd] = React.useState(agent?.cwd ?? defaultCwd);
   const [instructions, setInstructions] = React.useState(agent?.instructions ?? '');
   const [autoStart, setAutoStart] = React.useState(agent?.autoStart ?? true);
+  const [rolloverAt, setRolloverAt] = React.useState(rolloverAtLabel(agent?.rollover?.at).replace('%', ''));
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -57,8 +59,11 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
   const modelChanged = isEdit && agent != null && (modelVal || null) !== agent.model;
   const sessionWillDrop = Boolean(agent?.nativeSession) && (cwdChanged || profileChanged || modelChanged);
 
+  const showRollover = isEdit && reportsContext(profileId);
+  const rolloverValue = parseRolloverAt(rolloverAt);
+  const rolloverInvalid = showRollover && rolloverValue === null;
   const nameValid = isValidAgentName(name);
-  const canSubmit = nameValid && Boolean(profileId) && Boolean(cwd) && !instrOver && !submitting;
+  const canSubmit = nameValid && Boolean(profileId) && Boolean(cwd) && !instrOver && !rolloverInvalid && !submitting;
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value);
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value);
@@ -87,6 +92,7 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
         cwd,
         instructions,
         autoStart,
+        rolloverAt: showRollover && rolloverValue !== null && rolloverValue !== (agent.rollover?.at ?? DEFAULT_ROLLOVER_AT) ? rolloverValue : undefined,
       })
         .then(({ agent: saved, restartNeeded }) => {
           if (restartNeeded) agentActions.markRestartNeeded(saved.id);
@@ -204,6 +210,19 @@ const AgentDialog = ({ agent, defaultCwd, onClose, onSaved, onFolderPick }: Agen
             onChange={handleInstrChange}
           />
         </div>
+        {showRollover && (
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={`-rollover`}>Renew the session at % context (40 to 90, or off)</label>
+            <input
+              id={`-rollover`}
+              type="text"
+              className={`${rolloverInvalid ? ` ${styles.invalid}` : ''}`}
+              value={rolloverAt}
+              placeholder={String(DEFAULT_ROLLOVER_AT)}
+              onChange={(e) => setRolloverAt(e.target.value)}
+            />
+          </div>
+        )}
         <label className={styles.checkLabel}>
           <input type="checkbox" checked={autoStart} onChange={handleAutoStartChange} className={styles.check} />
           Start automatically

@@ -72,7 +72,19 @@ describe('formFromRoutine', () => {
       name: 'N', instruction: 'I', trigger: { kind: 'every', ms: 1_800_000, anchor: 0 }, missed: 'skip', overlap: 'queue',
       session: 'fresh', reportTo: { kind: 'agent', id: 'a1' }, maxPerDay: 4
     } as unknown as Routine;
-    expect(formFromRoutine(r, { a1: 'planner' })).toMatchObject({ kind: 'every', every: '30m', missed: 'skip', fresh: true, reportTo: 'agent:planner' });
+    expect(formFromRoutine(r, { a1: 'planner' })).toMatchObject({ kind: 'every', every: '30m', missed: 'skip', session: 'fresh', noNote: false, reportTo: 'agent:planner' });
     expect(hookUrl('http://127.0.0.1:9777', 'rt1')).toBe('http://127.0.0.1:9777/agents/routine-hook/rt1');
+  });
+});
+
+describe('routine session select', () => {
+  it('round-trips keep, fresh and rollover with its note flag', () => {
+    const base = { ...emptyForm(), name: 'N', text: 't' };
+    expect(formToBody({ ...base, session: 'keep' })).toMatchObject({ session: 'keep', noNote: false });
+    expect(formToBody({ ...base, session: 'fresh', noNote: true })).toMatchObject({ session: 'fresh', noNote: false });
+    expect(formToBody({ ...base, session: 'rollover', noNote: true })).toMatchObject({ session: 'rollover', noNote: true });
+    const r = { name: 'N', instruction: 'I', trigger: { kind: 'manual' }, missed: 'skip', overlap: 'skip', reportTo: { kind: 'user' }, maxPerDay: 4 };
+    expect(formFromRoutine({ ...r, session: 'rollover', rolloverNote: false } as unknown as Routine, {})).toMatchObject({ session: 'rollover', noNote: true });
+    expect(formFromRoutine({ ...r, session: 'rollover' } as unknown as Routine, {})).toMatchObject({ session: 'rollover', noNote: false });
   });
 });

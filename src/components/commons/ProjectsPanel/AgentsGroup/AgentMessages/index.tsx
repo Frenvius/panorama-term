@@ -6,6 +6,7 @@ import { X, ArrowDown, ArrowUp, Clock } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
+import { isRolloverMessage } from '~/usecase/util/agentMemory';
 import { useAgentMessages } from '~/usecase/hooks/useAgentMessages';
 import { readMessage, sendMessage } from '~/adapter/agents/agents.client';
 import { messageDirection, messagePreview, statusChipKind, clampToViewport } from '~/usecase/util/agentMessages';
@@ -115,7 +116,7 @@ const AgentMessages = ({ agent, anchorRect, onClose }: AgentMessagesProps) => {
         {messages.length === 0 && <div className={styles.empty}>No messages</div>}
         {messages.map((msg) => {
           const dir = messageDirection(msg, agent.id);
-          const chip = statusChipKind(msg);
+          const chip = isRolloverMessage(msg) ? 'rollover' : statusChipKind(msg);
           const isExpanded = expanded === msg.id;
           const displayText = isExpanded ? (fullTexts[msg.id] ?? msg.text) : messagePreview(msg);
           const peer = dir === 'in' ? msg.fromLabel : msg.toLabel;

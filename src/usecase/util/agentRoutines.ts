@@ -16,7 +16,8 @@ export interface RoutineForm {
   cron: string;
   missed: 'catch-up' | 'skip';
   overlap: 'skip' | 'queue';
-  fresh: boolean;
+  session: 'keep' | 'fresh' | 'rollover';
+  noNote: boolean;
   reportTo: string;
   maxPerDay: number;
 }
@@ -31,7 +32,8 @@ export const emptyForm = (): RoutineForm => ({
   cron: '',
   missed: 'catch-up',
   overlap: 'skip',
-  fresh: false,
+  session: 'keep',
+  noNote: false,
   reportTo: 'user',
   maxPerDay: 24
 });
@@ -119,7 +121,8 @@ export const formToBody = (form: RoutineForm): Record<string, unknown> => {
     text: form.text,
     missed: form.missed,
     overlap: form.overlap,
-    fresh: form.fresh,
+    session: form.session,
+    noNote: form.session === 'rollover' && form.noNote,
     reportTo: form.reportTo,
     maxPerDay: form.maxPerDay
   };
@@ -140,7 +143,8 @@ export const formFromRoutine = (r: Routine, agentNames: Record<string, string>):
     text: r.instruction,
     missed: r.missed === 'skip' ? 'skip' : 'catch-up',
     overlap: r.overlap,
-    fresh: r.session === 'fresh',
+    session: r.session,
+    noNote: r.session === 'rollover' && r.rolloverNote === false,
     reportTo: r.reportTo.kind === 'agent' ? `agent:${agentNames[r.reportTo.id] ?? r.reportTo.id}` : r.reportTo.kind,
     maxPerDay: r.maxPerDay
   };

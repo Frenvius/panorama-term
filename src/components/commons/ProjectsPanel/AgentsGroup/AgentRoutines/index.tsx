@@ -243,11 +243,21 @@ const AgentRoutines = ({ agent, anchorRect, onClose }: AgentRoutinesProps) => {
               <input className={styles.input} type="number" min={1} max={288} value={form.maxPerDay} onChange={(e) => patchForm({ maxPerDay: Number(e.target.value) })} />
             </label>
           </div>
-          <label className={styles.check}>
-            <input type="checkbox" checked={form.fresh} onChange={(e) => patchForm({ fresh: e.target.checked })} />
-            Fresh session for each run
+          <label className={styles.field}>
+            Session
+            <select className={styles.input} value={form.session} onChange={(e) => patchForm({ session: e.target.value as RoutineForm['session'] })}>
+              <option value="keep">Keep the conversation</option>
+              <option value="fresh">Fresh session for each run</option>
+              <option value="rollover">Renew with a handoff for each run</option>
+            </select>
           </label>
-          {form.fresh && <span className={styles.warning}>Each run drops this agent&apos;s conversation. Use a dedicated agent.</span>}
+          {form.session === 'rollover' && (
+            <label className={styles.check}>
+              <input type="checkbox" checked={form.noNote} onChange={(e) => patchForm({ noNote: e.target.checked })} />
+              Skip the handoff note (state only)
+            </label>
+          )}
+          {form.session === 'fresh' && <span className={styles.warning}>Each run drops this agent&apos;s conversation. Use a dedicated agent.</span>}
           {formError && <span className={styles.error}>{formError}</span>}
           <div className={styles.actions}>
             <button type="button" className={styles.btn} onClick={() => setEditing(null)}>Cancel</button>

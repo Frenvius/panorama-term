@@ -1,4 +1,4 @@
-import type { Routine, AgentWait, RoutineRun, RoutineSkip, AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
+import type { Routine, AgentWait, RoutineRun, RoutineSkip, AgentMemory, MemoryUsage, AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import { getUserCap } from '~/adapter/ui/ui.client';
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
@@ -67,6 +67,7 @@ export interface UpdateAgentOpts {
   cwd?: string;
   instructions?: string;
   autoStart?: boolean;
+  rolloverAt?: number;
 }
 
 export const updateAgent = (opts: UpdateAgentOpts): Promise<{ agent: PersistentAgent; restartNeeded: boolean }> =>
@@ -160,3 +161,21 @@ export const rotateRoutineToken = (id: string): Promise<{ token: string }> =>
 
 export const markAllRead = (uptoSeq: number): Promise<void> =>
   post<Record<string, never>>('mark-read', { all: true, uptoSeq }).then(() => undefined);
+
+export const listMemories = (agent: string): Promise<{ memories: AgentMemory[]; usage: MemoryUsage }> =>
+  post('memory', { agent, userCap: getUserCap() });
+
+export const rememberMemory = (agent: string, text: string, essential: boolean): Promise<{ id: string; text: string; usage: MemoryUsage }> =>
+  post('memory-remember', { agent, text, essential, userCap: getUserCap() });
+
+export const editMemory = (agent: string, id: string, text: string): Promise<{ text: string; usage: MemoryUsage }> =>
+  post('memory-edit', { agent, id, text, userCap: getUserCap() });
+
+export const setMemoryEssential = (agent: string, id: string, essential: boolean): Promise<{ text: string; usage: MemoryUsage }> =>
+  post('memory-set', { agent, id, essential, userCap: getUserCap() });
+
+export const forgetMemory = (agent: string, id: string): Promise<{ text: string; usage: MemoryUsage }> =>
+  post('memory-forget', { agent, id, userCap: getUserCap() });
+
+export const renewSession = (id: string): Promise<{ n: number; text: string }> =>
+  post('rollover', { id });

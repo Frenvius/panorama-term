@@ -2,7 +2,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import React from 'react';
-import { Clock, Hourglass, AlarmClock } from 'lucide-react';
+import { Brain, Clock, Hourglass, AlarmClock } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
@@ -10,13 +10,15 @@ import { agentActions } from '~/usecase/hooks/useAgents';
 import ContextMenu from '~/components/commons/ContextMenu';
 import { projectName } from '~/usecase/util/projectLayout';
 import { requestShowAgent } from '~/usecase/util/agentRequest';
-import { startAgent, stopAgent } from '~/adapter/agents/agents.client';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
 import { startedByLabel, waitTooltip } from '~/usecase/util/agentWaits';
+import { isRenewing, renewDisabledReason } from '~/usecase/util/agentMemory';
 import AgentWaits from '~/components/commons/ProjectsPanel/AgentsGroup/AgentWaits';
+import { startAgent, stopAgent, renewSession } from '~/adapter/agents/agents.client';
 import { statusToDotKind, isNotResumable, needsForceStop } from '~/usecase/util/agents';
 import AgentRoutines from '~/components/commons/ProjectsPanel/AgentsGroup/AgentRoutines';
 import AgentMessages from '~/components/commons/ProjectsPanel/AgentsGroup/AgentMessages';
+import AgentMemories from '~/components/commons/ProjectsPanel/AgentsGroup/AgentMemories';
 
 const SHOW_WHEN_LIVE_MS = 120_000;
 
@@ -41,6 +43,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   const [messagesAnchor, setMessagesAnchor] = React.useState<DOMRect | null>(null);
   const [waitsAnchor, setWaitsAnchor] = React.useState<DOMRect | null>(null);
   const [routinesAnchor, setRoutinesAnchor] = React.useState<DOMRect | null>(null);
+  const [memoriesAnchor, setMemoriesAnchor] = React.useState<DOMRect | null>(null);
   const rowRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -139,6 +142,23 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
 
   const handleCloseRoutines = () => setRoutinesAnchor(null);
 
+  const handleOpenMemories = () => {
+    setMenu(null);
+    if (rowRef.current) setMemoriesAnchor(rowRef.current.getBoundingClientRect());
+  };
+
+  const handleCloseMemories = () => setMemoriesAnchor(null);
+
+  const renewBlocked = renewDisabledReason(agent);
+
+  const handleRenew = () => {
+    setMenu(null);
+    renewSession(agent.id)
+      .then((r) => showToast({ kind: 'info', message: r.text }))
+      .then(() => agentActions.refresh())
+      .catch(reportError(`Could not renew the session of ${agent.name}`));
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -150,10 +170,12 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   if (!agent.live) menuItems.push({ label: 'Start', onSelect: handleStart });
   if (agent.live) menuItems.push({ label: forceOnly ? 'Force stop' : 'Stop', onSelect: handleStop, danger: forceOnly });
   if (agent.live) menuItems.push({ label: 'Restart (new session)...', onSelect: handleRestartRequest });
+  if (agent.live) menuItems.push({ label: renewBlocked ? `Renew session (${renewBlocked.toLowerCase()})` : 'Renew session (with handoff)', onSelect: handleRenew, disabled: renewBlocked !== null });
   menuItems.push('separator');
   menuItems.push({ label: 'Messages...', onSelect: handleOpenMessages });
   menuItems.push({ label: 'Waits...', onSelect: handleOpenWaits });
   menuItems.push({ label: 'Routines...', onSelect: handleOpenRoutines });
+  menuItems.push({ label: 'Memories...', onSelect: handleOpenMemories });
   menuItems.push('separator');
   menuItems.push({ label: 'Edit...', onSelect: handleEdit });
   menuItems.push({ label: 'Delete...', onSelect: handleDelete, danger: true });
@@ -177,12 +199,21 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
         {showProject && <span className={styles.project}>{projectName(agent.project!)}</span>}
         {isNotResumable(agent) && <span className={styles.chip}>not resumable</span>}
         {restartNeeded && <span className={styles.chip}>restart to apply</span>}
+        {isRenewing(agent) && <span className={styles.chip}>renewing...</span>}
+        {agent.contextPct != null && (
+          <span className={styles.chip} title="context used">{agent.contextPct}%</span>
+        )}
         {agent.startedBy && (
           <span className={styles.chip} title={agent.startedBy}>{startedByLabel(agent.startedBy)}</span>
         )}
         {agent.awaitingReplies > 0 && (
           <span className={styles.awaitIcon} title={`awaiting ${agent.awaitingReplies} ${agent.awaitingReplies === 1 ? 'reply' : 'replies'}`}>
             <Clock size={10} strokeWidth={2} />
+          </span>
+        )}
+        {(agent.memory?.count ?? 0) > 0 && (
+          <span className={styles.waitIcon} title={` memories`}>
+            <Brain size={10} strokeWidth={2} />
           </span>
         )}
         {(agent.routines?.enabled ?? 0) > 0 && (
@@ -214,6 +245,9 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
       )}
       {routinesAnchor && (
         <AgentRoutines agent={agent} anchorRect={routinesAnchor} onClose={handleCloseRoutines} />
+      )}
+      {memoriesAnchor && (
+        <AgentMemories agent={agent} anchorRect={memoriesAnchor} onClose={handleCloseMemories} />
       )}
       {waitsAnchor && (
         <AgentWaits agent={agent} anchorRect={waitsAnchor} onClose={handleCloseWaits} />
