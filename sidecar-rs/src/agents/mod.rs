@@ -129,6 +129,7 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "wait" => waits::handle_wait(&v),
         "waits" => waits::handle_waits(&v),
         "wait-cancel" => waits::handle_wait_cancel(&v),
+        "coordinate" => handle_coordinate(&v).await,
         _ => err_resp("bad_request", "unknown command"),
     }
 }
@@ -242,6 +243,21 @@ pub(crate) fn on_tile_status(tile_id: &str, status: &str) {
     if !tile_id.starts_with("agent-") {
         let key = mail::Party::Tile { id: tile_id.to_string() }.key();
         messages::note_status(&key, status == "busy", status == "idle");
+    }
+}
+
+pub(crate) fn on_orch_commit(run_id: &str) {
+    waits::on_orch(run_id);
+}
+
+pub(crate) fn orch_notice(tile_id: &str, run_id: &str, text: &str) -> Result<(), String> {
+    let id = model::agent_id_from_tile(tile_id).ok_or("not an agent tile")?;
+    waits::orch_notice(id, run_id, text)
+}
+
+pub(crate) fn orch_wake(tile_id: &str, run_id: &str, top: u32, text: &str) {
+    if let Some(id) = model::agent_id_from_tile(tile_id) {
+        waits::orch_wake(id, run_id, top, text);
     }
 }
 
@@ -468,6 +484,8 @@ fn merge_live(agent: &Agent, full: bool) -> Value {
         let (queued, awaiting) = messages::mail_counts(&agent.id);
         obj.insert("queued".into(), queued.into());
         obj.insert("awaitingReplies".into(), awaiting.into());
+        obj.insert("coordinates".into(), crate::orch::runs_coordinated_by(&agent.tile_id()).into());
+        obj.insert("waits".into(), waits::open_waits_json(&mail::Party::Agent { id: agent.id.clone() }));
     }
     value
 }
@@ -555,11 +573,56 @@ fn handle_delete(v: &Value) -> String {
     runtime::forget(&id, &tile);
     messages::on_agent_deleted(&id, &name);
     waits::cancel_for(&mail::Party::Agent { id: id.clone() }, "agent_deleted");
+    detach_coordinator(tile.clone());
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }
     crate::ui::broadcast_agents_changed(&id);
     ok_resp(json!({}))
+}
+
+pub(crate) const COORDINATOR_EXE: &str = "claude";
+
+async fn orch_call(command: &str, body: Value) -> Result<Value, String> {
+    let text = crate::orch::handle(command, body.to_string().as_bytes()).await;
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    if v["ok"] == true { Ok(v) } else { Err(text) }
+}
+
+fn detach_coordinator(tile: String) {
+    runtime::spawn_background(async move {
+        for run in crate::orch::runs_coordinated_by(&tile) {
+            if let Err(e) = orch_call("run-set-coordinator", json!({ "runId": run, "tileId": null })).await {
+                eprintln!("[agents] detach {run}: {e}");
+            }
+        }
+        let _ = orch_call("coordinator-set", json!({ "tileId": tile, "on": false })).await;
+    });
+}
+
+async fn handle_coordinate(v: &Value) -> String {
+    let key = text_field(v, "agent").or_else(|| text_field(v, "id")).unwrap_or_default();
+    let Some(agent) = lock().resolve(&key).cloned() else { return err_resp("not_found", "agent not found") };
+    let Some(run) = text_field(v, "runId").filter(|r| !r.is_empty()) else { return err_resp("bad_request", "runId required") };
+    let on = v.get("on").and_then(Value::as_bool).unwrap_or(true);
+    let tile = agent.tile_id();
+    if on && profile_exe(&agent.profile).as_deref() != Some(COORDINATOR_EXE) {
+        return err_resp("unsupported", "coordinator agents need claude");
+    }
+    let tile_value = if on { Value::String(tile.clone()) } else { Value::Null };
+    if !on && !crate::orch::runs_coordinated_by(&tile).contains(&run) {
+        return err_resp("conflict", &format!("{} does not coordinate {run}", agent.name));
+    }
+    if let Err(e) = orch_call("run-set-coordinator", json!({ "runId": run, "tileId": tile_value })).await {
+        return e;
+    }
+    let runs = crate::orch::runs_coordinated_by(&tile);
+    if !on && runs.is_empty() {
+        let _ = orch_call("coordinator-set", json!({ "tileId": tile, "on": false })).await;
+    }
+    crate::ui::broadcast_agents_changed(&agent.id);
+    let text = if on { format!("{} now coordinates {run}.", agent.name) } else { format!("{} no longer coordinates {run}.", agent.name) };
+    ok_resp(json!({ "coordinates": runs, "text": text }))
 }
 
 #[cfg(test)]

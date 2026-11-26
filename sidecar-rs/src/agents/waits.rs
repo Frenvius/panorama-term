@@ -43,7 +43,7 @@ pub struct FileStat {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Target {
-    Run { run: String },
+    Run { run: String, #[serde(default)] after: u32 },
     Task { run: String, task: String },
     Session { spec: String, ready: bool, session: String, #[serde(default)] pid: Option<u32> },
     Agent { id: String, name: String },
@@ -54,7 +54,7 @@ pub enum Target {
 impl Target {
     fn key(&self) -> String {
         match self {
-            Target::Run { run } => format!("run:{run}"),
+            Target::Run { run, .. } => format!("run:{run}"),
             Target::Task { run, task } => format!("task:{run}/{task}"),
             Target::Session { session, ready, .. } => format!("session:{session}{}", if *ready { ":ready" } else { "" }),
             Target::Agent { id, .. } => format!("agent:{id}"),
@@ -65,7 +65,7 @@ impl Target {
 
     pub fn describe(&self) -> String {
         match self {
-            Target::Run { run } => format!("run {run}"),
+            Target::Run { run, .. } => format!("run {run}"),
             Target::Task { run, task } => format!("task {run}/{task}"),
             Target::Session { spec, ready, .. } => session_label(spec, *ready),
             Target::Agent { name, .. } => format!("agent {name}"),
@@ -638,7 +638,7 @@ fn merge_more(waiter: &Party) {
         .map(|m| (m.id.clone(), m.text.clone())));
     if let Some((id, text)) = queued {
         let text = add_more(&text, 1, &crate::panorama_cli_path());
-        if commit_mail(MailCmd::Update { id, text, at: unix_ms() }).is_ok() {
+        if commit_mail(MailCmd::Update { id, text, key: None, at: unix_ms() }).is_ok() {
             return;
         }
     }
@@ -673,7 +673,9 @@ pub(crate) fn check_target(target: &Target, now: u64, ask_host: bool, exit_codes
             Some((_, Desired::Stopped, false)) => Some(format!("agent {name} stopped.")),
             Some(_) => None,
         },
-        Target::Run { .. } | Target::Task { .. } | Target::File { .. } => None,
+        Target::Run { run, after } => crate::orch::wait_run_event(run, *after),
+        Target::Task { run, task } => crate::orch::wait_task_event(run, task),
+        Target::File { .. } => None,
     }
 }
 
@@ -753,6 +755,94 @@ pub(crate) fn on_session_exit(session: &str, code: Option<u32>) {
     }
 }
 
+pub(crate) fn on_orch(run_id: &str) {
+    let hits: Vec<(String, usize, Target)> = with_waits(|w| w.open()
+        .flat_map(|wait| wait.targets.iter().enumerate().map(move |(i, t)| (wait.id.clone(), i, t.clone())))
+        .filter(|(_, _, t)| matches!(t, Target::Run { run, .. } | Target::Task { run, .. } if run == run_id))
+        .collect());
+    for (id, i, target) in hits {
+        if let Some(summary) = check_target(&target, unix_ms(), false, &HashMap::new()) {
+            fire(&id, Some(i), summary, false);
+        }
+    }
+}
+
+pub(crate) fn open_waits_json(party: &Party) -> Value {
+    with_waits(|w| w.open_for(party).map(|w| json!({
+        "id": w.id, "on": w.targets.iter().map(Target::describe).collect::<Vec<_>>(), "note": w.note, "timeoutAt": w.timeout_at,
+    })).collect::<Vec<_>>().into())
+}
+
+pub(crate) fn orch_notice(agent_id: &str, run: &str, text: &str) -> Result<(), String> {
+    let id = format!("o{}", &gen_wait_id()[1..]);
+    let message = Message {
+        id: id.clone(), from: Party::Brain, to: Party::Agent { id: agent_id.into() }, from_name: "panorama".into(), text: text.into(),
+        expects_reply: false, reply_to: None, thread: id, hops: 0, at: unix_ms(), seq: 0, status: MsgStatus::Queued,
+        delivered_at: None, replied_by: None, reason: None, read: false, notice: false,
+        kind: Some(crate::agents::mail::KIND_ORCH.into()), key: Some(format!("{}0", orch_base(agent_id, run))),
+    };
+    let queued = message.clone();
+    commit_mail(MailCmd::Send { message, recipient_exists: true }).map_err(|e| e.message)?;
+    crate::agents::delivery::kick_for(&queued);
+    Ok(())
+}
+
+fn orch_base(agent_id: &str, run: &str) -> String {
+    format!("orch:{agent_id}:{run}#")
+}
+
+pub(crate) fn orch_fingerprint(agent_id: &str, run: &str) -> u32 {
+    let base = orch_base(agent_id, run);
+    with_mailbox(|mb| mb.messages.values()
+        .filter_map(|m| m.key.as_deref()?.strip_prefix(base.as_str())?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OrchWake {
+    Skipped,
+    Coalesced(String),
+    Sent(String),
+}
+
+pub(crate) fn orch_wake(agent_id: &str, run: &str, top: u32, text: &str) -> OrchWake {
+    if top <= orch_fingerprint(agent_id, run) {
+        return OrchWake::Skipped;
+    }
+    let base = orch_base(agent_id, run);
+    let key = format!("{base}{top}");
+    let party = Party::Agent { id: agent_id.to_string() };
+    let queued = with_mailbox(|mb| mb.queue_for(&party).into_iter()
+        .find(|m| m.key.as_deref().is_some_and(|k| k.starts_with(base.as_str())))
+        .map(|m| m.id.clone()));
+    if let Some(id) = queued {
+        match commit_mail(MailCmd::Update { id: id.clone(), text: text.into(), key: Some(key.clone()), at: unix_ms() }) {
+            Ok(_) => return OrchWake::Coalesced(id),
+            Err(e) => eprintln!("[waits] orch update {id}: {}", e.message),
+        }
+    }
+    let id = format!("o{}", &gen_wait_id()[1..]);
+    let message = Message {
+        id: id.clone(), from: Party::Brain, to: party.clone(), from_name: "panorama".into(), text: text.into(),
+        expects_reply: false, reply_to: None, thread: id.clone(), hops: 0, at: unix_ms(), seq: 0, status: MsgStatus::Queued,
+        delivered_at: None, replied_by: None, reason: None, read: false, notice: false,
+        kind: Some(crate::agents::mail::KIND_ORCH.into()), key: Some(key),
+    };
+    let queued = message.clone();
+    if let Err(e) = commit_mail(MailCmd::Send { message, recipient_exists: true }) {
+        eprintln!("[waits] orch wake for {agent_id}: {}", e.message);
+        return OrchWake::Skipped;
+    }
+    if stopped_agent(&party) == Some(false) {
+        if let Err(e) = crate::agents::start_agent(agent_id, Some(format!("orch {run}"))) {
+            eprintln!("[waits] auto-start coordinator {agent_id}: {}", e.message);
+        }
+    }
+    crate::agents::delivery::kick_for(&queued);
+    OrchWake::Sent(id)
+}
+
 pub(crate) fn on_party_status(key: &str, busy: bool, idle: bool) {
     let watching: Vec<(String, usize, String)> = with_waits(|w| w.open()
         .flat_map(|wait| wait.targets.iter().enumerate().filter_map(move |(i, t)| match t {
@@ -792,7 +882,16 @@ fn resolve(spec: Spec, waiter: &Party) -> Result<Target, WaitError> {
             let spec = match &kind { Some(k) => format!("{k}@{what}"), None => what };
             Ok(Target::Session { spec, ready, session, pid: Some(pid) })
         }
-        Spec::Run(_) | Spec::Task(..) => Err(werr("bad_request", "run: and task: targets are not available yet")),
+        Spec::Run(run) => {
+            let after = crate::orch::wait_run_baseline(&run).ok_or_else(|| werr("not_found", format!("run {run} not found")))?;
+            Ok(Target::Run { run, after })
+        }
+        Spec::Task(run, task) => {
+            if !crate::orch::wait_task_known(&run, &task) {
+                return Err(werr("not_found", format!("task {run}/{task} not found")));
+            }
+            Ok(Target::Task { run, task })
+        }
         Spec::File(_) => Err(werr("bad_request", "file: targets are not available yet")),
     }
 }
@@ -954,6 +1053,7 @@ pub(crate) mod tests {
     fn bad_targets_are_refused() {
         let p = |s: &str| parse_spec(s, NOW);
         assert!(p("in:59s").unwrap_err().contains("60s"));
+        assert!(p("in:0s").is_err(), "in: under 60s is refused even when it would be due now");
         assert!(p("in:8d").unwrap_err().contains("7 days"));
         assert!(p(&format!("time:{}", iso_utc(NOW + 30_000))).unwrap_err().contains("60s"));
         assert!(p(&format!("time:{}", iso_utc(NOW + 8 * DAY_MS))).is_err());
@@ -1303,6 +1403,143 @@ pub(crate) mod tests {
         assert_eq!(status(&wait_id), WaitStatus::Cancelled);
         let late = reply(crate::agents::messages::handle_reply(&json!({ "to": ask, "text": "answer", "fromAgent": sender })));
         assert_eq!(late["error"]["code"], "tile_closed", "{late}");
+    }
+
+    fn coordinated_run(tag: &str, desired: Desired, crashed: bool, detached: bool) -> (String, String, String) {
+        let (agent, _) = test_agent(tag, desired, crashed);
+        let tile = crate::agents::model::tile_id(&agent);
+        let run = format!("r-{agent}");
+        crate::orch::tests::agent_test_run(&run, &tile, detached);
+        (agent, tile, run)
+    }
+
+    fn orch_mail(agent: &str) -> Vec<Message> {
+        let party = Party::Agent { id: agent.into() };
+        with_mailbox(|mb| mb.messages.values().filter(|m| m.to == party && m.kind.as_deref() == Some(crate::agents::mail::KIND_ORCH)).cloned().collect())
+    }
+
+    #[test]
+    fn an_agent_coordinator_is_woken_by_mail_not_by_typing() {
+        let _serial = serial();
+        let (agent, tile, run) = coordinated_run("ca", Desired::Running, false, false);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        let mail = orch_mail(&agent);
+        assert_eq!(mail.len(), 1, "{mail:?}");
+        assert_eq!(mail[0].from, Party::Brain);
+        assert_eq!(crate::agents::envelope::header(&mail[0]), format!("[panorama orch {run}]"));
+        assert!(mail[0].text.starts_with("1 new message.") && mail[0].text.contains(&format!("orch check --run-id {run}")), "{}", mail[0].text);
+    }
+
+    #[test]
+    fn orch_wakes_coalesce_while_queued_and_return_only_for_a_newer_decision() {
+        let _serial = serial();
+        let (agent, tile, run) = coordinated_run("cb", Desired::Running, false, false);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        crate::orch::recheck_coordinator(&run, &tile);
+        let mail = orch_mail(&agent);
+        assert_eq!(mail.len(), 1, "coalesced while queued: {mail:?}");
+        assert!(mail[0].text.starts_with("2 new messages."), "{}", mail[0].text);
+        commit_mail(MailCmd::Deliver { ids: vec![mail[0].id.clone()], at: unix_ms() }).unwrap();
+        crate::orch::recheck_coordinator(&run, &tile);
+        assert_eq!(orch_mail(&agent).len(), 1, "idle without an ack does not wake again");
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::recheck_coordinator(&run, &tile);
+        assert_eq!(orch_mail(&agent).len(), 2, "a newer decision wakes it");
+    }
+
+    #[test]
+    fn a_stopped_coordinator_agent_starts_on_a_decision_and_a_crashed_one_does_not() {
+        let _serial = serial();
+        for (tag, crashed) in [("cc", false), ("cd", true)] {
+            let (agent, tile, run) = coordinated_run(tag, Desired::Stopped, crashed, false);
+            crate::orch::tests::inject_coordinator_note(&run);
+            crate::orch::recheck_coordinator(&run, &tile);
+            let a = lock().agents[&agent].clone();
+            assert_eq!(orch_mail(&agent).len(), 1);
+            if crashed {
+                assert_eq!(a.desired, Desired::Stopped);
+            } else {
+                assert_eq!(a.desired, Desired::Running);
+                assert_eq!(a.started_by.as_deref(), Some(format!("orch {run}").as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn run_and_task_waits_fire_on_orch_changes() {
+        let _serial = serial();
+        let (me, _) = test_agent("ce", Desired::Running, false);
+        let (_, _, run) = coordinated_run("cf", Desired::Running, false, false);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::orch::tests::set_test_task(&run, "t1", crate::orch::model::TaskStatus::Pending);
+        crate::orch::tests::set_test_task(&run, "t2", crate::orch::model::TaskStatus::Completed);
+        let run_wait = reply(handle_wait(&json!({ "on": [format!("run:{run}")], "fromAgent": me })));
+        let run_wait = run_wait["wait"]["id"].as_str().expect("an older decision is not the next one").to_string();
+        let task_wait = reply(handle_wait(&json!({ "on": [format!("task:{run}/t1")], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
+        let done = reply(handle_wait(&json!({ "on": [format!("task:{run}/t2")], "fromAgent": me })));
+        assert_eq!(done["fired"], true, "{done}");
+        assert_eq!(reply(handle_wait(&json!({ "on": ["run:r-missing"], "fromAgent": me })))["error"]["code"], "not_found");
+        crate::agents::on_orch_commit(&run);
+        assert_eq!((status(&run_wait), status(&task_wait)), (WaitStatus::Open, WaitStatus::Open));
+        crate::orch::tests::set_test_task(&run, "t1", crate::orch::model::TaskStatus::Failed);
+        crate::orch::tests::inject_coordinator_note(&run);
+        crate::agents::on_orch_commit(&run);
+        assert!(message(&wake_id(&task_wait)).unwrap().text.starts_with("task t1 failed."));
+        let wake = message(&wake_id(&run_wait)).unwrap().text;
+        assert!(wake.contains("1 new decision(s)") && wake.contains("orch check --run-id"), "{wake}");
+    }
+
+    #[test]
+    fn a_finished_run_fires_its_wait() {
+        let _serial = serial();
+        let (me, _) = test_agent("cg", Desired::Running, false);
+        let (_, _, run) = coordinated_run("ch", Desired::Running, false, false);
+        let id = reply(handle_wait(&json!({ "on": [format!("run:{run}")], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
+        crate::orch::tests::set_test_run_status(&run, crate::orch::model::RunStatus::Completed);
+        tick_once(unix_ms(), false);
+        assert!(message(&wake_id(&id)).unwrap().text.starts_with(&format!("run {run} completed:")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn coordinate_needs_claude_and_off_detaches_the_run() {
+        let (agent, tile, run) = {
+            let _serial = serial();
+            coordinated_run("ci", Desired::Stopped, false, false)
+        };
+        let name = lock().agents[&agent].name.clone();
+        lock().agents.get_mut(&agent).unwrap().profile = "kimi".into();
+        let refused = reply(crate::agents::handle("coordinate", json!({ "agent": name, "runId": run }).to_string().as_bytes()).await);
+        assert_eq!(refused["error"]["code"], "unsupported");
+        assert_eq!(crate::orch::runs_coordinated_by(&tile), vec![run.clone()]);
+        let off = reply(crate::agents::handle("coordinate", json!({ "agent": name, "runId": run, "on": false }).to_string().as_bytes()).await);
+        assert_eq!(off["ok"], true, "{off}");
+        assert!(crate::orch::runs_coordinated_by(&tile).is_empty());
+        let again = reply(crate::agents::handle("coordinate", json!({ "agent": name, "runId": run, "on": false }).to_string().as_bytes()).await);
+        assert_eq!(again["error"]["code"], "conflict");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleting_a_coordinator_agent_detaches_its_runs() {
+        let (agent, tile, run) = {
+            let _serial = serial();
+            coordinated_run("cj", Desired::Stopped, false, false)
+        };
+        let name = lock().agents[&agent].name.clone();
+        let deleted = reply(crate::agents::handle("delete", json!({ "name": name }).to_string().as_bytes()).await);
+        assert_eq!(deleted["ok"], true, "{deleted}");
+        let mut detached = false;
+        for _ in 0..40 {
+            if crate::orch::runs_coordinated_by(&tile).is_empty() {
+                detached = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(detached, "run {run} still points at the deleted agent");
     }
 
     #[test]

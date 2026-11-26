@@ -907,7 +907,12 @@ pub(super) async fn apply_coordinator_step(run_id: &str, now: i64, probe: &Coord
             if !matches!(cleared, CommitResult::Ok(_)) {
                 return;
             }
-            match type_into_tile(&tile_id, &notice) {
+            let sent = if crate::agents::is_agent_tile(&tile_id) {
+                crate::agents::orch_notice(&tile_id, run_id, &notice)
+            } else {
+                type_into_tile(&tile_id, &notice)
+            };
+            match sent {
                 Ok(()) => super::record_coordinator_wake(
                     run_id, WakeReason::CoordinatorResume, unread, detached,
                 ),

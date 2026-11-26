@@ -82,6 +82,11 @@ pub struct Message {
 }
 
 pub const KIND_EVENT: &str = "event";
+pub const KIND_ORCH: &str = "orch";
+
+pub fn orch_run(key: &str) -> Option<&str> {
+    key.strip_prefix("orch:")?.split_once(':')?.1.split('#').next()
+}
 
 impl Message {
     pub fn from_brain(&self) -> bool {
@@ -107,7 +112,7 @@ pub enum MailCmd {
     Fail { id: String, at: u64, reason: String },
     Drop { id: String, at: u64, reason: String },
     Read { ids: Vec<String>, at: u64 },
-    Update { id: String, text: String, at: u64 },
+    Update { id: String, text: String, key: Option<String>, at: u64 },
 }
 
 #[derive(Debug, Default)]
@@ -181,7 +186,7 @@ impl Mailbox {
                 }
                 Ok(("msg-read", json!({ "ids": ids, "at": at })))
             }
-            MailCmd::Update { id, text, at } => {
+            MailCmd::Update { id, text, key, at } => {
                 let m = self.queued(id)?;
                 if !m.from_brain() {
                     return Err(MailError::new("bad_request", "only brain messages are updated"));
@@ -189,7 +194,7 @@ impl Mailbox {
                 if text.trim().is_empty() || text.len() > TEXT_MAX_BYTES {
                     return Err(MailError::new("bad_request", "bad text"));
                 }
-                Ok(("msg-update", json!({ "id": id, "text": text, "at": at })))
+                Ok(("msg-update", json!({ "id": id, "text": text, "key": key, "at": at })))
             }
         }
     }
@@ -295,6 +300,9 @@ impl Mailbox {
                 let id = data["id"].as_str().ok_or("missing id")?;
                 if let (Some(m), Some(text)) = (self.messages.get_mut(id), data["text"].as_str()) {
                     m.text = text.to_string();
+                    if let Some(key) = data["key"].as_str() {
+                        m.key = Some(key.to_string());
+                    }
                 }
             }
             _ => {}
@@ -434,14 +442,16 @@ pub(crate) mod tests {
         send(&mut mb, event).unwrap();
         let reply = Message { reply_to: Some("ew1".into()), thread: "ew1".into(), hops: 1, ..msg("r1", agent("a"), Party::Brain) };
         assert_eq!(send(&mut mb, reply).unwrap_err().code, "not_replyable");
-        let (kind, data) = mb.apply(&MailCmd::Update { id: "ew1".into(), text: "newer".into(), at: 2 }).unwrap();
+        let (kind, data) = mb.apply(&MailCmd::Update { id: "ew1".into(), text: "newer".into(), key: Some("k2".into()), at: 2 }).unwrap();
         mb.replay(kind, &data).unwrap();
         assert_eq!(mb.messages["ew1"].text, "newer");
+        assert_eq!(mb.messages["ew1"].key.as_deref(), Some("k2"));
+        assert_eq!(orch_run("orch:a1:r6un#12"), Some("r6un"));
         send(&mut mb, msg("m2", agent("b"), agent("a"))).unwrap();
-        assert_eq!(mb.apply(&MailCmd::Update { id: "m2".into(), text: "x".into(), at: 3 }).unwrap_err().code, "bad_request");
+        assert_eq!(mb.apply(&MailCmd::Update { id: "m2".into(), text: "x".into(), key: None, at: 3 }).unwrap_err().code, "bad_request");
         let (kind, data) = mb.apply(&MailCmd::Deliver { ids: vec!["ew1".into()], at: 4 }).unwrap();
         mb.replay(kind, &data).unwrap();
-        assert_eq!(mb.apply(&MailCmd::Update { id: "ew1".into(), text: "late".into(), at: 5 }).unwrap_err().code, "conflict", "only while queued");
+        assert_eq!(mb.apply(&MailCmd::Update { id: "ew1".into(), text: "late".into(), key: None, at: 5 }).unwrap_err().code, "conflict", "only while queued");
         assert_eq!(serde_json::to_value(Party::Brain).unwrap(), json!({ "kind": "brain" }));
     }
 

@@ -378,6 +378,7 @@ where
                 .then(|| entry.run.coordinator_tile.clone()).flatten())
     });
     drop(guard);
+    crate::agents::on_orch_commit(run_id);
     if let Some(tile) = wake {
         recheck_coordinator(run_id, &tile);
     }
@@ -406,6 +407,7 @@ where
                 .then(|| entry.run.coordinator_tile.clone()).flatten())
     });
     drop(guard);
+    crate::agents::on_orch_commit(run_id);
     if let Some(tile) = wake {
         recheck_coordinator(run_id, &tile);
     }
@@ -660,24 +662,125 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
 
 pub(crate) fn recheck_coordinator(run_id: &str, tile_id: &str) {
     let now = unix_ms() as i64;
-    let (reason, count, detached) = {
+    let (reason, count, detached, top) = {
         let guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = guard.runs.get(run_id).filter(|e| !e.run.status.is_terminal()
             && e.run.coordinator_tile.as_deref() == Some(tile_id)) else { return };
         let mut seen = HashSet::new();
         let mut types = Vec::new();
         let mut count = 0;
+        let mut top = 0;
         for message in coordinator_unacked(entry, now) {
             count += 1;
+            top = top.max(message.seq);
             if seen.insert(message.msg_type.as_str()) {
                 types.push(message.msg_type.clone());
             }
         }
-        (WakeReason::Messages(types), count, entry.run.detached)
+        (WakeReason::Messages(types), count, entry.run.detached, top)
     };
-    if count != 0 {
-        maybe_nudge_tile(tile_id, run_id, reason, count, detached);
+    if count == 0 {
+        return;
     }
+    if crate::agents::is_agent_tile(tile_id) {
+        crate::agents::orch_wake(tile_id, run_id, top, &agent_wake_text(run_id, tile_id, count, detached));
+        return;
+    }
+    maybe_nudge_tile(tile_id, run_id, reason, count, detached);
+}
+
+pub(crate) fn agent_wake_text(run_id: &str, tile_id: &str, count: usize, detached: bool) -> String {
+    let cli = crate::panorama_cli_path();
+    let what = match (detached, count) {
+        (true, 1) => "1 decision needed".to_string(),
+        (true, n) => format!("{n} decisions needed"),
+        (false, 1) => "1 new message".to_string(),
+        (false, n) => format!("{n} new messages"),
+    };
+    let board = board_lines(tile_id).into_iter().find(|l| l.contains(&format!("({run_id})"))).unwrap_or_default();
+    let flag = if detached { " --decisions" } else { "" };
+    format!("{what}. {board}. Read: {cli} orch check --run-id {run_id}{flag}")
+}
+
+pub(crate) fn note_agent_wake_delivered(run_id: &str) {
+    let now = unix_ms() as i64;
+    let found = {
+        let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get(run_id).map(|entry| {
+            let mut types: Vec<String> = Vec::new();
+            let mut count = 0;
+            for m in coordinator_unacked(entry, now) {
+                count += 1;
+                if !types.contains(&m.msg_type) {
+                    types.push(m.msg_type.clone());
+                }
+            }
+            (WakeReason::Messages(types), count, entry.run.detached)
+        })
+    };
+    if let Some((reason, count, detached)) = found {
+        record_coordinator_wake(run_id, reason, count, detached);
+    }
+}
+
+pub(crate) fn runs_coordinated_by(tile_id: &str) -> Vec<String> {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let mut runs: Vec<String> = guard.runs.values()
+        .filter(|e| !e.run.status.is_terminal() && e.run.coordinator_tile.as_deref() == Some(tile_id))
+        .map(|e| e.run.id.clone())
+        .collect();
+    runs.sort();
+    runs
+}
+
+pub(crate) fn wait_run_baseline(run_id: &str) -> Option<u32> {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    guard.runs.get(run_id).map(|e| e.messages.iter().map(|m| m.seq).max().unwrap_or(0))
+}
+
+pub(crate) fn wait_task_known(run_id: &str, task_id: &str) -> bool {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    guard.runs.get(run_id).is_some_and(|e| e.tasks.contains_key(task_id))
+}
+
+fn status_word<T: serde::Serialize>(status: &T) -> String {
+    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+pub(crate) fn wait_run_event(run_id: &str, after: u32) -> Option<String> {
+    let cli = crate::panorama_cli_path();
+    let read = format!(" Read: {cli} orch check --run-id {run_id} --decisions");
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(entry) = guard.runs.get(run_id) else { return Some(format!("run {run_id} no longer exists.")) };
+    let count = |s: TaskStatus| entry.tasks.values().filter(|t| t.status == s).count();
+    if entry.run.status.is_terminal() {
+        return Some(format!("run {run_id} {}: {} done, {} failed.{read}", status_word(&entry.run.status), count(TaskStatus::Completed), count(TaskStatus::Failed)));
+    }
+    let now = unix_ms() as i64;
+    let newer: Vec<&Message> = entry.messages.iter()
+        .filter(|m| m.seq > after && m.to == "coordinator" && needs_decision(m, entry, now))
+        .collect();
+    let last = newer.last()?;
+    let what = match last.msg_type.as_str() {
+        "run_finished" => format!("run {run_id} finished: {} done, {} failed.", count(TaskStatus::Completed), count(TaskStatus::Failed)),
+        "run_idle" => format!("run {run_id} is idle."),
+        _ => {
+            let mut types: Vec<&str> = newer.iter().map(|m| m.msg_type.as_str()).collect();
+            types.dedup();
+            format!("run {run_id}: {} new decision(s) ({}).", newer.len(), types.join(", "))
+        }
+    };
+    Some(format!("{what}{read}"))
+}
+
+pub(crate) fn wait_task_event(run_id: &str, task_id: &str) -> Option<String> {
+    let cli = crate::panorama_cli_path();
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(task) = guard.runs.get(run_id).and_then(|e| e.tasks.get(task_id)) else {
+        return Some(format!("task {run_id}/{task_id} no longer exists."));
+    };
+    matches!(task.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Blocked | TaskStatus::Review | TaskStatus::Cancelled)
+        .then(|| format!("task {task_id} {}. Read: {cli} orch run-show --run-id {run_id}", status_word(&task.status)))
 }
 
 fn record_coordinator_wake(run_id: &str, reason: WakeReason, message_count: usize, detached: bool) {
@@ -6032,6 +6135,28 @@ pub(crate) mod tests {
         ));
         assert_eq!(worker["dispatch"]["report"], report);
         assert_eq!(worker["dispatch"]["lateReports"][0]["report"], late_report);
+    }
+
+    pub(crate) fn agent_test_run(run_id: &str, tile: &str, detached: bool) {
+        setup_run_in_state(run_id);
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.runs.get_mut(run_id).unwrap();
+        entry.run.coordinator_tile = Some(tile.to_string());
+        entry.run.detached = detached;
+    }
+
+    pub(crate) fn inject_coordinator_note(run_id: &str) {
+        inject_message(run_id, "coordinator");
+    }
+
+    pub(crate) fn set_test_task(run_id: &str, task: &str, status: TaskStatus) {
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get_mut(run_id).unwrap().tasks.insert(task.to_string(), mk_task_entry(task, status, 1));
+    }
+
+    pub(crate) fn set_test_run_status(run_id: &str, status: RunStatus) {
+        let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+        guard.runs.get_mut(run_id).unwrap().run.status = status;
     }
 
     fn setup_run_in_state(run_id: &str) {

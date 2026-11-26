@@ -50,6 +50,7 @@ pub(crate) trait DeliveryBackend {
     fn prefix(&self, party: &Party) -> Option<String>;
     fn prefix_delivered(&self, party: &Party);
     fn last_busy(&self, party: &Party) -> Option<u64>;
+    fn orch_delivered(&self, run: &str);
     type Lock;
     async fn lock(&self, tile: &str) -> Self::Lock;
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String>;
@@ -170,6 +171,11 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
             if prefix.is_some() {
                 backend.prefix_delivered(party);
             }
+            for m in queue.iter().filter(|m| batch.ids.contains(&m.id) && m.kind.as_deref() == Some(crate::agents::mail::KIND_ORCH)) {
+                if let Some(run) = m.key.as_deref().and_then(crate::agents::mail::orch_run) {
+                    backend.orch_delivered(run);
+                }
+            }
             let mut stuck = guard(stuck_once());
             for id in &batch.ids {
                 stuck.remove(id);
@@ -275,6 +281,7 @@ impl DeliveryBackend for LiveBackend {
         }
     }
     fn last_busy(&self, party: &Party) -> Option<u64> { crate::agents::messages::last_busy_ms(&party.key()) }
+    fn orch_delivered(&self, run: &str) { crate::orch::note_agent_wake_delivered(run) }
     type Lock = Option<tokio::sync::OwnedMutexGuard<()>>;
     async fn lock(&self, tile: &str) -> Self::Lock { crate::lock_tile_writer(tile).await }
     async fn paste(&self, tile: &str, text: &str) -> Result<Confirm, String> { crate::paste_to_locked_tile(tile, text).await }
@@ -347,6 +354,7 @@ mod tests {
         typed_during_paste: Mutex<bool>,
         type_during_paste: bool,
         last_busy: Option<u64>,
+        orch_runs: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -357,6 +365,7 @@ mod tests {
                 cleared: Mutex::new(0), retries: Mutex::new(vec![]), prefix: None, prefix_marked: Mutex::new(false),
                 view_calls: Mutex::new(0), busy_after_first_view: false, busy_during_paste: None, drop_during_paste: None,
                 typed_during_paste: Mutex::new(false), type_during_paste: false, last_busy: None,
+                orch_runs: Mutex::new(vec![]),
             }
         }
 
@@ -387,6 +396,7 @@ mod tests {
         fn prefix(&self, _: &Party) -> Option<String> { self.prefix.clone() }
         fn prefix_delivered(&self, _: &Party) { *self.prefix_marked.lock().unwrap() = true; }
         fn last_busy(&self, _: &Party) -> Option<u64> { self.last_busy }
+        fn orch_delivered(&self, run: &str) { self.orch_runs.lock().unwrap().push(run.to_string()); }
         type Lock = ();
         async fn lock(&self, _: &str) {}
         async fn paste(&self, _: &str, text: &str) -> Result<Confirm, String> {
@@ -624,6 +634,24 @@ mod tests {
         release_retry(&key);
         assert!(claim_retry(&key));
         release_retry(&key);
+    }
+
+    #[tokio::test]
+    async fn delivering_an_orch_wake_records_the_coordinator_wake() {
+        let (to, _) = queue("w", 1);
+        let suffix = format!("{:07}", crate::agents::unix_ms() % 10_000_000);
+        let orch = Message {
+            kind: Some(crate::agents::mail::KIND_ORCH.into()), key: Some(format!("orch:x:rwake{suffix}#3")),
+            ..msg(&format!("owake{suffix}"), Party::Brain, to.clone())
+        };
+        commit_mail(MailCmd::Send { message: orch, recipient_exists: true }).unwrap();
+        let fake = Fake::idle("agent-x");
+        assert!(matches!(drain(&fake, &to).await, Outcome::Delivered(_)));
+        assert_eq!(*fake.orch_runs.lock().unwrap(), vec![format!("rwake{suffix}")]);
+        let (to, _) = queue("v", 1);
+        let failed = Fake::idle("agent-x").answering(vec![Err("gone".into())]);
+        drain(&failed, &to).await;
+        assert!(failed.orch_runs.lock().unwrap().is_empty());
     }
 
     #[test]

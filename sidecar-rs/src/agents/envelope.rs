@@ -27,6 +27,10 @@ pub fn header(m: &Message) -> String {
     if m.notice {
         return "[panorama notice]".into();
     }
+    if m.kind.as_deref() == Some(crate::agents::mail::KIND_ORCH) {
+        let run = m.key.as_deref().and_then(crate::agents::mail::orch_run).unwrap_or("");
+        return format!("[panorama orch {run}]");
+    }
     if m.kind.as_deref() == Some(crate::agents::mail::KIND_EVENT) {
         return format!("[panorama event {}]", m.id.strip_prefix('e').unwrap_or(&m.id));
     }

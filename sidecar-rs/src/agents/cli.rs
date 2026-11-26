@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits> [args] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate> [args] [--flags] [--json]";
 const PREVIEW_CHARS: usize = 40;
 
 #[derive(Debug, Default)]
@@ -44,6 +44,7 @@ fn allowed_flags(command: &str) -> Option<&'static str> {
         "inbox" => "pending limit",
         "wait" => "on timeout note cancel cancel-all",
         "waits" => "all status",
+        "coordinate" => "run off",
         _ => return None,
     })
 }
@@ -76,6 +77,8 @@ fn field_for(flag: &str) -> &'static str {
         "cancel-all" => "all",
         "all" => "all",
         "status" => "status",
+        "run" => "runId",
+        "off" => "off",
         _ => "",
     }
 }
@@ -92,7 +95,7 @@ fn positional_fields(command: &str) -> &'static [&'static str] {
     match command {
         "create" | "list" | "wait" | "waits" => &[],
         "send" | "reply" => &["to", "text"],
-        "inbox" => &["agent"],
+        "inbox" | "coordinate" => &["agent"],
         _ => &["id"],
     }
 }
@@ -135,7 +138,7 @@ where
             i += 2;
             continue;
         }
-        if matches!(flag, "fresh" | "force" | "expects-reply" | "pending" | "cancel-all" | "all") {
+        if matches!(flag, "fresh" | "force" | "expects-reply" | "pending" | "cancel-all" | "all" | "off") {
             body.insert(field.into(), true.into());
             i += 1;
             continue;
@@ -180,6 +183,12 @@ where
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
         if env.worker { body.insert("worker".into(), true.into()); }
+    } else if command == "coordinate" {
+        if !body.contains_key("agent") || !body.contains_key("runId") {
+            return Err("coordinate requires an agent name and --run <runId>".into());
+        }
+        let off = body.remove("off").is_some();
+        body.insert("on".into(), (!off).into());
     } else if command == "read" && !body.contains_key("id") {
         return Err("read requires a message id".into());
     } else if !matches!(command.as_str(), "list" | "inbox" | "read") && !body.contains_key("id") {
@@ -264,6 +273,7 @@ pub fn main() {
         "wait" if v["cancelled"].is_number() => println!("Cancelled {} wait(s).", v["cancelled"]),
         "wait" => println!("{}", v["text"].as_str().unwrap_or_default()),
         "waits" => v["waits"].as_array().into_iter().flatten().for_each(|w| println!("{}", wait_line(w))),
+        "coordinate" => println!("{}", v["text"].as_str().unwrap_or_default()),
         "inbox" => v["messages"].as_array().into_iter().flatten().for_each(|m| println!("{}", message_line(m))),
         "read" => {
             println!("{}", message_line(&v["message"]));
@@ -336,6 +346,15 @@ mod tests {
         assert!(parse(&["waits", "--all"]).unwrap().body.get("mine").is_none());
         let worker = CliEnv { tile: Some("t1".into()), worker: true, ..Default::default() };
         assert_eq!(parse_with(&["wait", "--on", "in:2m"], &worker).unwrap().body["worker"], true);
+    }
+
+    #[test]
+    fn coordinate_takes_an_agent_and_a_run() {
+        let on = parse(&["coordinate", "planner", "--run", "r6un"]).unwrap();
+        assert_eq!(Value::Object(on.body), serde_json::json!({ "agent": "planner", "runId": "r6un", "on": true }));
+        let off = parse(&["coordinate", "planner", "--run", "r6un", "--off"]).unwrap();
+        assert_eq!(off.body["on"], false);
+        assert!(parse(&["coordinate", "planner"]).is_err());
     }
 
     #[test]
