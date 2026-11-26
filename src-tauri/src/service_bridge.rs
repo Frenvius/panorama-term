@@ -63,6 +63,10 @@ pub async fn dispatch(command: &str, args: &Value) -> Result<Value, String> {
         "store_list" => value(crate::store::store_list(arg(args, "dir")?)?),
         "read_dir" => value(crate::read_dir(arg(args, "path")?).await?),
         "read_text_file" => value(crate::read_text_file(arg(args, "path")?)?),
+        "read_file_head" => value(crate::read_file_head(
+            arg(args, "path")?,
+            arg(args, "maxBytes")?,
+        )?),
         "read_file_tail" => value(crate::read_file_tail(
             arg(args, "path")?,
             arg(args, "maxBytes")?,

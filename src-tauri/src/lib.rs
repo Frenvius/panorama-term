@@ -822,6 +822,18 @@ fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_file_head(path: String, max_bytes: u64) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .map_err(|e| e.to_string())?
+        .take(max_bytes.min(MAX_TEXT_FILE))
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tauri::command]
 fn read_file_tail(path: String, max_bytes: u64) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
@@ -1054,6 +1066,7 @@ pub fn run() {
             reveal_path,
             read_dir,
             read_text_file,
+            read_file_head,
             read_file_tail,
             read_file_bytes,
             watch_text_file,

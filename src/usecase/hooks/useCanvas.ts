@@ -34,7 +34,7 @@ import { currentLayoutSpacing } from '~/usecase/util/reorderSetting';
 import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { syncProjectViewWithTiles } from '~/usecase/util/projectLayout';
 import { projectsInUse } from '~/usecase/util/projectGroups';
-import { getTasksOpen, placeTasksTile } from '~/usecase/util/bgTasks';
+import { endTasks, getTasksOpen, placeTasksTile } from '~/usecase/util/bgTasks';
 import {
   CELL,
   SNAP_PX,
@@ -587,10 +587,12 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
     if (!source || open === 'inline') return;
     const id = createId();
     const { x, y, width, height } = placeTasksTile(source, tilesRef.current.filter((t) => t.id !== sourceId), open);
-    setTiles((prev) => [
-      ...prev,
-      { id, type: 'tasks' as const, taskSource: sourceId, cwd: source.cwd, x, y, width, height, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }
-    ]);
+    // Two tasks seen in one read ask twice before the first tile is in tilesRef.
+    setTiles((prev) =>
+      prev.some((t) => t.type === 'tasks' && t.taskSource === sourceId)
+        ? prev
+        : [...prev, { id, type: 'tasks' as const, taskSource: sourceId, cwd: source.cwd, x, y, width, height, zIndex: prev.reduce((m, t) => Math.max(m, t.zIndex), 0) + 1 }]
+    );
     if (focus) setActiveTile(id);
   }, []);
 
@@ -680,12 +682,16 @@ export const useCanvas = ({ seed, wsId, tabId, onPersist }: UseCanvasArgs) => {
         .map((t) => ((t.linkedTo ?? []).includes(id) ? { ...t, linkedTo: (t.linkedTo ?? []).filter((x) => x !== id) } : t))
     );
     setActiveTile((a) => (a === id ? null : a));
-    if (!isWorker) void killPtySession(id);
+    if (!isWorker) {
+      void killPtySession(id);
+      endTasks(id);
+    }
   }, [bindKey]);
 
   const sleepTile = React.useCallback((id: string) => {
     setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, dormant: true } : t)));
     void killPtySession(id);
+    endTasks(id);
   }, []);
 
   const wakeTile = React.useCallback((id: string) => {

@@ -66,6 +66,8 @@ export interface Subagent {
   activity?: string[];
 }
 
+export type Ended<T> = T & { status: string };
+
 export interface BackgroundShell {
   id: string;
   command: string;
@@ -109,10 +111,9 @@ export interface ClaudeState {
   viewing?: string;
   subagents?: Subagent[];
   shells?: BackgroundShell[];
-  // How background shells ended, by id: completed, failed or killed.
-  shellEnds?: Record<string, string>;
-  // How subagents ended, by id: completed, failed or killed.
-  agentEnds?: Record<string, string>;
+  // Tasks that ended, newest last, with how: completed, failed or killed.
+  endedShells?: Ended<BackgroundShell>[];
+  endedAgents?: Ended<Subagent>[];
 }
 
 export interface PtyClaudeMessage extends ClaudeState {

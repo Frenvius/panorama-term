@@ -1,4 +1,4 @@
-import type { BackgroundShell, Subagent } from '~/domain/interfaces/pty.interface';
+import type { BackgroundShell, Ended, Subagent } from '~/domain/interfaces/pty.interface';
 
 import React from 'react';
 
@@ -40,17 +40,27 @@ const AUTO_ORDER: Side[] = ['right', 'below', 'left', 'above'];
 const EMPTY: BgTask[] = [];
 const REQUEST_EVENT = 'tasks:open';
 
-// Matches `codex`, `~/.local/bin/codex`, `C:\...\codex.exe`, `codex.cmd`; Windows wrappers carry an extension.
-const CLI_RE = /(?:^|[\s;&|(/\\"'])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?(?=[\s"']|$)/i;
+// Matches `codex`, `~/.local/bin/codex`, `"C:\...\codex.exe"`, `codex.cmd` in command position, so not `grep codex`;
+// Windows wrappers carry an extension. Same pattern as the Claude mod's.
+const CLI_RE =
+  /(?:^|[;&|(]|\b(?:exec|npx|env|nohup|sudo|timeout\s+\S+)\b)\s*(?:\w+=\S*\s+)*(?:["'][^"']*[/\\]|["']|[^\s"';&|()]*[/\\])?(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?["']?(?=\s|$)/i;
 
 // The agent CLI a shell command runs, if any.
 export const cliOf = (command: string): string | undefined => CLI_RE.exec(command)?.[1]?.toLowerCase();
 
 const detailKey = (t: BgTask) => JSON.stringify([t.description, t.label, t.model, t.tokens, t.activity]);
 
-// Running tasks of one kind come from the Claude mod; one missing from a later report, or with a reported end, has ended.
+// Running and ended tasks of one kind come from the Claude mod; one missing from a later report, or reported ended, has ended.
 // One that shows up again without an end was only missing from a transient report, so it is running.
-export const mergeTasks = (prev: BgTask[], live: BgTask[], now: number, ends: Record<string, string> = {}, kind?: 'agent'): BgTask[] => {
+// An ended one not seen running (it started and ended between two reads, or before this client connected) is added ended.
+export const mergeTasks = (
+  prev: BgTask[],
+  live: BgTask[],
+  now: number,
+  ended: Ended<BgTask>[] = [],
+  kind?: 'agent'
+): BgTask[] => {
+  const ends: Record<string, string> = Object.fromEntries(ended.map((t) => [t.id, t.status]));
   const byId = new Map(live.map((t) => [t.id, t]));
   let changed = false;
   const kept = prev.map((t) => {
@@ -67,8 +77,11 @@ export const mergeTasks = (prev: BgTask[], live: BgTask[], now: number, ends: Re
     changed = true;
     return next;
   });
-  const known = new Set(prev.map((t) => t.id));
-  const added = live.filter((t) => !known.has(t.id));
+  const prevIds = new Set(prev.map((t) => t.id));
+  const added = [
+    ...live.filter((t) => !prevIds.has(t.id)),
+    ...ended.filter((t) => !prevIds.has(t.id) && !byId.has(t.id)).map((t) => ({ ...t, endedAt: now }))
+  ];
   return added.length || changed ? [...added, ...kept] : prev;
 };
 
@@ -93,6 +106,11 @@ const subscribe = (l: () => void) => {
 };
 
 const savedKey = (tileId: string) => `panorama:tasks:${tileId}`;
+// Finished tasks started up to this time were cleared or dropped over the limit. The mod keeps reporting
+// the ones that ended, and they stay out.
+const clearedKey = (tileId: string) => `panorama:tasks-cleared:${tileId}`;
+const clearedAt = (tileId: string) => Number(getPref(clearedKey(tileId)) ?? 0);
+const setCleared = (tileId: string, at: number) => setPref(clearedKey(tileId), String(Math.max(at, clearedAt(tileId))));
 
 // Tasks outlive a restart; one that ended while the app was closed shows as finished on the next report.
 const tasksOf = (tileId: string): BgTask[] => {
@@ -108,32 +126,66 @@ const tasksOf = (tileId: string): BgTask[] => {
   return list;
 };
 
-const save = (tileId: string, list: BgTask[]) => {
+// Keeps every running task and the newest finished ones.
+const trim = (list: BgTask[]) => {
+  let finished = 0;
+  const kept = list.filter((t) => !t.endedAt || ++finished <= SAVED_MAX);
+  return kept.length === list.length ? list : kept;
+};
+
+const save = (tileId: string, all: BgTask[]) => {
+  const list = trim(all);
+  if (list !== all) setCleared(tileId, Math.max(...all.filter((t) => !list.includes(t)).map((t) => t.startedAt)));
   tasks.set(tileId, list);
-  const kept = list.slice(0, SAVED_MAX);
-  if (kept.length) setPref(savedKey(tileId), JSON.stringify(kept));
+  if (list.length) setPref(savedKey(tileId), JSON.stringify(list));
   else removePref(savedKey(tileId));
   notify();
 };
 
-// True when a task started that was not listed before.
-const report = (tileId: string, live: BgTask[], ends: Record<string, string> | undefined, kind?: 'agent'): boolean => {
+// True when a running task that was not listed before showed up.
+const report = (tileId: string, live: BgTask[], ended: Ended<BgTask>[] | undefined, kind?: 'agent'): boolean => {
   const prev = tasksOf(tileId);
-  const next = mergeTasks(prev, live, Date.now(), ends, kind);
+  const cleared = clearedAt(tileId);
+  const listed = new Set(prev.map((t) => t.id));
+  const kept = ended?.filter((t) => t.startedAt > cleared || listed.has(t.id));
+  const next = mergeTasks(prev, live, Date.now(), kept, kind);
   if (next === prev) return false;
   save(tileId, next);
-  return next.length > prev.length;
+  return live.some((t) => !listed.has(t.id));
 };
 
-export const reportShells = (tileId: string, shells: BackgroundShell[], ends?: Record<string, string>): boolean =>
-  report(tileId, shells, ends);
+export const reportShells = (tileId: string, shells: BackgroundShell[], ended?: Ended<BackgroundShell>[]): boolean =>
+  report(tileId, shells, ended);
 
-export const reportAgents = (tileId: string, agents: Subagent[], ends?: Record<string, string>): boolean => {
+export const reportAgents = (tileId: string, agents: Subagent[], ended: Ended<Subagent>[] = []): boolean => {
   const now = Date.now();
-  return report(tileId, agents.map((a) => agentTask(a, now)), ends, 'agent');
+  const task = (a: Subagent) => agentTask(a, now);
+  return report(
+    tileId,
+    agents.map(task),
+    ended.map((a) => ({ ...task(a), status: a.status })),
+    'agent'
+  );
 };
 
-export const clearFinished = (tileId: string): void => save(tileId, tasksOf(tileId).filter((t) => !t.endedAt));
+// The terminal's session is gone: tasks it still listed as running ended with it.
+export const endTasks = (tileId: string): void => {
+  const list = tasksOf(tileId);
+  if (!list.some((t) => !t.endedAt)) return;
+  const now = Date.now();
+  save(
+    tileId,
+    list.map((t) => (t.endedAt ? t : { ...t, endedAt: now, status: 'killed' }))
+  );
+};
+
+export const clearFinished = (tileId: string): void => {
+  setCleared(tileId, Date.now());
+  save(
+    tileId,
+    tasksOf(tileId).filter((t) => !t.endedAt)
+  );
+};
 
 export const useBgTasks = (tileId: string): BgTask[] => React.useSyncExternalStore(subscribe, () => tasksOf(tileId));
 
@@ -187,11 +239,20 @@ interface TasksTileRequest {
 export const requestTasksTile = (sourceId: string, focus = true): boolean =>
   !window.dispatchEvent(new CustomEvent<TasksTileRequest>(REQUEST_EVENT, { detail: { sourceId, focus }, cancelable: true }));
 
+let tileViews = 0;
+
+// Whether the tasks open in a tile: set to, and a view that has tasks tiles is open.
+export const tasksInTile = (): boolean => getTasksOpen() !== 'inline' && tileViews > 0;
+
 export const onTasksTileRequest = (cb: (request: TasksTileRequest) => void): (() => void) => {
   const handler = (e: Event) => {
     e.preventDefault();
     cb((e as CustomEvent<TasksTileRequest>).detail);
   };
   window.addEventListener(REQUEST_EVENT, handler);
-  return () => window.removeEventListener(REQUEST_EVENT, handler);
+  tileViews++;
+  return () => {
+    window.removeEventListener(REQUEST_EVENT, handler);
+    tileViews--;
+  };
 };

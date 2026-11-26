@@ -36,7 +36,7 @@ const commandText = (command: unknown): string => {
   if (!Array.isArray(command)) return '';
   // ["/bin/bash", "-lc", "<script>"] runs the script; show only that.
   const at = command.indexOf('-lc');
-  return String(at >= 0 ? command[at + 1] ?? '' : command.join(' '));
+  return String(at >= 0 ? (command[at + 1] ?? '') : command.join(' '));
 };
 
 const changedPaths = (changes: unknown): string[] => {
@@ -125,7 +125,13 @@ export const parseRollout = (raw: string): FeedLine[] => {
   return lines;
 };
 
-// When a rollout file was started, from its name (local time), in ms; NaN for other names.
+// Day folders are walked in steps short enough to hit every day.
+const STEP_MS = 6 * 3600_000;
+const HEAD_TIME_RE = /^\{"timestamp":"([^"]+)"/;
+// Names carry the host's local time, which may be another time zone than the client's: up to this far off.
+const ZONE_MS = 15 * 3600_000;
+
+// When a rollout file was started, from its name read as local time, in ms; NaN for other names.
 export const rolloutStart = (name: string): number => {
   const m = NAME_RE.exec(name);
   if (!m) return NaN;
@@ -133,20 +139,47 @@ export const rolloutStart = (name: string): number => {
   return new Date(y, mo - 1, d, h, mi, s).getTime();
 };
 
-// The log of the run started at `startedAt`: the first one begun after it that no other task took.
-export const pickRollout = (names: string[], startedAt: number, taken: Set<string>): string | undefined =>
-  names
-    .map((name) => ({ name, at: rolloutStart(name) }))
-    .filter(({ name, at }) => at >= startedAt - START_SLACK_MS && !taken.has(name))
-    .sort((a, b) => a.at - b.at)[0]?.name;
+// When a log began, from the timestamp its first line opens with (UTC); NaN while that is not written yet.
+export const headStart = (head: string): number => Date.parse(HEAD_TIME_RE.exec(head)?.[1] ?? '');
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-// The day folders a run started at `startedAt` may have logged to (it can cross midnight).
-export const rolloutDirs = (home: string, startedAt: number, now: number): string[] => {
+// The day folders a run may have logged to: it can cross midnight, and the host's day can differ from the client's.
+export const rolloutDirs = (home: string, startedAt: number, endedAt: number): string[] => {
   const day = (ms: number) => {
     const d = new Date(ms);
     return `${home}/.codex/sessions/${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
   };
-  return [...new Set([day(startedAt), day(now)])];
+  const dirs = new Set<string>();
+  for (let ms = startedAt - ZONE_MS; ms < endedAt + ZONE_MS; ms += STEP_MS) dirs.add(day(ms));
+  return [...dirs.add(day(endedAt + ZONE_MS))];
+};
+
+export interface RolloutIO {
+  list: (dir: string) => Promise<string[]>;
+  // The start of a log, from its first line.
+  start: (path: string) => Promise<number>;
+}
+
+// The log of the run that went from `startedAt` to `endedAt`: the first one begun in that span that no other task took.
+export const findRollout = async (
+  home: string,
+  startedAt: number,
+  endedAt: number,
+  taken: Set<string>,
+  io: RolloutIO
+): Promise<string | undefined> => {
+  for (const dir of rolloutDirs(home, startedAt, endedAt)) {
+    const names = (await io.list(dir).catch(() => [] as string[]))
+      .map((name) => ({ name, at: rolloutStart(name) }))
+      .filter(({ at }) => at >= startedAt - ZONE_MS && at <= endedAt + ZONE_MS)
+      .sort((a, b) => a.at - b.at);
+    for (const { name } of names) {
+      const path = `${dir}/${name}`;
+      if (taken.has(path)) continue;
+      const at = await io.start(path).catch(() => NaN);
+      if (at >= startedAt - START_SLACK_MS) return at <= endedAt ? path : undefined;
+    }
+  }
+  return undefined;
 };

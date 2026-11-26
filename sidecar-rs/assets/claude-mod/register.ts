@@ -30,22 +30,30 @@ const subagentTool = new Map<string, string>()
 // What each running subagent did last (tool and its main argument), newest last, for the tasks tile.
 const ACTIVITY_MAX = 6
 const subagentActivity = new Map<string, string[]>()
-// How tracked subagents ended (completed, failed, killed), newest last.
-const agentEnds = new Map<string, string>()
+// Tasks that ended keep their last row and how they ended (completed, failed, killed), newest last, so the app
+// lists one that started and ended between two of its reads, and a client that connects later sees them.
+// As many as the app keeps; ended commands are clipped, so the report stays well under the sidecar's post limit.
+const ENDED_MAX = 30
+const ENDED_COMMAND_MAX = 1000
+type AgentRow = Record<string, unknown> & { id: string }
+// The last row of each running subagent.
+const agentRows = new Map<string, AgentRow>()
+const endedAgents = new Map<string, AgentRow & { status: string }>()
 const AGENT_ENDS = new Set(['completed', 'failed', 'killed'])
 let lastSubagents = '[]'
 let lastView: string | undefined
 
 type ShellRow = { id: string; command: string; description?: string; outputFile?: string; startedAt: number; monitor?: true }
+// Background shells and monitors by task id. A call moved to the background keeps its row and id.
 const shells = new Map<string, ShellRow>()
 let lastShells = '[]'
-// How tracked shells ended (completed, failed, killed), newest last; the app shows it on finished tasks.
-const SHELL_ENDS_MAX = 50
-const shellIds = new Set<string>()
-const shellEnds = new Map<string, string>()
 // Other agent CLIs the model runs in the foreground (`codex exec ...`), by tool_use_id; listed with the shells.
-const CLI_RE = /(?:^|[\s;&|(/\\"'])(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?(?=[\s"']|$)/i
+// Only a command in command position counts, so `grep codex` is not one. Same pattern as the app's `cliOf`.
+const CLI_RE =
+  /(?:^|[;&|(]|\b(?:exec|npx|env|nohup|sudo|timeout\s+\S+)\b)\s*(?:\w+=\S*\s+)*(?:["'][^"']*[/\\]|["']|[^\s"';&|()]*[/\\])?(codex|gemini|agy|antigravity|opencode|kimi|cursor-agent|aider)(?:\.exe|\.cmd|\.ps1)?["']?(?=\s|$)/i
 const calls = new Map<string, ShellRow>()
+// Ended shells, monitors and calls, by the same ids.
+const endedShells = new Map<string, ShellRow & { status: string }>()
 
 const dialogOpen = () => toolDialog || commandDialog || elicitDialog
 
@@ -158,35 +166,37 @@ async function settleTool($: EngineInterface, id: string | undefined) {
   await post($, { status: 'busy', dialog: dialogOpen() })
 }
 
-async function listAgents($: EngineInterface): Promise<AgentInfo[]> {
+// Undefined when the list failed: a failed read says nothing about which subagents ended.
+async function listAgents($: EngineInterface): Promise<AgentInfo[] | undefined> {
   try {
     return await $.agent.list()
   } catch (err) {
     $.ui.log(`panorama: agent list failed: ${String(err)}`, { to: 'debug' })
-    return []
+    return undefined
   }
 }
 
 async function agentsActive($: EngineInterface, except?: string) {
-  return (await listAgents($)).some(a => a.id !== except && ACTIVE_AGENT.has(a.status))
+  return (await listAgents($))?.some(a => a.id !== except && ACTIVE_AGENT.has(a.status)) ?? false
 }
 
-function recordEnd(ends: Map<string, string>, id: string, status: string) {
-  if (ends.get(id) === status) return
-  ends.delete(id)
-  ends.set(id, status)
-  if (ends.size > SHELL_ENDS_MAX) ends.delete(ends.keys().next().value!)
+function recordEnd<T>(ended: Map<string, T>, key: string, row: T) {
+  ended.delete(key)
+  ended.set(key, row)
+  if (ended.size > ENDED_MAX) ended.delete(ended.keys().next().value!)
 }
 
 async function reportSubagents($: EngineInterface) {
   const now = Date.now()
   const all = await listAgents($)
+  if (!all) return
   const agents = all.filter(a => ACTIVE_AGENT.has(a.status))
   for (const a of agents) if (!subagentStart.has(a.id)) subagentStart.set(a.id, now)
-  for (const id of [...subagentStart.keys()]) {
+  for (const [id, row] of [...agentRows]) {
     if (agents.some(a => a.id === id)) continue
     const status = all.find(a => a.id === id)?.taskStatus
-    recordEnd(agentEnds, id, status && AGENT_ENDS.has(status) ? status : 'completed')
+    recordEnd(endedAgents, id, { ...row, status: status && AGENT_ENDS.has(status) ? status : 'completed' })
+    agentRows.delete(id)
     subagentStart.delete(id)
     subagentTool.delete(id)
     subagentActivity.delete(id)
@@ -203,11 +213,12 @@ async function reportSubagents($: EngineInterface) {
     tokens: a.tokenCount,
     activity: subagentActivity.get(a.id),
   }))
-  const ends = Object.fromEntries(agentEnds)
-  const key = JSON.stringify([rows, ends])
+  for (const row of rows) agentRows.set(row.id, row)
+  const ended = [...endedAgents.values()]
+  const key = JSON.stringify([rows, ended])
   if (key === lastSubagents) return
   lastSubagents = key
-  await post($, { subagents: rows, agentEnds: ends })
+  await post($, { subagents: rows, endedAgents: ended })
 }
 
 const SUMMARY_KEYS = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']
@@ -229,7 +240,6 @@ function trackCall(input: Record<string, unknown>) {
   const command = input.command
   if (input.tool !== 'Bash' || input.run_in_background || typeof id !== 'string' || typeof command !== 'string') return undefined
   if (!CLI_RE.test(command)) return undefined
-  shellIds.add(id)
   calls.set(id, {
     id,
     command,
@@ -240,23 +250,32 @@ function trackCall(input: Record<string, unknown>) {
 }
 
 async function reportShells($: EngineInterface) {
+  for (const [id, s] of shells) if (s.monitor && !s.outputFile) s.outputFile = siblingOutput(id)
   const rows = [...shells.values(), ...calls.values()]
-  const ends = Object.fromEntries(shellEnds)
-  const key = JSON.stringify([rows, ends])
+  const ended = [...endedShells.values()]
+  const key = JSON.stringify([rows, ended])
   if (key === lastShells) return
   lastShells = key
-  await post($, { shells: rows, shellEnds: ends })
+  await post($, { shells: rows, endedShells: ended })
 }
 
-function recordShellEnd(id: string, status: string) {
-  if (!shellIds.has(id) || shellEnds.get(id) === status) return false
-  recordEnd(shellEnds, id, status)
+// Moves a tracked shell, monitor or call to the ended ones. A later report of how it ended updates it;
+// one without a status only ends a task still running.
+function endShell(key: string, status?: string) {
+  const ended = endedShells.get(key)
+  const row = shells.get(key) ?? calls.get(key) ?? (status ? ended : undefined)
+  const next = status ?? 'completed'
+  if (!row || ended?.status === next) return false
+  shells.delete(key)
+  calls.delete(key)
+  recordEnd(endedShells, key, { ...row, command: row.command.slice(0, ENDED_COMMAND_MAX), status: next })
   return true
 }
 
-// A monitor's result names no file; its output sits beside the shells' in the session's tasks folder.
+// A monitor's result names no file; its output sits beside the shells' in the session's tasks folder,
+// which the first shell that names its file reveals.
 function siblingOutput(id: string) {
-  const known = [...shells.values()].find(s => s.outputFile)?.outputFile
+  const known = [...shells.values(), ...endedShells.values()].find(s => s.outputFile && !s.monitor)?.outputFile
   const cut = known ? Math.max(known.lastIndexOf('/'), known.lastIndexOf('\\')) : -1
   return known ? `${known.slice(0, cut + 1)}${id}.output` : undefined
 }
@@ -264,18 +283,21 @@ function siblingOutput(id: string) {
 function trackShell(
   e: { tool: unknown; command?: unknown; description?: unknown; ws?: { url?: unknown } },
   result: { result?: unknown; text?: string },
+  call?: string,
 ) {
   if (e.tool !== 'Bash' && e.tool !== 'Monitor') return false
   const record = result.result as { backgroundTaskId?: unknown; taskId?: unknown } | undefined
   const id = e.tool === 'Bash' ? record?.backgroundTaskId : record?.taskId
   if (typeof id !== 'string' || shells.has(id)) return false
-  shellIds.add(id)
+  const moved = call ? calls.get(call) : undefined
+  calls.delete(call ?? '')
   shells.set(id, {
-    id,
+    ...moved,
+    id: moved?.id ?? id,
     command: String(e.command ?? e.ws?.url ?? ''),
     description: typeof e.description === 'string' ? e.description : undefined,
     outputFile: result.text?.match(SHELL_OUTPUT_RE)?.[1] ?? (e.tool === 'Monitor' ? siblingOutput(id) : undefined),
-    startedAt: Date.now(),
+    startedAt: moved?.startedAt ?? Date.now(),
     monitor: e.tool === 'Monitor' || undefined,
   })
   return true
@@ -284,7 +306,7 @@ function trackShell(
 async function dropEndedShells($: EngineInterface, inFlight: BackgroundTaskSummary[] | undefined) {
   if (!inFlight) return
   const live = new Set(inFlight.filter(t => t.type === 'shell' || t.type === 'monitor').map(t => t.id))
-  for (const id of [...shells.keys()]) if (!live.has(id)) shells.delete(id)
+  for (const id of [...shells.keys()]) if (!live.has(id)) endShell(id)
   await reportShells($)
 }
 
@@ -394,11 +416,11 @@ export const register: Register = (on) => {
     lastSubagents = '[]'
     lastView = ''
     shells.clear()
-    shellIds.clear()
-    shellEnds.clear()
+    endedShells.clear()
     calls.clear()
     subagentActivity.clear()
-    agentEnds.clear()
+    agentRows.clear()
+    endedAgents.clear()
     lastShells = '[]'
     if (await $.env.get('PANORAMA_TILE_ID')) {
       await $.command.register({
@@ -437,8 +459,7 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
     const { id, status } = e.props.task ?? {}
-    const ended = Boolean(id && status && recordShellEnd(id, status))
-    if (id && (shells.delete(id) || ended)) void reportShells($)
+    if (id && endShell(id, status)) void reportShells($)
     return next(e)
   })
 
@@ -592,14 +613,16 @@ export const register: Register = (on) => {
     }
     const call = trackCall(input)
     if (call) await reportShells($)
-    const result = await next(e)
+    const result = await next(e).catch(async (err: unknown) => {
+      if (call && endShell(call, 'killed')) await reportShells($)
+      throw err
+    })
     await settleTool($, e.tool_use_id)
-    if (call) {
-      calls.delete(call)
-      recordShellEnd(call, 'deny' in result && result.deny ? 'killed' : 'isError' in result && result.isError ? 'failed' : 'completed')
-      await reportShells($)
-    }
-    if (!('deny' in result && result.deny) && trackShell(e as Parameters<typeof trackShell>[0], result)) await reportShells($)
+    const denied = 'deny' in result && result.deny
+    // A foreground call the model moved to the background goes on as a shell under the same row.
+    const tracked = !denied && trackShell(e as Parameters<typeof trackShell>[0], result, call)
+    if (call && !tracked) endShell(call, denied ? 'killed' : 'isError' in result && result.isError ? 'failed' : 'completed')
+    if (call || tracked) await reportShells($)
     return result
   })
 

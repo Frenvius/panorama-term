@@ -12,9 +12,11 @@ mock.module('~/adapter/settings/settings.client', () => ({
   setSetting: async () => {}
 }));
 
-const { mergeTasks, placeTasksTile, reportShells, reportAgents, clearFinished, cliOf, TASKS_TILE } = await import('~/usecase/util/bgTasks');
+const { mergeTasks, placeTasksTile, reportShells, reportAgents, clearFinished, endTasks, cliOf, TASKS_TILE } =
+  await import('~/usecase/util/bgTasks');
 
 const shell = (id: string) => ({ id, command: `run ${id}`, startedAt: 1 });
+const end = (id: string, status: string) => ({ ...shell(id), status });
 
 test('new shells come first and keep running', () => {
   const next = mergeTasks([], [shell('a'), shell('b')], 10);
@@ -39,18 +41,18 @@ test('a shell that reappears after a transient empty report is running again', (
 
 test('a reported end finishes the task with its status, even while still listed', () => {
   const running = mergeTasks([], [shell('a'), shell('b')], 10);
-  const next = mergeTasks(running, [shell('a'), shell('b')], 20, { a: 'failed' });
+  const next = mergeTasks(running, [shell('a'), shell('b')], 20, [end('a', 'failed')]);
   expect(next.find((t) => t.id === 'a')).toMatchObject({ endedAt: 20, status: 'failed' });
   expect(next.find((t) => t.id === 'b')?.endedAt).toBeUndefined();
 });
 
 test('a status arriving after the task already ended keeps its end time', () => {
   const ended = mergeTasks(mergeTasks([], [shell('a')], 10), [], 20);
-  expect(mergeTasks(ended, [], 30, { a: 'completed' })[0]).toMatchObject({ endedAt: 20, status: 'completed' });
+  expect(mergeTasks(ended, [], 30, [end('a', 'completed')])[0]).toMatchObject({ endedAt: 20, status: 'completed' });
 });
 
 test('a known status survives a report that no longer carries it', () => {
-  const ended = mergeTasks(mergeTasks([], [shell('a')], 10), [], 20, { a: 'failed' });
+  const ended = mergeTasks(mergeTasks([], [shell('a')], 10), [], 20, [end('a', 'failed')]);
   expect(mergeTasks(ended, [], 30)).toBe(ended);
 });
 
@@ -76,15 +78,24 @@ test('auto takes the first free side: right, below, left, above', () => {
 });
 
 test('auto falls back to the right when every side is taken', () => {
-  const wall = [{ x: -2000, y: -2000, width: 5000, height: 1990 }, { x: -2000, y: 410, width: 5000, height: 2000 }, { x: -2000, y: 0, width: 1990, height: 400 }, { x: 610, y: 0, width: 2000, height: 400 }];
+  const wall = [
+    { x: -2000, y: -2000, width: 5000, height: 1990 },
+    { x: -2000, y: 410, width: 5000, height: 2000 },
+    { x: -2000, y: 0, width: 1990, height: 400 },
+    { x: 610, y: 0, width: 2000, height: 400 }
+  ];
   expect(placeTasksTile(src, wall, 'auto')).toMatchObject({ x: 640, y: 0 });
 });
 
 test('tasks are saved per terminal; clearing drops only the finished ones', () => {
   reportShells('t1', [shell('a'), shell('b')]);
-  reportShells('t1', [shell('b')], { a: 'completed' });
-  const saved = (): [string, string | undefined][] => JSON.parse(prefs.get('panorama:tasks:t1') ?? '[]').map((t: { id: string; status?: string }) => [t.id, t.status]);
-  expect(saved()).toEqual([['a', 'completed'], ['b', undefined]]);
+  reportShells('t1', [shell('b')], [end('a', 'completed')]);
+  const saved = (): [string, string | undefined][] =>
+    JSON.parse(prefs.get('panorama:tasks:t1') ?? '[]').map((t: { id: string; status?: string }) => [t.id, t.status]);
+  expect(saved()).toEqual([
+    ['a', 'completed'],
+    ['b', undefined]
+  ]);
   clearFinished('t1');
   expect(saved()).toEqual([['b', undefined]]);
   reportShells('t1', []);
@@ -92,19 +103,37 @@ test('tasks are saved per terminal; clearing drops only the finished ones', () =
   expect(prefs.has('panorama:tasks:t1')).toBe(false);
 });
 
-const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, type: 'Explore', description: `find ${id}`, status: 'running', ...extra });
+const agent = (id: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  type: 'Explore',
+  description: `find ${id}`,
+  status: 'running',
+  ...extra
+});
 
 test('a running subagent picks up its new progress and activity', () => {
-  const first = mergeTasks([], [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 1, activity: ['Read a.ts'] }], 10, {}, 'agent');
-  const next = mergeTasks(first, [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 9, label: 'reading', activity: ['Read a.ts', 'Grep foo'] }], 20, {}, 'agent');
+  const first = mergeTasks(
+    [],
+    [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 1, activity: ['Read a.ts'] }],
+    10,
+    [],
+    'agent'
+  );
+  const next = mergeTasks(
+    first,
+    [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 9, label: 'reading', activity: ['Read a.ts', 'Grep foo'] }],
+    20,
+    [],
+    'agent'
+  );
   expect(next[0].activity).toEqual(['Read a.ts', 'Grep foo']);
   expect(next[0].label).toBe('reading');
   expect(next[0].startedAt).toBe(1);
-  expect(mergeTasks(next, [{ ...next[0] }], 30, {}, 'agent')).toBe(next);
+  expect(mergeTasks(next, [{ ...next[0] }], 30, [], 'agent')).toBe(next);
 });
 
 test('a shell report leaves subagents alone', () => {
-  const agents = mergeTasks([], [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 1 }], 10, {}, 'agent');
+  const agents = mergeTasks([], [{ id: 'a', kind: 'agent', command: 'Explore', startedAt: 1 }], 10, [], 'agent');
   const next = mergeTasks(agents, [shell('s')], 20);
   expect(next.find((t) => t.id === 'a')?.endedAt).toBeUndefined();
 });
@@ -124,4 +153,43 @@ test('cliOf finds the agent CLI a command runs', () => {
   expect(cliOf('"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" exec x')).toBe('codex');
   expect(cliOf('Codex.exe exec x')).toBe('codex');
   expect(cliOf('codexify run')).toBeUndefined();
+});
+
+test('a task that started and ended between two reads is listed as ended, without opening the tile', () => {
+  expect(reportShells('quick', [], [end('q', 'completed')])).toBe(false);
+  expect(JSON.parse(prefs.get('panorama:tasks:quick')!)).toEqual([expect.objectContaining({ id: 'q', status: 'completed' })]);
+});
+
+test('cleared tasks stay cleared while the mod keeps reporting them', () => {
+  reportShells('cl', [], [end('old', 'completed')]);
+  clearFinished('cl');
+  reportShells('cl', [], [end('old', 'completed')]);
+  expect(prefs.has('panorama:tasks:cl')).toBe(false);
+});
+
+test('only the newest finished tasks are kept, in memory too; running ones always stay', () => {
+  const finished = Array.from({ length: 40 }, (_, i) => ({ ...end(`f${i}`, 'completed'), startedAt: 100 - i }));
+  reportShells('many', [shell('run')], finished);
+  const kept = (): string[] => JSON.parse(prefs.get('panorama:tasks:many')!).map((t: { id: string }) => t.id);
+  expect(kept()).toHaveLength(31);
+  expect(kept()).toContain('run');
+  expect(kept()).not.toContain('f39');
+  reportShells('many', [shell('run')], finished);
+  expect(kept()).not.toContain('f39');
+});
+
+test('cliOf skips an agent CLI named only as an argument', () => {
+  expect(cliOf('grep -R codex .')).toBeUndefined();
+  expect(cliOf('git log | grep gemini')).toBeUndefined();
+  expect(cliOf('nohup codex exec x')).toBe('codex');
+});
+
+test('closing the terminal ends the tasks it still listed as running', () => {
+  reportShells('closed', [shell('r')], [end('done', 'failed')]);
+  endTasks('closed');
+  const saved = JSON.parse(prefs.get('panorama:tasks:closed')!).map((t: { id: string; status: string }) => [t.id, t.status]);
+  expect(saved).toEqual([
+    ['r', 'killed'],
+    ['done', 'failed']
+  ]);
 });

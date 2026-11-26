@@ -592,7 +592,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
 
           {activeTile?.type === 'tasks' && (
             <div className={styles.contentSlot}>
-              <TasksTile sourceId={activeTile.taskSource ?? ''} />
+              <TasksTile sourceId={activeTile.taskSource ?? ''} visible />
             </div>
           )}
 

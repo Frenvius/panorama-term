@@ -2059,8 +2059,8 @@ const AGENT_STATE_KEYS: &[&str] = &[
     "sessionReset",
     "subagents",
     "shells",
-    "shellEnds",
-    "agentEnds",
+    "endedShells",
+    "endedAgents",
     "viewing",
 ];
 
@@ -7043,17 +7043,17 @@ mod tests {
 
     #[test]
     fn mod_state_carries_how_background_shells_ended() {
-        let body = r#"{"source":"mod","tileId":"t1","shells":[],"shellEnds":{"b1":"completed","b2":"failed"}}"#;
+        let body = r#"{"source":"mod","tileId":"t1","shells":[],"endedShells":[{"id":"b1","status":"completed"},{"id":"b2","status":"failed"}]}"#;
         let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
-        assert_eq!(v["shellEnds"]["b1"], "completed");
-        assert_eq!(v["shellEnds"]["b2"], "failed");
+        assert_eq!(v["endedShells"][0]["status"], "completed");
+        assert_eq!(v["endedShells"][1]["id"], "b2");
     }
 
     #[test]
     fn mod_state_carries_how_subagents_ended() {
-        let body = r#"{"source":"mod","tileId":"t1","subagents":[],"agentEnds":{"a1":"killed"}}"#;
+        let body = r#"{"source":"mod","tileId":"t1","subagents":[],"endedAgents":[{"id":"a1","type":"Explore","status":"killed"}]}"#;
         let v: serde_json::Value = serde_json::from_str(&agent_state_ws_msg(body).unwrap()).unwrap();
-        assert_eq!(v["agentEnds"]["a1"], "killed");
+        assert_eq!(v["endedAgents"][0]["status"], "killed");
     }
 
     #[test]

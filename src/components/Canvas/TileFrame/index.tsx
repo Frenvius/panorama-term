@@ -997,7 +997,7 @@ const TileFrame = ({ tile, view, status, link }: TileFrameProps) => {
                 onPatchOrchTile={(patch) => onPatchOrchTile(tile.id, patch)}
               />
             )}
-            {tasks && <TasksTile sourceId={tile.taskSource ?? ''} />}
+            {tasks && <TasksTile sourceId={tile.taskSource ?? ''} visible={visible && !hidden} />}
             {!note && !code && !editor && !term && !tasks && tile.type !== 'orch' && <div className={styles.placeholder}>{tile.type !== 'term' ? label : ''}</div>}
           </ErrorBoundary>
         </div>

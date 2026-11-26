@@ -11,7 +11,7 @@ import PiActions from './PiActions';
 import Magnifier from './Magnifier';
 import OrchToggle from './OrchToggle';
 import ClaudeLogo from '~/components/commons/ClaudeLogo';
-import { getTasksAuto, getTasksOpen, reportAgents, reportShells, requestTasksTile } from '~/usecase/util/bgTasks';
+import { getTasksAuto, reportAgents, reportShells, requestTasksTile, tasksInTile } from '~/usecase/util/bgTasks';
 import { getPref, setPref, removePref } from '~/usecase/util/prefs';
 import { subscribePromptRestore } from '~/usecase/util/promptRestore';
 import { KimiLogo, PiLogo, CodexLogo, OpenCodeLogo, AntigravityLogo, GenericAgentLogo } from '~/components/commons/AgentIcons';
@@ -1070,8 +1070,8 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
 
   const shells = agentType === 'claude' ? structured?.shells ?? [] : [];
   const liveAgents = agentType === 'claude' ? structured?.subagents ?? [] : [];
-  // With a tasks tile the chip counts subagents too; the inline panel lists shells only.
-  const tasksTile = getTasksOpen() !== 'inline';
+  // With a tasks tile the chip counts subagents too; the inline panel (also where no view has tasks tiles) lists shells only.
+  const tasksTile = tasksInTile();
   const taskCount = shells.length + (tasksTile ? liveAgents.length : 0);
   const orchLabel = useOrchCoordinator(tileId).label;
   const hasOrchChip = agentType === 'claude' && orchLabel != null;
@@ -1082,19 +1082,19 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
   }, [shells.length]);
 
   // Keyed on ids and ends: the report object is rebuilt on every poll even when nothing changed.
-  const shellEnds = agentType === 'claude' ? structured?.shellEnds : undefined;
-  const shellsKey = shells.map((s) => s.id).join(' ') + JSON.stringify(shellEnds ?? {});
-  const agentEnds = agentType === 'claude' ? structured?.agentEnds : undefined;
-  const agentsKey = JSON.stringify([liveAgents.map((a) => [a.id, a.label, a.tokens, a.activity]), agentEnds ?? {}]);
+  const endedShells = agentType === 'claude' ? structured?.endedShells : undefined;
+  const shellsKey = JSON.stringify([shells.map((s) => s.id), endedShells?.map((s) => [s.id, s.status])]);
+  const endedAgents = agentType === 'claude' ? structured?.endedAgents : undefined;
+  const agentsKey = JSON.stringify([liveAgents.map((a) => [a.id, a.label, a.tokens, a.activity]), endedAgents?.map((a) => [a.id, a.status])]);
   // A task that just started opens the tile when set to, without taking focus.
   const autoOpenTasks = () => {
-    if (getTasksAuto() && getTasksOpen() !== 'inline') requestTasksTile(tileId, false);
+    if (getTasksAuto() && tasksInTile()) requestTasksTile(tileId, false);
   };
   React.useEffect(() => {
-    if (reportShells(tileId, shells, shellEnds)) autoOpenTasks();
+    if (reportShells(tileId, shells, endedShells)) autoOpenTasks();
   }, [tileId, shellsKey]);
   React.useEffect(() => {
-    if (reportAgents(tileId, liveAgents, agentEnds)) autoOpenTasks();
+    if (reportAgents(tileId, liveAgents, endedAgents)) autoOpenTasks();
   }, [tileId, agentsKey]);
 
   const suggestFetch = { arg: fetchArgs, slash: fetchSlash, model: fetchModels, effort: fetchEfforts };
@@ -1103,7 +1103,7 @@ const AgentBar = ({ tileId, cwd, sessionId, active, send, getLines, getFrame, ge
   const toggleModelMenu = () => setModelMenu((o) => !o);
   const toggleEffortMenu = () => setEffortMenu((o) => !o);
   const toggleShells = () => {
-    if (getTasksOpen() === 'inline' || !requestTasksTile(tileId)) setShellsOpen((o) => !o);
+    if (!tasksTile || !requestTasksTile(tileId)) setShellsOpen((o) => !o);
   };
   const restore = () => setManualHide(false);
 

@@ -2,27 +2,34 @@ import type { BgTask } from '~/usecase/util/bgTasks';
 
 import React from 'react';
 
-import { readDir, homeDir } from '~/adapter/fs/fs.client';
+import { readDir, readFileHead, homeDir } from '~/adapter/fs/fs.client';
 import { useFileTail } from '~/usecase/hooks/useFileTail';
-import { parseRollout, pickRollout, rolloutDirs } from '~/usecase/util/codexFeed';
+import { findRollout, headStart, parseRollout } from '~/usecase/util/codexFeed';
 
 const FIND_MS = 1500;
 // Log rows carry whole command outputs; a wide tail keeps more than the last few of them.
 const TAIL_BYTES = 512 * 1024;
+const HEAD_BYTES = 256;
 
 // Which log each task follows, so two runs never take the same one.
 const claimed = new Map<string, string>();
+// When each log began; a log's first line never changes.
+const starts = new Map<string, number>();
 
-const findRollout = async (task: BgTask): Promise<string | undefined> => {
-  const home = await homeDir();
-  if (!home) return undefined;
-  const taken = new Set(claimed.values());
-  for (const dir of rolloutDirs(home, task.startedAt, task.endedAt ?? Date.now())) {
-    const entries = await readDir(dir);
-    const name = pickRollout(entries.filter((e) => !e.dir).map((e) => e.name), task.startedAt, taken);
-    if (name) return `${dir}/${name}`;
+const io = {
+  list: async (dir: string) => (await readDir(dir)).filter((e) => !e.dir).map((e) => e.name),
+  start: async (path: string) => {
+    const known = starts.get(path);
+    if (known !== undefined) return known;
+    const at = headStart(await readFileHead(path, HEAD_BYTES));
+    if (!Number.isNaN(at)) starts.set(path, at);
+    return at;
   }
-  return undefined;
+};
+
+const lookUp = async (task: BgTask): Promise<string | undefined> => {
+  const home = await homeDir();
+  return home ? findRollout(home, task.startedAt, task.endedAt ?? Date.now(), new Set(claimed.values()), io) : undefined;
 };
 
 // What a Codex run is doing, while `enabled`: finds its session log, then follows it.
@@ -34,9 +41,10 @@ export const useCodexFeed = (task: BgTask, enabled: boolean) => {
     if (!enabled || path) return;
     let alive = true;
     const look = () =>
-      void findRollout(task)
+      void lookUp(task)
         .then((found) => {
-          if (!alive || !found || claimed.has(task.id)) return;
+          // Another task's lookup may have taken the same log meanwhile.
+          if (!alive || !found || claimed.has(task.id) || [...claimed.values()].includes(found)) return;
           claimed.set(task.id, found);
           setPath(found);
         })

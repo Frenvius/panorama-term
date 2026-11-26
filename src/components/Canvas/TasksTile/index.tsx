@@ -13,7 +13,15 @@ import { useBgTasks, useTasksDetail, clearFinished, cliOf } from '~/usecase/util
 import styles from './styles.module.scss';
 
 const STATUS_LABEL: Record<string, string> = { completed: 'done', failed: 'failed', killed: 'stopped' };
-const FEED_PREFIX: Record<string, string> = { command: '$', tool: '⚙', edit: '✎', reasoning: '…', running: '▸', done: '✓', message: '' };
+const FEED_PREFIX: Record<string, string> = {
+  command: '$',
+  tool: '⚙',
+  edit: '✎',
+  reasoning: '…',
+  running: '▸',
+  done: '✓',
+  message: ''
+};
 const ICON = 13;
 
 const lastLine = (text: string) => text.trimEnd().split('\n').at(-1) ?? '';
@@ -67,25 +75,28 @@ interface TaskItemProps {
   task: BgTask;
   now: number;
   open: boolean;
+  // False while the tile is off screen or behind a fullscreen tile: nothing is read then.
+  visible: boolean;
   detail: TasksDetail;
   onToggle: () => void;
 }
 
-const TaskItem = ({ task, now, open, detail, onToggle }: TaskItemProps) => {
+const TaskItem = ({ task, now, open, visible, detail, onToggle }: TaskItemProps) => {
   const agent = task.kind === 'agent';
   const cli = agent ? undefined : cliOf(task.command);
   const codex = cli === 'codex';
   const running = !task.endedAt;
   // The summary line needs the live source even while the task is collapsed.
   const summarize = detail !== 'compact' && running;
-  const feed = useCodexFeed(task, codex && (open || summarize));
-  const { text, error } = useFileTail(!agent && !codex && (open || summarize) ? task.outputFile : undefined, { live: running });
+  const read = visible && (open || summarize);
+  const feed = useCodexFeed(task, codex && read);
+  const { text, error } = useFileTail(!agent && !codex && read ? task.outputFile : undefined, { live: running });
 
   const summary = agent
-    ? task.label ?? task.activity?.at(-1)
+    ? (task.label ?? task.activity?.at(-1))
     : codex
-    ? feed.lines.filter((l) => l.kind !== 'reasoning').at(-1)?.text
-    : lastLine(text);
+      ? feed.lines.filter((l) => l.kind !== 'reasoning').at(-1)?.text
+      : lastLine(text);
 
   return (
     <div className={styles.task} data-ended={!running}>
@@ -109,7 +120,9 @@ const TaskItem = ({ task, now, open, detail, onToggle }: TaskItemProps) => {
           {agent ? (
             <>
               <div className={styles.meta}>
-                {[task.command, task.model, task.tokens ? `${Math.round(task.tokens / 1000)}k tokens` : ''].filter(Boolean).join(' · ')}
+                {[task.command, task.model, task.tokens ? `${Math.round(task.tokens / 1000)}k tokens` : '']
+                  .filter(Boolean)
+                  .join(' · ')}
               </div>
               {task.label && <p className={styles.label}>{task.label}</p>}
               {task.activity?.length ? (
@@ -128,11 +141,19 @@ const TaskItem = ({ task, now, open, detail, onToggle }: TaskItemProps) => {
             <>
               <pre className={styles.command}>$ {task.command}</pre>
               {codex ? (
-                feed.found || running ? <Feed lines={feed.lines} detail={detail} /> : <p className={styles.note}>Codex session log not found.</p>
+                feed.found || running ? (
+                  <Feed lines={feed.lines} detail={detail} />
+                ) : (
+                  <p className={styles.note}>Codex session log not found.</p>
+                )
               ) : task.outputFile ? (
                 <Output text={text} error={error} />
               ) : (
-                <p className={styles.note}>{running ? 'Runs in the foreground; its output reaches the agent when it ends.' : 'Output not kept for this task.'}</p>
+                <p className={styles.note}>
+                  {running
+                    ? 'Runs in the foreground; its output reaches the agent when it ends.'
+                    : 'Output not kept for this task.'}
+                </p>
               )}
             </>
           )}
@@ -142,7 +163,7 @@ const TaskItem = ({ task, now, open, detail, onToggle }: TaskItemProps) => {
   );
 };
 
-const TasksTile = ({ sourceId }: { sourceId: string }) => {
+const TasksTile = ({ sourceId, visible }: { sourceId: string; visible: boolean }) => {
   const tasks = useBgTasks(sourceId);
   const detail = useTasksDetail();
   const [toggled, setToggled] = React.useState<Set<string>>(() => new Set());
@@ -153,11 +174,11 @@ const TasksTile = ({ sourceId }: { sourceId: string }) => {
   const anyRunning = running.length > 0;
 
   React.useEffect(() => {
-    if (!anyRunning) return;
+    if (!anyRunning || !visible) return;
     setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [anyRunning]);
+  }, [anyRunning, visible]);
 
   // Full detail opens every running task, normal the newest; clicking flips whatever the default was.
   const openByDefault = (t: BgTask) => !t.endedAt && (detail === 'full' || (detail === 'normal' && t.id === running[0]?.id));
@@ -168,22 +189,37 @@ const TasksTile = ({ sourceId }: { sourceId: string }) => {
       if (!next.delete(id)) next.add(id);
       return next;
     });
-  const item = (t: BgTask) => <TaskItem key={t.id} task={t} now={now} open={isOpen(t)} detail={detail} onToggle={toggle(t.id)} />;
+  const item = (t: BgTask) => (
+    <TaskItem key={t.id} task={t} now={now} open={isOpen(t)} visible={visible} detail={detail} onToggle={toggle(t.id)} />
+  );
 
   return (
     <div className={styles.root}>
       {tasks.length === 0 && (
-        <p className={styles.empty}>No tasks yet. Subagents, background shells and monitors the agent starts, and other agent CLIs it runs, show up here.</p>
+        <p className={styles.empty}>
+          No tasks yet. Subagents, background shells and monitors the agent starts, and other agent CLIs it runs, show up here.
+        </p>
       )}
       {running.map(item)}
       {finished.length > 0 && (
         <div className={styles.group}>
           <div className={styles.groupHead}>
-            <button type="button" className={styles.groupToggle} onClick={() => setFinishedOpen((o) => !o)} aria-expanded={finishedOpen}>
+            <button
+              type="button"
+              className={styles.groupToggle}
+              onClick={() => setFinishedOpen((o) => !o)}
+              aria-expanded={finishedOpen}
+            >
               {finishedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               Finished {finished.length}
             </button>
-            <button type="button" className={styles.clear} onClick={() => clearFinished(sourceId)} aria-label="Clear finished tasks" data-tooltip="Clear finished">
+            <button
+              type="button"
+              className={styles.clear}
+              onClick={() => clearFinished(sourceId)}
+              aria-label="Clear finished tasks"
+              data-tooltip="Clear finished"
+            >
               <Trash2 size={12} />
             </button>
           </div>

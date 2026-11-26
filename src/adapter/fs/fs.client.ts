@@ -19,6 +19,9 @@ export const homeDir = (): Promise<string> => (isRemote() ? invoke<string>('home
 
 export const readTextFile =(path: string): Promise<string> => invoke<string>('read_text_file', { path });
 
+export const readFileHead = (path: string, maxBytes: number): Promise<string> =>
+  invoke<string>('read_file_head', { path, maxBytes });
+
 export const readFileTail = (path: string, maxBytes: number): Promise<string> =>
   invoke<string>('read_file_tail', { path, maxBytes });
 

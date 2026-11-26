@@ -31,7 +31,7 @@ describe('transport', () => {
     ]);
     expect(calls[9]).toEqual(['remote_invoke', { command: 'store_read', args: { name: 'workspaces.json' } }]);
   });
-  test('remote reads of the tasks tile go to the host: output tails and the home Codex logs live under', async () => {
+  test('remote reads of the tasks tile go to the host: output tails, log heads and the home Codex logs live under', async () => {
     const calls: unknown[][] = [];
     const invoke = ((...args: unknown[]) => {
       calls.push(args);
@@ -39,8 +39,9 @@ describe('transport', () => {
     }) as typeof import('@tauri-apps/api/core').invoke;
     const call = createTransport(invoke, () => true);
     await call('read_file_tail', { path: '/tmp/a.output', maxBytes: 10 });
+    await call('read_file_head', { path: '/s/rollout.jsonl', maxBytes: 10 });
     await call('home_dir');
-    expect(calls.map((c) => c[0])).toEqual(['remote_invoke', 'remote_invoke']);
+    expect(calls.map((c) => c[0])).toEqual(['remote_invoke', 'remote_invoke', 'remote_invoke']);
   });
   test('returns raw remote bytes and splits mixed store writes', async () => {
     const calls: unknown[][] = [];
