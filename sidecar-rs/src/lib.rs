@@ -1473,6 +1473,16 @@ fn instance_dir(dir: std::path::PathBuf, overridden: bool, debug: bool) -> std::
 }
 
 #[test]
+fn whole_escape_sequences_are_removed_from_pastes() {
+    assert_eq!(sanitize_paste("ok\u{1b}[2Jroot"), "okroot");
+    assert_eq!(sanitize_paste("a\u{1b}[38;5;196mred\u{1b}[0m b"), "ared b");
+    assert_eq!(sanitize_paste("t\u{1b}]0;title\u{7}x"), "tx");
+    assert_eq!(sanitize_paste("t\u{1b}]8;;http://x\u{1b}\\link"), "tlink");
+    assert_eq!(sanitize_paste("\u{9b}31mz"), "z");
+    assert_eq!(sanitize_paste("lone\u{1b} esc"), "lone esc");
+}
+
+#[test]
 fn instance_directories_preserve_defaults_and_overrides() {
     let dir = std::path::PathBuf::from("/home/user/.panorama");
     assert_eq!(instance_dir(dir.clone(), false, false), dir);
@@ -5152,8 +5162,43 @@ pub(crate) fn is_format_char(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
+fn strip_escape_sequences(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('\u{1b}', Some('[')) | ('\u{9b}', _) => {
+                if c == '\u{1b}' {
+                    chars.next();
+                }
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if ('\u{40}'..='\u{7e}').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            ('\u{1b}', Some(']')) | ('\u{9d}', _) => {
+                if c == '\u{1b}' {
+                    chars.next();
+                }
+                while let Some(n) = chars.next() {
+                    if n == '\u{7}' || n == '\u{9c}' || (n == '\u{1b}' && chars.peek() == Some(&'\\')) {
+                        if n == '\u{1b}' {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn sanitize_paste(text: &str) -> String {
-    text.replace("\r\n", "\n")
+    strip_escape_sequences(text).replace("\r\n", "\n")
         .replace('\r', "\n")
         .chars()
         .filter_map(|c| match c {

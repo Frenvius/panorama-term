@@ -126,6 +126,7 @@ pub struct Mailbox {
 
 pub const MAIL_KEEP_MS: u64 = 30 * 24 * 3_600_000;
 pub const MAIL_KEEP_MAX: usize = 2_000;
+pub const OPEN_KEEP_MS: u64 = 90 * 24 * 3_600_000;
 
 fn pending_reply(m: &Message) -> bool {
     m.expects_reply && m.replied_by.is_none() && !matches!(m.status, MsgStatus::Dropped | MsgStatus::Failed)
@@ -164,7 +165,8 @@ impl Mailbox {
             }
         }
         let pinned: HashSet<&str> = newest_orch.values().map(|(_, id)| id.as_str()).collect();
-        let must = |m: &Message| m.status == MsgStatus::Queued || pending_reply(m) || referenced.contains(&m.id) || pinned.contains(m.id.as_str());
+        let fresh = |m: &Message| now.saturating_sub(m.at) < OPEN_KEEP_MS;
+        let must = |m: &Message| m.status == MsgStatus::Queued || referenced.contains(&m.id) || (fresh(m) && (pending_reply(m) || pinned.contains(m.id.as_str())));
         let mut kept: Vec<&Message> = self.messages.values().filter(|m| must(m)).collect();
         let mut recent: Vec<&Message> = self.messages.values().filter(|m| !must(m) && now.saturating_sub(m.at) < MAIL_KEEP_MS).collect();
         recent.sort_by_key(|m| std::cmp::Reverse(m.seq));
@@ -174,6 +176,8 @@ impl Mailbox {
         for m in self.messages.values().filter(|m| !kept_ids.contains(m.id.as_str())) {
             *base.entry(m.thread.clone()).or_default() += 1;
         }
+        let live_threads: HashSet<&str> = kept.iter().map(|m| m.thread.as_str()).collect();
+        base.retain(|thread, _| live_threads.contains(thread.as_str()));
         kept.sort_by_key(|m| m.seq);
         json!({ "seq": self.seq, "messages": kept, "threadBase": base })
     }

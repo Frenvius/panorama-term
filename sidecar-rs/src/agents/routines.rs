@@ -826,7 +826,8 @@ pub(crate) fn fire(id: &str, due: u64, trigger: &str, note: Option<String>, next
         let run_id_text = run.id();
         renew_then_send(run, agent_id.clone());
         return Ok(json!({ "runId": run_id_text }));
-    }    send_run(&run);
+    }
+    send_run(&run);
     if run.started {
         if let Err(e) = crate::agents::start_agent(&agent_id, Some(format!("routine {id}"))) {
             eprintln!("[routines] auto-start for {id}: {}", e.message);
@@ -847,6 +848,9 @@ fn renew_then_send(run: Run, agent: String) {
             crate::agents::FreshOutcome::Ready => send_run(&run),
             crate::agents::FreshOutcome::Abandoned => {}
             crate::agents::FreshOutcome::Busy => fail_renewal(&run, &agent, "aborted:busy"),
+            crate::agents::FreshOutcome::Overlap => {
+                end_run(&run, &agent, "skipped", Some("a session renewal was already in progress".into()), false);
+            }
             crate::agents::FreshOutcome::Failed(outcome) => fail_renewal(&run, &agent, &outcome),
         }
     });

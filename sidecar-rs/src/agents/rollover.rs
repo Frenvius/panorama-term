@@ -17,6 +17,7 @@ pub const TURN_CAP_MS: u64 = 5 * 60_000;
 pub const TOTAL_CAP_MS: u64 = 15 * 60_000;
 pub const START_WAIT_MS: u64 = 3_600_000;
 const POLL_MS: u64 = 1_000;
+pub const WAIT_POLL_MS: u64 = if cfg!(test) { 20 } else { 5_000 };
 const HANDOFFS_KEPT: u32 = 3;
 const WAITS_BYTES: usize = 600;
 const ROUTINES_BYTES: usize = 400;
@@ -981,5 +982,25 @@ mod tests {
         assert_eq!(drive(&fake, &id, n, &|| true).await, "aborted:user");
         assert_eq!(agent(&id).native_session.as_ref().map(|s| s.id.as_str()), Some("s-old"));
         assert_eq!(*fake.stopped.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_routine_renewal_waits_without_pausing_mail_and_yields_to_an_open_one() {
+        let _serial = serial();
+        let id = test_agent("w");
+        crate::insert_test_session(&crate::agents::model::tile_id(&id));
+        let wanted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = wanted.clone();
+        let agent_id = id.clone();
+        let task = tokio::spawn(async move {
+            crate::agents::renew_for_routine(&agent_id, "rt1", None, Some(true), move || flag.load(std::sync::atomic::Ordering::SeqCst)).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(agent(&id).rollover.open.is_none() && !paused(&id), "mail is not held while the agent is not ready");
+        wanted.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(task.await.unwrap(), crate::agents::FreshOutcome::Abandoned);
+        let n = open(&id, "threshold", true, "open");
+        assert_eq!(crate::agents::renew_for_routine(&id, "rt1", None, None, || true).await, crate::agents::FreshOutcome::Overlap);
+        assert_eq!(agent(&id).rollover.open.as_ref().map(|o| o.n), Some(n), "the open renewal is left alone");
     }
 }

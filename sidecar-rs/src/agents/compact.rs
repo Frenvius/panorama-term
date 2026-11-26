@@ -333,23 +333,28 @@ mod tests {
             mail_step(&mut mb, MailCmd::Send { message: m, recipient_exists: true });
             mail_step(&mut mb, MailCmd::Deliver { ids: vec![format!("t{i}")], at: 1 });
         }
+        let mut waiting = msg("t-queued", agent("b"), agent("a"));
+        waiting.thread = "t0".into();
+        waiting.notice = true;
+        mail_step(&mut mb, MailCmd::Send { message: waiting, recipient_exists: true });
         let now = 1 + 40 * 24 * 3_600_000;
         let mut pruned = Mailbox::default();
         pruned.replay("mail-snapshot", &mb.snapshot(now, &Default::default())).unwrap();
-        assert!(pruned.messages.is_empty(), "old delivered mail is pruned");
+        assert_eq!(pruned.messages.len(), 1, "old delivered mail is pruned, the queued one stays");
         let mut m = msg("t-next", agent("a"), agent("b"));
         m.thread = "t0".into();
         let err = pruned.apply(&MailCmd::Send { message: m, recipient_exists: true }).unwrap_err();
         assert_eq!(err.code, "rejected");
+        assert_eq!(pruned.thread_len("t0"), THREAD_MAX + 1);
         let mut twice = Mailbox::default();
         twice.replay("mail-snapshot", &pruned.snapshot(now, &Default::default())).unwrap();
-        assert_eq!(twice.thread_len("t0"), THREAD_MAX, "a second compaction keeps the count");
+        assert_eq!(twice.thread_len("t0"), THREAD_MAX + 1, "a second compaction keeps the count");
     }
 
     #[test]
     fn mail_retention_keeps_what_is_open_or_pointed_at() {
         let day = 24 * 3_600_000;
-        let now = 100 * day;
+        let now = 60 * day;
         let mut mb = Mailbox::default();
         let mut send = |id: &str, at: u64, expects: bool, deliver: bool| {
             let mut m = msg(id, agent("a"), agent("b"));

@@ -126,9 +126,12 @@ pub fn init() {
 pub(crate) fn compact_agent_logs(force: bool) -> compact::Sizes {
     let mut total = compact::Sizes::default();
     let Some(base) = crate::panorama_dir() else { return total };
-    let mut guard = lock();
-    let ids: Vec<String> = guard.agents.keys().cloned().collect();
+    let ids: Vec<String> = lock().agents.keys().cloned().collect();
     for id in ids {
+        let mut guard = lock();
+        if !guard.agents.contains_key(&id) {
+            continue;
+        }
         let path = store::events_path(&base, &id);
         let seq = guard.seqs.get(&id).copied().unwrap_or(0);
         let since = seq.saturating_sub(guard.snaps.get(&id).copied().unwrap_or(0));
@@ -703,6 +706,7 @@ pub enum FreshOutcome {
     Ready,
     Abandoned,
     Busy,
+    Overlap,
     Failed(String),
 }
 
@@ -719,9 +723,27 @@ pub(crate) async fn renew_for_routine(agent_id: &str, routine: &str, run: Option
         Some(note) => (note, true),
         None => (false, false),
     };
+    let started = unix_ms();
+    loop {
+        if !wanted() {
+            return FreshOutcome::Abandoned;
+        }
+        let Some(agent) = lock().agents.get(agent_id).cloned() else { return FreshOutcome::Abandoned };
+        if agent.rollover.open.is_some() {
+            return FreshOutcome::Overlap;
+        }
+        let ready = <rollover::LiveBackend as rollover::Backend>::ready(&rollover::LiveBackend, agent_id);
+        if rollover::can_start(&ready) || (!ready.live && agent.desired == Desired::Stopped) {
+            break;
+        }
+        if unix_ms().saturating_sub(started) >= rollover::START_WAIT_MS {
+            return FreshOutcome::Busy;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(rollover::WAIT_POLL_MS)).await;
+    }
     let n = match rollover::begin(agent_id, &format!("routine:{routine}"), false, note, handoff, run) {
         Ok(n) => n,
-        Err(e) if e.code == "conflict" => return FreshOutcome::Busy,
+        Err(e) if e.code == "conflict" => return FreshOutcome::Overlap,
         Err(e) => return FreshOutcome::Failed(format!("failed:{}", e.code)),
     };
     let outcome = rollover::drive(&rollover::LiveBackend, agent_id, n, &wanted).await;
