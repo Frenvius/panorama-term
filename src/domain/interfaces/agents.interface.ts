@@ -45,12 +45,36 @@ export interface PersistentAgent extends AgentLive {
   queued: number;
   awaitingReplies: number;
   startedBy?: string;
+  coordinates?: string[];
+  canCoordinate?: boolean;
+  waits?: AgentWaitSummary[];
+}
+
+export interface AgentWaitSummary {
+  id: string;
+  on: string[];
+  note: string;
+  timeoutAt: number | null;
+}
+
+export type WaitStatus = 'open' | 'fired' | 'cancelled' | 'expired';
+
+export interface AgentWait {
+  id: string;
+  on: string[];
+  note: string;
+  createdAt: number;
+  timeoutAt: number | null;
+  status: WaitStatus;
+  fired: { at: number; summary: string; wake: boolean; started: boolean } | null;
+  cancelledBy: string | null;
 }
 
 export type Party =
   | { kind: 'agent'; id: string }
   | { kind: 'tile'; id: string }
-  | { kind: 'user' };
+  | { kind: 'user' }
+  | { kind: 'brain' };
 
 export type MessageStatus = 'queued' | 'delivered' | 'dropped' | 'failed';
 
@@ -74,5 +98,7 @@ export interface AgentMessage {
   reason: string | null;
   read: boolean;
   notice: boolean;
+  kind?: 'event' | 'orch';
+  key?: string;
   truncated?: boolean;
 }

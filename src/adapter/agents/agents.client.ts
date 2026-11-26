@@ -1,4 +1,4 @@
-import type { AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
+import type { AgentWait, AgentMessage, MessageStatus, PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import { SIDECAR_HTTP } from '~/adapter/pty/sidecar.client';
 
@@ -123,6 +123,15 @@ export const readMessage = (id: string): Promise<{ message: AgentMessage }> =>
 
 export const markRead = (ids: string[]): Promise<void> =>
   post<Record<string, never>>('mark-read', { ids }).then(() => undefined);
+
+export const listWaits = (agent: string): Promise<{ waits: AgentWait[] }> =>
+  post('waits', { agent });
+
+export const cancelWait = (id: string): Promise<void> =>
+  post<{ cancelled: number }>('wait-cancel', { id }).then(() => undefined);
+
+export const coordinateRun = (agent: string, runId: string, on: boolean): Promise<{ coordinates: string[]; text: string }> =>
+  post('coordinate', { agent, runId, on });
 
 export const markAllRead = (uptoSeq: number): Promise<void> =>
   post<Record<string, never>>('mark-read', { all: true, uptoSeq }).then(() => undefined);

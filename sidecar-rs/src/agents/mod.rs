@@ -485,6 +485,7 @@ fn merge_live(agent: &Agent, full: bool) -> Value {
         obj.insert("queued".into(), queued.into());
         obj.insert("awaitingReplies".into(), awaiting.into());
         obj.insert("coordinates".into(), crate::orch::runs_coordinated_by(&agent.tile_id()).into());
+        obj.insert("canCoordinate".into(), (profile_exe(&agent.profile).as_deref() == Some(COORDINATOR_EXE)).into());
         obj.insert("waits".into(), waits::open_waits_json(&mail::Party::Agent { id: agent.id.clone() }));
     }
     value

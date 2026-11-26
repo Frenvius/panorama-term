@@ -675,7 +675,23 @@ pub(crate) fn check_target(target: &Target, now: u64, ask_host: bool, exit_codes
         },
         Target::Run { run, after } => crate::orch::wait_run_event(run, *after),
         Target::Task { run, task } => crate::orch::wait_task_event(run, task),
+        Target::File { path, stat } if ask_host => file_summary(path, *stat, file_stat(path)),
         Target::File { .. } => None,
+    }
+}
+
+pub fn file_stat(path: &str) -> Option<FileStat> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    Some(FileStat { size: meta.len(), mtime })
+}
+
+pub fn file_summary(path: &str, before: Option<FileStat>, now: Option<FileStat>) -> Option<String> {
+    match (before, now) {
+        (None, Some(s)) => Some(format!("file appeared: {path} ({} bytes).", s.size)),
+        (Some(_), None) => Some(format!("file removed: {path}.")),
+        (Some(a), Some(b)) if a != b => Some(format!("file changed: {path} ({} bytes).", b.size)),
+        _ => None,
     }
 }
 
@@ -892,7 +908,13 @@ fn resolve(spec: Spec, waiter: &Party) -> Result<Target, WaitError> {
             }
             Ok(Target::Task { run, task })
         }
-        Spec::File(_) => Err(werr("bad_request", "file: targets are not available yet")),
+        Spec::File(path) => {
+            if !std::path::Path::new(&path).is_absolute() {
+                return Err(werr("bad_request", "file: needs an absolute path"));
+            }
+            let stat = file_stat(&path);
+            Ok(Target::File { path, stat })
+        }
     }
 }
 
@@ -1540,6 +1562,35 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(detached, "run {run} still points at the deleted agent");
+    }
+
+    #[test]
+    fn file_changes_are_seen_against_the_registration_stat() {
+        let a = FileStat { size: 3, mtime: 10 };
+        assert_eq!(file_summary("/x", None, None), None);
+        assert_eq!(file_summary("/x", Some(a), Some(a)), None);
+        assert_eq!(file_summary("/x", None, Some(a)).unwrap(), "file appeared: /x (3 bytes).");
+        assert_eq!(file_summary("/x", Some(a), Some(FileStat { size: 3, mtime: 11 })).unwrap(), "file changed: /x (3 bytes).");
+        assert_eq!(file_summary("/x", Some(a), None).unwrap(), "file removed: /x.");
+    }
+
+    #[test]
+    fn a_file_wait_polls_only_on_the_slow_tick_and_fires_on_change() {
+        let _serial = serial();
+        let (me, _) = test_agent("fa", Desired::Running, false);
+        let dir = std::env::temp_dir().join(format!("panorama-wait-{}", unix_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("out.txt");
+        let path = file.to_string_lossy().to_string();
+        let relative = reply(handle_wait(&json!({ "on": ["file:out.txt"], "fromAgent": me })));
+        assert_eq!(relative["error"]["code"], "bad_request");
+        let id = reply(handle_wait(&json!({ "on": [format!("file:{path}")], "fromAgent": me })))["wait"]["id"].as_str().unwrap().to_string();
+        std::fs::write(&file, "hi").unwrap();
+        tick_once(unix_ms(), false);
+        assert_eq!(status(&id), WaitStatus::Open, "files are polled on the slow tick only");
+        tick_once(unix_ms(), true);
+        assert!(message(&wake_id(&id)).unwrap().text.starts_with("file appeared:"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

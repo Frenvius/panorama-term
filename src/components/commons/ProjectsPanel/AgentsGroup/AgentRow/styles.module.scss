@@ -99,3 +99,11 @@
   flex: none;
   white-space: nowrap;
 }
+
+.waitIcon {
+  display: flex;
+  align-items: center;
+  flex: none;
+  color: var(--text-muted);
+  cursor: default;
+}

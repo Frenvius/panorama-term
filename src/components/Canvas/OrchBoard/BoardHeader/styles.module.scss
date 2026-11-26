@@ -398,3 +398,39 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.coordinatorDot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+
+  &[data-kind='alert'] {
+    background: #e0a33e;
+  }
+
+  &[data-kind='busy'] {
+    background: #e0844a;
+  }
+
+  &[data-kind='idle'] {
+    background: var(--run-glyph);
+  }
+
+  &[data-kind='detached'] {
+    box-shadow: inset 0 0 0 1.5px var(--run-glyph);
+  }
+}
+
+.coordinatorPicker {
+  flex: none;
+  max-width: 140px;
+  height: 20px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+}

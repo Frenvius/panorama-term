@@ -2,7 +2,7 @@ import type { ContextMenuEntry } from '~/components/commons/ContextMenu';
 import type { PersistentAgent } from '~/domain/interfaces/agents.interface';
 
 import React from 'react';
-import { Clock } from 'lucide-react';
+import { Clock, Hourglass } from 'lucide-react';
 
 import styles from './styles.module.scss';
 import { showToast } from '~/usecase/util/toasts';
@@ -12,6 +12,8 @@ import { projectName } from '~/usecase/util/projectLayout';
 import { requestShowAgent } from '~/usecase/util/agentRequest';
 import { startAgent, stopAgent } from '~/adapter/agents/agents.client';
 import ConfirmDialog from '~/components/commons/Settings/ConfirmDialog';
+import { startedByLabel, waitTooltip } from '~/usecase/util/agentWaits';
+import AgentWaits from '~/components/commons/ProjectsPanel/AgentsGroup/AgentWaits';
 import { statusToDotKind, isNotResumable, needsForceStop } from '~/usecase/util/agents';
 import AgentMessages from '~/components/commons/ProjectsPanel/AgentsGroup/AgentMessages';
 
@@ -36,6 +38,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   const [confirmRestart, setConfirmRestart] = React.useState(false);
   const [showMessages, setShowMessages] = React.useState(false);
   const [messagesAnchor, setMessagesAnchor] = React.useState<DOMRect | null>(null);
+  const [waitsAnchor, setWaitsAnchor] = React.useState<DOMRect | null>(null);
   const rowRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -55,6 +58,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   const dotKind = statusToDotKind(agent.status);
   const forceOnly = needsForceStop(agent);
   const exitDetail = agent.lastExit?.detail ?? agent.lastExit?.reason;
+  const waits = agent.waits ?? [];
 
   const handleClick = () => {
     if (agent.live) {
@@ -119,6 +123,13 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
 
   const handleCloseMessages = () => setShowMessages(false);
 
+  const handleOpenWaits = () => {
+    setMenu(null);
+    if (rowRef.current) setWaitsAnchor(rowRef.current.getBoundingClientRect());
+  };
+
+  const handleCloseWaits = () => setWaitsAnchor(null);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -132,6 +143,7 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
   if (agent.live) menuItems.push({ label: 'Restart (new session)...', onSelect: handleRestartRequest });
   menuItems.push('separator');
   menuItems.push({ label: 'Messages...', onSelect: handleOpenMessages });
+  menuItems.push({ label: 'Waits...', onSelect: handleOpenWaits });
   menuItems.push('separator');
   menuItems.push({ label: 'Edit...', onSelect: handleEdit });
   menuItems.push({ label: 'Delete...', onSelect: handleDelete, danger: true });
@@ -156,11 +168,16 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
         {isNotResumable(agent) && <span className={styles.chip}>not resumable</span>}
         {restartNeeded && <span className={styles.chip}>restart to apply</span>}
         {agent.startedBy && (
-          <span className={styles.chip} title={agent.startedBy}>started by message</span>
+          <span className={styles.chip} title={agent.startedBy}>{startedByLabel(agent.startedBy)}</span>
         )}
         {agent.awaitingReplies > 0 && (
           <span className={styles.awaitIcon} title={`awaiting ${agent.awaitingReplies} ${agent.awaitingReplies === 1 ? 'reply' : 'replies'}`}>
             <Clock size={10} strokeWidth={2} />
+          </span>
+        )}
+        {waits.length > 0 && (
+          <span className={styles.waitIcon} title={waitTooltip(waits, Date.now())}>
+            <Hourglass size={10} strokeWidth={2} />
           </span>
         )}
         {agent.queued > 0 && (
@@ -179,6 +196,9 @@ const AgentRow = ({ agent, activeProject, restartNeeded, onEdit, onDelete }: Age
           onConfirm={handleRestartConfirm}
           onCancel={handleRestartCancel}
         />
+      )}
+      {waitsAnchor && (
+        <AgentWaits agent={agent} anchorRect={waitsAnchor} onClose={handleCloseWaits} />
       )}
       {showMessages && messagesAnchor && (
         <AgentMessages agent={agent} anchorRect={messagesAnchor} onClose={handleCloseMessages} />

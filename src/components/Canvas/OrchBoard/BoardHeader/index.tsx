@@ -5,7 +5,11 @@ import { X, Play, Plus, Pause, Trash2, GitBranch, ChevronDown } from 'lucide-rea
 
 import styles from './styles.module.scss';
 import AutonomyToggles from './AutonomyToggles';
+import { useAgents } from '~/usecase/hooks/useAgents';
+import { statusToDotKind } from '~/usecase/util/agents';
 import { formatClock } from '~/usecase/util/orchRouting';
+import { coordinateRun } from '~/adapter/agents/agents.client';
+import { agentForTile, coordinatorCandidates } from '~/usecase/util/agentWaits';
 import { formatDuration, totalCost, integrationBranchName } from '~/usecase/util/orch';
 import { forgetProjectBoard, setProjectLastBoard } from '~/usecase/util/orchBoardRequest';
 import { deleteRun, setRunCoordinator, setRunStatus, setRunAutonomy, updateRun } from '~/adapter/orch/orch.client';
@@ -33,6 +37,9 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
   const [headerError, setHeaderError] = React.useState<string | null>(null);
   const [breakdownOpen, setBreakdownOpen] = React.useState(false);
 
+  const { agents } = useAgents();
+  const coordinatorAgent = agentForTile(agents, run.coordinatorTile);
+  const candidates = coordinatorCandidates(agents);
   const headerMainRef = React.useRef<HTMLDivElement>(null);
   const metaRef = React.useRef<HTMLDivElement>(null);
 
@@ -150,7 +157,17 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
 
   const handleDetachCoordinator = () => {
     setHeaderError(null);
-    setRunCoordinator(run.id, null)
+    const detach = coordinatorAgent ? coordinateRun(coordinatorAgent.name, run.id, false) : setRunCoordinator(run.id, null);
+    detach
+      .then(onChanged)
+      .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
+  };
+
+  const handlePickCoordinator = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const name = e.target.value;
+    if (!name) return;
+    setHeaderError(null);
+    coordinateRun(name, run.id, true)
       .then(onChanged)
       .catch((err) => setHeaderError(err instanceof Error ? err.message : String(err)));
   };
@@ -224,13 +241,27 @@ const BoardHeader = ({ run, cwd, dispatches, projectRuns, onPatchOrchTile, onNew
 
           {run.coordinatorTile && !renaming && (
             <span className={styles.coordinatorLabel}>
-              Coordinated
+              {coordinatorAgent ? (
+                <>
+                  <span className={styles.coordinatorDot} data-kind={statusToDotKind(coordinatorAgent.status)} />
+                  {coordinatorAgent.name}
+                </>
+              ) : 'Coordinated'}
               <button type="button" title="Detach coordinator" className={styles.coordinatorDetach} onClick={handleDetachCoordinator}>
                 <X size={10} strokeWidth={2} />
               </button>
             </span>
           )}
         </div>
+
+        {!run.coordinatorTile && !renaming && canPauseResume && candidates.length > 0 && (
+          <select className={styles.coordinatorPicker} value="" aria-label="Coordinator agent" onChange={handlePickCoordinator}>
+            <option value="">Coordinator...</option>
+            {candidates.map((a) => (
+              <option key={a.id} value={a.name}>{a.name}</option>
+            ))}
+          </select>
+        )}
 
         <div className={styles.runMeta} ref={metaRef}>
           {cost != null && (
