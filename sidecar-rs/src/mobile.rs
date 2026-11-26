@@ -298,7 +298,7 @@ fn stop_listener(st: &mut State) {
 }
 
 fn sync_relay(st: &mut State) {
-    let wanted = st.enabled && st.remote && !st.devices.is_empty();
+    let wanted = st.enabled && st.remote;
     match (wanted, st.relay.take()) {
         (true, Some(task)) => st.relay = Some(task),
         (true, None) => st.relay = Some(relay::spawn(st.secret.clone())),
@@ -364,6 +364,7 @@ fn start_pairing(desktop: bool) -> Value {
     start_listener(&mut st);
     let code = hex(&random_bytes::<8>());
     st.pairing = Some((code.clone(), Instant::now() + PAIRING_TTL, desktop));
+    sync_relay(&mut st);
     let hosts = lan_addresses().join(",");
     let uri = format!(
         "panorama-mobile://pair?v={PROTOCOL_VERSION}&k={}&c={code}&n={}&h={}",

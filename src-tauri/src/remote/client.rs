@@ -342,7 +342,7 @@ pub async fn pair(uri: &str, name: &str) -> Result<Identity, String> {
     let (_, _, welcome, address) = handshake_inner(
         &identity,
         json!({"t":"pair","code":code,"name":name,"capability":"desktop"}),
-        false,
+        true,
     )
     .await?;
     identity.device_id = welcome["deviceId"]
