@@ -250,7 +250,7 @@ pub(crate) fn block_parts(agent: &Agent) -> (String, Vec<context::RosterEntry>) 
 #[cfg(test)]
 pub(crate) fn full_block(agent: &Agent) -> String {
     let (stable, roster) = block_parts(agent);
-    context::with_roster(&stable, &roster, &crate::panorama_cli_path())
+    context::with_dynamic(&stable, &roster, &memory::essential_of(&agent.id), &crate::panorama_cli_path())
 }
 
 fn agent_for_tile(tile_id: &str) -> Option<Agent> {
@@ -262,7 +262,7 @@ pub(crate) fn prompt_context(tile_id: &str, session_id: &str, orch: Option<Strin
     let agent = agent_for_tile(tile_id)?;
     let cli = crate::panorama_cli_path();
     let stable = context::stable_block(&agent, &cli, orch.as_deref());
-    context::prompt_block(stable, &roster_for(&agent.id), &cli, tile_id, session_id)
+    context::prompt_block(stable, &roster_for(&agent.id), &memory::essential_of(&agent.id), &cli, tile_id, session_id)
 }
 
 fn session_key(agent: &Agent) -> String {
@@ -275,8 +275,10 @@ fn session_key(agent: &Agent) -> String {
 pub(crate) fn system_context(tile_id: &str) -> Option<String> {
     let agent = agent_for_tile(tile_id)?;
     let (stable, roster) = block_parts(&agent);
-    let frozen = context::frozen_roster(tile_id, &session_key(&agent), &roster);
-    Some(context::with_roster(&stable, &frozen, &crate::panorama_cli_path()))
+    let key = session_key(&agent);
+    let frozen = context::frozen_roster(tile_id, &key, &roster);
+    let memories = context::frozen_memories(tile_id, &key, &memory::essential_of(&agent.id));
+    Some(context::with_dynamic(&stable, &frozen, &memories, &crate::panorama_cli_path()))
 }
 
 pub(crate) fn on_compact(tile_id: &str) {
@@ -299,17 +301,27 @@ pub(crate) fn delivery_view(agent_id: &str) -> Option<delivery::View> {
 
 pub(crate) fn pending_block_for_paste(agent_id: &str) -> Option<String> {
     let agent = lock().agents.get(agent_id).cloned()?;
-    if context::has_context_hook(&profile_exe(&agent.profile)?) {
+    let exe = profile_exe(&agent.profile)?;
+    let memories = memory::essential_of(&agent.id);
+    if exe == "pi" {
+        return context::frozen_memory_delta(&agent.tile_id(), &session_key(&agent), &memories, &crate::panorama_cli_path());
+    }
+    if context::has_context_hook(&exe) {
         return None;
     }
     let (stable, roster) = block_parts(&agent);
-    context::paste_prefix(&stable, &roster, &crate::panorama_cli_path(), &agent.tile_id())
+    context::paste_prefix(&stable, &roster, &memories, &crate::panorama_cli_path(), &agent.tile_id())
 }
 
 pub(crate) fn mark_block_pasted(agent_id: &str) {
     let Some(agent) = lock().agents.get(agent_id).cloned() else { return };
+    let memories = memory::essential_of(&agent.id);
+    if profile_exe(&agent.profile).as_deref() == Some("pi") {
+        context::set_memory_pasted(&agent.tile_id(), &session_key(&agent), &memories);
+        return;
+    }
     let (stable, roster) = block_parts(&agent);
-    context::set_pasted(&agent.tile_id(), &stable, &roster);
+    context::set_pasted(&agent.tile_id(), &stable, &roster, &memories);
 }
 
 pub(crate) fn quiet_busy(tile_id: &str) -> bool {
@@ -953,6 +965,68 @@ mod tests {
         assert!(frozen["names"].as_array().unwrap().iter().any(|e| e["name"] == format!("late-{newcomer}")), "a new session freezes the new roster");
     }
 
+    #[test]
+    fn pi_freezes_essential_memories_per_session_and_gets_changes_as_a_mail_prefix() {
+        crate::orch::tests::f12_test_home();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let id = format!("apim{:08}", nanos % 100_000_000);
+        let name = format!("pim-{id}");
+        let mut agent = reducer::tests::agent(&id, &name);
+        agent.profile = "pi".into();
+        agent.native_session = Some(model::NativeSession { agent: "pi".into(), id: format!("s1-{id}"), bound_at: 1, model: None });
+        store::ensure_agent_dir(&crate::panorama_dir().unwrap(), &id).unwrap();
+        lock().agents.insert(id.clone(), agent);
+        let tile = model::tile_id(&id);
+        let cap = routines::tests::cap();
+        let remember = |text: &str| serde_json::from_str::<Value>(&memory::handle_remember(&json!({ "agent": name, "text": text, "essential": true, "userCap": cap }))).unwrap();
+        assert_eq!(remember("Reply in Portuguese.")["ok"], true);
+        let before = system_context(&tile).unwrap();
+        assert_eq!(remember("Build with bun.")["ok"], true);
+        let same_session = system_context(&tile).unwrap();
+        let prefix = pending_block_for_paste(&id);
+        mark_block_pasted(&id);
+        let after_mark = pending_block_for_paste(&id);
+        let still = system_context(&tile).unwrap();
+        lock().agents.get_mut(&id).unwrap().native_session = Some(model::NativeSession { agent: "pi".into(), id: format!("s2-{id}"), bound_at: 2, model: None });
+        let next = system_context(&tile).unwrap();
+        remove_test_agent(&id);
+        memory::on_agent_deleted(&id);
+        if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        assert!(before.contains("by user] Reply in Portuguese.") && !before.contains("Build with bun."), "{before}");
+        assert_eq!(before, same_session, "the system prompt is not rewritten mid-session");
+        assert_eq!(before, still);
+        assert!(prefix.as_deref().is_some_and(|p| p.starts_with("[panorama memory] added: [") && p.ends_with("by user] Build with bun.")), "{prefix:?}");
+        assert_eq!(after_mark, None);
+        assert!(next.contains("Build with bun."), "a new session freezes the new memories");
+    }
+    #[test]
+    fn a_memory_added_mid_session_reaches_the_hook_as_one_delta_line() {
+        crate::orch::tests::f12_test_home();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let id = format!("apmd{:08}", nanos % 100_000_000);
+        let name = format!("md-{id}");
+        insert_test_agent(&id, &name);
+        store::ensure_agent_dir(&crate::panorama_dir().unwrap(), &id).unwrap();
+        let tile = model::tile_id(&id);
+        let first = prompt_context(&tile, "sess-1", None);
+        let quiet = prompt_context(&tile, "sess-1", None);
+        let saved: Value = serde_json::from_str(&memory::handle_remember(&json!({ "agent": name, "text": "Reply in Portuguese.", "essential": true, "userCap": routines::tests::cap() }))).unwrap();
+        let delta = prompt_context(&tile, "sess-1", None);
+        let after = prompt_context(&tile, "sess-1", None);
+        let compacted = { on_compact(&tile); prompt_context(&tile, "sess-1", None) };
+        remove_test_agent(&id);
+        memory::on_agent_deleted(&id);
+        if let Some(path) = crate::binding_path(&tile) { let _ = std::fs::remove_file(path); }
+        let roster_only = |o: &Option<String>| o.as_deref().is_none_or(|l| l.starts_with("[panorama agents]") && !l.contains("[panorama memory]"));
+        assert!(first.is_some() && roster_only(&quiet), "{quiet:?}");
+        assert_eq!(saved["ok"], true, "{saved}");
+        let line = delta.unwrap();
+        assert!(!line.starts_with("[panorama agent]"), "never the full block: {line}");
+        assert_eq!(line.lines().last().unwrap(), format!("[panorama memory] added: [{} by user] Reply in Portuguese.", saved["id"].as_str().unwrap()));
+        assert!(roster_only(&after), "{after:?}");
+        let full = compacted.unwrap();
+        assert!(full.starts_with("[panorama agent]") && full.contains(context::MEMORY_HEADER) && full.contains("Reply in Portuguese."), "a compact resends the block with memories");
+    }
     #[test]
     fn a_coordinator_agent_gets_its_rules_once_and_a_roster_edit_as_one_line() {
         crate::orch::tests::f12_test_home();
