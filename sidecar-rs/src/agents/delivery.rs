@@ -123,6 +123,9 @@ pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Out
     if party.agent_id().is_some_and(crate::agents::rollover::paused) {
         queue.retain(|m| m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_ROLLOVER));
     }
+    if queue.first().is_some_and(|m| m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_HANDOFF)) {
+        queue.truncate(1);
+    }
     if queue.is_empty() {
         return Outcome::Nothing;
     }
@@ -700,11 +703,10 @@ mod tests {
         let handoff = format!("h{id}-1");
         commit_mail(MailCmd::Send { message: brain(&handoff, crate::agents::mail::KIND_HANDOFF), recipient_exists: true }).unwrap();
         crate::agents::lock().agents.get_mut(&id).unwrap().rollover.open = None;
+        assert_eq!(drain(&fake, &to).await, Outcome::Delivered(vec![handoff]), "the handoff first and alone, so it reads as one block");
         let Outcome::Delivered(sent) = drain(&fake, &to).await else { panic!() };
         crate::agents::lock().agents.remove(&id);
-        let mut expected = vec![handoff];
-        expected.extend(ids.iter().cloned());
-        assert_eq!(sent, expected, "the handoff first, then the queued mail in order, each once");
+        assert_eq!(sent, ids, "then the queued mail in order, each once");
         assert!(fake.pasted.lock().unwrap()[1].starts_with("[panorama handoff] "), "{:?}", fake.pasted.lock().unwrap());
     }
 }
