@@ -1425,6 +1425,9 @@ pub(crate) mod tests {
         assert_eq!(status(&wait_id), WaitStatus::Cancelled);
         let late = reply(crate::agents::messages::handle_reply(&json!({ "to": ask, "text": "answer", "fromAgent": sender })));
         assert_eq!(late["error"]["code"], "tile_closed", "{late}");
+        crate::agents::on_tile_opened(tile_id);
+        let reopened = reply(crate::agents::messages::handle_reply(&json!({ "to": ask, "text": "answer", "fromAgent": sender })));
+        assert_eq!(reopened["ok"], true, "a restarted tile reuses its id: {reopened}");
     }
 
     fn coordinated_run(tag: &str, desired: Desired, crashed: bool, detached: bool) -> (String, String, String) {

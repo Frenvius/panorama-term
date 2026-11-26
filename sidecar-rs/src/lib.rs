@@ -415,6 +415,9 @@ fn reconnect_sessions() {
             std::thread::spawn(move || run_consumer_loop(s, consumer_rx, None));
         }
 
+        if alive {
+            agents::on_tile_opened(&key);
+        }
         sessions().lock().unwrap().insert(key, session);
     }
 }
@@ -4368,6 +4371,7 @@ pub(crate) async fn get_or_create(p: &Params) -> Result<(Arc<Session>, bool), St
     let s = tokio::task::spawn_blocking(move || spawn_session(&params, permit))
         .await
         .map_err(|e| format!("spawn task: {e}"))??;
+    agents::on_tile_opened(&p.tile_id);
     sessions().lock().unwrap().insert(p.tile_id.clone(), s.clone());
     Ok((s, false))
 }

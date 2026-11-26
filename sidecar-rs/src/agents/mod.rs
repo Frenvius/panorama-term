@@ -261,6 +261,8 @@ pub(crate) fn orch_wake(tile_id: &str, run_id: &str, top: u32, text: &str) {
     }
 }
 
+const CLOSE_GRACE_S: u64 = 15;
+
 pub(crate) fn on_session_exit(session: &str, code: Option<u32>, plain: bool) {
     waits::on_session_exit(session, code);
     if !plain || session.starts_with("agent-") {
@@ -272,7 +274,7 @@ pub(crate) fn on_session_exit(session: &str, code: Option<u32>, plain: bool) {
     }
     let tile = session.to_string();
     runtime::spawn_background(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(CLOSE_GRACE_S)).await;
         let gone = tokio::task::spawn_blocking({ let t = tile.clone(); move || crate::lookup_live(&t).is_none() && crate::host_session_alive(&t) == Some(false) }).await;
         if matches!(gone, Ok(true)) {
             on_tile_closed(&tile);
@@ -283,6 +285,10 @@ pub(crate) fn on_session_exit(session: &str, code: Option<u32>, plain: bool) {
 fn guard_closed() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
     static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     SET.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn on_tile_opened(tile_id: &str) {
+    guard_closed().remove(tile_id);
 }
 
 pub(crate) fn tile_closed(tile_id: &str) -> bool {
