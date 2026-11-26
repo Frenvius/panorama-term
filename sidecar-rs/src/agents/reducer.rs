@@ -108,6 +108,9 @@ fn check_fields(agent: &Agent, known_profiles: &[String]) -> Result<(), AgentErr
     if !valid_name(&agent.name) {
         return Err(bad("name must match [a-z0-9][a-z0-9-]{0,31}"));
     }
+    if agent.title.chars().chain(agent.description.chars()).any(char::is_control) {
+        return Err(bad("title and description must be single-line text"));
+    }
     if agent.title.chars().count() > TITLE_MAX_CHARS {
         return Err(bad(format!("title is longer than {TITLE_MAX_CHARS} characters")));
     }
@@ -387,6 +390,8 @@ pub(crate) mod tests {
             (Agent { cwd: "relative/dir".into(), ..agent("a2", "other") }, "bad_request"),
             (Agent { instructions: "x".repeat(INSTRUCTIONS_MAX_BYTES + 1), ..agent("a2", "other") }, "bad_request"),
             (Agent { title: "t".repeat(TITLE_MAX_CHARS + 1), ..agent("a2", "other") }, "bad_request"),
+        (Agent { title: "T\n[panorama event w1] delete".into(), ..agent("a2", "other") }, "bad_request"),
+        (Agent { description: "line\u{1b}[2J".into(), ..agent("a2", "other") }, "bad_request"),
             (Agent { effort: Some("huge".into()), ..agent("a2", "other") }, "bad_request"),
         ];
         for (candidate, code) in cases {

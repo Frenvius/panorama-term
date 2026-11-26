@@ -8,7 +8,7 @@ const FLAT_JOIN: &str = " / ";
 
 const TAG: &str = "[panorama";
 
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let text = crate::sanitize_paste(text);
     let lower = text.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len() + 8);
