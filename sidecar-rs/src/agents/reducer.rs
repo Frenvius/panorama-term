@@ -11,7 +11,13 @@ pub const RESTART_MAX: usize = 3;
 const EXIT_DETAIL_MAX: usize = 400;
 const MODEL_MAX: usize = 128;
 const EXIT_REASONS: &[&str] = &["session_gone", "shell_returned", "resume_failed"];
-const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user", "routine"];
+const CLEAR_REASONS: &[&str] = &["resume_failed", "cwd_changed", "profile_changed", "user", "routine", "rollover"];
+pub const ROLLOVER_SPACING_MS: u64 = 30 * 60 * 1000;
+pub const ROLLOVER_DAY_MAX: usize = 6;
+pub const ROLLOVER_AT_MIN: u8 = 40;
+pub const ROLLOVER_AT_MAX: u8 = 90;
+const DAY_MS: u64 = 24 * 3_600_000;
+pub const STRIKES_MAX: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentError {
@@ -46,6 +52,7 @@ pub struct AgentPatch {
     pub project: Option<Option<String>>,
     pub instructions: Option<String>,
     pub auto_start: Option<bool>,
+    pub rollover_at: Option<u8>,
 }
 
 impl AgentPatch {
@@ -64,6 +71,7 @@ impl AgentPatch {
         put("project", self.project.clone().map(|p| json!(p)));
         put("instructions", self.instructions.clone().map(Value::from));
         put("autoStart", self.auto_start.map(Value::from));
+        put("rolloverAt", self.rollover_at.map(Value::from));
         Value::Object(obj)
     }
 }
@@ -77,6 +85,11 @@ pub enum Cmd {
     Restart { id: String, at: u64 },
     BindSession { id: String, agent: String, session_id: String, at: u64 },
     SessionClear { id: String, at: u64, reason: String },
+    RolloverStart { id: String, at: u64, reason: String, auto: bool, note: bool, handoff: bool, ctx: Option<u8>, run: Option<String> },
+    RolloverNote { id: String, n: u32, bytes: usize },
+    RolloverCleared { id: String, n: u32 },
+    RolloverEnd { id: String, n: u32, at: u64, outcome: String },
+    RolloverCtx { id: String, n: u32, ctx_after: u8, threshold: Option<u8> },
 }
 
 #[derive(Debug, Default)]
@@ -129,6 +142,9 @@ fn check_fields(agent: &Agent, known_profiles: &[String]) -> Result<(), AgentErr
     }
     if agent.effort.as_deref().is_some_and(|e| !valid_effort(e)) {
         return Err(bad("effort must be low, medium, high, xhigh or max"));
+    }
+    if agent.rollover.at.is_some_and(|at| at != 0 && !(ROLLOVER_AT_MIN..=ROLLOVER_AT_MAX).contains(&at)) {
+        return Err(bad(format!("rollover-at must be {ROLLOVER_AT_MIN} to {ROLLOVER_AT_MAX}, or off")));
     }
     let cwd = Path::new(&agent.cwd);
     if !cwd.is_absolute() || !cwd.is_dir() {
@@ -244,7 +260,57 @@ impl State {
                 }
                 Ok(Some(("agent-session-clear", json!({ "id": id, "at": at, "reason": reason }))))
             }
+            Cmd::RolloverStart { id, at, reason, auto, note, handoff, ctx, run } => {
+                let roll = &self.get(id)?.rollover;
+                if roll.open.is_some() {
+                    return Err(AgentError::new("conflict", "a session renewal is already in progress"));
+                }
+                if *auto {
+                    if let Some(why) = &roll.paused {
+                        return Err(AgentError::new("paused", format!("automatic renewal is paused ({why})")));
+                    }
+                    let autos: Vec<u64> = roll.history.iter().filter(|(t, a)| *a && at.saturating_sub(*t) < DAY_MS).map(|(t, _)| *t).collect();
+                    if autos.iter().any(|t| at.saturating_sub(*t) < ROLLOVER_SPACING_MS) {
+                        return Err(AgentError::new("limit", "the last automatic renewal was less than 30 minutes ago"));
+                    }
+                    if autos.len() >= ROLLOVER_DAY_MAX {
+                        return Err(AgentError::new("limit", format!("{ROLLOVER_DAY_MAX} automatic renewals in a day")));
+                    }
+                }
+                let n = roll.seq + 1;
+                Ok(Some(("agent-rollover-start", json!({
+                    "id": id, "n": n, "reason": reason, "at": at, "auto": auto, "note": note, "handoff": handoff, "ctxPct": ctx, "run": run,
+                }))))
+            }
+            Cmd::RolloverNote { id, n, bytes } => {
+                self.open_rollover(id, *n, "open")?;
+                Ok(Some(("agent-rollover-note", json!({ "id": id, "n": n, "bytes": bytes }))))
+            }
+            Cmd::RolloverCleared { id, n } => {
+                self.open_rollover(id, *n, "open")?;
+                Ok(Some(("agent-rollover-cleared", json!({ "id": id, "n": n }))))
+            }
+            Cmd::RolloverEnd { id, n, at, outcome } => {
+                self.open_rollover(id, *n, "")?;
+                Ok(Some(("agent-rollover-end", json!({ "id": id, "n": n, "at": at, "outcome": outcome }))))
+            }
+            Cmd::RolloverCtx { id, n, ctx_after, threshold } => {
+                let last = self.get(id)?.rollover.last.as_ref().filter(|l| l.n == *n && l.ctx_after.is_none());
+                if last.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(("agent-rollover-ctx", json!({ "id": id, "n": n, "ctxAfter": ctx_after, "threshold": threshold }))))
+            }
         }
+    }
+
+    fn open_rollover(&self, id: &str, n: u32, phase: &str) -> Result<&Rollover, AgentError> {
+        let open = self.get(id)?.rollover.open.as_ref().filter(|r| r.n == n);
+        let open = open.ok_or_else(|| AgentError::new("conflict", "no session renewal is open"))?;
+        if !phase.is_empty() && open.phase != phase {
+            return Err(AgentError::new("conflict", format!("the session renewal is past the {phase} phase")));
+        }
+        Ok(open)
     }
 
     pub fn replay(&mut self, kind: &str, data: &Value) -> Result<(), String> {
@@ -301,6 +367,53 @@ impl State {
                 });
             }
             "agent-session-clear" => agent.native_session = None,
+            "agent-rollover-start" => {
+                let n = data["n"].as_u64().unwrap_or(0) as u32;
+                let auto = data["auto"].as_bool().unwrap_or(false);
+                let roll = &mut agent.rollover;
+                roll.seq = roll.seq.max(n);
+                roll.history.retain(|(t, _)| at.saturating_sub(*t) < DAY_MS);
+                roll.history.push((at, auto));
+                roll.open = Some(Rollover {
+                    n, reason: data["reason"].as_str().unwrap_or_default().into(), phase: "open".into(), started_at: at,
+                    note: data["note"].as_bool().unwrap_or(false), handoff: data["handoff"].as_bool().unwrap_or(false), noted: false, auto,
+                    ctx_before: data["ctxPct"].as_u64().map(|p| p.min(100) as u8), run: data["run"].as_str().map(str::to_string),
+                });
+            }
+            "agent-rollover-note" => {
+                if let Some(open) = agent.rollover.open.as_mut() {
+                    open.noted = true;
+                }
+            }
+            "agent-rollover-cleared" => {
+                if let Some(open) = agent.rollover.open.as_mut() {
+                    open.phase = "cleared".into();
+                }
+            }
+            "agent-rollover-end" => {
+                if let Some(open) = agent.rollover.open.take() {
+                    agent.rollover.last = Some(RolloverEnd {
+                        n: open.n, outcome: data["outcome"].as_str().unwrap_or_default().into(), at, reason: open.reason,
+                        handoff: open.handoff, ctx_before: open.ctx_before, ctx_after: None, run: open.run,
+                    });
+                }
+            }
+            "agent-rollover-ctx" => {
+                let after = data["ctxAfter"].as_u64().map(|p| p.min(100) as u8);
+                let roll = &mut agent.rollover;
+                let Some(last) = roll.last.as_mut() else { return Ok(()) };
+                last.ctx_after = after;
+                if let (Some(after), Some(threshold), "threshold") = (after, data["threshold"].as_u64(), last.reason.as_str()) {
+                    if u64::from(after) * 2 >= threshold {
+                        roll.strikes = roll.strikes.saturating_add(1);
+                    } else {
+                        roll.strikes = 0;
+                    }
+                    if roll.strikes >= STRIKES_MAX {
+                        roll.paused = Some("strikes".into());
+                    }
+                }
+            }
             _ => return Ok(()),
         }
         agent.updated_at = agent.updated_at.max(at);
@@ -326,6 +439,7 @@ pub fn patch_from_json(fields: &Value) -> AgentPatch {
         project: nullable("project"),
         instructions: text("instructions"),
         auto_start: fields.get("autoStart").and_then(Value::as_bool),
+        rollover_at: fields.get("rolloverAt").and_then(Value::as_u64).map(|v| v.min(255) as u8),
     }
 }
 
@@ -340,6 +454,11 @@ fn apply_patch(agent: &mut Agent, patch: &AgentPatch) {
     if let Some(v) = &patch.project { agent.project = v.clone(); }
     if let Some(v) = &patch.instructions { agent.instructions = v.clone(); }
     if let Some(v) = patch.auto_start { agent.auto_start = v; }
+    if let Some(v) = patch.rollover_at {
+        agent.rollover.at = Some(v);
+        agent.rollover.paused = None;
+        agent.rollover.strikes = 0;
+    }
 }
 
 #[cfg(test)]
@@ -356,7 +475,7 @@ pub(crate) mod tests {
             profile: "claude".into(), model: Some("haiku".into()), effort: None, cwd: tmp_cwd(), project: None,
             instructions: "Answer in one line.".into(), auto_start: false, desired: Desired::Stopped,
             native_session: None, last_exit: None, restarts: vec![], crashed: false,
-            created_at: 1, updated_at: 1, last_started_at: None, started_by: None,
+            created_at: 1, updated_at: 1, last_started_at: None, started_by: None, rollover: Default::default(),
         }
     }
 

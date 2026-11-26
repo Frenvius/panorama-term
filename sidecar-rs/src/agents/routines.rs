@@ -63,6 +63,7 @@ pub enum Overlap {
 pub enum SessionMode {
     Keep,
     Fresh,
+    Rollover,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +109,16 @@ pub struct Routine {
     pub next_due: Option<u64>,
     #[serde(default)]
     pub run_seq: u32,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub rollover_note: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Routine {
@@ -811,36 +822,57 @@ pub(crate) fn fire(id: &str, due: u64, trigger: &str, note: Option<String>, next
     if let Some(p) = payload.as_deref() {
         crate::agents::routine_hook::save_payload(&run.id(), id, p);
     }
-    let fresh = with_routines(|s| s.routines.get(id).map(|r| r.session == SessionMode::Fresh)).unwrap_or(false);
-    if fresh {
+    if with_routines(|s| s.routines.get(id).is_some_and(|r| r.session != SessionMode::Keep)) {
         let run_id_text = run.id();
-        let agent = agent_id.clone();
-        fresh_tasks().lock().unwrap_or_else(|e| e.into_inner()).insert(run.id());
-        crate::agents::runtime::spawn_background(async move {
-            let (rid, n) = (run.routine_id.clone(), run.n);
-            let outcome = crate::agents::fresh_session_for(&agent, &run.routine_id, move || still_wanted(&rid, n)).await;
-            fresh_tasks().lock().unwrap_or_else(|e| e.into_inner()).remove(&run.id());
-            match outcome {
-                crate::agents::FreshOutcome::Ready => send_run(&run),
-                crate::agents::FreshOutcome::Abandoned => {}
-                crate::agents::FreshOutcome::Busy => {
-                    if let Some(routine) = with_routines(|s| s.routines.get(&run.routine_id).cloned()) {
-                        if end_run(&run, &agent, "failed", Some("agent stayed busy; no fresh session".into()), false) {
-                            notify_user(&agent, &routine, run.n, &format!("Routine \"{}\" failed: the agent stayed busy, so its fresh session was not started.", routine.name));
-                        }
-                    }
-                }
-            }
-        });
+        renew_then_send(run, agent_id.clone());
         return Ok(json!({ "runId": run_id_text }));
-    }
-    send_run(&run);
+    }    send_run(&run);
     if run.started {
         if let Err(e) = crate::agents::start_agent(&agent_id, Some(format!("routine {id}"))) {
             eprintln!("[routines] auto-start for {id}: {}", e.message);
         }
     }
     Ok(json!({ "runId": run.id() }))
+}
+
+fn renew_then_send(run: Run, agent: String) {
+    let session = with_routines(|s| s.routines.get(&run.routine_id).map(|r| (r.session, r.rollover_note))).unwrap_or((SessionMode::Keep, true));
+    fresh_tasks().lock().unwrap_or_else(|e| e.into_inner()).insert(run.id());
+    crate::agents::runtime::spawn_background(async move {
+        let (rid, n) = (run.routine_id.clone(), run.n);
+        let rollover = (session.0 == SessionMode::Rollover).then_some(session.1);
+        let outcome = crate::agents::renew_for_routine(&agent, &run.routine_id, Some(run.id()), rollover, move || still_wanted(&rid, n)).await;
+        fresh_tasks().lock().unwrap_or_else(|e| e.into_inner()).remove(&run.id());
+        match outcome {
+            crate::agents::FreshOutcome::Ready => send_run(&run),
+            crate::agents::FreshOutcome::Abandoned => {}
+            crate::agents::FreshOutcome::Busy => fail_renewal(&run, &agent, "aborted:busy"),
+            crate::agents::FreshOutcome::Failed(outcome) => fail_renewal(&run, &agent, &outcome),
+        }
+    });
+}
+
+fn fail_renewal(run: &Run, agent: &str, outcome: &str) {
+    let Some(routine) = with_routines(|s| s.routines.get(&run.routine_id).cloned()) else { return };
+    let (summary, text) = if outcome == "aborted:busy" {
+        ("agent stayed busy; no fresh session".to_string(), format!("Routine \"{}\" failed: the agent stayed busy, so its fresh session was not started.", routine.name))
+    } else {
+        (format!("session renewal {outcome}"), format!("Routine \"{}\" failed: its session renewal ended {outcome}.", routine.name))
+    };
+    if end_run(run, agent, "failed", Some(summary), false) {
+        notify_user(agent, &routine, run.n, &text);
+    }
+}
+
+pub(crate) fn after_rollover(run_id: &str, outcome: &str) {
+    let Some((id, n)) = parse_run_id(run_id) else { return };
+    let Some(run) = with_routines(|s| s.run(&id, n).cloned()) else { return };
+    let Some(agent) = with_routines(|s| s.routines.get(&id).map(|r| r.agent_id.clone())) else { return };
+    match outcome {
+        o if o.starts_with("done") => send_run(&run),
+        "aborted:unwanted" | "gone" => {}
+        o => fail_renewal(&run, &agent, o),
+    }
 }
 
 fn fresh_tasks() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -1101,9 +1133,19 @@ fn handle_missed(r: &Routine, now: u64, offset_min: i32, count: u32, first: u64,
 pub(crate) fn settle_after_boot() {
     let settled = unix_ms().saturating_sub(REPAIR_AFTER_MS);
     let busy = fresh_tasks().lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let missing: Vec<Run> = with_routines(|s| s.runs.values().flatten().filter(|r| r.open() && r.delivered_at.is_none() && r.fired_at < settled && !busy.contains(&r.id())).cloned().collect());
-    for run in missing {
-        send_run(&run);
+    let missing: Vec<(Run, String, bool)> = with_routines(|s| s.runs.values().flatten()
+        .filter(|r| r.open() && r.delivered_at.is_none() && r.fired_at < settled && !busy.contains(&r.id()))
+        .filter_map(|r| s.routines.get(&r.routine_id).map(|rt| (r.clone(), rt.agent_id.clone(), rt.session != SessionMode::Keep)))
+        .collect());
+    for (run, agent, renews) in missing {
+        if crate::agents::rollover::run_pending(&run.id()) {
+            continue;
+        }
+        if renews && !crate::agents::rollover::renewed_for(&agent, &run.id()) {
+            renew_then_send(run, agent);
+        } else {
+            send_run(&run);
+        }
     }
     let delivered: Vec<(Run, String)> = with_routines(|s| s.runs.values().flatten()
         .filter(|r| r.open() && r.delivered_at.is_some())
@@ -1302,10 +1344,18 @@ fn routine_from(v: &Value, base: Option<&Routine>, now: u64) -> Result<Routine, 
         Some(c) => Some(c.as_f64().filter(|c| *c > 0.0).ok_or("--max-cost-day must be a positive number")?),
         None => base.and_then(|b| b.max_cost_day),
     };
-    let session = match v.get("fresh").and_then(Value::as_bool) {
-        Some(true) => SessionMode::Fresh,
-        Some(false) => SessionMode::Keep,
-        None => base.map_or(SessionMode::Keep, |b| b.session),
+    let session = match (pick("session").as_deref(), v.get("fresh").and_then(Value::as_bool)) {
+        (Some("keep"), _) => SessionMode::Keep,
+        (Some("fresh"), _) => SessionMode::Fresh,
+        (Some("rollover"), _) => SessionMode::Rollover,
+        (Some(_), _) => return Err("--session takes keep, fresh or rollover".into()),
+        (None, Some(true)) => SessionMode::Fresh,
+        (None, Some(false)) => SessionMode::Keep,
+        (None, None) => base.map_or(SessionMode::Keep, |b| b.session),
+    };
+    let rollover_note = match v.get("noNote").and_then(Value::as_bool) {
+        Some(no) => !no,
+        None => base.is_none_or(|b| b.rollover_note),
     };
     let report_to = match pick("reportTo") {
         Some(raw) => report_to_from(Some(raw))?,
@@ -1324,7 +1374,7 @@ fn routine_from(v: &Value, base: Option<&Routine>, now: u64) -> Result<Routine, 
         id: base.map_or_else(gen_id, |b| b.id.clone()), agent_id, name: name.trim().to_string(), instruction, trigger, enabled,
         paused_reason: base.and_then(|b| b.paused_reason.clone()), missed, catch_up_window_ms, overlap, session, report_to,
         max_per_day, max_cost_day, run_timeout_ms, if_changed, created_at: base.map_or(now, |b| b.created_at), next_due: None,
-        run_seq: base.map_or(0, |b| b.run_seq),
+        run_seq: base.map_or(0, |b| b.run_seq), rollover_note,
     })
 }
 
@@ -1562,7 +1612,7 @@ pub(crate) mod tests {
             id: id.into(), agent_id: agent.into(), name: "Morning check".into(), instruction: "Check things.".into(), trigger,
             enabled: true, paused_reason: None, missed: Missed::CatchUp, catch_up_window_ms: SCHEDULE_CATCH_UP_MS,
             overlap: Overlap::Skip, session: SessionMode::Keep, report_to: ReportTo::User, max_per_day: DEFAULT_MAX_PER_DAY,
-            max_cost_day: None, run_timeout_ms: DEFAULT_RUN_TIMEOUT_MS, if_changed: None, created_at: 0, next_due: None, run_seq: 0,
+            max_cost_day: None, run_timeout_ms: DEFAULT_RUN_TIMEOUT_MS, if_changed: None, created_at: 0, next_due: None, run_seq: 0, rollover_note: true,
         }
     }
 
@@ -2436,5 +2486,50 @@ pub(crate) mod tests {
         assert!(kept.exists(), "a kept run keeps its payload");
         assert!(!pruned.exists() && !orphan.exists());
         assert!(rt().state.run(&id, 1).is_some());
+    }
+
+    async fn wait_for_message(id: &str) -> Option<Message> {
+        for _ in 0..300 {
+            if let Some(m) = msg(id) {
+                return Some(m);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn a_rollover_routine_sends_its_run_after_the_new_session_and_its_handoff() {
+        let _s = serial();
+        let (agent, name) = test_agent("ro", Desired::Stopped, false);
+        lock().agents.get_mut(&agent).unwrap().native_session = Some(crate::agents::model::NativeSession { agent: "claude".into(), id: "s-old".into(), bound_at: 1, model: None });
+        let id = create(&name, json!({ "session": "rollover", "noNote": true }));
+        assert_eq!(with_routines(|s| (s.routines[&id].session, s.routines[&id].rollover_note)), (SessionMode::Rollover, false));
+        let r = reply(handle_run(&json!({ "id": id, "userCap": cap() }), None));
+        assert!(r["runId"].is_string(), "{r}");
+        let run_msg = wait_for_message(&message_id(&id, 1)).await.expect("the run is sent");
+        let a = lock().agents[&agent].clone();
+        let n = a.rollover.last.as_ref().map(|l| l.n).unwrap();
+        let handoff = msg(&crate::agents::rollover::handoff_id(&agent, n)).expect("a handoff for the new session");
+        assert!(handoff.seq < run_msg.seq, "the run is queued after the clear and the handoff");
+        assert!(a.native_session.is_none());
+        assert_eq!(a.rollover.last.as_ref().map(|l| (l.outcome.as_str(), l.run.clone())), Some(("done", Some(run_id(&id, 1)))));
+    }
+
+    #[tokio::test]
+    async fn a_fresh_run_left_unsent_at_boot_renews_the_session_before_it_is_sent() {
+        let _s = serial();
+        let (agent, name) = test_agent("rb", Desired::Stopped, false);
+        lock().agents.get_mut(&agent).unwrap().native_session = Some(crate::agents::model::NativeSession { agent: "claude".into(), id: "s-old".into(), bound_at: 1, model: None });
+        let id = create(&name, json!({ "fresh": true }));
+        let at = unix_ms() - 60_000;
+        commit(Cmd::Fire(FireCmd { id: id.clone(), due: at, trigger: "manual".into(), at, crashed: false, start: false, note: None, next_due: None, unchanged: false, stat: None })).unwrap();
+        assert!(msg(&message_id(&id, 1)).is_none());
+        settle_after_boot();
+        let sent = wait_for_message(&message_id(&id, 1)).await;
+        let a = lock().agents[&agent].clone();
+        assert!(sent.is_some());
+        assert!(a.native_session.is_none(), "the old session is gone before the run arrives");
+        assert_eq!(a.rollover.last.as_ref().and_then(|l| l.run.clone()), Some(run_id(&id, 1)));
     }
 }

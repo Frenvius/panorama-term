@@ -699,6 +699,7 @@ fn status_settled(id: &str) {
     let status = crate::agents::live_view(&agent).status;
     let key = crate::agents::mail::Party::Agent { id: id.to_string() }.key();
     crate::agents::messages::note_status(&key, status == LiveStatus::Busy, status == LiveStatus::Idle);
+    crate::agents::rollover::on_settled(id, status);
     if status == LiveStatus::Idle {
         crate::agents::delivery::kick(&crate::agents::mail::Party::Agent { id: id.to_string() });
     }

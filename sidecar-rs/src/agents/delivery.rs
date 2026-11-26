@@ -73,6 +73,10 @@ fn retry_pending() -> &'static Mutex<HashSet<String>> {
     SET.get_or_init(Default::default)
 }
 
+pub(crate) fn delivering(party: &Party) -> bool {
+    guard(in_flight()).contains(&party.key())
+}
+
 pub(crate) fn claim_retry(key: &str) -> bool {
     guard(retry_pending()).insert(key.to_string())
 }
@@ -115,7 +119,10 @@ pub enum Outcome {
 
 pub(crate) async fn drain<B: DeliveryBackend>(backend: &B, party: &Party) -> Outcome {
     let Some(_flight) = Flight::take(party) else { return Outcome::Busy };
-    let queue: Vec<Message> = with_mailbox(|mb| mb.queue_for(party).into_iter().cloned().collect());
+    let mut queue: Vec<Message> = with_mailbox(|mb| mb.queue_for(party).into_iter().cloned().collect());
+    if party.agent_id().is_some_and(crate::agents::rollover::paused) {
+        queue.retain(|m| m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_ROLLOVER));
+    }
     if queue.is_empty() {
         return Outcome::Nothing;
     }
@@ -674,5 +681,30 @@ mod tests {
     #[test]
     fn user_mail_is_never_pasted() {
         assert!(LiveBackend.view(&Party::User).is_none());
+    }
+
+    #[tokio::test]
+    async fn mail_waits_during_a_rollover_and_follows_the_handoff_in_order() {
+        let (to, ids) = queue("r", 3);
+        let id = to.agent_id().unwrap().to_string();
+        let mut agent = crate::agents::reducer::tests::agent(&id, &format!("r-{id}"));
+        agent.rollover.open = Some(crate::agents::model::Rollover { n: 1, reason: "user".into(), phase: "open".into(), note: true, handoff: true, ..Default::default() });
+        crate::agents::lock().agents.insert(id.clone(), agent);
+        let brain = |mid: &str, kind: &str| Message { kind: Some(kind.into()), from_name: "panorama".into(), ..msg(mid, Party::Brain, to.clone()) };
+        let prompt = format!("r{id}-1");
+        commit_mail(MailCmd::Send { message: brain(&prompt, crate::agents::mail::KIND_ROLLOVER), recipient_exists: true }).unwrap();
+        let fake = Fake::idle("agent-x");
+        assert_eq!(drain(&fake, &to).await, Outcome::Delivered(vec![prompt.clone()]), "only the rollover prompt passes the pause");
+        assert_eq!(drain(&fake, &to).await, Outcome::Nothing);
+        assert!(ids.iter().all(|m| status_of(m) == MsgStatus::Queued));
+        let handoff = format!("h{id}-1");
+        commit_mail(MailCmd::Send { message: brain(&handoff, crate::agents::mail::KIND_HANDOFF), recipient_exists: true }).unwrap();
+        crate::agents::lock().agents.get_mut(&id).unwrap().rollover.open = None;
+        let Outcome::Delivered(sent) = drain(&fake, &to).await else { panic!() };
+        crate::agents::lock().agents.remove(&id);
+        let mut expected = vec![handoff];
+        expected.extend(ids.iter().cloned());
+        assert_eq!(sent, expected, "the handoff first, then the queued mail in order, each once");
+        assert!(fake.pasted.lock().unwrap()[1].starts_with("[panorama handoff] "), "{:?}", fake.pasted.lock().unwrap());
     }
 }

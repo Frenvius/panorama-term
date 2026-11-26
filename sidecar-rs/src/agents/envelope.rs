@@ -35,6 +35,12 @@ pub fn header(m: &Message) -> String {
         let (id, n) = crate::agents::routines::parse_run_id(&m.id).unwrap_or_default();
         return format!("[panorama routine {id} run {n}] {}", crate::agents::context::one_line(&m.from_name));
     }
+    if m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_ROLLOVER) {
+        return "[panorama rollover]".into();
+    }
+    if m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_HANDOFF) {
+        return "[panorama handoff]".into();
+    }
     if m.kind.as_deref() == Some(crate::agents::mail::KIND_EVENT) {
         return format!("[panorama event {}]", m.id.strip_prefix('e').unwrap_or(&m.id));
     }
@@ -54,8 +60,12 @@ fn cut_at_char(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+pub const HANDOFF_INLINE_BYTES: usize = 8_000;
+
 pub fn body(m: &Message, cli: &str) -> String {
-    let text = if m.text.len() <= INLINE_MAX_BYTES {
+    let handoff = m.from_brain() && m.kind.as_deref() == Some(crate::agents::mail::KIND_HANDOFF);
+    let inline = if handoff { HANDOFF_INLINE_BYTES } else { INLINE_MAX_BYTES };
+    let text = if m.text.len() <= inline {
         clean(m.text.trim_end())
     } else {
         format!("{} ... (full text: {cli} agent read {})", clean(cut_at_char(&m.text, INLINE_HEAD_BYTES).trim_end()), m.id)

@@ -88,6 +88,10 @@ pub(crate) fn broadcast_agents_routines() {
     }
 }
 
+pub(crate) fn broadcast_agents_rollover(agent_id: &str) {
+    send_event(json!({ "t": "agents.rollover", "agentId": agent_id }));
+}
+
 pub(crate) fn broadcast_agents_memory(agent_id: &str) {
     send_event(json!({ "t": "agents.memory", "agentId": agent_id }));
 }

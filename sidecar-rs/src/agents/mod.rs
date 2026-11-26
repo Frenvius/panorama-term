@@ -9,6 +9,7 @@ mod memory;
 mod messages;
 mod model;
 mod reducer;
+mod rollover;
 mod routine_hook;
 mod routines;
 mod runtime;
@@ -70,6 +71,7 @@ fn parse_body(body: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(body).map_err(|_| err_resp("bad_request", "invalid JSON body"))
 }
 
+#[derive(Debug)]
 struct CommitError {
     code: String,
     message: String,
@@ -115,6 +117,7 @@ pub fn init() {
     messages::init();
     waits::init();
     routines::init();
+    rollover::repair_after_boot();
     runtime::restore_all();
     compact::start();
 }
@@ -180,6 +183,8 @@ pub async fn handle(command: &str, body: &[u8]) -> String {
         "memory-set" => memory::handle_set(&v),
         "memory-forget" => memory::handle_forget(&v),
         "memory-search" => memory::handle_search(&v),
+        "handoff" => rollover::handle_handoff(&v),
+        "rollover" => rollover::handle_rollover(&v),
         "compact" => tokio::task::spawn_blocking(move || compact::handle_compact(&v)).await.unwrap_or_else(|_| err_resp("io", "compaction failed")),
         _ => err_resp("bad_request", "unknown command"),
     }
@@ -453,6 +458,10 @@ async fn handle_stop(v: &Value) -> String {
     if let Err(e) = commit_cmd(&id, cmd) {
         return e.resp();
     }
+    if let Some(open) = agent.rollover.open.as_ref().filter(|o| o.phase == "open") {
+        let _ = commit_cmd(&id, Cmd::RolloverEnd { id: id.clone(), n: open.n, at: unix_ms(), outcome: "aborted:stopped".into() });
+        crate::ui::broadcast_agents_rollover(&id);
+    }
     let tile = agent.tile_id();
     let stopped = runtime::stop_session(&tile).await;
     runtime::forget(&id, &tile);
@@ -518,7 +527,7 @@ fn handle_create(v: &Value) -> String {
         crashed: false,
         created_at: now,
         updated_at: now,
-        last_started_at: None, started_by: None,
+        last_started_at: None, started_by: None, rollover: Default::default(),
     };
     let id = agent.id.clone();
     let auto_start = agent.auto_start;
@@ -674,6 +683,7 @@ fn handle_delete(v: &Value) -> String {
     detach_coordinator(tile.clone());
     routines::on_agent_deleted(&id);
     memory::on_agent_deleted(&id);
+    rollover::forget(&id);
     if let Err(e) = store::remove_binding(&base, &tile) {
         eprintln!("[agents] {e}");
     }
@@ -695,6 +705,7 @@ pub enum FreshOutcome {
     Ready,
     Abandoned,
     Busy,
+    Failed(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -725,38 +736,35 @@ fn fresh_ready_now(agent_id: &str) -> Option<bool> {
     Some(!live.live || fresh_ready(live.status, live.status_source, typed))
 }
 
-pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str, wanted: impl Fn() -> bool) -> FreshOutcome {
-    let tile = model::tile_id(agent_id);
-    let mut attempts = 0;
-    loop {
-        let Some(ready) = fresh_ready_now(agent_id) else { return FreshOutcome::Abandoned };
-        match fresh_step(wanted(), ready, attempts) {
-            FreshStep::Abandon => return FreshOutcome::Abandoned,
-            FreshStep::GiveUp => return FreshOutcome::Busy,
-            FreshStep::Wait => {
-                attempts += 1;
-                tokio::time::sleep(FRESH_POLL).await;
-            }
-            FreshStep::Restart => break,
-        }
-    }
-    if crate::lookup_live(&tile).is_some() {
-        if commit_cmd(agent_id, Cmd::Stop { id: agent_id.into(), at: unix_ms(), by: "brain".into(), force: false, crashed: false }).is_err() {
-            return FreshOutcome::Abandoned;
-        }
-        runtime::stop_session(&tile).await;
-        runtime::forget(agent_id, &tile);
-    }
+pub(crate) async fn fresh_session_for(agent_id: &str, routine: &str, wanted: impl Fn() -> bool + Send + Sync) -> FreshOutcome {
+    renew_for_routine(agent_id, routine, None, None, wanted).await
+}
+
+pub(crate) async fn renew_for_routine(agent_id: &str, routine: &str, run: Option<String>, rollover: Option<bool>, wanted: impl Fn() -> bool + Send + Sync) -> FreshOutcome {
     if !wanted() {
         return FreshOutcome::Abandoned;
     }
-    if let Err(e) = commit_cmd(agent_id, Cmd::SessionClear { id: agent_id.into(), at: unix_ms(), reason: "routine".into() }) {
-        eprintln!("[routines] fresh session for {agent_id}: {}", e.message);
+    let (note, handoff) = match rollover {
+        Some(note) => (note, true),
+        None => (false, false),
+    };
+    let n = match rollover::begin(agent_id, &format!("routine:{routine}"), false, note, handoff, run) {
+        Ok(n) => n,
+        Err(e) if e.code == "conflict" => return FreshOutcome::Busy,
+        Err(e) => return FreshOutcome::Failed(format!("failed:{}", e.code)),
+    };
+    let outcome = rollover::drive(&rollover::LiveBackend, agent_id, n, &wanted).await;
+    match outcome.as_str() {
+        o if o.starts_with("done") => FreshOutcome::Ready,
+        "aborted:unwanted" | "gone" => FreshOutcome::Abandoned,
+        "aborted:busy" => FreshOutcome::Busy,
+        _ => FreshOutcome::Failed(outcome),
     }
-    if let Err(e) = start_agent(agent_id, Some(format!("routine {routine}"))) {
-        eprintln!("[routines] fresh start of {agent_id}: {}", e.message);
-    }
-    FreshOutcome::Ready
+}
+
+pub(crate) fn profile_exe_of(agent_id: &str) -> Option<String> {
+    let profile = lock().agents.get(agent_id).map(|a| a.profile.clone())?;
+    profile_exe(&profile)
 }
 async fn orch_call(command: &str, body: Value) -> Result<Value, String> {
     let text = crate::orch::handle(command, body.to_string().as_bytes()).await;

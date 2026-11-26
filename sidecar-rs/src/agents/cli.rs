@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::orch::cli::{http_post, parse_response_body};
 
-const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate|compact|memory|routine> [args] [--flags] [--json]";
+const USAGE: &str = "usage: panorama-cli agent <create|list|show|update|delete|start|stop|send|reply|read|inbox|wait|waits|coordinate|compact|handoff|rollover|memory|routine> [args] [--flags] [--json]";
 const PREVIEW_CHARS: usize = 40;
 
 #[derive(Debug, Default)]
@@ -32,7 +32,7 @@ struct Parsed {
 fn allowed_flags(command: &str) -> Option<&'static str> {
     Some(match command {
         "create" => "name title description profile model effort cwd instructions instructions-file auto-start",
-        "update" => "id name title description profile model effort cwd instructions instructions-file auto-start",
+        "update" => "id name title description profile model effort cwd instructions instructions-file auto-start rollover-at",
         "list" => "project",
         "show" => "id tail",
         "delete" => "id",
@@ -46,6 +46,8 @@ fn allowed_flags(command: &str) -> Option<&'static str> {
         "waits" => "all status",
         "coordinate" => "run off",
         "compact" => "",
+        "handoff" => "file",
+        "rollover" => "id",
         _ => return None,
     })
 }
@@ -80,6 +82,7 @@ fn field_for(flag: &str) -> &'static str {
         "status" => "status",
         "run" => "runId",
         "off" => "off",
+        "rollover-at" => "rolloverAt",
         _ => "",
     }
 }
@@ -95,6 +98,7 @@ fn parse_bool(flag: &str, raw: &str) -> Result<bool, String> {
 fn positional_fields(command: &str) -> &'static [&'static str] {
     match command {
         "create" | "list" | "wait" | "waits" | "compact" => &[],
+        "handoff" => &["text"],
         "send" | "reply" => &["to", "text"],
         "inbox" | "coordinate" => &["agent"],
         _ => &["id"],
@@ -149,7 +153,13 @@ where
             "auto-start" => parse_bool(flag, raw)?.into(),
             "tail" | "limit" => raw.parse::<u64>().map_err(|_| format!("--{flag} requires a number"))?.into(),
             "timeout" => crate::agents::waits::parse_duration(raw).ok_or("--timeout takes a duration like 30m or 2h")?.into(),
-            "instructions-file" | "file" => read_file(raw)?.into(),
+            "instructions-file" => read_file(raw)?.into(),
+            "file" if command == "handoff" => read_handoff_file(raw)?.into(),
+            "file" => read_file(raw)?.into(),
+            "rollover-at" => match raw.as_str() {
+                "off" => 0.into(),
+                n => n.parse::<u64>().ok().filter(|v| (40..=90).contains(v)).ok_or("--rollover-at takes 40 to 90, or off")?.into(),
+            },
             _ => raw.clone().into(),
         };
         body.insert(field.into(), value);
@@ -190,6 +200,16 @@ where
         }
         let off = body.remove("off").is_some();
         body.insert("on".into(), (!off).into());
+    } else if command == "handoff" || command == "rollover" {
+        if command == "handoff" && !body.contains_key("text") {
+            return Err("handoff requires a text or --file <path>".into());
+        }
+        if command == "rollover" && !body.contains_key("id") {
+            return Err("rollover requires an agent name".into());
+        }
+        if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
+        if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
+        if env.worker { body.insert("worker".into(), true.into()); }
     } else if command == "compact" {
         if let Some(agent) = &env.agent { body.insert("fromAgent".into(), agent.clone().into()); }
         if let Some(tile) = &env.tile { body.insert("fromTile".into(), tile.clone().into()); }
@@ -200,6 +220,17 @@ where
         return Err(format!("{command} requires an agent name or id"));
     }
     Ok(Parsed { command, body, json })
+}
+
+fn read_handoff_file(path: &str) -> Result<String, String> {
+    if !crate::agents::waits::local_disk_path(path) {
+        return Err("--file takes a path on a local disk".into());
+    }
+    let size = std::fs::metadata(path).map_err(|e| format!("cannot read {path}: {e}"))?.len();
+    if size > crate::agents::rollover::NOTE_FILE_MAX_BYTES as u64 {
+        return Err(format!("{path} is over 16 KB; keep the handoff short"));
+    }
+    read_file(path)
 }
 
 fn read_file(path: &str) -> Result<String, String> {
@@ -277,14 +308,16 @@ fn routine_flag(flag: &str) -> Option<(&'static str, &'static str)> {
         "no-update" => ("noUpdate", "bool"),
         "failed" => ("failed", "bool"),
         "rotate" => ("rotate", "bool"),
+        "session" => ("session", "text"),
+        "no-note" => ("noNote", "bool"),
         _ => return None,
     })
 }
 
 fn routine_shape(sub: &str) -> Option<(&'static str, &'static [&'static str], &'static str)> {
     Some(match sub {
-        "create" => ("routine-create", &["agent"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session report-to max-per-day max-cost-day run-timeout if-changed disabled"),
-        "update" => ("routine-update", &["id"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session report-to max-per-day max-cost-day run-timeout if-changed"),
+        "create" => ("routine-create", &["agent"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session session no-note report-to max-per-day max-cost-day run-timeout if-changed disabled"),
+        "update" => ("routine-update", &["id"], "name at days cron every hook manual text file missed catch-up-window overlap fresh keep-session session no-note report-to max-per-day max-cost-day run-timeout if-changed"),
         "list" => ("routines", &["agent"], ""),
         "show" => ("routine-runs", &["id"], "runs"),
         "enable" => ("routine-enable", &["id"], ""),
@@ -514,7 +547,7 @@ pub fn main() {
         "wait" if v["cancelled"].is_number() => println!("Cancelled {} wait(s).", v["cancelled"]),
         "wait" => println!("{}", v["text"].as_str().unwrap_or_default()),
         "waits" => v["waits"].as_array().into_iter().flatten().for_each(|w| println!("{}", wait_line(w))),
-        "coordinate" => println!("{}", v["text"].as_str().unwrap_or_default()),
+        "coordinate" | "handoff" | "rollover" => println!("{}", v["text"].as_str().unwrap_or_default()),
         "compact" => println!("Compacted the logs: {} KB -> {} KB", v["before"].as_u64().unwrap_or(0) / 1024, v["after"].as_u64().unwrap_or(0) / 1024),
         "inbox" => v["messages"].as_array().into_iter().flatten().for_each(|m| println!("{}", message_line(m))),
         "read" => {
@@ -696,5 +729,25 @@ mod tests {
         assert!(parse_memory(&args(&["remember"]), &env).is_err());
         assert!(parse_memory(&args(&["remember", "x", "--by", "user"]), &env).is_err());
         assert!(parse_memory(&args(&["list", "extra"]), &env).is_err());
+    }
+
+    #[test]
+    fn rollover_commands_parse() {
+        let env = CliEnv { agent: Some("a1".into()), tile: Some("agent-a1".into()), worker: false };
+        let reader = |p: &str| -> Result<String, String> { Ok(format!("file:{p}")) };
+        let parse_args_with = |a: &[&str], env: &CliEnv, r: &dyn Fn(&str) -> Result<String, String>| parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), env, r);
+        let h = parse_args_with(&["handoff", "Working on the parser."], &env, &reader).unwrap();
+        assert_eq!((h.body["text"].as_str(), h.body["fromAgent"].as_str()), (Some("Working on the parser."), Some("a1")));
+        assert!(parse_args_with(&["handoff"], &env, &reader).is_err());
+        let r = parse_args_with(&["rollover", "rev"], &CliEnv::default(), &reader).unwrap();
+        assert_eq!(r.body["id"], "rev");
+        let off = parse_args_with(&["update", "rev", "--rollover-at", "off"], &CliEnv::default(), &reader).unwrap();
+        assert_eq!(off.body["rolloverAt"], 0);
+        let at = parse_args_with(&["update", "rev", "--rollover-at", "55"], &CliEnv::default(), &reader).unwrap();
+        assert_eq!(at.body["rolloverAt"], 55);
+        assert!(parse_args_with(&["update", "rev", "--rollover-at", "95"], &CliEnv::default(), &reader).is_err());
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (_, body) = parse_routine(&args(&["create", "rev", "--name", "Nightly", "--text", "x", "--manual", "--session", "rollover", "--no-note"]), &CliEnv::default(), &reader).unwrap();
+        assert_eq!((body["session"].as_str(), body["noNote"].as_bool()), (Some("rollover"), Some(true)));
     }
 }

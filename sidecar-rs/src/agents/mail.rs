@@ -83,6 +83,8 @@ pub struct Message {
 
 pub const KIND_EVENT: &str = "event";
 pub const KIND_ORCH: &str = "orch";
+pub const KIND_ROLLOVER: &str = "rollover";
+pub const KIND_HANDOFF: &str = "handoff";
 
 pub fn orch_run(key: &str) -> Option<&str> {
     key.strip_prefix("orch:")?.split_once(':')?.1.split('#').next()
@@ -134,7 +136,7 @@ impl Mailbox {
         let mut queued: Vec<&Message> = self.messages.values()
             .filter(|m| m.status == MsgStatus::Queued && m.to == *party)
             .collect();
-        queued.sort_by_key(|m| m.seq);
+        queued.sort_by_key(|m| (m.kind.as_deref() != Some(KIND_HANDOFF) || !m.from_brain(), m.seq));
         queued
     }
 

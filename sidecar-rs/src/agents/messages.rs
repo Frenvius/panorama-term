@@ -227,6 +227,12 @@ pub(crate) fn compact_mail(force: bool) -> crate::agents::compact::Sizes {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn tests_queue(agent_id: &str, id: &str) {
+    let m = crate::agents::mail::Message { from_name: "user".into(), ..crate::agents::mail::tests::msg(id, Party::User, Party::Agent { id: agent_id.into() }) };
+    commit_mail(MailCmd::Send { message: m, recipient_exists: true }).unwrap();
+}
+
 fn parties_of(cmd: &MailCmd, mailbox: &Mailbox) -> Vec<Party> {
     let of = |id: &str| mailbox.messages.get(id).map(|m| vec![m.from.clone(), m.to.clone()]).unwrap_or_default();
     match cmd {

@@ -76,8 +76,67 @@ pub struct Agent {
     pub last_started_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_by: Option<String>,
+    #[serde(default)]
+    pub rollover: RolloverState,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rollover {
+    pub n: u32,
+    pub reason: String,
+    pub phase: String,
+    pub started_at: u64,
+    #[serde(default)]
+    pub note: bool,
+    #[serde(default)]
+    pub handoff: bool,
+    #[serde(default)]
+    pub noted: bool,
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_before: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloverEnd {
+    pub n: u32,
+    pub outcome: String,
+    pub at: u64,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub handoff: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_before: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_after: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloverState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<Rollover>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<String>,
+    #[serde(default)]
+    pub history: Vec<(u64, bool)>,
+    #[serde(default)]
+    pub strikes: u8,
+    #[serde(default)]
+    pub seq: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<RolloverEnd>,
+}
 impl Agent {
     pub fn tile_id(&self) -> String {
         tile_id(&self.id)
