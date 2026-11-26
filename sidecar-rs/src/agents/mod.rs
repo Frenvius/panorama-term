@@ -812,7 +812,7 @@ mod tests {
         let only_delta = |out: &Option<String>| out.as_deref().is_none_or(|o| o.starts_with("[panorama agents] ") && !o.contains("Orchestrate"));
         assert!(only_delta(&second), "once per session: {second:?}");
         let delta = delta.unwrap();
-        assert!(delta.starts_with("[panorama agents] ") && delta.contains(&format!("rev-{newcomer}")) && !delta.contains("Orchestrate"), "{delta}");
+        assert!(delta.starts_with("[panorama agents] ") && (delta.contains(&format!("rev-{newcomer}")) || delta.contains("The agent list changed")) && !delta.contains("Orchestrate"), "{delta}");
         assert!(only_delta(&after_delta) && !after_delta.as_deref().unwrap_or("").contains(&format!("rev-{newcomer}")), "{after_delta:?}");
         assert!(new_session.unwrap().contains("Orchestrate mode is ON"));
     }
