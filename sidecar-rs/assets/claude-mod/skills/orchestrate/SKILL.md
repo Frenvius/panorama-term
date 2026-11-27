@@ -95,11 +95,22 @@ For attached mode, all message types, steering, retries, conflicts, boards and a
 A worker runs in an isolated git worktree. If the task needs gitignored files, a heavy build
 artifact, or a running app that is not in the worktree, the worktree cannot serve it.
 
-When you recognize this: stop and ask the user which route to take (link the files through
-`.panorama/worktree.json`, an in-place task with `workspace: "main"`, or doing it by hand),
-and which model to use. Never bypass with the Agent tool, subagents, or another agent CLI.
-Do not override the profile or model unless the user asks. Split implement from build/validate
-tasks when only the latter needs the missing files.
+Most of these still run in parallel worktrees. Prefer, in order:
+
+- Share what the build only reads: `link` it (`readOnly` when workers must not write it), or
+  rely on the tool's global cache. Never `link` a directory the build writes; `copy` it or
+  let each worktree produce its own.
+- Isolate run-time state per worker: port, database, data directory, queue prefix. The spec
+  tells the worker to take them from env or a task-specific name.
+- Split implement (parallel, no lock) from build/validate or run-app tasks, and put an
+  `exclusive` lock only on the part that cannot be isolated.
+- Use `workspace: "main"` only when none of the above works. Two in-place tasks never run
+  together: they would build and verify each other's half-done edits.
+
+When the route is not clear from the repo: stop and ask the user which route to take (the
+options above, an in-place task, or doing it by hand), and which model to use. Never bypass
+with the Agent tool, subagents, or another agent CLI. Do not override the profile or model
+unless the user asks.
 
 ## One task: `orch exec`
 
