@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.22]
+
+### Fixed
+- Closed tabs and terminals no longer come back in the Projects view when another Panorama client is connected to the same host.
+- Opening a file from a project that is not in the panel no longer adds an empty project; the file opens in the matching or active project.
+- The agent prompt bar no longer jumps onto a table while the agent is drawing one.
+
 ## [0.4.21]
 
 ### Performance
