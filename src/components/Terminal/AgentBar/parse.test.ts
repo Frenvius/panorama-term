@@ -101,6 +101,18 @@ describe('inputTopRow', () => {
   it('keeps the bordered input box for Claude', () => {
     expect(inputTopRow(gridFrame(box('❯ hello'), []), 'claude')).toBe(1);
   });
+
+  it('ignores table separators while a table streams in', () => {
+    const table = [
+      '┌──────┬──────┐',
+      '│ Area │ Note │',
+      '├──────┼──────┤',
+      '│ a    │ b    │',
+      '├──────┼──────┤',
+      '│ c    │ d    │'
+    ];
+    expect(inputTopRow(gridFrame(table, []), 'claude')).toBeNull();
+  });
 });
 
 describe('readInputText', () => {

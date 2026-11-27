@@ -203,7 +203,7 @@ const scrapeModel = (rows: string[]): { model: string; contextInfo?: string } | 
 
 const isBoxBottom = (s: string): boolean => s.includes('╰') && s.includes('╯');
 const isBoxTop = (s: string): boolean =>
-  (s.includes('╭') && s.includes('╮')) || (s.includes('├') && s.includes('┤'));
+  (s.includes('╭') && s.includes('╮')) || (s.includes('├') && s.includes('┤') && !s.includes('┼'));
 
 const PLACEHOLDER = /^(try\b|write a prompt|ask\b|\/ for commands|\? for shortcuts)/i;
 
