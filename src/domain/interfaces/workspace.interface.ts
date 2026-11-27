@@ -61,6 +61,7 @@ export interface CanvasState {
   viewport: Viewport;
   frames?: Frame[];
   projectView?: ProjectViewState;
+  rev?: number;
 }
 
 export interface TabState {

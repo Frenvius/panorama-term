@@ -20,6 +20,7 @@ import { moveProject, moveFrameOrder } from '~/usecase/util/projectOrder';
 import { killPtySession } from '~/adapter/pty/sidecar.client';
 import { isHeadlessTile } from '~/usecase/util/agents';
 import { toStored, toRuntime } from '~/usecase/util/workspaceCanvas';
+import { keepLocalSelection } from '~/usecase/util/projectSelection';
 import { workspaceService } from '~/usecase/service/workspace.service';
 import { unlinkNote, deleteNote, unlinkTerm } from '~/adapter/notes/notes.client';
 import { withFrameCreated, withFramePatched } from '~/usecase/util/frame';
@@ -253,15 +254,20 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   const pendingSaveRef = React.useRef(false);
   const ownStatesRef = React.useRef(new WeakSet<CanvasState>(seed ? [seed] : []));
   const appliedRef = React.useRef({ tiles, frames, projectView });
+  const revRef = React.useRef(seed?.rev ?? 0);
 
   const persistNow = () => {
     pendingSaveRef.current = false;
-    const stored = toStored({
-      tiles: tilesRef.current,
-      view: viewRef.current,
-      frames: framesRef.current,
-      projectView: projectViewRef.current
-    });
+    revRef.current += 1;
+    const stored: CanvasState = {
+      ...toStored({
+        tiles: tilesRef.current,
+        view: viewRef.current,
+        frames: framesRef.current,
+        projectView: projectViewRef.current
+      }),
+      rev: revRef.current
+    };
     ownStatesRef.current.add(stored);
     onPersistRef.current(stored);
   };
@@ -269,8 +275,19 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   React.useEffect(() => {
     if (!seed || ownStatesRef.current.has(seed)) return;
     ownStatesRef.current.add(seed);
+    const incomingRev = seed.rev ?? 0;
+    if (!isRemote() && (pendingSaveRef.current || incomingRev <= revRef.current)) {
+      revRef.current = Math.max(revRef.current, incomingRev);
+      if (!pendingSaveRef.current) persistNow();
+      return;
+    }
+    revRef.current = incomingRev;
+    pendingSaveRef.current = false;
     const next = toRuntime(seed);
-    const nextView = syncWithFrames(seed.projectView, next.tiles, next.frames);
+    const nextView = keepLocalSelection(
+      syncWithFrames(seed.projectView, next.tiles, next.frames),
+      projectViewRef.current
+    );
     appliedRef.current = { tiles: next.tiles, frames: next.frames, projectView: nextView };
     tilesRef.current = next.tiles;
     framesRef.current = next.frames;
@@ -1251,6 +1268,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   const setTileOscTitle = React.useCallback((id: string, title: string) => {
     const oscTitle = title.trim() || undefined;
     setTiles((prev) => {
+      if (!prev.some((t) => t.id === id && t.oscTitle !== oscTitle)) return prev;
       const next = prev.map((t) => (t.id === id && t.oscTitle !== oscTitle ? { ...t, oscTitle } : t));
       tilesRef.current = next;
       return next;
