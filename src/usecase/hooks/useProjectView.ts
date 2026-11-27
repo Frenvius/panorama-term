@@ -29,6 +29,7 @@ import {
   DEFAULT_PROJECT,
   splitPanelGroup,
   projectRootPath,
+  resolveKnownProject,
   updateSplitRatio,
   normalizeProjectPath,
   activateTileInProject,
@@ -841,7 +842,9 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
   const placeFileTile = React.useCallback(
     (root: string, filePath: string, type: 'editor' | 'code', sideSplit?: boolean) => {
-      const normRoot = projectRootPath(root) || projectViewRef.current.activeProject || '';
+      const { projects, activeProject } = projectViewRef.current;
+      const normRoot = resolveKnownProject(projects, root, filePath, activeProject);
+      if (!normRoot) return;
       const existingTile = tilesRef.current.find((t) => {
         if (t.type !== type || t.filePath !== filePath) return false;
         if (type === 'code' && t.cwd) {
@@ -851,14 +854,16 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
       });
 
       if (existingTile) {
-        if (sideSplit && normRoot) {
+        activateTile(existingTile.id);
+        if (sideSplit) {
           setProjectView((prev) => {
-            const canonical =
-              prev.projects.find((p) => p.toLowerCase() === normRoot.toLowerCase()) ?? prev.activeProject ?? normRoot;
+            const canonical = prev.activeProject ?? normRoot;
             const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState([existingTile.id]);
+            const groupId = Object.values(basePanel.groups).find((group) => group.tileIds.includes(existingTile.id))?.id;
             const nextPanel = splitPanelGroup(basePanel, {
               direction: 'horizontal',
-              tileId: existingTile.id
+              tileId: existingTile.id,
+              groupId
             });
             const next: ProjectViewState = {
               ...prev,
@@ -871,8 +876,6 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
             projectViewRef.current = next;
             return next;
           });
-        } else {
-          activateTile(existingTile.id);
         }
         return;
       }
@@ -901,9 +904,7 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
 
       if (normRoot) {
         setProjectView((prev) => {
-          const existingProj = prev.projects.find((p) => p.toLowerCase() === normRoot.toLowerCase());
-          const canonical = existingProj ?? normRoot;
-          const projects = existingProj ? prev.projects : [...prev.projects, canonical];
+          const canonical = normRoot;
           const basePanel = prev.byProject[panelKey(canonical)] ?? emptyProjectPanelState();
           const activeGroup = basePanel.groups[basePanel.activeGroupId];
           const nextPanel =
@@ -912,7 +913,6 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
               : activateTileInProject(basePanel, { tileId: id });
           const next: ProjectViewState = {
             ...prev,
-            projects,
             activeProject: canonical,
             byProject: {
               ...prev.byProject,

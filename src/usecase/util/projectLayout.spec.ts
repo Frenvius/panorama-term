@@ -10,6 +10,7 @@ import {
   splitPanelGroup,
   collectGroupIds,
   projectRootPath,
+  resolveKnownProject,
   updateSplitRatio,
   tileMatchesProject,
   normalizeProjectPath,
@@ -32,6 +33,20 @@ const makeTile = (id: string, overrides: Partial<Tile> = {}): Tile => ({
 });
 
 describe('project path helpers', () => {
+  test('resolveKnownProject selects known owners and falls back to the active project', () => {
+    const projects = ['/work/app', '/work/app/packages/ui', '/work/other'];
+    expect(resolveKnownProject(projects, '/work/app', '/work/app/index.ts', '/work/other')).toBe('/work/app');
+    expect(resolveKnownProject(projects, '/work/app/src', '/work/app/src/index.ts', '/work/other')).toBe('/work/app');
+    expect(resolveKnownProject(projects, '/unknown', '/unknown/file.ts', '/work/other')).toBe('/work/other');
+    expect(resolveKnownProject(projects, '/unknown', '/work/app/packages/ui/index.ts', '/work/other')).toBe('/work/app/packages/ui');
+    expect(resolveKnownProject(projects, '/work/app', '/work/app/packages/ui/index.ts', '/work/other')).toBe('/work/app/packages/ui');
+    expect(resolveKnownProject(['C:\\Work\\App'], 'c:/WORK/app/', 'c:/work/app/file.ts', null)).toBe('C:\\Work\\App');
+    expect(resolveKnownProject(['C:\\Work\\App'], 'c:/work/app/src', 'C:\\WORK\\APP\\src\\file.ts', null)).toBe('C:\\Work\\App');
+    expect(resolveKnownProject(projects, '/work/app-other', '/work/app-other/file.ts', null)).toBeNull();
+    expect(resolveKnownProject([], '/unknown', '/unknown/file.ts', null)).toBeNull();
+    expect(resolveKnownProject(projects, '/unknown', '/unknown/file.ts', '/unknown')).toBeNull();
+  });
+
   test('normalizeProjectPath normalizes slashes and trailing slashes', () => {
     expect(normalizeProjectPath('C:\\code\\panorama\\')).toBe('C:/code/panorama');
     expect(normalizeProjectPath('/Users/dev/project///')).toBe('/Users/dev/project');
@@ -255,6 +270,19 @@ describe('binary split panel tree operations', () => {
     expect(syncedDefault.activeProject).toBe('~');
     const defaultGroups = Object.values(syncedDefault.byProject['~']!.groups);
     expect(defaultGroups.flatMap((g) => g.tileIds)).toEqual(['t3']);
+  });
+
+  test('sync keeps an external file in its resolved known project', () => {
+    const view = { projects: ['/work/app'], activeProject: '/work/app', byProject: {} };
+    const workspacePath = resolveKnownProject(view.projects, '/external', '/external/file.ts', view.activeProject)!;
+    for (const type of ['editor', 'code'] as const) {
+      const tile = makeTile(type, { type, workspacePath, cwd: '/external', filePath: '/external/file.ts' });
+      const synced = syncProjectViewWithTiles(view, [tile]);
+      expect(synced.projects).toEqual(view.projects);
+      expect(Object.values(synced.byProject['/work/app']!.groups).flatMap((group) => group.tileIds)).toContain(type);
+      expect(tile.cwd).toBe('/external');
+      expect(tile.filePath).toBe('/external/file.ts');
+    }
   });
 
   test('syncProjectViewWithTiles uses tileKey resolver when provided', () => {

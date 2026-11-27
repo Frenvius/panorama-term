@@ -48,6 +48,18 @@ export const pathStartsWith = (targetPath: string, prefixPath: string): boolean 
   return target === prefix || target.startsWith(`${prefix}/`);
 };
 
+export const resolveKnownProject = (projects: string[], root: string, filePath: string, activeProject: string | null): string | null => {
+  const rootKey = projectRootPath(root).toLowerCase();
+  const exact = projects.find((project) => normalizeProjectPath(project).toLowerCase() === rootKey);
+  let best: string | null = null;
+  for (const project of projects) {
+    if (pathStartsWith(filePath, project) && (!best || normalizeProjectPath(project).length > normalizeProjectPath(best).length)) {
+      best = project;
+    }
+  }
+  return best ?? exact ?? projects.find((project) => normalizeProjectPath(project).toLowerCase() === normalizeProjectPath(activeProject ?? '').toLowerCase()) ?? null;
+};
+
 export const tileCandidatePath = (tile: Tile): string => tile.workspacePath ?? tile.folderPath ?? tile.cwd ?? tile.filePath ?? '';
 
 export const tileProject = (tile: Tile, projects: string[]): string | null => {
