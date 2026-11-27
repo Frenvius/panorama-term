@@ -94,7 +94,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
 
-  const [bodySize, setBodySize] = React.useState({ w: 640, h: 420 });
+  const [bodySize, setBodySize] = React.useState<{ w: number; h: number } | null>(null);
   const [renamingTileId, setRenamingTileId] = React.useState<string | null>(null);
   const [renameDraft, setRenameDraft] = React.useState('');
   const [tabContextMenu, setTabContextMenu] = React.useState<{ tile: Tile; x: number; y: number } | null>(null);
@@ -121,7 +121,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
     return subscribeDirty(() => setDirtyTick((n) => n + 1));
   }, []);
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
@@ -163,8 +163,8 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
 
   const termTiles = React.useMemo(() => groupTiles.filter((t) => t.type === 'term' && !t.dormant), [groupTiles]);
 
-  const termCols = Math.max(20, fitCells(bodySize.w, 8, cellW));
-  const termRows = Math.max(2, fitCells(bodySize.h, 10, TERM_ROW_PX));
+  const termCols = Math.max(20, fitCells(bodySize?.w ?? 0, 8, cellW));
+  const termRows = Math.max(2, fitCells(bodySize?.h ?? 0, 10, TERM_ROW_PX));
 
   const noteSections = activeTile?.type === 'note' ? noteTabs(activeTile.content) : [];
   const activeNoteTabName = activeTile?.type === 'note' ? parseFrontField(activeTile.content, 'tab') : '';
@@ -509,7 +509,7 @@ const PanelGroupView = (props: PanelGroupViewProps) => {
 
       <div ref={bodyRef} className={styles.body} data-panel-body-group={group.id}>
         <ErrorBoundary fallback={panelCrash}>
-          {termTiles.map((termTile) => {
+          {bodySize && termTiles.map((termTile) => {
             const isTermActive = termTile.id === activeTile?.id;
             const runView = Boolean(termTile.runCwd);
             return (
