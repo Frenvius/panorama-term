@@ -8,6 +8,7 @@ import type { SplitDirection, ProjectViewState, ProjectPanelState } from '~/doma
 import React from 'react';
 import { listen } from '@tauri-apps/api/event';
 
+import { isRemote } from '~/adapter/transport';
 import { clearAlert } from '~/usecase/util/alerts';
 import { NOTE_DEFAULT_COLOR } from '~/usecase/util/note';
 import { getPref, setPref } from '~/usecase/util/prefs';
@@ -250,35 +251,47 @@ export const useProjectView = ({ seed, wsId, onPersist }: UseProjectViewArgs) =>
   const onPersistRef = React.useRef(onPersist);
   onPersistRef.current = onPersist;
   const pendingSaveRef = React.useRef(false);
+  const ownStatesRef = React.useRef(new WeakSet<CanvasState>(seed ? [seed] : []));
+  const appliedRef = React.useRef({ tiles, frames, projectView });
+
+  const persistNow = () => {
+    pendingSaveRef.current = false;
+    const stored = toStored({
+      tiles: tilesRef.current,
+      view: viewRef.current,
+      frames: framesRef.current,
+      projectView: projectViewRef.current
+    });
+    ownStatesRef.current.add(stored);
+    onPersistRef.current(stored);
+  };
 
   React.useEffect(() => {
+    if (!seed || ownStatesRef.current.has(seed)) return;
+    ownStatesRef.current.add(seed);
+    const next = toRuntime(seed);
+    const nextView = syncWithFrames(seed.projectView, next.tiles, next.frames);
+    appliedRef.current = { tiles: next.tiles, frames: next.frames, projectView: nextView };
+    tilesRef.current = next.tiles;
+    framesRef.current = next.frames;
+    projectViewRef.current = nextView;
+    setTiles(next.tiles);
+    setFrames(next.frames);
+    setProjectView(nextView);
+  }, [seed]);
+
+  React.useEffect(() => {
+    const applied = appliedRef.current;
+    const changed = applied.tiles !== tiles || applied.frames !== frames || applied.projectView !== projectView;
+    if (isRemote() && !changed) return;
     pendingSaveRef.current = true;
-    const id = setTimeout(() => {
-      pendingSaveRef.current = false;
-      onPersistRef.current(
-        toStored({
-          tiles: tilesRef.current,
-          view: viewRef.current,
-          frames: framesRef.current,
-          projectView: projectViewRef.current
-        })
-      );
-    }, 400);
+    const id = setTimeout(persistNow, 400);
     return () => clearTimeout(id);
   }, [tiles, view, frames, projectView]);
 
   React.useEffect(
     () => () => {
-      if (!pendingSaveRef.current) return;
-      pendingSaveRef.current = false;
-      onPersistRef.current(
-        toStored({
-          tiles: tilesRef.current,
-          view: viewRef.current,
-          frames: framesRef.current,
-          projectView: projectViewRef.current
-        })
-      );
+      if (pendingSaveRef.current) persistNow();
     },
     []
   );
