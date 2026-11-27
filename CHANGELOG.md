@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.23]
+
+### Fixed
+- With another Panorama client connected, closed tabs no longer reopen and switching tabs no longer jumps back to the previous one. Changes made on the host always win over older state from the client.
+- The active project, focused panel and selected tab are now kept per device instead of following the other connected client.
+- Terminals in the Projects view wait for the panel's real size before attaching, so they no longer start with the wrong dimensions.
+
 ## [0.4.22]
 
 ### Fixed

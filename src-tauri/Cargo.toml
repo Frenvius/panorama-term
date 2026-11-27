@@ -1,6 +1,6 @@
 [package]
 name = "panorama"
-version = "0.4.22"
+version = "0.4.23"
 description = "Infinite canvas of persistent terminal tiles"
 edition = "2021"
 license = "MIT"
